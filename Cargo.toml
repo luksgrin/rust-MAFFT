@@ -2,6 +2,7 @@
 members = [
     "crates/mafft-sys",
     "crates/mafft-types",
+    "crates/mafft-io",
 ]
 resolver = "2"
 
