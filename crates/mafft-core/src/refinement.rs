@@ -9,9 +9,13 @@
 /// split into two groups (subtree vs everything else). There are never
 /// "uninvolved" sequences — every sequence is in one group or the other.
 
-use mafft_align::{profile_align, Profile, GapModel, Alignment, AlignOp};
+use mafft_align::{
+    profile_align, constrained_profile_align, ConstrainedAlignParams,
+    Profile, GapModel, Alignment, AlignOp,
+};
+use mafft_fft::SegmentParams;
 use mafft_tree::{Topology, sequence_weights};
-use mafft_types::ScoringContext;
+use mafft_types::{ScoringContext, LocalHomologyTable};
 
 use crate::progressive::MultipleAlignment;
 
@@ -45,6 +49,7 @@ pub fn iterative_refine(
     topology: &Topology,
     scoring: &ScoringContext,
     params: &RefinementParams,
+    constraints: Option<&LocalHomologyTable>,
 ) -> usize {
     let nseq = alignment.nseq();
     if nseq <= 2 || topology.steps.is_empty() {
@@ -97,6 +102,7 @@ pub fn iterative_refine(
 
             let new_seqs = realign_all(
                 group1, group2, &alignment.sequences, &weights, scoring, &gap,
+                constraints,
             );
 
             if let Some((new_seqs, new_score)) = new_seqs {
@@ -150,6 +156,7 @@ fn realign_all(
     weights: &[f64],
     scoring: &ScoringContext,
     gap: &GapModel,
+    constraints: Option<&LocalHomologyTable>,
 ) -> Option<(Vec<Vec<u8>>, f64)> {
     let seqs1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
     let seqs2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
@@ -168,7 +175,23 @@ fn realign_all(
         return None;
     }
 
-    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, true, true);
+    // Use constrained alignment if local homology table is available
+    let aln = if let Some(lh_table) = constraints {
+        let params = ConstrainedAlignParams {
+            gap: gap.clone(),
+            segment_params: SegmentParams::protein(),
+            constraint_weight: 1.0,
+        };
+        constrained_profile_align(
+            &prof1, &prof2,
+            &scoring.substitution_matrix,
+            lh_table,
+            group1, group2,
+            &params,
+        )
+    } else {
+        profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, true, true)
+    };
 
     // Verify ops consume all columns from both profiles.
     // Since both profiles have the same length (= current alignment width),
@@ -304,7 +327,7 @@ mod tests {
             use_fft: false,
         };
 
-        let iters = iterative_refine(&mut msa, &topo, &scoring, &params);
+        let iters = iterative_refine(&mut msa, &topo, &scoring, &params, None);
         assert!(iters <= 10);
 
         let width = msa.width();
@@ -339,7 +362,7 @@ mod tests {
         let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false);
         let params = RefinementParams { max_iterations: 5, ..Default::default() };
 
-        iterative_refine(&mut msa, &topo, &scoring, &params);
+        iterative_refine(&mut msa, &topo, &scoring, &params, None);
 
         let width = msa.width();
         assert!(width > 0);
@@ -379,7 +402,7 @@ mod tests {
         let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false);
         let params = RefinementParams { max_iterations: 3, ..Default::default() };
 
-        iterative_refine(&mut msa, &topo, &scoring, &params);
+        iterative_refine(&mut msa, &topo, &scoring, &params, None);
 
         let width = msa.width();
         for (i, seq) in msa.sequences.iter().enumerate() {

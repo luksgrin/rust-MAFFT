@@ -1,12 +1,10 @@
 /// High-level MAFFT alignment engine.
-///
-/// Ties together I/O, scoring, tree construction, progressive alignment,
-/// and iterative refinement into a single coherent pipeline.
 
-use mafft_io::{read_fasta, detect_seq_type};
+use mafft_io::read_fasta;
 use mafft_scoring::build_context;
 use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance};
-use mafft_types::{ScoringModel, SeqType, SequenceSet};
+use mafft_align::{build_local_homology_table, GapModel};
+use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
 use crate::progressive::{progressive_align, MultipleAlignment};
 use crate::refinement::{iterative_refine, RefinementParams};
@@ -49,15 +47,8 @@ impl Default for MafftEngine {
 }
 
 impl MafftEngine {
-    /// Create an engine for a specific alignment mode.
     pub fn new(mode: AlignmentMode) -> Self {
-        let scoring_model = match &mode {
-            AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. } => ScoringModel::Jtt,
-            AlignmentMode::GInsi { .. } => ScoringModel::Jtt,
-            AlignmentMode::LInsi { .. } => ScoringModel::Jtt,
-            AlignmentMode::EInsi { .. } => ScoringModel::Jtt,
-        };
-        Self { mode, scoring_model }
+        Self { mode, scoring_model: ScoringModel::Jtt }
     }
 
     /// Align a set of sequences.
@@ -70,9 +61,9 @@ impl MafftEngine {
         };
 
         let scoring = build_context(scoring_model, seq_type);
+        let nseq = input.nseq();
 
         // Step 1: Compute pairwise distances
-        let nseq = input.nseq();
         let mut dm = DistanceMatrix::new(nseq);
         for i in 0..nseq {
             for j in (i + 1)..nseq {
@@ -84,7 +75,27 @@ impl MafftEngine {
         // Step 2: Build guide tree
         let topo = musclesupg(&dm, ClusterMethod::default());
 
-        // Step 3: Progressive alignment
+        // Step 3: Build local homology table (for constrained modes)
+        let uses_constraints = matches!(
+            self.mode,
+            AlignmentMode::LInsi { .. } | AlignmentMode::EInsi { .. }
+        );
+        let local_hom = if uses_constraints {
+            let seq_refs: Vec<&[u8]> = input.sequences.iter().map(|s| s.data.as_slice()).collect();
+            let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+            let (table, _dist) = build_local_homology_table(
+                &seq_refs,
+                &scoring.substitution_matrix,
+                &scoring.amino_map,
+                &gap,
+                0.0,
+            );
+            Some(table)
+        } else {
+            None
+        };
+
+        // Step 4: Progressive alignment
         let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
         let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
 
@@ -95,9 +106,9 @@ impl MafftEngine {
 
         let mut msa = progressive_align(&sequences, &names, &topo, &scoring, use_fft);
 
-        // Step 4: Iterative refinement (if mode requires it)
+        // Step 5: Iterative refinement (if mode requires it)
         match &self.mode {
-            AlignmentMode::FftNs2 => {} // no refinement
+            AlignmentMode::FftNs2 => {}
             AlignmentMode::FftNsi { iterations }
             | AlignmentMode::GInsi { iterations }
             | AlignmentMode::LInsi { iterations }
@@ -107,7 +118,13 @@ impl MafftEngine {
                     cut: 0.0001,
                     use_fft,
                 };
-                iterative_refine(&mut msa, &topo, &scoring, &params);
+                iterative_refine(
+                    &mut msa,
+                    &topo,
+                    &scoring,
+                    &params,
+                    local_hom.as_ref(),
+                );
             }
         }
 
@@ -143,10 +160,8 @@ mod tests {
         let msa = engine.align(&make_test_input());
         assert_eq!(msa.nseq(), 3);
         let w = msa.width();
-        assert!(w >= 13); // at least as long as longest input
-        for seq in &msa.sequences {
-            assert_eq!(seq.len(), w);
-        }
+        assert!(w >= 13);
+        for seq in &msa.sequences { assert_eq!(seq.len(), w); }
     }
 
     #[test]
@@ -155,9 +170,7 @@ mod tests {
         let msa = engine.align(&make_test_input());
         assert_eq!(msa.nseq(), 3);
         let w = msa.width();
-        for seq in &msa.sequences {
-            assert_eq!(seq.len(), w);
-        }
+        for seq in &msa.sequences { assert_eq!(seq.len(), w); }
     }
 
     #[test]
@@ -172,7 +185,15 @@ mod tests {
         let engine = MafftEngine::default();
         let msa = engine.align(&input);
         assert_eq!(msa.nseq(), 2);
-        // Identical sequences should align perfectly
         assert_eq!(msa.sequences[0], msa.sequences[1]);
+    }
+
+    #[test]
+    fn engine_linsi_mode() {
+        let engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 });
+        let msa = engine.align(&make_test_input());
+        assert_eq!(msa.nseq(), 3);
+        let w = msa.width();
+        for seq in &msa.sequences { assert_eq!(seq.len(), w); }
     }
 }

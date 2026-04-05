@@ -5,14 +5,13 @@
 //! `mafft_sys` are provided for the FFI boundary.
 
 mod local_hom;
-mod tree;
+mod tree; // intentionally empty — tree types live in mafft-tree
 mod segment;
 mod complex;
 mod seq;
 mod scoring;
 
 pub use local_hom::*;
-pub use tree::*;
 pub use segment::*;
 pub use complex::*;
 pub use seq::*;
