@@ -6,6 +6,7 @@ members = [
     "crates/mafft-scoring",
     "crates/mafft-fft",
     "crates/mafft-align",
+    "crates/mafft-tree",
 ]
 resolver = "2"
 

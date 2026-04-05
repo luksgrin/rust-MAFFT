@@ -1,0 +1,10 @@
+[package]
+name = "mafft-tree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Distance computation and guide tree construction for MAFFT"
+
+[dependencies]
+mafft-types = { path = "../mafft-types" }
+mafft-scoring = { path = "../mafft-scoring" }
