@@ -45,7 +45,6 @@ fn align_sample_fasta() {
 }
 
 #[test]
-#[ignore] // Refinement column-space tracking needs work for >4 sequences
 fn align_sample_with_refinement() {
     // Use only the first 6 sequences to keep refinement fast
     let full_input = read_fasta(test_data_path("sample")).unwrap();
@@ -54,6 +53,16 @@ fn align_sample_with_refinement() {
         seq_type: full_input.seq_type,
     };
 
+    // First verify progressive-only works
+    let engine_prog = MafftEngine::new(AlignmentMode::FftNs2);
+    let msa_prog = engine_prog.align(&input);
+    for (i, seq) in msa_prog.sequences.iter().enumerate() {
+        let residues = seq.iter().filter(|&&c| c != b'-').count();
+        assert_eq!(residues, input.sequences[i].data.len(),
+            "progressive lost residues for seq {i}: {} vs {}", residues, input.sequences[i].data.len());
+    }
+
+    // Now test with refinement
     let engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 });
     let msa = engine.align(&input);
 

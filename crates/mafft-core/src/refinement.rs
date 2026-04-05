@@ -4,6 +4,10 @@
 ///
 /// Repeatedly re-aligns pairs of groups defined by the guide tree,
 /// accepting improvements and rejecting regressions, until convergence.
+///
+/// Key insight from the C code: at each tree branch, ALL sequences are
+/// split into two groups (subtree vs everything else). There are never
+/// "uninvolved" sequences — every sequence is in one group or the other.
 
 use mafft_align::{profile_align, Profile, GapModel, Alignment, AlignOp};
 use mafft_tree::{Topology, sequence_weights};
@@ -16,8 +20,7 @@ use crate::progressive::MultipleAlignment;
 pub struct RefinementParams {
     /// Maximum number of iterations.
     pub max_iterations: usize,
-    /// Score improvement threshold (fraction). An alignment is rejected
-    /// if the new score is worse than `old_score * (1 - cut)`.
+    /// Score improvement threshold (fraction).
     pub cut: f64,
     /// Whether to use FFT-accelerated alignment during refinement.
     pub use_fft: bool,
@@ -35,11 +38,8 @@ impl Default for RefinementParams {
 
 /// Iteratively refine a multiple alignment.
 ///
-/// Walks the guide tree repeatedly, re-aligning the two groups at each
-/// internal node. Improvements are accepted, regressions rejected.
-/// Stops when converged (no changes across all branches) or oscillating.
-///
-/// Returns the number of iterations performed.
+/// At each tree branch, splits ALL sequences into two groups (subtree vs
+/// rest), re-aligns the two groups, and accepts improvements.
 pub fn iterative_refine(
     alignment: &mut MultipleAlignment,
     topology: &Topology,
@@ -58,39 +58,58 @@ pub fn iterative_refine(
     let convergence_target = nseq * 2;
     let mut score_history: Vec<f64> = Vec::new();
 
+    // Build the branch splits: for each topology step, we get two branches.
+    // Branch k side 0: step.left vs everything else
+    // Branch k side 1: step.right vs everything else
+    let all_indices: Vec<usize> = (0..nseq).collect();
+    let mut branches: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
+    for step in &topology.steps {
+        // Branch side 0: step.left vs complement
+        let complement_left: Vec<usize> = all_indices
+            .iter()
+            .filter(|i| !step.left.contains(i))
+            .copied()
+            .collect();
+        if !step.left.is_empty() && !complement_left.is_empty() {
+            branches.push((step.left.clone(), complement_left));
+        }
+
+        // Branch side 1: step.right vs complement
+        let complement_right: Vec<usize> = all_indices
+            .iter()
+            .filter(|i| !step.right.contains(i))
+            .copied()
+            .collect();
+        if !step.right.is_empty() && !complement_right.is_empty() {
+            branches.push((step.right.clone(), complement_right));
+        }
+    }
+
     let mut iteration = 0;
     for iter in 0..params.max_iterations {
         iteration = iter + 1;
         let mut any_change = false;
 
-        for step in &topology.steps {
-            if step.left.is_empty() || step.right.is_empty() {
-                continue;
-            }
-
+        for (group1, group2) in &branches {
             let old_score = compute_split_score(
-                &step.left, &step.right, &alignment.sequences, &weights, scoring,
+                group1, group2, &alignment.sequences, &weights, scoring,
             );
 
-            let (new_seqs, new_score) = realign_groups(
-                &step.left,
-                &step.right,
-                &alignment.sequences,
-                &weights,
-                scoring,
-                &gap,
+            let new_seqs = realign_all(
+                group1, group2, &alignment.sequences, &weights, scoring, &gap,
             );
 
-            let threshold = old_score - params.cut * old_score.abs();
-            if new_score > threshold && new_seqs.is_some() {
-                let new_seqs = new_seqs.unwrap();
-
-                let changed = (0..nseq).any(|i| alignment.sequences[i] != new_seqs[i]);
-
-                if changed {
-                    alignment.sequences = new_seqs;
-                    any_change = true;
-                    converged_count = 0;
+            if let Some((new_seqs, new_score)) = new_seqs {
+                let threshold = old_score - params.cut * old_score.abs();
+                if new_score > threshold {
+                    let changed = (0..nseq).any(|i| alignment.sequences[i] != new_seqs[i]);
+                    if changed {
+                        alignment.sequences = new_seqs;
+                        any_change = true;
+                        converged_count = 0;
+                    } else {
+                        converged_count += 1;
+                    }
                 } else {
                     converged_count += 1;
                 }
@@ -120,19 +139,18 @@ pub fn iterative_refine(
     iteration
 }
 
-/// Re-align two groups within the current MSA.
+/// Re-align all sequences split into two groups.
 ///
-/// Both groups share the same alignment width. The profile alignment
-/// re-aligns their column spaces. The result is a complete new set of
-/// sequences with consistent width.
-fn realign_groups(
+/// Since group1 + group2 = ALL sequences, there are no "other" sequences
+/// to worry about. Every sequence is in exactly one group.
+fn realign_all(
     group1: &[usize],
     group2: &[usize],
     sequences: &[Vec<u8>],
     weights: &[f64],
     scoring: &ScoringContext,
     gap: &GapModel,
-) -> (Option<Vec<Vec<u8>>>, f64) {
+) -> Option<(Vec<Vec<u8>>, f64)> {
     let seqs1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
     let seqs2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
 
@@ -147,29 +165,36 @@ fn realign_groups(
     let prof2 = Profile::from_aligned(&seqs2, &w2n, &scoring.amino_map, scoring.nalphabets);
 
     if prof1.length == 0 || prof2.length == 0 {
-        return (None, 0.0);
+        return None;
     }
 
     let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, true, true);
 
-    // Verify ops consume all columns from both profiles
-    let consumed1 = aln.operations.iter().filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete)).count();
-    let consumed2 = aln.operations.iter().filter(|op| matches!(op, AlignOp::Match | AlignOp::Insert)).count();
-    // Verify ops consume all columns. If not, the re-alignment may lose residues.
+    // Verify ops consume all columns from both profiles.
+    // Since both profiles have the same length (= current alignment width),
+    // and tail_gap=true forces the DP to (n,m), this should always hold.
+    let consumed1 = aln.operations.iter()
+        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete))
+        .count();
+    let consumed2 = aln.operations.iter()
+        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Insert))
+        .count();
+
     if consumed1 != prof1.length || consumed2 != prof2.length {
-        return (None, 0.0); // reject this re-alignment
+        eprintln!(
+            "WARN: ops mismatch: consumed1={} prof1.len={} consumed2={} prof2.len={}",
+            consumed1, prof1.length, consumed2, prof2.length
+        );
+        return None; // safety: reject if ops don't cover all columns
     }
 
-    // Both groups share the same alignment width before re-alignment.
-    // The ops tell us how to merge their column spaces into a new alignment.
-    let width = sequences[0].len();
-    let mut new_sequences = sequences.to_vec();
+    // Build new sequences. Since ALL sequences are in one of the two groups,
+    // every sequence gets a well-defined column mapping.
+    let mut new_sequences = vec![Vec::new(); sequences.len()];
 
-    // Determine which group's columns each sequence shares.
-    let mut in_group1 = vec![false; sequences.len()];
-    let mut in_group2 = vec![false; sequences.len()];
-    for &i in group1 { in_group1[i] = true; }
-    for &i in group2 { in_group2[i] = true; }
+    // Build membership lookup
+    let mut is_group1 = vec![false; sequences.len()];
+    for &i in group1 { is_group1[i] = true; }
 
     for idx in 0..sequences.len() {
         let old = &sequences[idx];
@@ -177,8 +202,7 @@ fn realign_groups(
         let mut col = 0;
 
         for op in &aln.operations {
-            if in_group1[idx] {
-                // Group1: consume column at Match/Delete, gap at Insert
+            if is_group1[idx] {
                 match op {
                     AlignOp::Match | AlignOp::Delete => {
                         new_seq.push(if col < old.len() { old[col] } else { b'-' });
@@ -188,8 +212,7 @@ fn realign_groups(
                         new_seq.push(b'-');
                     }
                 }
-            } else if in_group2[idx] {
-                // Group2: consume column at Match/Insert, gap at Delete
+            } else {
                 match op {
                     AlignOp::Match | AlignOp::Insert => {
                         new_seq.push(if col < old.len() { old[col] } else { b'-' });
@@ -199,25 +222,14 @@ fn realign_groups(
                         new_seq.push(b'-');
                     }
                 }
-            } else {
-                // Not in either group: treat like group1 (they share the same
-                // column space as the full alignment before the split)
-                match op {
-                    AlignOp::Match | AlignOp::Delete => {
-                        new_seq.push(if col < old.len() { old[col] } else { b'-' });
-                        col += 1;
-                    }
-                    AlignOp::Insert => {
-                        new_seq.push(b'-');
-                    }
-                }
             }
         }
 
         new_sequences[idx] = new_seq;
     }
 
-    (Some(new_sequences), aln.score)
+    // All sequences should now have the same width (= aln.operations.len())
+    Some((new_sequences, aln.score))
 }
 
 fn compute_split_score(
@@ -230,8 +242,7 @@ fn compute_split_score(
     let mut score = 0.0;
     for &i in group1 {
         for &j in group2 {
-            let w = weights[i] * weights[j];
-            score += pairwise_score(&sequences[i], &sequences[j], scoring) * w;
+            score += pairwise_score(&sequences[i], &sequences[j], scoring) * weights[i] * weights[j];
         }
     }
     score
@@ -294,15 +305,13 @@ mod tests {
         };
 
         let iters = iterative_refine(&mut msa, &topo, &scoring, &params);
-        assert!(iters <= 10, "should converge within 10 iterations, took {iters}");
+        assert!(iters <= 10);
 
-        // All sequences should have the same width
         let width = msa.width();
         for seq in &msa.sequences {
             assert_eq!(seq.len(), width);
         }
 
-        // Ungapped should match originals
         let ungapped: Vec<Vec<u8>> = msa.sequences.iter()
             .map(|s| s.iter().filter(|&&c| c != b'-').cloned().collect())
             .collect();
@@ -335,7 +344,49 @@ mod tests {
         let width = msa.width();
         assert!(width > 0);
         for (i, seq) in msa.sequences.iter().enumerate() {
+            assert_eq!(seq.len(), width, "sequence {i} has wrong width");
+        }
+
+        // Verify residue preservation
+        for (i, seq) in msa.sequences.iter().enumerate() {
+            let residue_count = seq.iter().filter(|&&c| c != b'-').count();
+            assert_eq!(residue_count, seqs[i].len(),
+                "sequence {i} lost residues: {} vs {}", residue_count, seqs[i].len());
+        }
+    }
+
+    #[test]
+    fn refinement_six_sequences() {
+        let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+        let seqs = vec![
+            b"ACDEFGHIKLMNPQR".to_vec(),
+            b"ACDEFHIKLMNPQR".to_vec(),
+            b"ACDEHIKLMNPQR".to_vec(),
+            b"ACDHIKLMNPQR".to_vec(),
+            b"ACDHIKLMNP".to_vec(),
+            b"ACDHIKLM".to_vec(),
+        ];
+        let names: Vec<String> = (0..6).map(|i| format!("s{i}")).collect();
+
+        let mut dm = DistanceMatrix::new(6);
+        for i in 0..6 {
+            for j in (i + 1)..6 {
+                dm.set(i, j, (j - i) as f64 * 0.1);
+            }
+        }
+        let topo = upgma(&dm);
+
+        let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false);
+        let params = RefinementParams { max_iterations: 3, ..Default::default() };
+
+        iterative_refine(&mut msa, &topo, &scoring, &params);
+
+        let width = msa.width();
+        for (i, seq) in msa.sequences.iter().enumerate() {
             assert_eq!(seq.len(), width, "sequence {i} has wrong width after refinement");
+            let residues = seq.iter().filter(|&&c| c != b'-').count();
+            assert_eq!(residues, seqs[i].len(),
+                "sequence {i} lost residues during refinement");
         }
     }
 }
