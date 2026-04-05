@@ -3,3 +3,43 @@ target/
 
 # OS
 .DS_Store
+
+# MAFFT upstream build artifacts (from make -C mafft-upstream/core)
+mafft-upstream/binaries/
+mafft-upstream/scripts/
+mafft-upstream/core/*.o
+mafft-upstream/core/*.rb
+mafft-upstream/core/*.pl
+mafft-upstream/core/mafft
+mafft-upstream/core/addsingle
+mafft-upstream/core/contrafoldwrap
+mafft-upstream/core/countlen
+mafft-upstream/core/disttbfast
+mafft-upstream/core/dndblast
+mafft-upstream/core/dndfast7
+mafft-upstream/core/dndpre
+mafft-upstream/core/dvtditr
+mafft-upstream/core/f2cl
+mafft-upstream/core/filter
+mafft-upstream/core/getlag
+mafft-upstream/core/hex2maffttext
+mafft-upstream/core/mafft-distance
+mafft-upstream/core/mafft-profile
+mafft-upstream/core/maffttext2hex
+mafft-upstream/core/makedirectionlist
+mafft-upstream/core/mccaskillwrap
+mafft-upstream/core/multi2hat3s
+mafft-upstream/core/nodepair
+mafft-upstream/core/pairash
+mafft-upstream/core/pairlocalalign
+mafft-upstream/core/regtable2seq
+mafft-upstream/core/replaceu
+mafft-upstream/core/restoreu
+mafft-upstream/core/score
+mafft-upstream/core/seq2regtable
+mafft-upstream/core/setcore
+mafft-upstream/core/setdirection
+mafft-upstream/core/sextet5
+mafft-upstream/core/splittbfast
+mafft-upstream/core/tbfast
+mafft-upstream/core/version

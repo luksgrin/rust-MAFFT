@@ -6,14 +6,16 @@
 pub use num_complex::Complex64;
 
 // ---------------------------------------------------------------------------
-// FFI conversion: Fukusosuu <-> Complex64
+// FFI conversion: Fukusosuu <-> Complex64 (only with "ffi" feature)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "ffi")]
 /// Convert a C `Fukusosuu` to a Rust `Complex64`.
 pub fn from_fukusosuu(c: mafft_sys::Fukusosuu) -> Complex64 {
     Complex64::new(c.R, c.I)
 }
 
+#[cfg(feature = "ffi")]
 /// Convert a Rust `Complex64` to a C `Fukusosuu`.
 pub fn to_fukusosuu(c: Complex64) -> mafft_sys::Fukusosuu {
     mafft_sys::Fukusosuu { R: c.re, I: c.im }
@@ -30,16 +32,7 @@ mod tests {
 
         assert_eq!(a + b, Complex64::new(4.0, 2.0));
         assert_eq!(a - b, Complex64::new(2.0, 6.0));
-        // (3+4i)(1-2i) = 11 - 2i
         assert_eq!(a * b, Complex64::new(11.0, -2.0));
         assert!((a.norm_sqr() - 25.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn ffi_roundtrip() {
-        let rust = Complex64::new(1.5, -2.5);
-        let c = to_fukusosuu(rust);
-        let back = from_fukusosuu(c);
-        assert_eq!(rust, back);
     }
 }

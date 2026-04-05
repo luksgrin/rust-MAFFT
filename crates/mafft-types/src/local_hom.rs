@@ -87,6 +87,7 @@ impl LocalHomologyTable {
 // FFI conversion: C LocalHom linked list <-> Rust Vec<HomologyRegion>
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "ffi")]
 impl HomologyRegion {
     /// Convert a C `LocalHom` linked list into a Vec of Rust regions.
     ///

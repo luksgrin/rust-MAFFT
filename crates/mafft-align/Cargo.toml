@@ -10,4 +10,3 @@ mafft-types = { path = "../mafft-types" }
 mafft-scoring = { path = "../mafft-scoring" }
 mafft-fft = { path = "../mafft-fft" }
 num-complex = "0.4"
-mafft-sys = { path = "../mafft-sys" }

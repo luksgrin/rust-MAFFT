@@ -7,4 +7,6 @@ description = "Scoring matrices and constants for MAFFT alignment"
 
 [dependencies]
 mafft-types = { path = "../mafft-types" }
+
+[dev-dependencies]
 mafft-sys = { path = "../mafft-sys" }

@@ -322,7 +322,6 @@ version = "0.1.0"
 dependencies = [
  "mafft-fft",
  "mafft-scoring",
- "mafft-sys",
  "mafft-types",
  "num-complex",
 ]
