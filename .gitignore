@@ -1,0 +1,52 @@
+# C binaries
+binaries/
+
+# Scripts
+scripts/
+
+# Compilation artifacts
+*.o
+*.rb
+
+# Resulting binaries in core
+core/addsingle
+core/contrafoldwrap
+core/countlen
+core/disttbfast
+core/dndblast
+core/dndfast7
+core/dndpre
+core/dvtditr
+core/f2cl
+core/filter
+core/getlag
+core/hex2maffttext
+core/mafft
+core/mafft-distance
+core/mafft-profile
+core/mafftash_premafft.pl
+core/maffttext2hex
+core/makedirectionlist
+core/mccaskillwrap
+core/multi2hat3s
+core/nodepair
+core/pairash
+core/pairlocalalign
+core/regtable2seq
+core/replaceu
+core/restoreu
+core/score
+core/seekquencer_premafft.pl
+core/seq2regtable
+core/setcore
+core/setdirection
+core/sextet5
+core/splittbfast
+core/tbfast
+core/version
+
+# Rust target directory
+target/
+
+# Cargo lock file
+Cargo.lock
