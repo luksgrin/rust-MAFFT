@@ -1,0 +1,10 @@
+[package]
+name = "mafft-scoring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Scoring matrices and constants for MAFFT alignment"
+
+[dependencies]
+mafft-types = { path = "../mafft-types" }
+mafft-sys = { path = "../mafft-sys" }

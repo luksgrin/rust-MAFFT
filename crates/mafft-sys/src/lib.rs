@@ -253,11 +253,25 @@ unsafe extern "C" {
 
     pub static mut penalty: c_int;
     pub static mut ppenalty: c_int;
+    pub static mut penalty_dist: c_int;
+    pub static mut ppenalty_dist: c_int;
     pub static mut penalty_ex: c_int;
     pub static mut ppenalty_ex: c_int;
+    pub static mut penalty_OP: c_int;
+    pub static mut ppenalty_OP: c_int;
+    pub static mut penalty_EX: c_int;
+    pub static mut ppenalty_EX: c_int;
     pub static mut offset: c_int;
     pub static mut poffset: c_int;
     pub static mut offsetFFT: c_int;
+    pub static mut offsetLN: c_int;
+    pub static mut penaltyLN: c_int;
+    pub static mut penalty_exLN: c_int;
+    pub static mut RNAppenalty: c_int;
+    pub static mut RNAppenalty_ex: c_int;
+    pub static mut RNApthr: c_int;
+    pub static mut nevermemsave: c_int;
+    pub static mut disp: c_int;
 
     pub static mut use_fft: c_char;
     pub static mut force_fft: c_char;
