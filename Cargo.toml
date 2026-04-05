@@ -8,6 +8,7 @@ members = [
     "crates/mafft-align",
     "crates/mafft-tree",
     "crates/mafft-core",
+    "crates/mafft-bin",
 ]
 resolver = "2"
 

@@ -12,7 +12,7 @@ mod localhom;
 mod detect;
 
 pub use error::IoError;
-pub use fasta::{read_fasta, read_fasta_from_reader, write_fasta, write_fasta_to_writer};
+pub use fasta::{read_fasta, read_fasta_from_reader, write_fasta, write_fasta_to_writer, write_fasta_to_writer_with_width};
 pub use clustal::write_clustal;
 pub use phylip::write_phylip;
 pub use hat2::{read_hat2, write_hat2, Hat2Matrix};

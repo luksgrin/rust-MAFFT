@@ -35,8 +35,19 @@ jobs:
       - name: Build Rust workspace
         run: cargo build --workspace
 
-      - name: Run Rust tests
-        run: cargo test --workspace
+      - name: Build Rust binary (release)
+        run: cargo build -p mafft-bin --release
+
+      - name: Run Rust tests (lib only, fast)
+        run: cargo test --workspace --lib
+
+      - name: Run Rust integration tests (release)
+        run: cargo test -p mafft-core --release --test end_to_end
+
+      - name: Smoke test Rust binary
+        run: |
+          ./target/release/mafft-rs -q test/sample > /dev/null
+          echo "mafft-rs smoke test: PASS"
 
       # Upload the built binaries + scripts so test jobs can use them
       - name: Upload C binaries
@@ -46,6 +57,13 @@ jobs:
           path: |
             binaries/
             scripts/
+          retention-days: 1
+
+      - name: Upload Rust binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mafft-rs
+          path: target/release/mafft-rs
           retention-days: 1
 
   # ------------------------------------------------------------------
@@ -212,3 +230,36 @@ jobs:
           cd test
           mafft --parttree sample > x 2>/dev/null
           diff x sample.parttree
+
+  # ------------------------------------------------------------------
+  # Rust binary validation
+  # ------------------------------------------------------------------
+  test-rust-binary:
+    name: "Test: Rust mafft-rs binary"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-rs
+      - name: Validate output
+        run: |
+          chmod +x mafft-rs
+          # Run alignment
+          ./mafft-rs -q test/sample > rust_out.fasta
+          # Check: 36 sequences
+          SEQ_COUNT=$(grep -c '^>' rust_out.fasta)
+          [ "$SEQ_COUNT" -eq 36 ] || { echo "FAIL: expected 36 sequences, got $SEQ_COUNT"; exit 1; }
+          # Check: all sequences same width
+          python3 -c "
+          seqs = {}; name = None
+          for line in open('rust_out.fasta'):
+              line = line.strip()
+              if line.startswith('>'): name = line; seqs[name] = ''
+              elif name: seqs[name] += line
+          widths = set(len(s) for s in seqs.values())
+          assert len(widths) == 1, f'Inconsistent widths: {widths}'
+          print(f'OK: {len(seqs)} sequences, width {widths.pop()}')
+          "
+          echo "Rust binary test: PASS"
