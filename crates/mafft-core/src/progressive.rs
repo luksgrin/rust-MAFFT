@@ -5,10 +5,8 @@
 ///
 /// Key design (matching C code):
 /// - All sequences share the same alignment width at all times.
-/// - At each merge, profiles are built from the full-width sequences.
-/// - The profile DP aligns column-by-column (both profiles have width W).
-/// - After alignment, ALL sequences are expanded to the new width by
-///   inserting gap columns at the appropriate positions.
+/// - At each merge, common gap columns are stripped before profile alignment.
+/// - After alignment, gap columns are re-inserted and all sequences expanded.
 
 use mafft_align::{profile_align, fft_profile_align, Profile, GapModel, Alignment, AlignOp, FftAlignParams};
 use mafft_tree::{Topology, sequence_weights};
@@ -64,7 +62,7 @@ pub fn progressive_align(
     MultipleAlignment { sequences: aligned, names: names.to_vec(), score: last_score }
 }
 
-/// Perform one merge step: align two groups and expand all sequences.
+/// Perform one merge step: strip common gaps, align profiles, expand all.
 fn merge_step(
     group1: &[usize],
     group2: &[usize],
@@ -77,9 +75,22 @@ fn merge_step(
     let nseq = aligned.len();
     let width = aligned[0].len();
 
-    // Build profiles from full-width aligned sequences.
-    let seqs1: Vec<&[u8]> = group1.iter().map(|&i| aligned[i].as_slice()).collect();
-    let seqs2: Vec<&[u8]> = group2.iter().map(|&i| aligned[i].as_slice()).collect();
+    // Step 1: Find common-gap columns (all-gap in BOTH groups).
+    // These carry no information and waste DP time.
+    let is_common_gap = find_common_gap_columns(group1, group2, aligned, width);
+    let kept_cols: Vec<usize> = (0..width).filter(|&c| !is_common_gap[c]).collect();
+    let num_common_gaps = width - kept_cols.len();
+
+    // Step 2: Strip common-gap columns for profile construction.
+    let stripped1: Vec<Vec<u8>> = group1.iter()
+        .map(|&i| kept_cols.iter().map(|&c| aligned[i][c]).collect())
+        .collect();
+    let stripped2: Vec<Vec<u8>> = group2.iter()
+        .map(|&i| kept_cols.iter().map(|&c| aligned[i][c]).collect())
+        .collect();
+
+    let s1_refs: Vec<&[u8]> = stripped1.iter().map(|s| s.as_slice()).collect();
+    let s2_refs: Vec<&[u8]> = stripped2.iter().map(|s| s.as_slice()).collect();
 
     let w1: Vec<f64> = group1.iter().map(|&i| weights[i]).collect();
     let w2: Vec<f64> = group2.iter().map(|&i| weights[i]).collect();
@@ -88,8 +99,11 @@ fn merge_step(
     let w1n: Vec<f64> = if sum1 > 0.0 { w1.iter().map(|w| w / sum1).collect() } else { vec![1.0; group1.len()] };
     let w2n: Vec<f64> = if sum2 > 0.0 { w2.iter().map(|w| w / sum2).collect() } else { vec![1.0; group2.len()] };
 
-    let prof1 = Profile::from_aligned(&seqs1, &w1n, &scoring.amino_map, scoring.nalphabets);
-    let prof2 = Profile::from_aligned(&seqs2, &w2n, &scoring.amino_map, scoring.nalphabets);
+    // Step 3: Build profiles from stripped sequences and align.
+    let prof1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
+
+    let stripped_width = kept_cols.len();
 
     let aln = if use_fft && prof1.length > 80 && prof2.length > 80 {
         let fft_params = FftAlignParams {
@@ -109,161 +123,79 @@ fn merge_step(
         profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, true, true)
     };
 
-    // Both profiles have the same length (= width, the current alignment width).
-    // The ops align these W columns against each other.
+    // Step 4: Build new sequences from alignment ops.
     //
-    // Now we need to expand ALL sequences to the new width.
+    // The ops align the stripped columns. Both stripped profiles have the
+    // same length (stripped_width). cursor1 and cursor2 each walk through
+    // kept_cols indices 0..stripped_width-1.
     //
-    // The ops tell us:
-    // - Match at (i,j): old column i (from group1 cursor) is aligned with
-    //   old column j (from group2 cursor). New alignment has ONE column for this.
-    // - Delete: old column i (group1) appears alone. Group2 gets gap.
-    // - Insert: old column j (group2) appears alone. Group1 gets gap.
+    // For each op:
+    // - Match: cursor1 advances (maps to kept_cols[cursor1] in original),
+    //          cursor2 advances (maps to kept_cols[cursor2] in original).
+    //   Group1 takes from original[kept_cols[cursor1]].
+    //   Group2 takes from original[kept_cols[cursor2]].
+    //   Others follow cursor1.
     //
-    // For "other" sequences: they have content at ALL old columns. At a Match
-    // position, old columns i and j are being merged into one. If i == j,
-    // "other" sequence contributes its column i content. If i != j, we must
-    // choose — we use column i (from cursor1) since that's the "main" timeline.
-    // Column j's content from "other" will be lost... UNLESS it appears
-    // separately in a Delete/Insert op.
+    // - Delete: cursor1 advances. Group1 takes content, group2 gets gap.
+    //   Others follow cursor1.
     //
-    // This is correct because: the DP aligns ALL W columns from group1 with
-    // ALL W columns from group2. Every old column appears exactly once:
-    // either consumed by cursor1 (at Match/Delete) or by cursor2 (at
-    // Match/Insert). For cursor1, columns appear in order 0,1,2,...,W-1.
-    // Same for cursor2. So every old column index is visited exactly once
-    // by each cursor. At a Match op, cursor1's column and cursor2's column
-    // are merged. For "other" sequences, we include cursor1's column at
-    // Match/Delete, and cursor2's column at Insert. This covers every old
-    // column exactly once (cursor1 consumes W columns across Match+Delete,
-    // cursor2 consumes W columns across Match+Insert, but Match overlaps
-    // both, so total distinct old columns = W).
+    // - Insert: cursor2 advances. Group2 takes content, group1 gets gap.
+    //   Others get gap (cursor2's column will be covered by cursor1 later).
     //
-    // Wait, that means "other" sequences contribute W columns total:
-    // (Match+Delete columns from cursor1) + (Insert columns from cursor2)
-    // = W + (W - Match_count) = 2W - Match_count = new width.
-    // But "other" sequences only HAVE W columns of content. We'd be pulling
-    // W columns from cursor1 and (W-Match) from cursor2 = 2W-Match total.
-    // That's more than W columns pulled from a sequence of length W!
-    //
-    // The issue: cursor1 and cursor2 both index the SAME W columns (0..W-1)
-    // in the same order. At a Match op with cursor1=3 and cursor2=5,
-    // "other" sequence would use column 3 here. At a later Insert with
-    // cursor2=6 (having skipped 4,5 because they were used in Delete ops),
-    // wait no — cursor2 advances monotonically through 0..W-1 just like
-    // cursor1. So at Insert, "other" uses cursor2's column, which is a
-    // different column from what cursor1 consumed.
-    //
-    // So total columns consumed from "other":
-    // - At Match+Delete: cursor1 values (= indices 0..W-1, all W columns)
-    // - At Insert: cursor2 values that aren't already at Match positions
-    //
-    // But cursor2 also goes 0..W-1. At Match ops, cursor2's value is used
-    // for group2 but "other" uses cursor1's value instead. So "other"
-    // doesn't use cursor2 at Match ops. At Insert ops, "other" uses cursor2.
-    // Insert count = W - Match count.
-    // So "other" pulls W columns from cursor1 + (W - Match) from cursor2.
-    // That's 2W - Match total. But "other" only has W columns!
-    //
-    // This means we'd be reading some columns TWICE (once from cursor1 at
-    // Match/Delete, and again from cursor2 at Insert). That causes
-    // duplication of residues for "other" sequences.
-    //
-    // THE FIX: "other" sequences should use a SINGLE cursor that advances
-    // through their own columns 0..W-1 in order. At each op (Match, Delete,
-    // or Insert), advance this cursor. The "other" sequence contributes its
-    // current column at EVERY op position. This means: at new positions
-    // where group1 has a gap (Insert), "other" still contributes content.
-    // At new positions where group2 has a gap (Delete), "other" still
-    // contributes content. The other sequence's column order is preserved,
-    // and exactly W columns are consumed (one per op that advances the
-    // "other" cursor)... but wait, there are MORE than W ops (new width > W).
-    //
-    // Ugh. The new width is W + Delete_count + Insert_count - Match_count?
-    // No: consumed_from_1 = Match + Delete = W. consumed_from_2 = Match + Insert = W.
-    // New width = Match + Delete + Insert = W - Match + W = 2W - Match.
-    //
-    // So new width > W (unless Match = W, meaning identity alignment).
-    // "Other" sequences have only W columns. They need 2W-Match new columns.
-    // So (W-Match) new columns must be gaps for "other" sequences.
-    //
-    // Which ops should be gaps for "other"? The ops that bring in "new"
-    // columns that aren't part of the shared column space. Since both
-    // cursor1 and cursor2 go through columns 0..W-1, the "new" columns
-    // are when cursor1 and cursor2 are at different positions and both
-    // consuming simultaneously. But that only happens at Match ops.
-    //
-    // OK, I think the correct approach is: "other" sequences use cursor1
-    // at Match/Delete, and get gaps at Insert. This consumes exactly W
-    // columns (= Match + Delete). At Insert positions (new width - W
-    // positions), "other" gets gaps. Total = W real + (new_width - W) gaps
-    // = new_width. ✓
-    //
-    // But then "other" sequences' columns that correspond to cursor2
-    // positions (which may have real content) are IGNORED at Insert positions.
-    // Those columns get "used up" by cursor2 at Match and Insert ops, but
-    // "other" doesn't see them. This means "other" sequences lose content
-    // at columns that are in cursor2 but not cursor1.
-    //
-    // EXCEPT: cursor1 ALSO goes through 0..W-1 in order. So cursor1
-    // visits every column 0..W-1. Therefore "other" sequences (following
-    // cursor1) also visit every column 0..W-1. No content is lost.
-    //
-    // At Insert positions, cursor2 visits a column that cursor1 ALSO
-    // visits (later, at a Delete or Match op). So "other"'s content from
-    // that column will appear at the cursor1 position, not the Insert
-    // position. The Insert position gets a gap for "other", and the actual
-    // content appears elsewhere. This is correct!
+    // After processing all ops, re-insert common-gap columns at their
+    // original relative positions.
 
-    let mut new_aligned = vec![Vec::with_capacity(aln.operations.len()); nseq];
-
-    let mut cursor1 = 0usize; // group1's column cursor through 0..W-1
-    let mut cursor2 = 0usize; // group2's column cursor through 0..W-1
-
-    // Pre-compute membership for speed
     let mut is_group1 = vec![false; nseq];
     let mut is_group2 = vec![false; nseq];
     for &i in group1 { is_group1[i] = true; }
     for &i in group2 { is_group2[i] = true; }
 
+    // Build the aligned-but-no-common-gaps result
+    let new_stripped_width = aln.operations.len();
+    let mut new_stripped = vec![Vec::with_capacity(new_stripped_width); nseq];
+
+    let mut cursor1 = 0usize;
+    let mut cursor2 = 0usize;
+
     for op in &aln.operations {
         match op {
             AlignOp::Match => {
+                let old_col1 = kept_cols[cursor1];
+                let old_col2 = kept_cols[cursor2];
                 for idx in 0..nseq {
                     if is_group1[idx] {
-                        new_aligned[idx].push(aligned[idx][cursor1]);
+                        new_stripped[idx].push(aligned[idx][old_col1]);
                     } else if is_group2[idx] {
-                        new_aligned[idx].push(aligned[idx][cursor2]);
+                        new_stripped[idx].push(aligned[idx][old_col2]);
                     } else {
-                        // "Other": follow cursor1 (covers all W old columns)
-                        new_aligned[idx].push(aligned[idx][cursor1]);
+                        new_stripped[idx].push(aligned[idx][old_col1]);
                     }
                 }
                 cursor1 += 1;
                 cursor2 += 1;
             }
             AlignOp::Delete => {
+                let old_col1 = kept_cols[cursor1];
                 for idx in 0..nseq {
                     if is_group1[idx] {
-                        new_aligned[idx].push(aligned[idx][cursor1]);
+                        new_stripped[idx].push(aligned[idx][old_col1]);
                     } else if is_group2[idx] {
-                        new_aligned[idx].push(b'-');
+                        new_stripped[idx].push(b'-');
                     } else {
-                        new_aligned[idx].push(aligned[idx][cursor1]);
+                        new_stripped[idx].push(aligned[idx][old_col1]);
                     }
                 }
                 cursor1 += 1;
             }
             AlignOp::Insert => {
+                let old_col2 = kept_cols[cursor2];
                 for idx in 0..nseq {
                     if is_group1[idx] {
-                        new_aligned[idx].push(b'-');
+                        new_stripped[idx].push(b'-');
                     } else if is_group2[idx] {
-                        new_aligned[idx].push(aligned[idx][cursor2]);
+                        new_stripped[idx].push(aligned[idx][old_col2]);
                     } else {
-                        // Gap for "other" — cursor2's column will be
-                        // covered when cursor1 reaches it later.
-                        new_aligned[idx].push(b'-');
+                        new_stripped[idx].push(b'-');
                     }
                 }
                 cursor2 += 1;
@@ -271,8 +203,137 @@ fn merge_step(
         }
     }
 
-    *aligned = new_aligned;
+    // Step 5: Re-insert common-gap columns at their original positions.
+    //
+    // We need to interleave the new_stripped result with the common-gap
+    // columns. The common-gap columns were at specific positions in the
+    // original alignment. We place them back relative to the kept columns.
+    //
+    // Build the final sequences by walking through original column indices.
+    // For each original column index c:
+    // - If c was a common gap: insert a gap column for all sequences
+    // - If c was a kept column: take the next column from new_stripped
+    //
+    // But the new_stripped may be WIDER than the number of kept columns
+    // (because the alignment introduced new columns via Delete/Insert ops).
+    // So we can't do a 1:1 mapping with original positions.
+    //
+    // Instead, we interleave by tracking the original-column order:
+    // - Walk through original columns 0..width-1
+    // - For each kept column, emit the corresponding new_stripped columns
+    //   (there may be multiple if the alignment expanded at that point)
+    // - For each common-gap column, emit a gap column
+    //
+    // To do this properly, we need to know which new_stripped columns
+    // correspond to which kept_cols entries. The mapping is:
+    // - new_stripped columns corresponding to cursor1 positions map to
+    //   kept_cols[0], kept_cols[1], ... (Match/Delete ops advance cursor1)
+    // - Insert ops don't correspond to any kept_cols entry (they're new)
+    //
+    // So we build a list of (kept_col_index_or_none, new_stripped_col):
+    let mut col_origins: Vec<Option<usize>> = Vec::with_capacity(new_stripped_width);
+    {
+        let mut c1 = 0usize;
+        let mut c2 = 0usize;
+        for op in &aln.operations {
+            match op {
+                AlignOp::Match => {
+                    col_origins.push(Some(c1)); // maps to kept_cols[c1]
+                    c1 += 1;
+                    c2 += 1;
+                }
+                AlignOp::Delete => {
+                    col_origins.push(Some(c1)); // maps to kept_cols[c1]
+                    c1 += 1;
+                }
+                AlignOp::Insert => {
+                    col_origins.push(None); // new column, no original position
+                    c2 += 1;
+                }
+            }
+        }
+    }
+
+    // Now build final sequences by interleaving:
+    let final_width = new_stripped_width + num_common_gaps;
+    let mut final_aligned = vec![Vec::with_capacity(final_width); nseq];
+
+    let mut stripped_cursor = 0usize; // cursor into new_stripped columns
+    let mut kept_cursor = 0usize; // which kept_col we expect next
+
+    for orig_col in 0..width {
+        if is_common_gap[orig_col] {
+            // Re-insert common-gap column: all sequences get gap
+            for idx in 0..nseq {
+                final_aligned[idx].push(b'-');
+            }
+        } else {
+            // This original column corresponds to kept_cols[kept_cursor].
+            // Emit all new_stripped columns that map to this kept position,
+            // plus any Insert columns (None) that precede the next kept position.
+            while stripped_cursor < new_stripped_width {
+                match col_origins[stripped_cursor] {
+                    Some(k) if k == kept_cursor => {
+                        // This new column maps to the current kept position
+                        for idx in 0..nseq {
+                            final_aligned[idx].push(new_stripped[idx][stripped_cursor]);
+                        }
+                        stripped_cursor += 1;
+                        break; // move to next original column
+                    }
+                    None => {
+                        // Insert column (new, no original position) — emit it
+                        for idx in 0..nseq {
+                            final_aligned[idx].push(new_stripped[idx][stripped_cursor]);
+                        }
+                        stripped_cursor += 1;
+                    }
+                    Some(k) => {
+                        // Maps to a different kept position — we've moved past
+                        // the current one. This shouldn't happen if cursor1
+                        // advances monotonically, but handle gracefully.
+                        break;
+                    }
+                }
+            }
+            kept_cursor += 1;
+        }
+    }
+
+    // Emit any remaining new_stripped columns (Insert ops after the last kept column)
+    while stripped_cursor < new_stripped_width {
+        for idx in 0..nseq {
+            final_aligned[idx].push(new_stripped[idx][stripped_cursor]);
+        }
+        stripped_cursor += 1;
+    }
+
+    *aligned = final_aligned;
     aln.score
+}
+
+/// Find columns that are all-gap in ALL sequences (true common gap columns).
+///
+/// Only columns where every sequence has a gap can be safely stripped,
+/// since "other" sequences (not in either group) may have real content
+/// at columns that are all-gap within the two merge groups.
+fn find_common_gap_columns(
+    _group1: &[usize],
+    _group2: &[usize],
+    aligned: &[Vec<u8>],
+    width: usize,
+) -> Vec<bool> {
+    let mut all_gap = vec![true; width];
+
+    for seq in aligned.iter() {
+        for (col, &ch) in seq.iter().enumerate() {
+            if ch != b'-' && ch != b'.' {
+                all_gap[col] = false;
+            }
+        }
+    }
+
+    all_gap
 }
 
 #[cfg(test)]
@@ -281,6 +342,16 @@ mod tests {
     use mafft_tree::{DistanceMatrix, upgma};
     use mafft_scoring::build_context;
     use mafft_types::{ScoringModel, SeqType};
+
+    fn check_alignment(result: &MultipleAlignment, original: &[Vec<u8>]) {
+        let width = result.width();
+        assert!(width > 0, "alignment width should be > 0");
+        for (i, seq) in result.sequences.iter().enumerate() {
+            assert_eq!(seq.len(), width, "seq {i} has wrong width: {} vs {width}", seq.len());
+            let ungapped: Vec<u8> = seq.iter().filter(|&&c| c != b'-').cloned().collect();
+            assert_eq!(ungapped, original[i], "seq {i} residues not preserved");
+        }
+    }
 
     #[test]
     fn progressive_two_identical() {
@@ -291,8 +362,8 @@ mod tests {
         dm.set(0, 1, 0.0);
         let topo = upgma(&dm);
         let result = progressive_align(&seqs, &names, &topo, &scoring, false);
-        assert_eq!(result.nseq(), 2);
         assert_eq!(result.sequences[0], result.sequences[1]);
+        check_alignment(&result, &seqs);
     }
 
     #[test]
@@ -308,13 +379,7 @@ mod tests {
         dm.set(0, 1, 0.1); dm.set(0, 2, 0.3); dm.set(1, 2, 0.2);
         let topo = upgma(&dm);
         let result = progressive_align(&seqs, &names, &topo, &scoring, false);
-        assert_eq!(result.nseq(), 3);
-        let width = result.width();
-        for seq in &result.sequences { assert_eq!(seq.len(), width); }
-        for (i, seq) in result.sequences.iter().enumerate() {
-            let ungapped: Vec<u8> = seq.iter().filter(|&&c| c != b'-').cloned().collect();
-            assert_eq!(ungapped, seqs[i], "seq {i} residues not preserved");
-        }
+        check_alignment(&result, &seqs);
     }
 
     #[test]
@@ -333,11 +398,6 @@ mod tests {
         for i in 0..6 { for j in (i+1)..6 { dm.set(i, j, (j-i) as f64 * 0.1); } }
         let topo = upgma(&dm);
         let result = progressive_align(&seqs, &names, &topo, &scoring, false);
-        let width = result.width();
-        for (i, seq) in result.sequences.iter().enumerate() {
-            assert_eq!(seq.len(), width, "seq {i} wrong width");
-            let ungapped: Vec<u8> = seq.iter().filter(|&&c| c != b'-').cloned().collect();
-            assert_eq!(ungapped, seqs[i], "seq {i} residues not preserved");
-        }
+        check_alignment(&result, &seqs);
     }
 }
