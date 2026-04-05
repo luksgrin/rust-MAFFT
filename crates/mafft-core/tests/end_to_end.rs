@@ -45,17 +45,30 @@ fn align_sample_fasta() {
 }
 
 #[test]
-#[ignore] // TODO: iterative refinement gap bookkeeping needs fix for width consistency
+#[ignore] // Refinement column-space tracking needs work for >4 sequences
 fn align_sample_with_refinement() {
-    let engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 });
-    let input = read_fasta(test_data_path("sample")).unwrap();
+    // Use only the first 6 sequences to keep refinement fast
+    let full_input = read_fasta(test_data_path("sample")).unwrap();
+    let input = mafft_types::SequenceSet {
+        sequences: full_input.sequences[..6].to_vec(),
+        seq_type: full_input.seq_type,
+    };
 
+    let engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 });
     let msa = engine.align(&input);
 
     let width = msa.width();
     assert!(width > 0);
-    for seq in &msa.sequences {
-        assert_eq!(seq.len(), width);
+    for (i, seq) in msa.sequences.iter().enumerate() {
+        assert_eq!(seq.len(), width, "sequence {i} width mismatch after refinement");
+    }
+
+    // Ungapped residue counts should be preserved
+    for (i, seq) in msa.sequences.iter().enumerate() {
+        let residue_count = seq.iter().filter(|&&c| c != b'-').count();
+        assert_eq!(residue_count, input.sequences[i].data.len(),
+            "sequence {i} lost residues during refinement: {} vs {}",
+            residue_count, input.sequences[i].data.len());
     }
 }
 
