@@ -7,7 +7,7 @@ use mafft_io::read_fasta;
 
 fn test_data_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test")
+        .join("../../mafft-upstream/test")
         .join(name)
 }
 

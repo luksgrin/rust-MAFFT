@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 fn main() {
-    let core_dir: PathBuf = ["../../core"].iter().collect();
+    let core_dir: PathBuf = ["../../mafft-upstream/core"].iter().collect();
 
     // Library source files (no main function).
     // These are the shared objects used across MAFFT binaries.

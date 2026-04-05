@@ -1,0 +1,3 @@
+[submodule "mafft-upstream"]
+	path = mafft-upstream
+	url = https://gitlab.com/sysimm/mafft.git
