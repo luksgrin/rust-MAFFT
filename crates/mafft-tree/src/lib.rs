@@ -6,11 +6,13 @@
 mod distance;
 mod nj;
 mod upgma;
+mod musclesupg;
 mod topology;
 mod weighting;
 
 pub use distance::{DistanceMatrix, pairwise_identity_distance, ktuple_distance};
 pub use nj::neighbor_joining;
 pub use upgma::upgma;
+pub use musclesupg::{musclesupg, ClusterMethod};
 pub use topology::{Topology, JoinStep};
 pub use weighting::sequence_weights;

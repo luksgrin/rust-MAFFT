@@ -59,6 +59,9 @@ pub struct ScoringContext {
     pub nalphabets: usize,
     /// Number of scored alphabets (20 for protein standard AAs).
     pub nscoredalphabets: usize,
+    /// FFT-specific scoring matrix (n_dis + offset adjustment).
+    /// Used by `alignableReagion()` for segment detection scoring.
+    pub fft_matrix: Vec<Vec<i32>>,
 }
 
 impl ScoringContext {

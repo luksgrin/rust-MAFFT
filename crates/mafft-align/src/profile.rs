@@ -87,6 +87,64 @@ impl Profile {
         }
         score
     }
+
+    /// Extract a sub-profile (slice of positions from `start` to `end`).
+    pub fn sub_profile(&self, start: usize, end: usize) -> Profile {
+        let end = end.min(self.length);
+        let start = start.min(end);
+        Profile {
+            freqs: self.freqs[start..end].to_vec(),
+            gap_freq: self.gap_freq[start..end].to_vec(),
+            length: end - start,
+            nalphabets: self.nalphabets,
+        }
+    }
+}
+
+/// Align two profiles using anchor points, running DP within each segment.
+///
+/// Shared implementation used by both `fft_align` and `constrained_align`.
+pub fn align_with_anchors(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<i32>],
+    gap: &GapModel,
+    anchors: &[(usize, usize)],
+) -> Alignment {
+    let mut all_ops = Vec::new();
+    let mut total_score = 0.0;
+    let mut p1 = 0usize;
+    let mut p2 = 0usize;
+
+    for &(a1, a2) in anchors {
+        if a1 > p1 || a2 > p2 {
+            let sub1 = prof1.sub_profile(p1, a1);
+            let sub2 = prof2.sub_profile(p2, a2);
+            let seg_aln = profile_align(&sub1, &sub2, matrix, gap, p1 == 0, false);
+            total_score += seg_aln.score;
+            all_ops.extend(seg_aln.operations);
+        }
+        if a1 < prof1.length && a2 < prof2.length {
+            all_ops.push(AlignOp::Match);
+            p1 = a1 + 1;
+            p2 = a2 + 1;
+        }
+    }
+
+    if p1 < prof1.length || p2 < prof2.length {
+        let sub1 = prof1.sub_profile(p1, prof1.length);
+        let sub2 = prof2.sub_profile(p2, prof2.length);
+        let seg_aln = profile_align(&sub1, &sub2, matrix, gap, false, true);
+        total_score += seg_aln.score;
+        all_ops.extend(seg_aln.operations);
+    }
+
+    Alignment {
+        seq1: Vec::new(),
+        seq2: Vec::new(),
+        score: total_score,
+        operations: all_ops,
+    }
 }
 
 /// Align two profiles using affine gap DP.
@@ -253,7 +311,7 @@ mod tests {
 
     #[test]
     fn profile_with_gaps_reduces_penalty() {
-        let (mtx, map) = simple_setup();
+        let (_mtx, map) = simple_setup();
         // Two sequences, one has a gap at position 1
         let seqs: Vec<&[u8]> = vec![b"A-GT", b"ACGT"];
         let prof = Profile::from_aligned(&seqs, &[0.5, 0.5], &map, 5);

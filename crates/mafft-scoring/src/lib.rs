@@ -11,6 +11,7 @@ mod dna;
 mod properties;
 mod penalties;
 mod normalize;
+mod ambiguity;
 
 pub use alphabet::{ProteinAlphabet, DnaAlphabet, Alphabet, PROTEIN_ALPHABET, DNA_ALPHABET};
 pub use blosum::blosum_matrix;
@@ -19,6 +20,7 @@ pub use dna::{default_dna_matrix, DNA_RIBOSUM4, DNA_RIBOSUM16};
 pub use properties::{POLARITY, VOLUME, normalized_polarity, normalized_volume};
 pub use penalties::{GapParams, default_dna_gap_params, default_protein_gap_params};
 pub use normalize::{normalize_matrix, build_scoring_matrix};
+pub use ambiguity::{fill_dna_ambiguity_scores, fill_dna_n_scores};
 
 use mafft_types::{SeqType, ScoringModel, ScoringContext, GapPenalties};
 
@@ -35,12 +37,25 @@ pub fn build_context(model: ScoringModel, seq_type: SeqType) -> ScoringContext {
     }
 }
 
+/// Build the FFT-specific matrix: n_disFFT[i][j] = n_dis[i][j] + offset - offsetFFT.
+/// Since offsetFFT = 0 in practice, this is just n_dis[i][j] + offset.
+fn build_fft_matrix(matrix: &[Vec<i32>], offset: i32) -> Vec<Vec<i32>> {
+    let n = matrix.len();
+    let mut fft = vec![vec![0i32; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            fft[i][j] = matrix[i][j] + offset; // offsetFFT = 0
+        }
+    }
+    fft
+}
+
 fn build_dna_context() -> ScoringContext {
     let raw = default_dna_matrix();
     let gap = default_dna_gap_params();
     let n = DNA_ALPHABET.len();
 
-    // Build 26x26 integer matrix (the DNA alphabet has 26 entries)
+    // Build 26x26 integer matrix
     let mut matrix = vec![vec![0i32; n]; n];
     for i in 0..10 {
         for j in 0..10 {
@@ -59,6 +74,12 @@ fn build_dna_context() -> ScoringContext {
             matrix[i][j] = matrix[i - 5][j - 5];
         }
     }
+
+    // Fill DNA ambiguity codes (IUPAC: R,Y,K,M,S,W,B,D,H,V) and N scores
+    fill_dna_ambiguity_scores(&mut matrix);
+    fill_dna_n_scores(&mut matrix);
+
+    let fft_matrix = build_fft_matrix(&matrix, gap.offset);
 
     let consweight = matrix
         .iter()
@@ -80,6 +101,7 @@ fn build_dna_context() -> ScoringContext {
         },
         nalphabets: 26,
         nscoredalphabets: 10,
+        fft_matrix,
     }
 }
 
@@ -103,7 +125,6 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
             (mat, freq)
         }
         _ => {
-            // Default: JTT with PAM 200
             let mat = jtt::build_jtt_pam_matrix(false, 200);
             let freq = jtt_frequencies();
             (mat, freq)
@@ -138,6 +159,8 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
         matrix[i][22] = matrix[22][i];
     }
 
+    let fft_matrix = build_fft_matrix(&matrix, gap_params.offset);
+
     let consweight = matrix
         .iter()
         .map(|row| row.iter().map(|&v| v as f64).collect())
@@ -170,11 +193,12 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
         },
         nalphabets: 26,
         nscoredalphabets: 20,
+        fft_matrix,
     }
 }
 
 /// Round to nearest integer, rounding 0.5 away from zero (C's shishagonyuu).
-fn round_half_away(x: f64) -> i32 {
+pub fn round_half_away(x: f64) -> i32 {
     if x > 0.0 {
         (x + 0.5) as i32
     } else if x < 0.0 {
