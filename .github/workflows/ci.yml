@@ -51,14 +51,19 @@ jobs:
           ./target/release/mafft-rs -q mafft-upstream/test/sample > /dev/null
           echo "mafft-rs smoke test: PASS"
 
-      # Upload the built binaries + scripts so test jobs can use them
-      - name: Upload C binaries
+      # Upload C binaries + scripts + test data as a single artifact
+      - name: Prepare C test bundle
+        run: |
+          mkdir -p c-test-bundle/binaries c-test-bundle/scripts c-test-bundle/test
+          cp mafft-upstream/binaries/* c-test-bundle/binaries/
+          cp mafft-upstream/scripts/* c-test-bundle/scripts/
+          cp -r mafft-upstream/test/* c-test-bundle/test/
+
+      - name: Upload C test bundle
         uses: actions/upload-artifact@v4
         with:
-          name: mafft-binaries
-          path: |
-            mafft-upstream/binaries/
-            mafft-upstream/scripts/
+          name: c-test-bundle
+          path: c-test-bundle/
           retention-days: 1
 
       - name: Upload Rust binary
@@ -76,18 +81,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft sample > x 2>/dev/null
           diff x sample.fftns2
 
@@ -96,18 +98,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft --maxiterate 100 sample > x 2>/dev/null
           diff x sample.fftnsi
 
@@ -116,18 +115,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft --dpparttree sample > x 2>/dev/null
           diff x sample.dpparttree
 
@@ -136,18 +132,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft --globalpair sample > x 2>/dev/null
           diff x sample.gins1
 
@@ -156,18 +149,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft --globalpair --maxiterate 100 sample > x 2>/dev/null
           diff x sample.ginsi
 
@@ -176,18 +166,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft --allowshift --globalpair --maxiterate 100 sample > x 2>/dev/null
           diff x sample.ginsi.allowshift
 
@@ -196,18 +183,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft --localpair sample > x 2>/dev/null
           diff x sample.lins1
 
@@ -216,18 +200,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft --localpair --maxiterate 100 sample > x 2>/dev/null
           diff x sample.linsi
 
@@ -236,18 +217,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: mafft-binaries
+          name: c-test-bundle
       - name: Run test
         run: |
-          chmod +x mafft-upstream/binaries/* mafft-upstream/scripts/*
-          export PATH="$PWD/mafft-upstream/binaries:$PWD/mafft-upstream/scripts:$PATH"
-          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
-          cd mafft-upstream/test
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
           mafft --parttree sample > x 2>/dev/null
           diff x sample.parttree
 
@@ -259,16 +237,17 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
           name: mafft-rs
+      - uses: actions/download-artifact@v4
+        with:
+          name: c-test-bundle
+          path: c-test-bundle
       - name: Validate output
         run: |
           chmod +x mafft-rs
-          ./mafft-rs -q mafft-upstream/test/sample > rust_out.fasta
+          ./mafft-rs -q c-test-bundle/test/sample > rust_out.fasta
           SEQ_COUNT=$(grep -c '^>' rust_out.fasta)
           [ "$SEQ_COUNT" -eq 36 ] || { echo "FAIL: expected 36 sequences, got $SEQ_COUNT"; exit 1; }
           python3 -c "
