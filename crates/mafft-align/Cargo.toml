@@ -8,4 +8,5 @@ description = "Pairwise sequence alignment algorithms for MAFFT"
 [dependencies]
 mafft-types = { path = "../mafft-types" }
 mafft-scoring = { path = "../mafft-scoring" }
+mafft-fft = { path = "../mafft-fft" }
 mafft-sys = { path = "../mafft-sys" }
