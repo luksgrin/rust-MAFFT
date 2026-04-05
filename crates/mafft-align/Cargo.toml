@@ -1,0 +1,11 @@
+[package]
+name = "mafft-align"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pairwise sequence alignment algorithms for MAFFT"
+
+[dependencies]
+mafft-types = { path = "../mafft-types" }
+mafft-scoring = { path = "../mafft-scoring" }
+mafft-sys = { path = "../mafft-sys" }
