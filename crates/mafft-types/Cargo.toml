@@ -1,0 +1,10 @@
+[package]
+name = "mafft-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure Rust types for MAFFT data structures"
+
+[dependencies]
+mafft-sys = { path = "../mafft-sys" }
+num-complex = "0.4"

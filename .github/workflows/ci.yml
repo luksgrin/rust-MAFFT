@@ -1,0 +1,214 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ------------------------------------------------------------------
+  # Build: compile C binaries and Rust workspace
+  # ------------------------------------------------------------------
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build C binaries
+        run: make -C core
+
+      - name: Build Rust workspace
+        run: cargo build --workspace
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      # Upload the built binaries + scripts so test jobs can use them
+      - name: Upload C binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: mafft-binaries
+          path: |
+            binaries/
+            scripts/
+          retention-days: 1
+
+  # ------------------------------------------------------------------
+  # MAFFT alignment tests (each mode runs as a separate job)
+  # ------------------------------------------------------------------
+  test-fftns2:
+    name: "Test: FFT-NS-2 (default)"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft sample > x 2>/dev/null
+          diff x sample.fftns2
+
+  test-fftnsi:
+    name: "Test: FFT-NS-i"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --maxiterate 100 sample > x 2>/dev/null
+          diff x sample.fftnsi
+
+  test-dpparttree:
+    name: "Test: dpparttree"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --dpparttree sample > x 2>/dev/null
+          diff x sample.dpparttree
+
+  test-gins1:
+    name: "Test: G-INS-1"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --globalpair sample > x 2>/dev/null
+          diff x sample.gins1
+
+  test-ginsi:
+    name: "Test: G-INS-i"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --globalpair --maxiterate 100 sample > x 2>/dev/null
+          diff x sample.ginsi
+
+  test-ginsi-allowshift:
+    name: "Test: G-INS-i (allowshift)"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --allowshift --globalpair --maxiterate 100 sample > x 2>/dev/null
+          diff x sample.ginsi.allowshift
+
+  test-lins1:
+    name: "Test: L-INS-1"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --localpair sample > x 2>/dev/null
+          diff x sample.lins1
+
+  test-linsi:
+    name: "Test: L-INS-i"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --localpair --maxiterate 100 sample > x 2>/dev/null
+          diff x sample.linsi
+
+  test-parttree:
+    name: "Test: parttree"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mafft-binaries
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --parttree sample > x 2>/dev/null
+          diff x sample.parttree
