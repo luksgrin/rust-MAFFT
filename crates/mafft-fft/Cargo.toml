@@ -1,0 +1,12 @@
+[package]
+name = "mafft-fft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FFT-based homology detection for MAFFT alignment"
+
+[dependencies]
+mafft-types = { path = "../mafft-types" }
+mafft-scoring = { path = "../mafft-scoring" }
+rustfft = "6"
+num-complex = "0.4"

@@ -4,6 +4,7 @@ members = [
     "crates/mafft-types",
     "crates/mafft-io",
     "crates/mafft-scoring",
+    "crates/mafft-fft",
 ]
 resolver = "2"
 
