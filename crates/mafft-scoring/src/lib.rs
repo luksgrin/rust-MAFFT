@@ -39,11 +39,13 @@ pub fn build_context(model: ScoringModel, seq_type: SeqType) -> ScoringContext {
 
 /// Build the FFT-specific matrix: n_disFFT[i][j] = n_dis[i][j] + offset - offsetFFT.
 /// Since offsetFFT = 0 in practice, this is just n_dis[i][j] + offset.
-fn build_fft_matrix(matrix: &[Vec<i32>], offset: i32) -> Vec<Vec<i32>> {
+/// Only applies to the scored region (20x20 for protein, 10x10 for DNA),
+/// matching C which loops `for i<20; for j<20` leaving extended entries as zero.
+fn build_fft_matrix(matrix: &[Vec<i32>], offset: i32, nscored: usize) -> Vec<Vec<i32>> {
     let n = matrix.len();
     let mut fft = vec![vec![0i32; n]; n];
-    for i in 0..n {
-        for j in 0..n {
+    for i in 0..nscored.min(n) {
+        for j in 0..nscored.min(n) {
             fft[i][j] = matrix[i][j] + offset; // offsetFFT = 0
         }
     }
@@ -79,7 +81,7 @@ fn build_dna_context() -> ScoringContext {
     fill_dna_ambiguity_scores(&mut matrix);
     fill_dna_n_scores(&mut matrix);
 
-    let fft_matrix = build_fft_matrix(&matrix, gap.offset);
+    let fft_matrix = build_fft_matrix(&matrix, gap.offset, 10);
 
     let consweight = matrix
         .iter()
@@ -134,7 +136,9 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
     let needs_rescale = matches!(model, ScoringModel::Blosum(_));
     let normalized = build_scoring_matrix(&raw_20x20, &freq, gap_params.offset, needs_rescale);
 
-    // Expand 20x20 -> 26x26 (adding B, Z, X, '.', '-', J)
+    // Expand 20x20 -> 26x26.
+    // Matching C: initialize to zero, fill only the 20x20 core.
+    // Entries 20-25 (B, Z, X, '.', '-', J) remain zero, matching C's behavior.
     let n = PROTEIN_ALPHABET.len();
     let mut matrix = vec![vec![0i32; n]; n];
     for i in 0..20 {
@@ -142,24 +146,8 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
             matrix[i][j] = normalized[i][j];
         }
     }
-    // B = average of N, D (indices 2, 3)
-    for i in 0..20 {
-        matrix[20][i] = round_half_away((normalized[2][i] + normalized[3][i]) as f64 / 2.0);
-        matrix[i][20] = matrix[20][i];
-    }
-    // Z = average of Q, E (indices 5, 6)
-    for i in 0..20 {
-        matrix[21][i] = round_half_away((normalized[5][i] + normalized[6][i]) as f64 / 2.0);
-        matrix[i][21] = matrix[21][i];
-    }
-    // X = average of all 20
-    for i in 0..20 {
-        let avg: f64 = (0..20).map(|j| normalized[i][j] as f64).sum::<f64>() / 20.0;
-        matrix[22][i] = round_half_away(avg);
-        matrix[i][22] = matrix[22][i];
-    }
 
-    let fft_matrix = build_fft_matrix(&matrix, gap_params.offset);
+    let fft_matrix = build_fft_matrix(&matrix, gap_params.offset, 20);
 
     let consweight = matrix
         .iter()

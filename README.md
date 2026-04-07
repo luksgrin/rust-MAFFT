@@ -229,19 +229,20 @@ The following items explain the quality and feature gap between `mafft-rs` and t
 | Item | Description | Effort |
 |------|-------------|--------|
 | **Per-group gap stripping** | C strips columns all-gap within each group independently before profile alignment, producing shorter profiles. We strip only globally-all-gap columns. This directly affects profile quality and DP cost. | Medium — algorithm is correct but re-insertion interleaving has a bug on large inputs (see `TODO.md`) |
-| **Scoring matrix normalization** | Subtle differences in how the 3-stage normalization (average subtraction, 600-scaling, offset) is applied may produce different scores. Cross-validation of penalty values matches, but full matrix entries haven't been compared cell-by-cell. | Low — add cell-by-cell comparison test |
-| **FFT anchor quality** | The C code's `seq_vec_3` vectorization, `getKouho` candidate selection, and `blockAlign2` anchor pairing are more tuned. Our multi-channel FFT works but anchor placement may differ. | Medium — requires comparing anchor positions between C and Rust on real data |
-| **Guide tree fidelity** | C uses `fixed_musclesupg_double_realloc_nobk_halfmtx` with half-matrix storage and precise nearest-neighbor caching. Our `musclesupg` is equivalent algorithmically but may produce different trees due to tie-breaking or floating-point order differences. | Low — compare tree topologies |
+| **JTT scoring matrix** | Cell-by-cell comparison shows 400/676 cells differ (max diff 434). BLOSUM62 now matches exactly, but JTT (the default for protein) has normalization differences — likely in PAM exponentiation or frequency weighting. | Medium |
+| **DNA scoring matrix** | C generates DNA scores via `generatenuc1pam` + PAM^200 exponentiation (Kimura R=2). Our Rust code uses a static pre-computed table (`locn_disn`). 291/676 cells differ. | Medium — port the PAM generation |
+| **FFT anchor quality** | The C code's `seq_vec_3` vectorization, `getKouho` candidate selection, and `blockAlign2` anchor pairing are more tuned. Our multi-channel FFT works but anchor placement may differ. | Medium |
+| **Guide tree fidelity** | Our `musclesupg` is equivalent algorithmically but may produce different trees due to tie-breaking or floating-point order differences. | Low — compare tree topologies |
 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses the full-width profiles. | Medium — same per-group stripping issue |
-| **Distance computation for guide tree** | C uses 6-tuple distance with memoized frequency tables. Our `ktuple_distance` uses HashMap, which may produce slightly different values due to hash ordering. | Low |
+| **Distance computation for guide tree** | C uses 6-tuple distance with memoized frequency tables. Our `ktuple_distance` uses HashMap, which may produce slightly different values. | Low |
 
 ### Medium impact (missing features)
 
 | Item | Description | Effort |
 |------|-------------|--------|
-| **`--add` / `--addfragments`** | Adding new sequences to an existing alignment (`addonetip` in C). Used frequently in incremental workflows. | Medium — `addfunctions.c` is ~2K lines |
+| **`--add` / `--addfragments`** | Adding new sequences to an existing alignment (`addonetip` in C). Used frequently in incremental workflows. | Medium |
 | **`--retree N`** | Rebuilding the guide tree N times. Currently accepted but ignored (always builds once). | Low |
-| **`--op`, `--ep`, `--bl`, `--kimura`** | Gap penalty and distance model tuning. The parameters exist internally but aren't exposed via CLI. | Low — wire existing params to clap args |
+| **`--op`, `--ep`, `--bl`, `--kimura`** | Gap penalty and distance model tuning. The parameters exist internally but aren't exposed via CLI. | Low |
 | **`n_disLN` matrix** | Log-normal scoring variant used in a specific code path. | Low |
 | **`ribosumdis[37][37]`** | RNA ribosum composite matrix. Raw data present but 37x37 assembly not done. | Low |
 | **Warp/shift (`--allowshift`)** | Extra DP state for long-range gap shifts. | Medium |
@@ -265,42 +266,43 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
 | 1 | **Fix per-group gap stripping** | The single highest-impact item. C strips columns all-gap within each group independently (`commongappick`), producing shorter profiles and better DP. Our global stripping produces profiles 2-5x longer. The algorithm is correct but the re-insertion interleaving has a bug on large inputs (see `TODO.md`). | Medium |
-| 2 | **Cell-by-cell scoring matrix validation** | Compare every entry of `n_dis[26][26]` and `n_disFFT[26][26]` between C and Rust for BLOSUM62 and JTT200. Even small drifts compound across millions of DP cells. | Low |
-| 3 | **Guide tree topology comparison** | Run both C and Rust on `test/sample`, compare join order and branch lengths. A different tree produces a fundamentally different progressive alignment. | Low |
-| 4 | **FFT anchor position comparison** | For each progressive merge step, compare the anchor positions chosen by C vs Rust. Wrong anchors = wrong segment boundaries = wrong sub-alignments. | Medium |
+| 2 | **Fix JTT scoring matrix** | 400/676 cells differ vs C (max diff 434). JTT is the default for protein alignment. Likely a difference in PAM exponentiation or frequency-weighted normalization. | Medium |
+| 3 | **Port DNA PAM generation** | C generates DNA scores dynamically via `generatenuc1pam` + PAM^200 (Kimura R=2). We use a static table. 291/676 cells differ. | Medium |
+| 4 | **Guide tree topology comparison** | Run both C and Rust on `test/sample`, compare join order and branch lengths. A different tree produces a fundamentally different progressive alignment. | Low |
+| 5 | **FFT anchor position comparison** | For each progressive merge step, compare the anchor positions chosen by C vs Rust. Wrong anchors = wrong segment boundaries = wrong sub-alignments. | Medium |
 
 #### Behavioral parity (match C's exact output)
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 5 | **Wire `--retree N`** | Rebuild the guide tree N times. Currently accepted but ignored. C's FFT-NS-2 default is `--retree 2`. | Low |
-| 6 | **Wire `--op`, `--ep`, `--bl`** | Expose gap opening, extension, and BLOSUM number parameters via CLI. The values exist internally. | Low |
-| 7 | **Wire `--kimura N`** | Distance model parameter. Stored in `ScoringContext` but not exposed. | Low |
-| 8 | **Match gap penalty formula exactly** | Verify that the position-specific gap cost modulation in `profile_align` (`gap.open * (1.0 - gap_freq)`) matches C's `ogcp/fgcp * gapfreq` weighting. The C formula has separate opening, final, and extension gap profiles per position. | Medium |
-| 9 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
-| 10 | **`n_disLN` matrix** | Log-normal scoring variant used in a specific refinement code path. | Low |
-| 11 | **Distance matrix: match C's 6-tuple counting** | C uses memoized frequency tables with `commonsextet_p`. Our HashMap-based k-tuple may produce slightly different values. | Low |
-| 12 | **Match C's output ordering and formatting** | C outputs sequences in input order with specific line wrapping and name formatting. Small formatting differences exist. | Low |
+| 6 | **Wire `--retree N`** | Rebuild the guide tree N times. Currently accepted but ignored. C's FFT-NS-2 default is `--retree 2`. | Low |
+| 7 | **Wire `--op`, `--ep`, `--bl`** | Expose gap opening, extension, and BLOSUM number parameters via CLI. The values exist internally. | Low |
+| 8 | **Wire `--kimura N`** | Distance model parameter. Stored in `ScoringContext` but not exposed. | Low |
+| 9 | **Match gap penalty formula exactly** | Verify that the position-specific gap cost modulation in `profile_align` (`gap.open * (1.0 - gap_freq)`) matches C's `ogcp/fgcp * gapfreq` weighting. The C formula has separate opening, final, and extension gap profiles per position. | Medium |
+| 10 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
+| 11 | **`n_disLN` matrix** | Log-normal scoring variant used in a specific refinement code path. | Low |
+| 12 | **Distance matrix: match C's 6-tuple counting** | C uses memoized frequency tables with `commonsextet_p`. Our HashMap-based k-tuple may produce slightly different values. | Low |
+| 13 | **Match C's output ordering and formatting** | C outputs sequences in input order with specific line wrapping and name formatting. Small formatting differences exist. | Low |
 
 #### Feature completeness (support all C modes and flags)
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 13 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
-| 14 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
-| 15 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 16 | **`--nofft`** | Disable FFT — force pure DP for all alignment steps (NW-NS-2 mode). | Low |
-| 17 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
-| 18 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
-| 19 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
-| 20 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
-| 21 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
+| 14 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
+| 15 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
+| 16 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 17 | **`--nofft`** | Disable FFT — force pure DP for all alignment steps (NW-NS-2 mode). | Low |
+| 18 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
+| 19 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
+| 20 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
+| 21 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
+| 22 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
 
 #### Summary
 
-- **Items 1-4**: Close the quality gap (currently 52% → expected 90%+).
-- **Items 5-12**: Achieve behavioral parity (exact output matching on standard benchmarks).
-- **Items 13-21**: Full feature completeness (all C flags supported).
+- **Items 1-5**: Close the quality gap (currently 52% → expected 90%+).
+- **Items 6-13**: Achieve behavioral parity (exact output matching on standard benchmarks).
+- **Items 14-22**: Full feature completeness (all C flags supported).
 
 ## Upstream MAFFT
 

@@ -299,6 +299,8 @@ unsafe extern "C" {
     pub static mut ribosumdis: [[c_int; 37]; 37];
     pub static mut amino_n: [c_int; 0x100];
     pub static mut amino_grp: [c_char; 0x100];
+    pub static mut nalphabets: c_int;
+    pub static mut nscoredalphabets: c_int;
 }
 
 #[cfg(test)]
