@@ -16,6 +16,17 @@ pub struct Profile {
     pub freqs: Vec<Vec<f64>>,
     /// Gap frequency at each position (0.0 = no gaps, 1.0 = all gaps).
     pub gap_freq: Vec<f64>,
+    /// Non-gap frequency at each position (= 1.0 - gap_freq). Used for
+    /// cross-weighting in gap cost computation.
+    pub nongap_freq: Vec<f64>,
+    /// Opening gap cost profile: weighted count of gap-opening transitions
+    /// (non-gap → gap) at each position, modulated by penalty and nongap_freq.
+    /// Formula: `ogcp[i] = 0.5 * (1.0 - opening_count[i]) * penalty * nongap_freq[i]`
+    pub ogcp: Vec<f64>,
+    /// Final gap cost profile: weighted count of gap-closing transitions
+    /// (gap → non-gap) at each position.
+    /// Formula: `fgcp[i] = 0.5 * (1.0 - closing_count[i]) * penalty * nongap_freq[i]`
+    pub fgcp: Vec<f64>,
     /// Number of positions (alignment columns).
     pub length: usize,
     /// Alphabet size.
@@ -40,6 +51,9 @@ impl Profile {
             return Self {
                 freqs: Vec::new(),
                 gap_freq: Vec::new(),
+                nongap_freq: Vec::new(),
+                ogcp: Vec::new(),
+                fgcp: Vec::new(),
                 length: 0,
                 nalphabets,
             };
@@ -49,10 +63,17 @@ impl Profile {
         let mut freqs = vec![vec![0.0f64; nalphabets]; length];
         let mut gap_freq = vec![0.0f64; length];
 
+        // Opening gap count (non-gap → gap transitions) and final gap count
+        // (gap → non-gap transitions), matching C's st_OpeningGapCount/st_FinalGapCount.
+        let mut opening_count = vec![0.0f64; length];
+        let mut closing_count = vec![0.0f64; length];
+
         for (seq, &w) in sequences.iter().zip(weights.iter()) {
+            let mut prev_is_gap = false;
             for (pos, &ch) in seq.iter().enumerate() {
                 if pos >= length { break; }
-                if ch == b'-' || ch == b'.' {
+                let is_gap = ch == b'-' || ch == b'.';
+                if is_gap {
                     gap_freq[pos] += w;
                 } else {
                     let idx = amino_map[ch as usize] as usize;
@@ -60,10 +81,38 @@ impl Profile {
                         freqs[pos][idx] += w;
                     }
                 }
+                // Gap opening: non-gap → gap
+                if !prev_is_gap && is_gap {
+                    opening_count[pos] += w;
+                }
+                // Gap closing: gap → non-gap
+                if prev_is_gap && !is_gap {
+                    closing_count[pos] += w;
+                }
+                prev_is_gap = is_gap;
             }
         }
 
-        Self { freqs, gap_freq, length, nalphabets }
+        let nongap_freq: Vec<f64> = gap_freq.iter().map(|&g| (1.0 - g).max(0.0)).collect();
+
+        // Clamp opening/closing counts to [0, 1] range.
+        // C's st_OpeningGapCount/st_FinalGapCount produce values in this
+        // range because sequence weights sum to 1. Our weights may not be
+        // normalized, so we clamp.
+        for v in &mut opening_count { *v = v.clamp(0.0, 1.0); }
+        for v in &mut closing_count { *v = v.clamp(0.0, 1.0); }
+
+        // Store raw opening/closing counts; actual ogcp/fgcp are computed
+        // in profile_align when the penalty parameter is known.
+        Self {
+            freqs,
+            gap_freq,
+            nongap_freq,
+            ogcp: opening_count,
+            fgcp: closing_count,
+            length,
+            nalphabets,
+        }
     }
 
     /// Compute the match score between position `i` of this profile and
@@ -113,6 +162,9 @@ impl Profile {
         Profile {
             freqs: self.freqs[start..end].to_vec(),
             gap_freq: self.gap_freq[start..end].to_vec(),
+            nongap_freq: self.nongap_freq[start..end].to_vec(),
+            ogcp: self.ogcp[start..end].to_vec(),
+            fgcp: self.fgcp[start..end].to_vec(),
             length: end - start,
             nalphabets: self.nalphabets,
         }
@@ -191,6 +243,23 @@ pub fn profile_align(
         };
     }
 
+    // Compute position-specific gap cost profiles matching C's formula:
+    // ogcp[i] = 0.5 * (1.0 - opening_count[i]) * penalty * nongap_freq[i]
+    // fgcp[i] = 0.5 * (1.0 - closing_count[i]) * penalty * nongap_freq[i]
+    let penalty = gap.open;
+    let ogcp1: Vec<f64> = (0..n).map(|i| {
+        0.5 * (1.0 - prof1.ogcp[i]) * penalty * prof1.nongap_freq[i]
+    }).collect();
+    let fgcp1: Vec<f64> = (0..n).map(|i| {
+        0.5 * (1.0 - prof1.fgcp[i]) * penalty * prof1.nongap_freq[i]
+    }).collect();
+    let ogcp2: Vec<f64> = (0..m).map(|j| {
+        0.5 * (1.0 - prof2.ogcp[j]) * penalty * prof2.nongap_freq[j]
+    }).collect();
+    let fgcp2: Vec<f64> = (0..m).map(|j| {
+        0.5 * (1.0 - prof2.fgcp[j]) * penalty * prof2.nongap_freq[j]
+    }).collect();
+
     let head_factor = if head_gap { 1.0 } else { 0.0 };
 
     // DP matrices
@@ -201,15 +270,26 @@ pub fn profile_align(
 
     h[0][0] = 0.0;
     for i in 1..=n {
-        let cost = gap.open * head_factor + gap.extend * i as f64 * head_factor;
-        d[i][0] = cost;
-        h[i][0] = cost;
+        // Terminal gap: ogcp1[0] * headgapfreq2 + fgcp1[i-1] * nongap2[0]
+        let cost = if head_gap {
+            ogcp1[0] * prof2.nongap_freq.first().copied().unwrap_or(1.0)
+                + fgcp1[i - 1] * prof2.nongap_freq.first().copied().unwrap_or(1.0)
+        } else {
+            gap.open * 0.0 // TERMGAPFAC = 0 for free terminal gaps
+        };
+        d[i][0] = if i == 1 { cost } else { d[i-1][0] + fgcp1[i-1] * prof2.nongap_freq.first().copied().unwrap_or(1.0) };
+        h[i][0] = d[i][0];
         traceback[i][0] = 1;
     }
     for j in 1..=m {
-        let cost = gap.open * head_factor + gap.extend * j as f64 * head_factor;
-        ins[0][j] = cost;
-        h[0][j] = cost;
+        let cost = if head_gap {
+            ogcp2[0] * prof1.nongap_freq.first().copied().unwrap_or(1.0)
+                + fgcp2[j - 1] * prof1.nongap_freq.first().copied().unwrap_or(1.0)
+        } else {
+            0.0
+        };
+        ins[0][j] = if j == 1 { cost } else { ins[0][j-1] + fgcp2[j-1] * prof1.nongap_freq.first().copied().unwrap_or(1.0) };
+        h[0][j] = ins[0][j];
         traceback[0][j] = 2;
     }
 
@@ -219,18 +299,26 @@ pub fn profile_align(
 
             let diag = h[i - 1][j - 1] + sub;
 
-            // Gap costs modulated by gap frequency at the position
-            // More existing gaps → cheaper to open a new gap
-            let gap_mod_1 = 1.0 - prof1.gap_freq.get(i - 1).copied().unwrap_or(0.0);
-            let gap_mod_2 = 1.0 - prof2.gap_freq.get(j - 1).copied().unwrap_or(0.0);
+            // Gap costs using C's formula:
+            // Deletion (gap in seq2):
+            //   open:   ogcp2[j-1] * nongap_freq1[i-2] (previous position)
+            //   extend: fgcp2[j-1] * nongap_freq1[i-1] (current position)
+            let gf1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0);
+            let gf1_prev = if i >= 2 { prof1.nongap_freq[i - 2] } else { 1.0 };
+            let gf2 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0);
+            let gf2_prev = if j >= 2 { prof2.nongap_freq[j - 2] } else { 1.0 };
 
-            let d_open = h[i - 1][j] + gap.open * gap_mod_2;
-            let d_ext = d[i - 1][j] + gap.extend;
-            d[i][j] = d_open.max(d_ext);
+            let d_ext = d[i - 1][j] + fgcp2.get(j - 1).copied().unwrap_or(penalty) * gf1;
+            let d_open = h[i - 1][j] + ogcp2.get(j - 1).copied().unwrap_or(penalty) * gf1_prev;
+            d[i][j] = d_ext.max(d_open);
 
-            let i_open = h[i][j - 1] + gap.open * gap_mod_1;
-            let i_ext = ins[i][j - 1] + gap.extend;
-            ins[i][j] = i_open.max(i_ext);
+            // Insertion (gap in seq1):
+            //   open:   ogcp1[i-1] * nongap_freq2[j-2] (previous position)
+            //   extend: fgcp1[i-2] * nongap_freq2[j-1] (current position)
+            let fgcp1_prev = if i >= 2 { fgcp1[i - 2] } else { fgcp1.first().copied().unwrap_or(penalty) };
+            let i_ext = ins[i][j - 1] + fgcp1_prev * gf2;
+            let i_open = h[i][j - 1] + ogcp1.get(i - 1).copied().unwrap_or(penalty) * gf2_prev;
+            ins[i][j] = i_ext.max(i_open);
 
             h[i][j] = diag;
             traceback[i][j] = 0;

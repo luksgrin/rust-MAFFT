@@ -165,7 +165,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--parttree`, `--dpparttree` | Not implemented (PartTree for 10K+ sequences) |
 | `--allowshift` | Not implemented (warp/shift gap penalty) |
 | `--nofft` | Not needed (FFT is used automatically when beneficial) |
-| `--retree N` | Accepted but not yet effective |
+| `--retree N` | Supported (default 2, matching C) |
 | `--op`, `--ep`, `--bl` | Penalty tuning not exposed |
 | `--kimura N` | Distance model tuning not exposed |
 | RNA modes (`--qinsi`, `--xinsi`) | Not implemented |
@@ -275,31 +275,30 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 |---|------|-------------|--------|
 | 5 | **Wire `--op`, `--ep`, `--bl`** | Expose gap opening, extension, and BLOSUM number parameters via CLI. The values exist internally. | Low |
 | 6 | **Wire `--kimura N`** | Distance model parameter. Stored in `ScoringContext` but not exposed. | Low |
-| 7 | **Match gap penalty formula exactly** | Verify that the position-specific gap cost modulation in `profile_align` (`gap.open * (1.0 - gap_freq)`) matches C's `ogcp/fgcp * gapfreq` weighting. The C formula has separate opening, final, and extension gap profiles per position. | Medium |
-| 8 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
-| 9 | **`n_disLN` matrix** | Log-normal scoring variant used in a specific refinement code path. | Low |
-| 10 | **Distance matrix: match C's 6-tuple counting** | C uses memoized frequency tables with `commonsextet_p`. Our HashMap-based k-tuple may produce slightly different values. | Low |
-| 11 | **Match C's output ordering and formatting** | C outputs sequences in input order with specific line wrapping and name formatting. Small formatting differences exist. | Low |
+| 7 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
+| 8 | **`n_disLN` matrix** | Log-normal scoring variant used in a specific refinement code path. | Low |
+| 9 | **Distance matrix: match C's 6-tuple counting** | C uses memoized frequency tables with `commonsextet_p`. Our HashMap-based k-tuple may produce slightly different values. | Low |
+| 10 | **Match C's output ordering and formatting** | C outputs sequences in input order with specific line wrapping and name formatting. Small formatting differences exist. | Low |
 
 #### Feature completeness (support all C modes and flags)
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 12 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
-| 13 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
-| 14 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 15 | **`--nofft`** | Disable FFT — force pure DP for all alignment steps (NW-NS-2 mode). | Low |
-| 16 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
-| 17 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
-| 18 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
-| 19 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
-| 20 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
+| 11 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
+| 12 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
+| 13 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 14 | **`--nofft`** | Disable FFT — force pure DP for all alignment steps (NW-NS-2 mode). | Low |
+| 15 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
+| 16 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
+| 17 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
+| 18 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
+| 19 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
 
 #### Summary
 
-- **Items 1-4**: Close the quality gap (currently 62% SP ratio).
-- **Items 5-11**: Achieve behavioral parity (exact output matching on standard benchmarks).
-- **Items 12-20**: Full feature completeness (all C flags supported).
+- **Items 1-4**: Close the quality gap (currently 47% SP ratio — temporary dip as individual pieces are fixed to match C exactly; quality will converge as more pieces are corrected).
+- **Items 5-10**: Achieve behavioral parity (exact output matching on standard benchmarks).
+- **Items 11-19**: Full feature completeness (all C flags supported).
 
 ## Upstream MAFFT
 
