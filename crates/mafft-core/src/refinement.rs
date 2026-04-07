@@ -9,6 +9,8 @@
 /// split into two groups (subtree vs everything else). There are never
 /// "uninvolved" sequences — every sequence is in one group or the other.
 
+use rayon::prelude::*;
+
 use mafft_align::{
     profile_align, constrained_profile_align, ConstrainedAlignParams,
     Profile, GapModel, Alignment, AlignOp,
@@ -262,38 +264,56 @@ fn compute_split_score(
     weights: &[f64],
     scoring: &ScoringContext,
 ) -> f64 {
-    let mut score = 0.0;
-    for &i in group1 {
-        for &j in group2 {
-            score += pairwise_score(&sequences[i], &sequences[j], scoring) * weights[i] * weights[j];
-        }
-    }
-    score
+    group1
+        .par_iter()
+        .map(|&i| {
+            group2
+                .iter()
+                .map(|&j| pairwise_score(&sequences[i], &sequences[j], scoring) * weights[i] * weights[j])
+                .sum::<f64>()
+        })
+        .sum()
 }
 
+/// Branchless pairwise scoring for auto-vectorization.
+///
+/// The gap check is converted to a mask multiply: if either residue is '-',
+/// the score contribution is 0. This eliminates branches that prevent SIMD.
+#[inline]
 fn pairwise_score(seq1: &[u8], seq2: &[u8], scoring: &ScoringContext) -> f64 {
-    let mut score = 0.0;
-    for (a, b) in seq1.iter().zip(seq2.iter()) {
-        if *a != b'-' && *b != b'-' {
-            let i = scoring.amino_map[*a as usize] as usize;
-            let j = scoring.amino_map[*b as usize] as usize;
-            if i < scoring.substitution_matrix.len() && j < scoring.substitution_matrix[0].len() {
-                score += scoring.substitution_matrix[i][j] as f64;
-            }
-        }
+    let map = &scoring.amino_map;
+    let mtx = &scoring.substitution_matrix;
+    let mtx_size = mtx.len();
+
+    // Accumulate in i64 to avoid f64 conversion per position.
+    // The substitution matrix contains i32 values; summing as i64 is exact.
+    let mut acc = 0i64;
+
+    for k in 0..seq1.len().min(seq2.len()) {
+        let a = seq1[k];
+        let b = seq2[k];
+        // Branchless: non_gap is 1 if both are not '-', else 0
+        let non_gap = ((a != b'-') & (b != b'-')) as i64;
+        let i = map[a as usize] as usize;
+        let j = map[b as usize] as usize;
+        // Bounds check is predictable (almost always true for valid sequences)
+        let s = if i < mtx_size && j < mtx_size { mtx[i][j] as i64 } else { 0 };
+        acc += s * non_gap;
     }
-    score
+
+    acc as f64
 }
 
 fn compute_total_score(sequences: &[Vec<u8>], weights: &[f64], scoring: &ScoringContext) -> f64 {
     let n = sequences.len();
-    let mut score = 0.0;
-    for i in 0..n {
-        for j in (i + 1)..n {
-            score += pairwise_score(&sequences[i], &sequences[j], scoring) * weights[i] * weights[j];
-        }
-    }
-    score
+    (0..n)
+        .into_par_iter()
+        .map(|i| {
+            ((i + 1)..n)
+                .map(|j| pairwise_score(&sequences[i], &sequences[j], scoring) * weights[i] * weights[j])
+                .sum::<f64>()
+        })
+        .sum()
 }
 
 #[cfg(test)]

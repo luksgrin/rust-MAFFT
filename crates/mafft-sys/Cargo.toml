@@ -3,8 +3,9 @@ name = "mafft-sys"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Raw FFI bindings to MAFFT C code"
+description = "Raw FFI bindings to MAFFT C code (internal, not for publication)"
 build = "build.rs"
+publish = false
 
 [build-dependencies]
 cc = "1"

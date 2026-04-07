@@ -1,23 +1,28 @@
 /// Pairwise local alignment constraint builder.
 ///
-/// Ports the C `pairlocalalign.c`.
-///
 /// Computes all-vs-all pairwise local alignments and stores the results
 /// as a `LocalHomologyTable`, which is then used to guide progressive
 /// alignment in L-INS-i and E-INS-i modes.
+
+use rayon::prelude::*;
 
 use mafft_types::{HomologyRegion, LocalHomologyTable};
 
 use crate::dp::GapModel;
 use crate::local::local_align;
 
+/// Result of one pairwise alignment for parallel collection.
+struct PairResult {
+    i: usize,
+    j: usize,
+    distance: f64,
+    region: Option<HomologyRegion>,
+}
+
 /// Build a local homology table from all-vs-all pairwise local alignments.
 ///
-/// For each pair (i, j) with i < j, performs a local alignment and stores
-/// the resulting high-scoring regions. Reciprocal entries (j, i) are created
-/// with swapped coordinates.
-///
-/// Returns the table and a pairwise distance matrix.
+/// The pairwise alignments are computed in parallel using rayon.
+/// Results are collected and applied to the table sequentially.
 pub fn build_local_homology_table(
     sequences: &[&[u8]],
     matrix: &[Vec<i32>],
@@ -26,11 +31,16 @@ pub fn build_local_homology_table(
     score_offset: f64,
 ) -> (LocalHomologyTable, Vec<Vec<f64>>) {
     let nseq = sequences.len();
-    let mut table = LocalHomologyTable::new(nseq);
-    let mut dist = vec![vec![0.0f64; nseq]; nseq];
 
-    for i in 0..nseq {
-        for j in (i + 1)..nseq {
+    // Generate all (i, j) pairs with i < j
+    let pairs: Vec<(usize, usize)> = (0..nseq)
+        .flat_map(|i| ((i + 1)..nseq).map(move |j| (i, j)))
+        .collect();
+
+    // Compute all pairwise alignments in parallel
+    let results: Vec<PairResult> = pairs
+        .par_iter()
+        .map(|&(i, j)| {
             let result = local_align(
                 sequences[i],
                 sequences[j],
@@ -42,21 +52,15 @@ pub fn build_local_homology_table(
 
             let score = result.alignment.score;
             if score <= 0.0 {
-                dist[i][j] = 2.0;
-                dist[j][i] = 2.0;
-                continue;
+                return PairResult { i, j, distance: 2.0, region: None };
             }
 
-            // Compute distance: use identity from the alignment
             let identity = result.alignment.identity();
             let d = (1.0 - identity).clamp(0.0, 2.0);
-            dist[i][j] = d;
-            dist[j][i] = d;
 
-            // Store local homology region
             let aln_len = result.alignment.len();
-            if aln_len > 0 {
-                let region = HomologyRegion {
+            let region = if aln_len > 0 {
+                Some(HomologyRegion {
                     start1: result.offset1 as i32,
                     end1: (result.offset1 + aln_len) as i32,
                     start2: result.offset2 as i32,
@@ -66,18 +70,32 @@ pub fn build_local_homology_table(
                     importance: score,
                     korh: b'h',
                     ..Default::default()
-                };
-                table.push(i, j, region.clone());
+                })
+            } else {
+                None
+            };
 
-                // Reciprocal entry
-                table.push(j, i, HomologyRegion {
-                    start1: region.start2,
-                    end1: region.end2,
-                    start2: region.start1,
-                    end2: region.end1,
-                    ..region
-                });
-            }
+            PairResult { i, j, distance: d, region }
+        })
+        .collect();
+
+    // Apply results to table and distance matrix (sequential)
+    let mut table = LocalHomologyTable::new(nseq);
+    let mut dist = vec![vec![0.0f64; nseq]; nseq];
+
+    for r in results {
+        dist[r.i][r.j] = r.distance;
+        dist[r.j][r.i] = r.distance;
+
+        if let Some(region) = r.region {
+            table.push(r.i, r.j, region.clone());
+            table.push(r.j, r.i, HomologyRegion {
+                start1: region.start2,
+                end1: region.end2,
+                start2: region.start1,
+                end2: region.end1,
+                ..region
+            });
         }
     }
 
@@ -92,10 +110,8 @@ mod tests {
         let mut mtx = vec![vec![-100i32; 5]; 5];
         for i in 0..4 { mtx[i][i] = 100; }
         let mut map = [0xFFu8; 256];
-        map[b'A' as usize] = 0;
-        map[b'C' as usize] = 1;
-        map[b'G' as usize] = 2;
-        map[b'T' as usize] = 3;
+        map[b'A' as usize] = 0; map[b'C' as usize] = 1;
+        map[b'G' as usize] = 2; map[b'T' as usize] = 3;
         map[b'-' as usize] = 4;
         (mtx, map)
     }
@@ -108,11 +124,8 @@ mod tests {
 
         let (table, dist) = build_local_homology_table(&seqs, &mtx, &map, &gap, 0.0);
 
-        // Identical sequences should have homology regions
         let regions_01 = table.get(0, 1);
         assert!(!regions_01.is_empty(), "should find homology between identical seqs");
-
-        // Distance between identical seqs should be 0
         assert!(dist[0][1] < 1e-6, "identical seqs should have distance ~0, got {}", dist[0][1]);
     }
 
@@ -129,7 +142,6 @@ mod tests {
         assert_eq!(fwd.len(), rev.len());
 
         if !fwd.is_empty() {
-            // Reciprocal should have swapped coordinates
             assert_eq!(fwd[0].start1, rev[0].start2);
             assert_eq!(fwd[0].start2, rev[0].start1);
         }

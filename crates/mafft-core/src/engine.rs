@@ -1,5 +1,7 @@
 /// High-level MAFFT alignment engine.
 
+use rayon::prelude::*;
+
 use mafft_io::read_fasta;
 use mafft_scoring::build_context;
 use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance};
@@ -63,13 +65,21 @@ impl MafftEngine {
         let scoring = build_context(scoring_model, seq_type);
         let nseq = input.nseq();
 
-        // Step 1: Compute pairwise distances
+        // Step 1: Compute pairwise distances (parallel)
+        let pairs: Vec<(usize, usize, f64)> = (0..nseq)
+            .into_par_iter()
+            .flat_map(|i| {
+                let seqs = &input.sequences;
+                ((i + 1)..nseq).into_par_iter().map(move |j| {
+                    let d = pairwise_identity_distance(&seqs[i].data, &seqs[j].data);
+                    (i, j, d)
+                })
+            })
+            .collect();
+
         let mut dm = DistanceMatrix::new(nseq);
-        for i in 0..nseq {
-            for j in (i + 1)..nseq {
-                let d = pairwise_identity_distance(&input.sequences[i].data, &input.sequences[j].data);
-                dm.set(i, j, d);
-            }
+        for (i, j, d) in pairs {
+            dm.set(i, j, d);
         }
 
         // Step 2: Build guide tree

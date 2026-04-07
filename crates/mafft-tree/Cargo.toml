@@ -3,8 +3,14 @@ name = "mafft-tree"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Distance computation and guide tree construction for MAFFT"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Distance computation and guide tree construction for MAFFT alignment"
+readme = "../../README.md"
 
 [dependencies]
-mafft-types = { path = "../mafft-types" }
-mafft-scoring = { path = "../mafft-scoring" }
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }

@@ -48,6 +48,10 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     linewidth: usize,
 
+    /// Number of threads (0 = use all available cores) [default: 0]
+    #[arg(long, default_value_t = 0)]
+    thread: usize,
+
     /// Quiet mode: suppress progress messages
     #[arg(long, short)]
     quiet: bool,
@@ -55,6 +59,14 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+
+    // Configure thread pool
+    if args.thread > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(args.thread)
+            .build_global()
+            .ok(); // ignore error if pool already initialized
+    }
 
     // Read input
     let input = match &args.input {

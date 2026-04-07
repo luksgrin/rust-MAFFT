@@ -68,6 +68,12 @@ impl Profile {
 
     /// Compute the match score between position `i` of this profile and
     /// position `j` of another profile, using the given scoring matrix.
+    ///
+    /// Uses a two-pass approach (matching C's `match_calc`) that enables
+    /// SIMD auto-vectorization:
+    /// 1. Build `scarr[b] = sum_a(freq1[a] * matrix[a][b])` — branchless
+    /// 2. Dot-product `sum_b(scarr[b] * freq2[b])` — branchless, contiguous
+    #[inline]
     pub fn match_score(
         &self,
         i: usize,
@@ -75,15 +81,27 @@ impl Profile {
         j: usize,
         matrix: &[Vec<i32>],
     ) -> f64 {
-        let mut score = 0.0;
-        for a in 0..self.nalphabets.min(matrix.len()) {
-            let f1 = self.freqs[i][a];
-            if f1 == 0.0 { continue; }
-            for b in 0..other.nalphabets.min(matrix[a].len()) {
-                let f2 = other.freqs[j][b];
-                if f2 == 0.0 { continue; }
-                score += f1 * f2 * matrix[a][b] as f64;
+        let nalpha = self.nalphabets.min(other.nalphabets).min(matrix.len());
+        let freq1 = &self.freqs[i];
+        let freq2 = &other.freqs[j];
+
+        // Pass 1: scarr[b] = sum_a(freq1[a] * matrix[a][b])
+        // This is branchless — zero freq1 values contribute zero, no skip needed.
+        let mut scarr = [0.0f64; 32]; // fixed-size for auto-vectorization (covers nalphabets <= 26)
+        for a in 0..nalpha {
+            let f1 = freq1[a];
+            // Compiler can vectorize this inner loop: scarr[b] += f1 * matrix[a][b]
+            let row = &matrix[a];
+            let row_len = nalpha.min(row.len());
+            for b in 0..row_len {
+                scarr[b] += f1 * row[b] as f64;
             }
+        }
+
+        // Pass 2: dot product — perfectly vectorizable contiguous f64 multiply-add
+        let mut score = 0.0f64;
+        for b in 0..nalpha {
+            score += scarr[b] * freq2[b];
         }
         score
     }

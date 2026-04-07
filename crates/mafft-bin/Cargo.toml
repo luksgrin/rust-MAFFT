@@ -3,14 +3,20 @@ name = "mafft-bin"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 description = "MAFFT multiple sequence alignment tool (Rust implementation)"
+readme = "../../README.md"
+publish = false
 
 [[bin]]
 name = "mafft-rs"
 path = "src/main.rs"
 
 [dependencies]
-mafft-core = { path = "../mafft-core" }
-mafft-io = { path = "../mafft-io" }
-mafft-types = { path = "../mafft-types" }
+mafft-core = { path = "../mafft-core", version = "0.1.0" }
+mafft-io = { path = "../mafft-io", version = "0.1.0" }
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
+rayon = "1"

@@ -54,17 +54,24 @@ impl DistanceMatrix {
 /// Compute identity-based distance between two aligned sequences.
 ///
 /// Distance = 1.0 - (identical positions / aligned positions excluding gaps).
+///
+/// Uses branchless counting for auto-vectorization: the gap check and
+/// equality check are converted to integer masks that LLVM can vectorize
+/// with SIMD compare+accumulate instructions.
 pub fn pairwise_identity_distance(seq1: &[u8], seq2: &[u8]) -> f64 {
     let mut matches = 0u64;
     let mut aligned = 0u64;
 
-    for (a, b) in seq1.iter().zip(seq2.iter()) {
-        if *a != b'-' && *b != b'-' {
-            aligned += 1;
-            if a == b {
-                matches += 1;
-            }
-        }
+    let len = seq1.len().min(seq2.len());
+    for k in 0..len {
+        let a = seq1[k];
+        let b = seq2[k];
+        // Branchless: both_nongap = 1 if neither is '-', else 0
+        let both_nongap = ((a != b'-') & (b != b'-')) as u64;
+        // Branchless: is_match = 1 if a == b, else 0
+        let is_match = (a == b) as u64;
+        aligned += both_nongap;
+        matches += both_nongap & is_match;
     }
 
     if aligned == 0 {
