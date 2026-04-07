@@ -39,6 +39,12 @@ pub struct MafftEngine {
     pub scoring_model: ScoringModel,
     /// Number of guide tree rebuilds. C's FFT-NS-2 default is 2.
     pub retree: usize,
+    /// Gap opening penalty override (positive float, e.g. 1.53 → internal -1530).
+    /// None = use default for the scoring model.
+    pub gap_open: Option<f64>,
+    /// Offset/extension penalty override (positive float, e.g. 0.123 → internal -123).
+    /// None = use default.
+    pub gap_offset: Option<f64>,
 }
 
 impl Default for MafftEngine {
@@ -47,18 +53,38 @@ impl Default for MafftEngine {
             mode: AlignmentMode::FftNs2,
             scoring_model: ScoringModel::Jtt,
             retree: 2,
+            gap_open: None,
+            gap_offset: None,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2 }
+        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None }
     }
 
     /// Set the number of guide tree rebuilds.
     pub fn with_retree(mut self, retree: usize) -> Self {
         self.retree = retree;
+        self
+    }
+
+    /// Set gap opening penalty (positive float, e.g. 1.53).
+    pub fn with_gap_open(mut self, op: f64) -> Self {
+        self.gap_open = Some(op);
+        self
+    }
+
+    /// Set offset/extension penalty (positive float, e.g. 0.123).
+    pub fn with_gap_offset(mut self, ep: f64) -> Self {
+        self.gap_offset = Some(ep);
+        self
+    }
+
+    /// Set scoring model (e.g. BLOSUM with specific number).
+    pub fn with_scoring_model(mut self, model: ScoringModel) -> Self {
+        self.scoring_model = model;
         self
     }
 
@@ -71,7 +97,22 @@ impl MafftEngine {
             self.scoring_model
         };
 
-        let scoring = build_context(scoring_model, seq_type);
+        let mut scoring = build_context(scoring_model, seq_type);
+
+        // Apply gap penalty overrides if set.
+        // C convention: --op 1.53 means ppenalty = -1530 (multiply by -1000).
+        // After scaling: penalty = (int)(600/1000 * ppenalty + 0.5).
+        if let Some(op) = self.gap_open {
+            let ppenalty = -(op * 1000.0) as i32;
+            let scale = if seq_type.is_nucleotide() { 3.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+            scoring.gap.open = (scale * ppenalty as f64 + 0.5) as i32;
+        }
+        if let Some(ep) = self.gap_offset {
+            let poffset = -(ep * 1000.0) as i32;
+            let scale = 600.0 / 1000.0;
+            scoring.gap.offset = (scale * poffset as f64 + 0.5) as i32;
+        }
+
         let nseq = input.nseq();
         let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
         let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();

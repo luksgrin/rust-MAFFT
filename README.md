@@ -154,6 +154,10 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `ginsi input.fa` | `mafft-rs --globalpair --maxiterate 1000 input.fa` | G-INS-i shortcut |
 | `einsi input.fa` | `mafft-rs --genafpair --maxiterate 1000 input.fa` | E-INS-i shortcut |
 | `mafft --thread N input.fa` | `mafft-rs --thread N input.fa` | Multithreading |
+| `mafft --op 1.53 input.fa` | `mafft-rs --op 1.53 input.fa` | Gap opening penalty |
+| `mafft --ep 0.123 input.fa` | `mafft-rs --ep 0.123 input.fa` | Offset penalty |
+| `mafft --bl 80 input.fa` | `mafft-rs --bl 80 input.fa` | BLOSUM matrix number |
+| `mafft --kimura 2 input.fa` | `mafft-rs --kimura 2 input.fa` | Kimura distance parameter |
 | `mafft --clustalout input.fa` | `mafft-rs --format clustal input.fa` | Clustal output |
 | `mafft --phylipout input.fa` | `mafft-rs --format phylip input.fa` | PHYLIP output |
 
@@ -166,8 +170,8 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--allowshift` | Not implemented (warp/shift gap penalty) |
 | `--nofft` | Not needed (FFT is used automatically when beneficial) |
 | `--retree N` | Supported (default 2, matching C) |
-| `--op`, `--ep`, `--bl` | Penalty tuning not exposed |
-| `--kimura N` | Distance model tuning not exposed |
+| `--op`, `--ep`, `--bl` | Supported |
+| `--kimura N` | Accepted (stored, pending DNA PAM generation) |
 | RNA modes (`--qinsi`, `--xinsi`) | Not implemented |
 | Structure modes (`--scarnalike`) | Not implemented |
 
@@ -273,32 +277,30 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 5 | **Wire `--op`, `--ep`, `--bl`** | Expose gap opening, extension, and BLOSUM number parameters via CLI. The values exist internally. | Low |
-| 6 | **Wire `--kimura N`** | Distance model parameter. Stored in `ScoringContext` but not exposed. | Low |
-| 7 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
-| 8 | **`n_disLN` matrix** | Log-normal scoring variant used in a specific refinement code path. | Low |
-| 9 | **Distance matrix: match C's 6-tuple counting** | C uses memoized frequency tables with `commonsextet_p`. Our HashMap-based k-tuple may produce slightly different values. | Low |
-| 10 | **Match C's output ordering and formatting** | C outputs sequences in input order with specific line wrapping and name formatting. Small formatting differences exist. | Low |
+| 5 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
+| 6 | **`n_disLN` matrix** | Log-normal scoring variant used in a specific refinement code path. | Low |
+| 7 | **Distance matrix: match C's 6-tuple counting** | C uses memoized frequency tables with `commonsextet_p`. Our HashMap-based k-tuple may produce slightly different values. | Low |
+| 8 | **Match C's output ordering and formatting** | C outputs sequences in input order with specific line wrapping and name formatting. Small formatting differences exist. | Low |
 
 #### Feature completeness (support all C modes and flags)
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 11 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
-| 12 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
-| 13 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 14 | **`--nofft`** | Disable FFT — force pure DP for all alignment steps (NW-NS-2 mode). | Low |
-| 15 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
-| 16 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
-| 17 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
-| 18 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
-| 19 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
+| 9 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
+| 10 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
+| 11 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 12 | **`--nofft`** | Disable FFT — force pure DP for all alignment steps (NW-NS-2 mode). | Low |
+| 13 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
+| 14 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
+| 15 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
+| 16 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
+| 17 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
 
 #### Summary
 
 - **Items 1-4**: Close the quality gap (currently 47% SP ratio — temporary dip as individual pieces are fixed to match C exactly; quality will converge as more pieces are corrected).
-- **Items 5-10**: Achieve behavioral parity (exact output matching on standard benchmarks).
-- **Items 11-19**: Full feature completeness (all C flags supported).
+- **Items 5-8**: Achieve behavioral parity (exact output matching on standard benchmarks).
+- **Items 9-17**: Full feature completeness (all C flags supported).
 
 ## Upstream MAFFT
 

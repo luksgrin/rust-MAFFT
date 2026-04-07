@@ -5,7 +5,7 @@ use clap::Parser;
 
 use mafft_core::{MafftEngine, AlignmentMode};
 use mafft_io::{read_fasta, read_fasta_from_reader, write_fasta_to_writer_with_width};
-use mafft_types::{Sequence, SequenceSet};
+use mafft_types::{Sequence, SequenceSet, ScoringModel};
 
 /// MAFFT-rs: Multiple sequence alignment (Rust implementation)
 #[derive(Parser, Debug)]
@@ -47,6 +47,23 @@ struct Args {
     /// FASTA line width (0 for unlimited) [default: 60]
     #[arg(long, default_value_t = 60)]
     linewidth: usize,
+
+    // --- Scoring parameters ---
+    /// Gap opening penalty (positive float, e.g. 1.53) [default: 1.53]
+    #[arg(long)]
+    op: Option<f64>,
+
+    /// Offset (gap extension-like penalty, positive float, e.g. 0.123) [default: 0.123]
+    #[arg(long)]
+    ep: Option<f64>,
+
+    /// BLOSUM matrix number (30, 45, 50, 62, 80). Only used with --localpair/--globalpair when scoring with BLOSUM.
+    #[arg(long)]
+    bl: Option<i32>,
+
+    /// Kimura R parameter for DNA distance model [default: 2]
+    #[arg(long)]
+    kimura: Option<i32>,
 
     /// Number of threads (0 = use all available cores) [default: 0]
     #[arg(long, default_value_t = 0)]
@@ -109,7 +126,17 @@ fn main() {
     }
 
     // Align
-    let engine = MafftEngine::new(mode).with_retree(args.retree);
+    let mut engine = MafftEngine::new(mode).with_retree(args.retree);
+    if let Some(op) = args.op {
+        engine = engine.with_gap_open(op);
+    }
+    if let Some(ep) = args.ep {
+        engine = engine.with_gap_offset(ep);
+    }
+    if let Some(bl) = args.bl {
+        engine = engine.with_scoring_model(ScoringModel::Blosum(bl));
+    }
+    // --kimura is stored for future use when DNA PAM generation is implemented
     let msa = engine.align(&input);
 
     if !args.quiet {
