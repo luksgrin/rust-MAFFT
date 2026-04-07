@@ -362,3 +362,53 @@ fn cross_validate_amino_mapping() {
         mafft_sys::freeconstants();
     }
 }
+
+#[test]
+fn debug_jtt_pam1_vs_c() {
+    let _lock = C_MUTEX.lock().unwrap();
+    
+    // Build Rust PAM1 (just 1 iteration to isolate the issue)
+    let rust_pam1 = mafft_scoring::jtt::build_jtt_pam_matrix(false, 1);
+    
+    // Build C's with pamN=1
+    unsafe {
+        init_c_globals();
+        std::ptr::addr_of_mut!(mafft_sys::dorp).write(b'p' as i32);
+        std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::nblosum).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::pamN).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::TMorJTT).write(201); // JTT
+
+        let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
+        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
+        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        mafft_sys::constants(1, seq_arr);
+
+        let c_matrix = read_c_n_dis();
+        mafft_sys::freeconstants();
+
+        // Apply same normalization to Rust PAM1
+        let freq = mafft_scoring::jtt::jtt_frequencies();
+        let gap = mafft_scoring::default_protein_gap_params();
+        let rust_norm = mafft_scoring::build_scoring_matrix(&rust_pam1, &freq, gap.offset, true);
+        
+        let mut mismatches = 0;
+        let mut max_diff = 0i32;
+        for i in 0..20 {
+            for j in 0..20 {
+                let diff = (c_matrix[i][j] - rust_norm[i][j]).abs();
+                if diff > 0 { mismatches += 1; }
+                if diff > max_diff { max_diff = diff; }
+            }
+        }
+        eprintln!("JTT PAM1: {mismatches}/400 cells differ, max_diff={max_diff}");
+        if mismatches > 0 {
+            for i in 0..3 {
+                for j in 0..3 {
+                    eprintln!("  [{i}][{j}]: C={}, Rust={}", c_matrix[i][j], rust_norm[i][j]);
+                }
+            }
+        }
+    }
+}

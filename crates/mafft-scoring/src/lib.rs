@@ -6,7 +6,7 @@
 
 mod alphabet;
 mod blosum;
-mod jtt;
+pub mod jtt;
 mod dna;
 mod properties;
 mod penalties;
@@ -133,8 +133,10 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
         }
     };
 
-    let needs_rescale = matches!(model, ScoringModel::Blosum(_));
-    let normalized = build_scoring_matrix(&raw_20x20, &freq, gap_params.offset, needs_rescale);
+    // Both BLOSUM and JTT/TM use the full normalization pipeline:
+    // subtract weighted average, scale by 600/diag_avg, subtract offset.
+    // The C code sets makeaverage0=1 for both paths when pamN >= 0.
+    let normalized = build_scoring_matrix(&raw_20x20, &freq, gap_params.offset, true);
 
     // Expand 20x20 -> 26x26.
     // Matching C: initialize to zero, fill only the 20x20 core.
