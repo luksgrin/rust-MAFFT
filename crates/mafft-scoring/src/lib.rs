@@ -53,15 +53,18 @@ fn build_fft_matrix(matrix: &[Vec<i32>], offset: i32, nscored: usize) -> Vec<Vec
 }
 
 fn build_dna_context() -> ScoringContext {
-    let raw = default_dna_matrix();
     let gap = default_dna_gap_params();
     let n = DNA_ALPHABET.len();
 
-    // Build 26x26 integer matrix
+    // Generate 4x4 PAM matrix via Kimura model (default: R=2, pamN=200),
+    // matching C's generatenuc1pam() + exponentiation + normalization.
+    let pam4x4 = dna::generate_dna_pam(2, 200, gap.offset);
+
+    // Expand 4x4 → 10x10 (a,g,c,t,u,A,G,C,T,U) then → 26x26
     let mut matrix = vec![vec![0i32; n]; n];
-    for i in 0..10 {
-        for j in 0..10 {
-            matrix[i][j] = raw[i][j];
+    for i in 0..4 {
+        for j in 0..4 {
+            matrix[i][j] = pam4x4[i][j];
         }
     }
 
@@ -77,9 +80,9 @@ fn build_dna_context() -> ScoringContext {
         }
     }
 
-    // Fill DNA ambiguity codes (IUPAC: R,Y,K,M,S,W,B,D,H,V) and N scores
+    // Fill DNA ambiguity codes (IUPAC: R,Y,K,M,S,W,B,D,H,V).
+    // N wildcard scores are only filled when nwildcard flag is set (not default).
     fill_dna_ambiguity_scores(&mut matrix);
-    fill_dna_n_scores(&mut matrix);
 
     let fft_matrix = build_fft_matrix(&matrix, gap.offset, 10);
 

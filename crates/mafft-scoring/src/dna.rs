@@ -1,8 +1,99 @@
 /// DNA scoring matrices from DNA.h.
 
+use crate::round_half_away;
+
+/// Generate a DNA scoring matrix via Kimura PAM model.
+///
+/// Ports C's `generatenuc1pam()` + PAM exponentiation + normalization.
+/// This is what C uses by default (kimuraR=2, pamN=200).
+///
+/// Returns a 4x4 integer scoring matrix for a,g,c,t.
+pub fn generate_dna_pam(kimura_r: i32, pam_n: usize, offset: i32) -> [[i32; 4]; 4] {
+    let freq = [0.25f64; 4]; // uniform frequencies (C default for fmodel=0)
+    let kr = kimura_r as f64;
+
+    // Kimura rate matrix
+    let rate = [
+        [0.0, kr,  1.0, 1.0],
+        [kr,  0.0, 1.0, 1.0],
+        [1.0, 1.0, 0.0, kr ],
+        [1.0, 1.0, kr,  0.0],
+    ];
+
+    // Compute mutability and delta
+    let mut mutability = [0.0f64; 4];
+    let mut total = 0.0;
+    for i in 0..4 {
+        let mut m = 0.0;
+        for j in 0..4 { m += rate[i][j] * freq[j]; }
+        mutability[i] = m;
+        total += m * freq[i];
+    }
+    let delta = 0.01 / total;
+
+    // Build PAM1
+    let mut pam1 = [[0.0f64; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            if i != j {
+                pam1[i][j] = delta * rate[i][j] * freq[j];
+            } else {
+                pam1[i][j] = 1.0 - delta * mutability[i];
+            }
+        }
+    }
+
+    // Exponentiate: pamx = pam1^pam_n
+    let mut pamx = [[0.0f64; 4]; 4];
+    for i in 0..4 { pamx[i][i] = 1.0; } // identity
+    for _ in 0..pam_n {
+        let prev = pamx;
+        for i in 0..4 {
+            for j in 0..4 {
+                let mut s = 0.0;
+                for k in 0..4 { s += prev[i][k] * pam1[k][j]; }
+                pamx[i][j] = s;
+            }
+        }
+    }
+
+    // Divide by background frequency
+    for i in 0..4 {
+        for j in 0..4 {
+            pamx[i][j] /= freq[j];
+        }
+    }
+
+    // Log transform
+    for i in 0..4 {
+        for j in 0..4 {
+            if pamx[i][j] <= 0.0 { pamx[i][j] = 0.00001; }
+            pamx[i][j] = pamx[i][j].log10() * 1000.0;
+        }
+    }
+
+    // Normalize: subtract weighted average
+    let mut average = 0.0;
+    for i in 0..4 { for j in 0..4 { average += pamx[i][j] * freq[i] * freq[j]; } }
+    for i in 0..4 { for j in 0..4 { pamx[i][j] -= average; } }
+
+    // Scale by 600 / diagonal average (C uses uniform 1/4 weighting)
+    average = 0.0;
+    for i in 0..4 { average += pamx[i][i] * 0.25; }
+    for i in 0..4 { for j in 0..4 { pamx[i][j] *= 600.0 / average; } }
+
+    // Subtract offset
+    let ofs = offset as f64;
+    for i in 0..4 { for j in 0..4 { pamx[i][j] -= ofs; } }
+
+    // Round
+    let mut result = [[0i32; 4]; 4];
+    for i in 0..4 { for j in 0..4 { result[i][j] = round_half_away(pamx[i][j]); } }
+    result
+}
+
 /// Default DNA scoring matrix (26x26, mostly zeros).
-/// Indices 0-3: a,g,c,t. Index 4: u (=t). Indices 5-9: uppercase mirrors.
-/// Index 24: '-' (gap). Index 25: 'O'.
+/// Uses the static table (only used when kimuraR == 9999 in C).
 pub fn default_dna_matrix() -> [[i32; 26]; 26] {
     let mut m = [[0i32; 26]; 26];
 
