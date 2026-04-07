@@ -109,7 +109,7 @@ fn main() {
     }
 
     // Align
-    let engine = MafftEngine::new(mode);
+    let engine = MafftEngine::new(mode).with_retree(args.retree);
     let msa = engine.align(&input);
 
     if !args.quiet {

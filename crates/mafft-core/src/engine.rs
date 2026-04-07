@@ -37,6 +37,8 @@ impl Default for AlignmentMode {
 pub struct MafftEngine {
     pub mode: AlignmentMode,
     pub scoring_model: ScoringModel,
+    /// Number of guide tree rebuilds. C's FFT-NS-2 default is 2.
+    pub retree: usize,
 }
 
 impl Default for MafftEngine {
@@ -44,13 +46,20 @@ impl Default for MafftEngine {
         Self {
             mode: AlignmentMode::FftNs2,
             scoring_model: ScoringModel::Jtt,
+            retree: 2,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Jtt }
+        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2 }
+    }
+
+    /// Set the number of guide tree rebuilds.
+    pub fn with_retree(mut self, retree: usize) -> Self {
+        self.retree = retree;
+        self
     }
 
     /// Align a set of sequences.
@@ -64,26 +73,49 @@ impl MafftEngine {
 
         let scoring = build_context(scoring_model, seq_type);
         let nseq = input.nseq();
+        let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+        let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
 
-        // Step 1: Compute pairwise distances (parallel)
-        let pairs: Vec<(usize, usize, f64)> = (0..nseq)
-            .into_par_iter()
-            .flat_map(|i| {
-                let seqs = &input.sequences;
-                ((i + 1)..nseq).into_par_iter().map(move |j| {
-                    let d = pairwise_identity_distance(&seqs[i].data, &seqs[j].data);
-                    (i, j, d)
-                })
-            })
-            .collect();
+        let use_fft = matches!(
+            self.mode,
+            AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. }
+        );
 
-        let mut dm = DistanceMatrix::new(nseq);
-        for (i, j, d) in pairs {
-            dm.set(i, j, d);
+        // Step 1: Initial pairwise distances (parallel)
+        let mut dm = compute_distance_matrix_from_seqs(&sequences);
+
+        // Step 2: Build guide tree and progressive align, repeating `retree` times.
+        // Each iteration after the first computes distances from the ALIGNMENT
+        // (not the raw sequences), producing a better tree.
+        let retree = self.retree.max(1);
+        let mut msa = MultipleAlignment {
+            sequences: sequences.clone(),
+            names: names.clone(),
+            score: 0.0,
+        };
+
+        for pass in 0..retree {
+            // Build guide tree from current distance matrix
+            let topo = musclesupg(&dm, ClusterMethod::default());
+
+            // Progressive alignment
+            let input_seqs = if pass == 0 {
+                // First pass: use raw sequences
+                sequences.clone()
+            } else {
+                // Subsequent passes: strip gaps from previous alignment
+                // to get updated unaligned sequences (same content, different
+                // order may produce better tree-guided alignment)
+                sequences.clone()
+            };
+
+            msa = progressive_align(&input_seqs, &names, &topo, &scoring, use_fft);
+
+            // If there's another pass, compute new distances from the alignment
+            if pass + 1 < retree {
+                dm = compute_distance_matrix_from_alignment(&msa.sequences);
+            }
         }
-
-        // Step 2: Build guide tree
-        let topo = musclesupg(&dm, ClusterMethod::default());
 
         // Step 3: Build local homology table (for constrained modes)
         let uses_constraints = matches!(
@@ -105,24 +137,16 @@ impl MafftEngine {
             None
         };
 
-        // Step 4: Progressive alignment
-        let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
-        let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
-
-        let use_fft = matches!(
-            self.mode,
-            AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. }
-        );
-
-        let mut msa = progressive_align(&sequences, &names, &topo, &scoring, use_fft);
-
-        // Step 5: Iterative refinement (if mode requires it)
+        // Step 4: Iterative refinement (if mode requires it)
         match &self.mode {
             AlignmentMode::FftNs2 => {}
             AlignmentMode::FftNsi { iterations }
             | AlignmentMode::GInsi { iterations }
             | AlignmentMode::LInsi { iterations }
             | AlignmentMode::EInsi { iterations } => {
+                // Rebuild tree one more time for refinement
+                let dm = compute_distance_matrix_from_alignment(&msa.sequences);
+                let topo = musclesupg(&dm, ClusterMethod::default());
                 let params = RefinementParams {
                     max_iterations: *iterations,
                     cut: 0.0001,
@@ -146,6 +170,48 @@ impl MafftEngine {
         let input = read_fasta(path)?;
         Ok(self.align(&input))
     }
+}
+
+/// Compute pairwise identity distances from raw (unaligned) sequences.
+fn compute_distance_matrix_from_seqs(sequences: &[Vec<u8>]) -> DistanceMatrix {
+    let nseq = sequences.len();
+    let pairs: Vec<(usize, usize, f64)> = (0..nseq)
+        .into_par_iter()
+        .flat_map(|i| {
+            let seqs = sequences;
+            ((i + 1)..nseq).into_par_iter().map(move |j| {
+                let d = pairwise_identity_distance(&seqs[i], &seqs[j]);
+                (i, j, d)
+            })
+        })
+        .collect();
+
+    let mut dm = DistanceMatrix::new(nseq);
+    for (i, j, d) in pairs {
+        dm.set(i, j, d);
+    }
+    dm
+}
+
+/// Compute pairwise identity distances from aligned sequences (with gaps).
+fn compute_distance_matrix_from_alignment(sequences: &[Vec<u8>]) -> DistanceMatrix {
+    let nseq = sequences.len();
+    let pairs: Vec<(usize, usize, f64)> = (0..nseq)
+        .into_par_iter()
+        .flat_map(|i| {
+            let seqs = sequences;
+            ((i + 1)..nseq).into_par_iter().map(move |j| {
+                let d = pairwise_identity_distance(&seqs[i], &seqs[j]);
+                (i, j, d)
+            })
+        })
+        .collect();
+
+    let mut dm = DistanceMatrix::new(nseq);
+    for (i, j, d) in pairs {
+        dm.set(i, j, d);
+    }
+    dm
 }
 
 #[cfg(test)]
@@ -205,5 +271,19 @@ mod tests {
         assert_eq!(msa.nseq(), 3);
         let w = msa.width();
         for seq in &msa.sequences { assert_eq!(seq.len(), w); }
+    }
+
+    #[test]
+    fn engine_retree_1_vs_2() {
+        let input = make_test_input();
+        let msa1 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input);
+        let msa2 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(2).align(&input);
+        // Both should produce valid alignments
+        assert_eq!(msa1.nseq(), 3);
+        assert_eq!(msa2.nseq(), 3);
+        let w1 = msa1.width();
+        let w2 = msa2.width();
+        for seq in &msa1.sequences { assert_eq!(seq.len(), w1); }
+        for seq in &msa2.sequences { assert_eq!(seq.len(), w2); }
     }
 }
