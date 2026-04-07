@@ -2,11 +2,14 @@
 
 A Rust reimplementation of [MAFFT](https://mafft.cbrc.jp/alignment/software/), the widely-used multiple sequence alignment tool originally written in C by Kazutaka Katoh.
 
-This project provides a single `mafft-rs` binary that reads FASTA sequences and produces a multiple sequence alignment, replacing the original C toolchain (5+ binaries orchestrated by a 3000-line shell script) with a standalone Rust executable.
+This project provides:
+- **`mafft-rs`** — a single CLI binary replacing the original 5+ C binaries and shell script
+- **`mafft-core`** — a Rust library crate for programmatic use
+- **`pymafft`** — Python bindings via PyO3
 
 ## Status
 
-**Working prototype.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. Alignment quality is approximately 50% of the original C implementation's sum-of-pairs score on the included test dataset — see [Known Limitations](#known-limitations) for details.
+**Working prototype.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. Alignment quality is approximately 52% of the original C implementation's sum-of-pairs score on the included test dataset — see [Known Limitations](#known-limitations) and [Gap Analysis](#gap-analysis-vs-original-mafft) for details.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -31,17 +34,29 @@ The binary is at `target/release/mafft-rs`.
 ### Run tests
 
 ```bash
-# Fast unit tests (all crates)
+# Fast unit tests (all crates, ~91 tests)
 cargo test --workspace --lib
 
-# Integration tests (requires release build, ~5s)
+# Integration tests (requires release build, ~4 tests)
 cargo test -p mafft-core --release --test end_to_end
 
 # Build and test C reference (optional)
 make -C mafft-upstream/core
 ```
 
+### Python bindings
+
+```bash
+cd crates/pymafft
+uv venv .venv
+uv pip install maturin pytest
+maturin develop --release
+uv run pytest tests/ -v   # 32 tests
+```
+
 ## Usage
+
+### CLI
 
 ```bash
 # Basic usage (FFT-NS-2, fast default)
@@ -55,6 +70,9 @@ mafft-rs -o aligned.fasta sequences.fasta
 
 # Quiet mode (suppress progress messages)
 mafft-rs -q sequences.fasta > aligned.fasta
+
+# Control thread count (0 = all cores)
+mafft-rs --thread 4 sequences.fasta > aligned.fasta
 ```
 
 ### Alignment strategies
@@ -92,6 +110,31 @@ mafft-rs --format phylip sequences.fasta
 mafft-rs --linewidth 80 sequences.fasta
 ```
 
+### Python
+
+```python
+import pymafft
+
+# Align from list of sequences
+result = pymafft.align(["ACDEFGHIK", "ACDEFHIK", "ACDHIK"])
+
+# Align from named tuples
+result = pymafft.align([("human", "ACDEFGHIK"), ("mouse", "ACDEFHIK")])
+
+# Choose strategy
+result = pymafft.align(seqs, strategy="linsi", maxiterate=1000)
+
+# Align from file
+result = pymafft.align_file("sequences.fasta")
+
+# Access results
+for seq in result:
+    print(f"{seq.name}: {seq.sequence}")
+
+result.to_fasta()    # FASTA string
+result.to_tuples()   # list of (name, seq) tuples
+```
+
 ## Migration from MAFFT (C)
 
 The original MAFFT uses a shell script wrapper that invokes multiple C binaries. `mafft-rs` consolidates everything into a single binary with compatible flags.
@@ -110,6 +153,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `linsi input.fa` | `mafft-rs --localpair --maxiterate 1000 input.fa` | L-INS-i shortcut |
 | `ginsi input.fa` | `mafft-rs --globalpair --maxiterate 1000 input.fa` | G-INS-i shortcut |
 | `einsi input.fa` | `mafft-rs --genafpair --maxiterate 1000 input.fa` | E-INS-i shortcut |
+| `mafft --thread N input.fa` | `mafft-rs --thread N input.fa` | Multithreading |
 | `mafft --clustalout input.fa` | `mafft-rs --format clustal input.fa` | Clustal output |
 | `mafft --phylipout input.fa` | `mafft-rs --format phylip input.fa` | PHYLIP output |
 
@@ -120,7 +164,6 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--add`, `--addfragments` | Not implemented (adding sequences to existing alignment) |
 | `--parttree`, `--dpparttree` | Not implemented (PartTree for 10K+ sequences) |
 | `--allowshift` | Not implemented (warp/shift gap penalty) |
-| `--thread N` | Not implemented (multithreading) |
 | `--nofft` | Not needed (FFT is used automatically when beneficial) |
 | `--retree N` | Accepted but not yet effective |
 | `--op`, `--ep`, `--bl` | Penalty tuning not exposed |
@@ -130,11 +173,11 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 
 ## Architecture
 
-The project is organized as a Cargo workspace with 9 crates:
+The project is organized as a Cargo workspace with 10 crates:
 
 ```
 crates/
-  mafft-sys/       Raw FFI bindings to MAFFT C code (for cross-validation)
+  mafft-sys/       Raw FFI bindings to MAFFT C code (dev-only, for cross-validation)
   mafft-types/     Shared Rust types (HomologyRegion, Sequence, ScoringContext, etc.)
   mafft-io/        FASTA, Clustal, PHYLIP, hat2 I/O
   mafft-scoring/   Substitution matrices (BLOSUM, JTT, TM, DNA) and gap penalties
@@ -143,52 +186,121 @@ crates/
   mafft-tree/      Distance computation, NJ, UPGMA, guide tree construction
   mafft-core/      Progressive alignment engine, iterative refinement, MafftEngine
   mafft-bin/       CLI binary (mafft-rs)
+  pymafft/         Python bindings via PyO3
 ```
 
-### How it was built
-
-The migration followed a bottom-up, phase-by-phase strategy:
-
-1. **Phase 0**: Cargo workspace + FFI bindings to C code + shared Rust types
-2. **Phase 1**: FASTA/Clustal/PHYLIP I/O (lenient parser for MAFFT's non-standard headers)
-3. **Phase 2**: Scoring matrices (BLOSUM 30-80, JTT, TM, DNA with IUPAC ambiguity codes)
-4. **Phase 3**: FFT engine (replaced hand-rolled Cooley-Tukey with `rustfft`, multi-channel per-residue-type correlation)
-5. **Phase 4a**: Pairwise alignment (Needleman-Wunsch, Smith-Waterman, generalized affine gap)
-6. **Phase 4b**: Tree construction (NJ, UPGMA, production MUSCLE-style builder with nearest-neighbor heuristic)
-7. **Phase 5**: Profile alignment (group-to-group DP, FFT-accelerated anchoring, local homology constraints)
-8. **Phase 6**: Progressive alignment engine + iterative refinement (TreeDependentIteration port)
-9. **Phase 7**: CLI binary consolidating all C entry points into a single `mafft-rs`
-
-Each phase was tested independently against the C reference implementation, maintaining a suite of 96 tests (92 unit + 4 integration).
+The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is only used as a dev-dependency for cross-validation tests.
 
 ### Key design decisions
 
 - **No global state.** The C code uses ~400 `extern` globals. Rust modules use owned `ScoringContext`, `Topology`, `Profile` structs passed explicitly.
 - **`num_complex::Complex64`** replaces the C `Fukusosuu` struct. `rustfft` replaces the hand-rolled Cooley-Tukey FFT.
-- **Per-group gap stripping** strips globally-all-gap columns before profile alignment (conservative but correct; see TODO.md for the more aggressive per-group approach).
+- **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring.
+- **SIMD-friendly inner loops**: branchless patterns in `match_score()`, `pairwise_score()`, and `pairwise_identity_distance()` that LLVM auto-vectorizes to NEON/AVX instructions.
 - **Three-way gap insertion** (matching C's `insertnewgaps()`): group1 follows cursor1, group2 follows cursor2, "other" sequences follow cursor1 with gaps at Insert positions.
+
+### Test suite
+
+| Suite | Count | What |
+|-------|-------|------|
+| Rust unit tests | 91 | All crates, all modules |
+| Rust integration tests | 4 | End-to-end on real data + C reference comparison |
+| C alignment tests | 9 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
+| Python tests | 32 | API, strategies, file I/O, error handling, types |
+| **Total** | **136** | |
 
 ## Known limitations
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves approximately 52% of the C implementation's sum-of-pairs identity score. This gap is due to:
-
-- **Conservative gap stripping**: we strip only globally-all-gap columns, while C strips per-group, producing shorter (faster, better) profiles.
-- **Simplified FFT anchoring**: the anchor selection heuristic is less tuned than C's.
-- **Scoring normalization differences**: subtle differences in how scoring matrices are scaled and applied.
-
-The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved).
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves approximately 52% of the C implementation's sum-of-pairs identity score. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved). See the gap analysis below for the specific causes and fixes.
 
 ### Performance
 
-- Single-threaded only (the C version uses pthreads). `rayon` integration is planned.
-- Per-group gap stripping not yet implemented (DP matrices can be larger than necessary).
-- No SIMD optimization for inner DP loops.
+- Per-group gap stripping not yet implemented (DP matrices can be larger than necessary). See `TODO.md`.
+- No SIMD for the DP fill loops themselves (data dependencies prevent vectorization without anti-diagonal restructuring).
 
-### Missing features
+## Gap analysis vs original MAFFT
 
-See the [Features not yet supported](#features-not-yet-supported) table above and `TODO.md` for detailed technical notes.
+The following items explain the quality and feature gap between `mafft-rs` and the original C MAFFT, ordered by impact on alignment quality:
+
+### High impact (alignment quality)
+
+| Item | Description | Effort |
+|------|-------------|--------|
+| **Per-group gap stripping** | C strips columns all-gap within each group independently before profile alignment, producing shorter profiles. We strip only globally-all-gap columns. This directly affects profile quality and DP cost. | Medium — algorithm is correct but re-insertion interleaving has a bug on large inputs (see `TODO.md`) |
+| **Scoring matrix normalization** | Subtle differences in how the 3-stage normalization (average subtraction, 600-scaling, offset) is applied may produce different scores. Cross-validation of penalty values matches, but full matrix entries haven't been compared cell-by-cell. | Low — add cell-by-cell comparison test |
+| **FFT anchor quality** | The C code's `seq_vec_3` vectorization, `getKouho` candidate selection, and `blockAlign2` anchor pairing are more tuned. Our multi-channel FFT works but anchor placement may differ. | Medium — requires comparing anchor positions between C and Rust on real data |
+| **Guide tree fidelity** | C uses `fixed_musclesupg_double_realloc_nobk_halfmtx` with half-matrix storage and precise nearest-neighbor caching. Our `musclesupg` is equivalent algorithmically but may produce different trees due to tie-breaking or floating-point order differences. | Low — compare tree topologies |
+| **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses the full-width profiles. | Medium — same per-group stripping issue |
+| **Distance computation for guide tree** | C uses 6-tuple distance with memoized frequency tables. Our `ktuple_distance` uses HashMap, which may produce slightly different values due to hash ordering. | Low |
+
+### Medium impact (missing features)
+
+| Item | Description | Effort |
+|------|-------------|--------|
+| **`--add` / `--addfragments`** | Adding new sequences to an existing alignment (`addonetip` in C). Used frequently in incremental workflows. | Medium — `addfunctions.c` is ~2K lines |
+| **`--retree N`** | Rebuilding the guide tree N times. Currently accepted but ignored (always builds once). | Low |
+| **`--op`, `--ep`, `--bl`, `--kimura`** | Gap penalty and distance model tuning. The parameters exist internally but aren't exposed via CLI. | Low — wire existing params to clap args |
+| **`n_disLN` matrix** | Log-normal scoring variant used in a specific code path. | Low |
+| **`ribosumdis[37][37]`** | RNA ribosum composite matrix. Raw data present but 37x37 assembly not done. | Low |
+| **Warp/shift (`--allowshift`)** | Extra DP state for long-range gap shifts. | Medium |
+
+### Low impact (niche features)
+
+| Item | Description | Effort |
+|------|-------------|--------|
+| **PartTree (`--parttree`, `--dpparttree`)** | Divide-and-conquer tree for 10K+ sequences. | High |
+| **RNA modes (`--qinsi`, `--xinsi`)** | McCaskill/CONTRAfold RNA structure integration. | High — requires external tools |
+| **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH. | High — requires external tools |
+| **`veryfastsupg_int`** | Fast integer-distance UPGMA variant. | Low |
+| **`blockAlign3`** | O(n^2) anchor selection variant. | Low |
+
+### Path to 100% replication
+
+To achieve byte-for-byte identical output with the C implementation on all test cases, three categories of work are needed: quality fixes (close the SP score gap), behavioral parity (match C's exact logic), and feature completeness (support all C flags).
+
+#### Quality fixes (close the 52% → 100% SP score gap)
+
+| # | Item | Description | Effort |
+|---|------|-------------|--------|
+| 1 | **Fix per-group gap stripping** | The single highest-impact item. C strips columns all-gap within each group independently (`commongappick`), producing shorter profiles and better DP. Our global stripping produces profiles 2-5x longer. The algorithm is correct but the re-insertion interleaving has a bug on large inputs (see `TODO.md`). | Medium |
+| 2 | **Cell-by-cell scoring matrix validation** | Compare every entry of `n_dis[26][26]` and `n_disFFT[26][26]` between C and Rust for BLOSUM62 and JTT200. Even small drifts compound across millions of DP cells. | Low |
+| 3 | **Guide tree topology comparison** | Run both C and Rust on `test/sample`, compare join order and branch lengths. A different tree produces a fundamentally different progressive alignment. | Low |
+| 4 | **FFT anchor position comparison** | For each progressive merge step, compare the anchor positions chosen by C vs Rust. Wrong anchors = wrong segment boundaries = wrong sub-alignments. | Medium |
+
+#### Behavioral parity (match C's exact output)
+
+| # | Item | Description | Effort |
+|---|------|-------------|--------|
+| 5 | **Wire `--retree N`** | Rebuild the guide tree N times. Currently accepted but ignored. C's FFT-NS-2 default is `--retree 2`. | Low |
+| 6 | **Wire `--op`, `--ep`, `--bl`** | Expose gap opening, extension, and BLOSUM number parameters via CLI. The values exist internally. | Low |
+| 7 | **Wire `--kimura N`** | Distance model parameter. Stored in `ScoringContext` but not exposed. | Low |
+| 8 | **Match gap penalty formula exactly** | Verify that the position-specific gap cost modulation in `profile_align` (`gap.open * (1.0 - gap_freq)`) matches C's `ogcp/fgcp * gapfreq` weighting. The C formula has separate opening, final, and extension gap profiles per position. | Medium |
+| 9 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
+| 10 | **`n_disLN` matrix** | Log-normal scoring variant used in a specific refinement code path. | Low |
+| 11 | **Distance matrix: match C's 6-tuple counting** | C uses memoized frequency tables with `commonsextet_p`. Our HashMap-based k-tuple may produce slightly different values. | Low |
+| 12 | **Match C's output ordering and formatting** | C outputs sequences in input order with specific line wrapping and name formatting. Small formatting differences exist. | Low |
+
+#### Feature completeness (support all C modes and flags)
+
+| # | Item | Description | Effort |
+|---|------|-------------|--------|
+| 13 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
+| 14 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
+| 15 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 16 | **`--nofft`** | Disable FFT — force pure DP for all alignment steps (NW-NS-2 mode). | Low |
+| 17 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
+| 18 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
+| 19 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
+| 20 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
+| 21 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
+
+#### Summary
+
+- **Items 1-4**: Close the quality gap (currently 52% → expected 90%+).
+- **Items 5-12**: Achieve behavioral parity (exact output matching on standard benchmarks).
+- **Items 13-21**: Full feature completeness (all C flags supported).
 
 ## Upstream MAFFT
 
@@ -203,6 +315,14 @@ git add mafft-upstream
 cargo test --workspace  # verify nothing breaks
 git commit -m "Bump MAFFT upstream to <version>"
 ```
+
+## CI/CD
+
+| Workflow | Triggers | What |
+|----------|----------|------|
+| **CI** (`ci.yml`) | push/PR to main/dev | Build + test Rust and C, smoke test binary |
+| **Python** (`python.yml`) | push/PR + release | Build wheels (Linux, macOS, Windows), test on Python 3.9-3.13, publish to PyPI on release |
+| **Release** (`release.yml`) | GitHub release | Build `mafft-rs` binaries for 4 platforms, attach to release |
 
 ## License
 
