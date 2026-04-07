@@ -9,6 +9,7 @@ members = [
     "crates/mafft-tree",
     "crates/mafft-core",
     "crates/mafft-bin",
+    "crates/pymafft",
 ]
 resolver = "2"
 
