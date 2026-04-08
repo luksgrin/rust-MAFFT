@@ -41,6 +41,19 @@ pub fn build_context(model: ScoringModel, seq_type: SeqType) -> ScoringContext {
 /// Since offsetFFT = 0 in practice, this is just n_dis[i][j] + offset.
 /// Only applies to the scored region (20x20 for protein, 10x10 for DNA),
 /// matching C which loops `for i<20; for j<20` leaving extended entries as zero.
+/// Build the LN (log-normal) matrix: n_disLN[i][j] = n_dis[i][j] + offset - offsetLN.
+fn build_ln_matrix(matrix: &[Vec<i32>], offset: i32, offset_ln: i32, nscored: usize) -> Vec<Vec<f64>> {
+    let n = matrix.len();
+    let adj = (offset - offset_ln) as f64;
+    let mut ln = vec![vec![0.0f64; n]; n];
+    for i in 0..nscored.min(n) {
+        for j in 0..nscored.min(n) {
+            ln[i][j] = matrix[i][j] as f64 + adj;
+        }
+    }
+    ln
+}
+
 fn build_fft_matrix(matrix: &[Vec<i32>], offset: i32, nscored: usize) -> Vec<Vec<i32>> {
     let n = matrix.len();
     let mut fft = vec![vec![0i32; n]; n];
@@ -85,6 +98,7 @@ fn build_dna_context() -> ScoringContext {
     fill_dna_ambiguity_scores(&mut matrix);
 
     let fft_matrix = build_fft_matrix(&matrix, gap.offset, 10);
+    let ln_matrix = build_ln_matrix(&matrix, gap.offset, gap.offset_ln, 10);
 
     let consweight = matrix
         .iter()
@@ -107,6 +121,7 @@ fn build_dna_context() -> ScoringContext {
         nalphabets: 26,
         nscoredalphabets: 10,
         fft_matrix,
+        ln_matrix,
         ribosumdis: Some(build_ribosumdis(gap.offset)),
     }
 }
@@ -154,6 +169,7 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
     }
 
     let fft_matrix = build_fft_matrix(&matrix, gap_params.offset, 20);
+    let ln_matrix = build_ln_matrix(&matrix, gap_params.offset, gap_params.offset_ln, 20);
 
     let consweight = matrix
         .iter()
@@ -188,6 +204,7 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
         nalphabets: 26,
         nscoredalphabets: 20,
         fft_matrix,
+        ln_matrix,
         ribosumdis: None,
     }
 }
