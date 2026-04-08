@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use mafft_io::read_fasta;
 use mafft_scoring::build_context;
-use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance};
+use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance, ktuple_distance};
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
@@ -222,7 +222,8 @@ impl MafftEngine {
     }
 }
 
-/// Compute pairwise identity distances from raw (unaligned) sequences.
+/// Compute pairwise 6-tuple distances from raw (unaligned) sequences.
+/// Matches C's default distance computation using `commonsextet_p`.
 fn compute_distance_matrix_from_seqs(sequences: &[Vec<u8>]) -> DistanceMatrix {
     let nseq = sequences.len();
     let pairs: Vec<(usize, usize, f64)> = (0..nseq)
@@ -230,7 +231,7 @@ fn compute_distance_matrix_from_seqs(sequences: &[Vec<u8>]) -> DistanceMatrix {
         .flat_map(|i| {
             let seqs = sequences;
             ((i + 1)..nseq).into_par_iter().map(move |j| {
-                let d = pairwise_identity_distance(&seqs[i], &seqs[j]);
+                let d = ktuple_distance(&seqs[i], &seqs[j], 6);
                 (i, j, d)
             })
         })
