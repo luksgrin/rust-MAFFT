@@ -286,14 +286,12 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 | 6 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
 | 7 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
 | 8 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
-| 9 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
-| 10 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
 
 #### Summary
 
 - **Items 1-2**: Quality improvements (per-group gap stripping, FFT anchor tuning).
 - **Item 3**: Behavioral parity (commongappick during refinement).
-- **Items 4-10**: Full feature completeness (all C flags supported).
+- **Items 4-8**: Full feature completeness (all C flags supported).
 
 ## Upstream MAFFT
 

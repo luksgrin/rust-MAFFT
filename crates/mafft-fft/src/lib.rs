@@ -16,4 +16,4 @@ pub use vectorize::{
     sequences_to_channels, sequences_to_property_channels,
     multichannel_correlate, PROTEIN_CHANNELS, DNA_CHANNELS, PROPERTY_CHANNELS,
 };
-pub use block_align::block_align;
+pub use block_align::{block_align, block_align3};

@@ -1,6 +1,6 @@
 /// UPGMA (Unweighted Pair Group Method with Arithmetic Mean) tree construction.
 ///
-/// Ports the C `upg2()` from mltaln9.c.
+/// Ports the C `upg2()` and `veryfastsupg_int()` from mltaln9.c.
 
 use crate::distance::DistanceMatrix;
 use crate::topology::{JoinStep, Topology};
@@ -82,6 +82,21 @@ pub fn upgma(dist: &DistanceMatrix) -> Topology {
     }
 
     topo
+}
+
+/// UPGMA from integer distance matrix.
+///
+/// Ports C's `veryfastsupg_int()`. Takes a full `nseq × nseq` integer
+/// matrix (like C's `int **oeff`) and converts to `DistanceMatrix` internally.
+/// Uses linked-list traversal matching the C implementation.
+pub fn upgma_int(nseq: usize, int_matrix: &[Vec<i32>]) -> Topology {
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            dm.set(i, j, int_matrix[i][j] as f64);
+        }
+    }
+    upgma(&dm)
 }
 
 #[cfg(test)]
