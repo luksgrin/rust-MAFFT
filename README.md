@@ -158,6 +158,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `mafft --ep 0.123 input.fa` | `mafft-rs --ep 0.123 input.fa` | Offset penalty |
 | `mafft --bl 80 input.fa` | `mafft-rs --bl 80 input.fa` | BLOSUM matrix number |
 | `mafft --kimura 2 input.fa` | `mafft-rs --kimura 2 input.fa` | Kimura distance parameter |
+| `mafft --nofft input.fa` | `mafft-rs --nofft input.fa` | Disable FFT (NW-NS-2) |
 | `mafft --clustalout input.fa` | `mafft-rs --format clustal input.fa` | Clustal output |
 | `mafft --phylipout input.fa` | `mafft-rs --format phylip input.fa` | PHYLIP output |
 
@@ -168,7 +169,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--add`, `--addfragments` | Not implemented (adding sequences to existing alignment) |
 | `--parttree`, `--dpparttree` | Not implemented (PartTree for 10K+ sequences) |
 | `--allowshift` | Not implemented (warp/shift gap penalty) |
-| `--nofft` | Not needed (FFT is used automatically when beneficial) |
+| `--nofft` | Supported (disables FFT, forces pure DP) |
 | `--retree N` | Supported (default 2, matching C) |
 | `--op`, `--ep`, `--bl` | Supported |
 | `--kimura N` | Accepted (stored, pending DNA PAM generation) |
@@ -287,8 +288,7 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 | 8 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
 | 9 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
 | 10 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 11 | **`--nofft`** | Disable FFT — force pure DP for all alignment steps (NW-NS-2 mode). | Low |
-| 12 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
+| 11 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
 | 13 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
 | 14 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
 | 15 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
@@ -298,7 +298,7 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 
 - **Items 1-3**: Close the quality gap (currently 47% SP ratio — temporary dip as individual pieces are fixed to match C exactly; quality will converge as more pieces are corrected).
 - **Items 4-7**: Achieve behavioral parity (exact output matching on standard benchmarks).
-- **Items 8-16**: Full feature completeness (all C flags supported).
+- **Items 8-15**: Full feature completeness (all C flags supported).
 
 ## Upstream MAFFT
 

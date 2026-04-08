@@ -40,6 +40,10 @@ struct Args {
     #[arg(long, default_value_t = 2)]
     retree: usize,
 
+    /// Disable FFT: force pure DP for all alignment steps (NW-NS-2 mode)
+    #[arg(long)]
+    nofft: bool,
+
     /// Output format: fasta (default), clustal, phylip
     #[arg(long, default_value = "fasta")]
     format: String,
@@ -136,7 +140,10 @@ fn main() {
     if let Some(bl) = args.bl {
         engine = engine.with_scoring_model(ScoringModel::Blosum(bl));
     }
-    // --kimura is stored for future use when DNA PAM generation is implemented
+    // --kimura is stored for future use with custom Kimura R values
+    if args.nofft {
+        engine = engine.with_nofft(true);
+    }
     let msa = engine.align(&input);
 
     if !args.quiet {

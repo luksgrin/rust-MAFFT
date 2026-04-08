@@ -45,6 +45,8 @@ pub struct MafftEngine {
     /// Offset/extension penalty override (positive float, e.g. 0.123 → internal -123).
     /// None = use default.
     pub gap_offset: Option<f64>,
+    /// Disable FFT: force pure DP for all alignment steps.
+    pub nofft: bool,
 }
 
 impl Default for MafftEngine {
@@ -55,13 +57,14 @@ impl Default for MafftEngine {
             retree: 2,
             gap_open: None,
             gap_offset: None,
+            nofft: false,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None }
+        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None, nofft: false }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -79,6 +82,12 @@ impl MafftEngine {
     /// Set offset/extension penalty (positive float, e.g. 0.123).
     pub fn with_gap_offset(mut self, ep: f64) -> Self {
         self.gap_offset = Some(ep);
+        self
+    }
+
+    /// Disable FFT: force pure DP for all alignment steps.
+    pub fn with_nofft(mut self, nofft: bool) -> Self {
+        self.nofft = nofft;
         self
     }
 
@@ -117,7 +126,7 @@ impl MafftEngine {
         let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
         let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
 
-        let use_fft = matches!(
+        let use_fft = !self.nofft && matches!(
             self.mode,
             AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. }
         );
