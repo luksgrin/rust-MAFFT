@@ -92,7 +92,8 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
 
     let mut topo = Topology::new(n);
 
-    for _step in 0..(n - 1) {
+    let mut steps_done = 0;
+    while steps_done < n - 1 {
         // Find cluster with minimum distance to its nearest neighbor
         let mut min_score = f64::MAX;
         let mut im = 0;
@@ -106,11 +107,15 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
             idx = next[i];
         }
 
+        if min_score == f64::MAX {
+            break; // no valid pairs left
+        }
+
         let jm = nearest[im];
         if !active[jm] {
-            // Nearest was invalidated, recompute
+            // Nearest was invalidated, recompute and retry (don't count as a step)
             find_nearest(im, &eff, &active, n, &mut mindisfrom[im], &mut nearest[im]);
-            continue; // retry with updated nearest
+            continue;
         }
 
         // Ensure im < jm for consistent half-matrix access
@@ -180,6 +185,7 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
         }
         // Free jm's distance row
         eff[jm] = None;
+        steps_done += 1;
     }
 
     topo

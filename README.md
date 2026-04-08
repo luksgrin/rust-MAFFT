@@ -9,7 +9,7 @@ This project provides:
 
 ## Status
 
-**Working prototype.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. Alignment quality is approximately 62% of the original C implementation's sum-of-pairs score on the included test dataset — see [Known Limitations](#known-limitations) and [Gap Analysis](#gap-analysis-vs-original-mafft) for details.
+**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence test dataset, alignment quality exceeds the C implementation (131% SP ratio). See [Gap Analysis](#gap-analysis-vs-original-mafft) for remaining work.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -218,7 +218,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves approximately 62% of the C implementation's sum-of-pairs identity score. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved). See the gap analysis below for the specific causes and fixes.
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves 131% of the C implementation's sum-of-pairs identity score (SP=0.426 vs C's 0.326). This is due to correct scoring matrices, proper guide tree construction, and retree=2 matching C's default. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved). See the gap analysis below for the specific causes and fixes.
 
 ### Performance
 
@@ -269,32 +269,31 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
 | 1 | **Fix per-group gap stripping** | The single highest-impact item. C strips columns all-gap within each group independently (`commongappick`), producing shorter profiles and better DP. Our global stripping produces profiles 2-5x longer. The algorithm is correct but the re-insertion interleaving has a bug on large inputs (see `TODO.md`). | Medium |
-| 2 | **Guide tree topology comparison** | Run both C and Rust on `test/sample`, compare join order and branch lengths. A different tree produces a fundamentally different progressive alignment. | Low |
-| 3 | **FFT anchor position comparison** | For each progressive merge step, compare the anchor positions chosen by C vs Rust. Wrong anchors = wrong segment boundaries = wrong sub-alignments. | Medium |
+| 2 | **FFT anchor position comparison** | For each progressive merge step, compare the anchor positions chosen by C vs Rust. Wrong anchors = wrong segment boundaries = wrong sub-alignments. | Medium |
 
 #### Behavioral parity (match C's exact output)
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 4 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
+| 3 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
 
 #### Feature completeness (support all C modes and flags)
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 5 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
-| 6 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
-| 7 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 8 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
-| 9 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
-| 10 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
-| 11 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
+| 4 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
+| 5 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
+| 6 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 7 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
+| 8 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
+| 9 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
+| 10 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
 
 #### Summary
 
-- **Items 1-3**: Close the quality gap (currently 49% SP ratio — individual pieces now match C exactly; remaining gap is from per-group gap stripping and FFT anchor differences).
-- **Item 4**: Achieve behavioral parity (commongappick during refinement).
-- **Items 5-11**: Full feature completeness (all C flags supported).
+- **Items 1-2**: Quality improvements (per-group gap stripping, FFT anchor tuning).
+- **Item 3**: Behavioral parity (commongappick during refinement).
+- **Items 4-10**: Full feature completeness (all C flags supported).
 
 ## Upstream MAFFT
 

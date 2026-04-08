@@ -160,3 +160,50 @@ fn align_rna_sample() {
         assert_eq!(seq.len(), width);
     }
 }
+
+#[test]
+fn diagnostic_guide_tree() {
+    use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let nseq = input.nseq();
+
+    // Compute 6-tuple distance matrix (same as engine's first pass)
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = ktuple_distance(&input.sequences[i].data, &input.sequences[j].data, 6);
+            dm.set(i, j, d);
+        }
+    }
+
+    // Print first 5 distances
+    eprintln!("First 5 pairwise 6-tuple distances:");
+    let mut count = 0;
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            if count >= 5 { break; }
+            eprintln!("  d({},{}) = {:.6}", i, j, dm.get(i, j));
+            count += 1;
+        }
+        if count >= 5 { break; }
+    }
+
+    // Build tree and print first 5 merge steps
+    let topo = musclesupg(&dm, ClusterMethod::default());
+    eprintln!("First 5 merge steps:");
+    for (i, step) in topo.steps.iter().enumerate().take(5) {
+        let mut left: Vec<usize> = step.left.clone();
+        let mut right: Vec<usize> = step.right.clone();
+        left.sort();
+        right.sort();
+        eprintln!("  Step {}: {:?} + {:?} (len: {:.4}, {:.4})",
+            i, left, right, step.left_length, step.right_length);
+    }
+
+    // Basic structural check
+    let last = topo.steps.last().unwrap();
+    let mut all: Vec<usize> = last.left.iter().chain(last.right.iter()).copied().collect();
+    all.sort();
+    assert_eq!(all, (0..nseq).collect::<Vec<_>>(), "tree doesn't cover all sequences");
+}
