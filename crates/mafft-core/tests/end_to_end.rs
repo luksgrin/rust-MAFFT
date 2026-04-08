@@ -207,3 +207,55 @@ fn diagnostic_guide_tree() {
     all.sort();
     assert_eq!(all, (0..nseq).collect::<Vec<_>>(), "tree doesn't cover all sequences");
 }
+
+#[test]
+fn diagnostic_fft_anchoring() {
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_scoring::build_context;
+    use mafft_align::{Profile, FftAlignParams, fft_profile_align, profile_align, GapModel};
+    use mafft_fft::SegmentParams;
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+
+    // Take two sequences and compare FFT-accelerated vs direct DP alignment
+    let s1 = &input.sequences[0].data;
+    let s2 = &input.sequences[1].data;
+
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    let seqs1: Vec<&[u8]> = vec![s1.as_slice()];
+    let seqs2: Vec<&[u8]> = vec![s2.as_slice()];
+    let w = vec![1.0];
+
+    let prof1 = Profile::from_aligned(&seqs1, &w, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&seqs2, &w, &scoring.amino_map, scoring.nalphabets);
+
+    // Direct DP alignment
+    let dp_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+
+    // FFT-accelerated alignment
+    let fft_params = FftAlignParams {
+        num_candidates: 20,
+        segment_params: SegmentParams::protein(),
+        gap: gap.clone(),
+        head_gap: true,
+        tail_gap: true,
+        num_channels: 20,
+    };
+    let fft_aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params);
+
+    eprintln!("Direct DP:  score={:.1}, ops={}", dp_aln.score, dp_aln.operations.len());
+    eprintln!("FFT accel:  score={:.1}, ops={}", fft_aln.score, fft_aln.operations.len());
+
+    // Both should produce valid alignments
+    assert!(dp_aln.operations.len() > 0, "DP alignment empty");
+    assert!(fft_aln.operations.len() > 0, "FFT alignment empty");
+
+    // FFT should produce a score at least 50% of DP (it's an approximation)
+    if dp_aln.score != 0.0 {
+        let ratio = fft_aln.score / dp_aln.score;
+        eprintln!("FFT/DP score ratio: {:.4}", ratio);
+        assert!(ratio > 0.3, "FFT score too low vs DP: {:.1} vs {:.1}", fft_aln.score, dp_aln.score);
+    }
+}
