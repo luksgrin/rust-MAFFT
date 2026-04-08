@@ -62,6 +62,9 @@ pub struct ScoringContext {
     /// FFT-specific scoring matrix (n_dis + offset adjustment).
     /// Used by `alignableReagion()` for segment detection scoring.
     pub fft_matrix: Vec<Vec<i32>>,
+    /// RNA ribosum composite matrix (37×37) for RNA secondary structure scoring.
+    /// Only populated for DNA/RNA sequence types.
+    pub ribosumdis: Option<[[i32; 37]; 37]>,
 }
 
 impl ScoringContext {

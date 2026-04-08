@@ -146,3 +146,101 @@ pub static DNA_RIBOSUM16: [[f64; 16]; 16] = [
     [-11.32, -8.87, -8.67, -4.81, -6.63,-12.01, -4.49, -5.30, -7.08, -4.91, -7.40, -3.83, -2.98, -4.76, -3.21, -5.97],
     [ -9.05,-11.07, -7.83, -2.98,-11.54,-10.79, -3.90, -4.45, -8.39, -3.67, -5.41, -5.21, -3.39, -4.28, -5.97, -0.02],
 ];
+
+/// Build the 37×37 ribosumdis composite matrix for RNA alignment.
+///
+/// Ports the assembly logic from C's constants.c (lines 542-616):
+/// 1. Normalize ribosum4 and ribosum16 (subtract average, scale by 600, subtract offset, round)
+/// 2. Fill 37×37 with ribosum4 in a 9×9 block pattern (loop-loop interactions)
+/// 3. Overlay ribosum16 at [4..20][4..20] and [20..36][20..36] (stem-stem interactions)
+pub fn build_ribosumdis(offset: i32) -> [[i32; 37]; 37] {
+    let freq = [0.25f64; 4]; // uniform frequencies (default)
+
+    // --- Normalize ribosum4 ---
+    let mut r4 = DNA_RIBOSUM4;
+
+    // Subtract weighted average
+    let mut avg = 0.0;
+    for i in 0..4 { for j in 0..4 { avg += r4[i][j] * freq[i] * freq[j]; } }
+    for i in 0..4 { for j in 0..4 { r4[i][j] -= avg; } }
+
+    // Scale by 600 / diagonal average
+    avg = 0.0;
+    for i in 0..4 { avg += r4[i][i] * freq[i]; }
+    for i in 0..4 { for j in 0..4 { r4[i][j] *= 600.0 / avg; } }
+
+    // Subtract offset
+    let ofs = offset as f64;
+    for i in 0..4 { for j in 0..4 { r4[i][j] -= ofs; } }
+
+    // Round
+    for i in 0..4 { for j in 0..4 { r4[i][j] = round_half_away(r4[i][j]) as f64; } }
+
+    // --- Normalize ribosum16 ---
+    let mut r16 = DNA_RIBOSUM16;
+
+    // Subtract weighted average (4D: freq[i]*freq[j]*freq[k]*freq[m])
+    avg = 0.0;
+    for i in 0..4 { for j in 0..4 { for k in 0..4 { for m in 0..4 {
+        avg += r16[i*4+j][k*4+m] * freq[i] * freq[j] * freq[k] * freq[m];
+    }}}}
+    for i in 0..16 { for j in 0..16 { r16[i][j] -= avg; } }
+
+    // Scale by 600 / base-pair diagonal average
+    avg = 0.0;
+    avg += r16[0*4+3][0*4+3] * freq[0] * freq[3]; // AU
+    avg += r16[3*4+0][3*4+0] * freq[3] * freq[0]; // UA
+    avg += r16[1*4+2][1*4+2] * freq[1] * freq[2]; // CG
+    avg += r16[2*4+1][2*4+1] * freq[2] * freq[1]; // GC
+    avg += r16[1*4+3][1*4+3] * freq[1] * freq[3]; // GU
+    avg += r16[3*4+1][3*4+1] * freq[3] * freq[1]; // UG
+    for i in 0..16 { for j in 0..16 { r16[i][j] *= 600.0 / avg; } }
+
+    // Subtract offset
+    for i in 0..16 { for j in 0..16 { r16[i][j] -= ofs; } }
+
+    // Round
+    for i in 0..16 { for j in 0..16 { r16[i][j] = round_half_away(r16[i][j]) as f64; } }
+
+    // --- Assemble 37×37 ---
+    let mut dis = [[0i32; 37]; 37];
+
+    // Fill loop-loop blocks: ribosum4 tiled in 9×9 pattern
+    // Indices 0..35 = 9 blocks of 4 nucleotides each
+    for m in 0..9 {
+        for i in 0..4 {
+            for k in 0..9 {
+                for j in 0..4 {
+                    dis[m*4+i][k*4+j] = r4[i][j] as i32;
+                }
+            }
+        }
+    }
+
+    // Overlay stem5-stem5 at [4..20][4..20] (first stem block)
+    for i in 0..16 { for j in 0..16 { dis[i+4][j+4] = r16[i][j] as i32; } }
+
+    // Overlay stem5-stem5 at [20..36][20..36] (second stem block)
+    for i in 0..16 { for j in 0..16 { dis[i+20][j+20] = r16[i][j] as i32; } }
+
+    dis
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ribosumdis_matches_c() {
+        // C values with default parameters (kimuraR=2, pamN=200, offset from default DNA gap params)
+        let gap = crate::default_dna_gap_params();
+        let dis = build_ribosumdis(gap.offset);
+        // Values from C dump
+        assert_eq!(dis[0][0], 997, "ribosumdis[0][0]");
+        assert_eq!(dis[0][3], 89, "ribosumdis[0][3]");
+        assert_eq!(dis[4][4], 705, "ribosumdis[4][4]");
+        assert_eq!(dis[4][7], 415, "ribosumdis[4][7]");
+        assert_eq!(dis[20][20], 705, "ribosumdis[20][20]");
+        assert_eq!(dis[36][36], 0, "ribosumdis[36][36]");
+    }
+}

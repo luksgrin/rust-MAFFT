@@ -16,7 +16,7 @@ mod ambiguity;
 pub use alphabet::{ProteinAlphabet, DnaAlphabet, Alphabet, PROTEIN_ALPHABET, DNA_ALPHABET};
 pub use blosum::blosum_matrix;
 pub use jtt::{jtt_matrix, jtt_frequencies, tm_frequencies};
-pub use dna::{default_dna_matrix, DNA_RIBOSUM4, DNA_RIBOSUM16};
+pub use dna::{default_dna_matrix, build_ribosumdis, DNA_RIBOSUM4, DNA_RIBOSUM16};
 pub use properties::{POLARITY, VOLUME, normalized_polarity, normalized_volume};
 pub use penalties::{GapParams, default_dna_gap_params, default_protein_gap_params};
 pub use normalize::{normalize_matrix, build_scoring_matrix};
@@ -107,6 +107,7 @@ fn build_dna_context() -> ScoringContext {
         nalphabets: 26,
         nscoredalphabets: 10,
         fft_matrix,
+        ribosumdis: Some(build_ribosumdis(gap.offset)),
     }
 }
 
@@ -187,6 +188,7 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
         nalphabets: 26,
         nscoredalphabets: 20,
         fft_matrix,
+        ribosumdis: None,
     }
 }
 

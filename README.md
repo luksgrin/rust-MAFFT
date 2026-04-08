@@ -287,17 +287,16 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 | 7 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
 | 8 | **`--allowshift`** | Warp/shift gap penalty — extra DP state for long-range jumps (`penalty_shift`). | Medium |
 | 9 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 10 | **`ribosumdis[37][37]`** | Assemble the 37×37 RNA ribosum composite matrix from the 4×4 and 16×16 components already in `dna.rs`. | Low |
-| 11 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
-| 12 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
-| 13 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
-| 14 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
+| 10 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
+| 11 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
+| 12 | **`veryfastsupg_int`** | Fast integer-distance UPGMA variant (performance optimization). | Low |
+| 13 | **`blockAlign3`** | O(n²) anchor selection variant (rarely triggered). | Low |
 
 #### Summary
 
 - **Items 1-3**: Close the quality gap (currently 47% SP ratio — temporary dip as individual pieces are fixed to match C exactly; quality will converge as more pieces are corrected).
 - **Items 4-6**: Achieve behavioral parity (exact output matching on standard benchmarks).
-- **Items 7-14**: Full feature completeness (all C flags supported).
+- **Items 7-13**: Full feature completeness (all C flags supported).
 
 ## Upstream MAFFT
 
