@@ -94,6 +94,19 @@ mafft-rs --localpair --maxiterate 1000 sequences.fasta
 mafft-rs --genafpair --maxiterate 1000 sequences.fasta
 ```
 
+### Adding sequences to an existing alignment
+
+```bash
+# Add new sequences to an existing aligned FASTA
+mafft-rs existing_alignment.fasta --add new_sequences.fasta
+
+# Add fragment sequences
+mafft-rs existing_alignment.fasta --addfragments fragments.fasta
+
+# Preserve existing alignment columns (no new gaps in original sequences)
+mafft-rs existing_alignment.fasta --add new_sequences.fasta --keeplength
+```
+
 ### Output formats
 
 ```bash
@@ -159,6 +172,8 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `mafft --bl 80 input.fa` | `mafft-rs --bl 80 input.fa` | BLOSUM matrix number |
 | `mafft --kimura 2 input.fa` | `mafft-rs --kimura 2 input.fa` | Kimura distance parameter |
 | `mafft --allowshift --globalpair --maxiterate 1000 input.fa` | `mafft-rs --allowshift --globalpair --maxiterate 1000 input.fa` | G-INS-i with shift |
+| `mafft --add new.fa existing.fa` | `mafft-rs existing.fa --add new.fa` | Add sequences to alignment |
+| `mafft --addfragments frags.fa existing.fa` | `mafft-rs existing.fa --addfragments frags.fa` | Add fragment sequences |
 | `mafft --nofft input.fa` | `mafft-rs --nofft input.fa` | Disable FFT (NW-NS-2) |
 | `mafft --clustalout input.fa` | `mafft-rs --format clustal input.fa` | Clustal output |
 | `mafft --phylipout input.fa` | `mafft-rs --format phylip input.fa` | PHYLIP output |
@@ -167,7 +182,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 
 | Original MAFFT flag | Status |
 |---------------------|--------|
-| `--add`, `--addfragments` | Not implemented (adding sequences to existing alignment) |
+| `--add`, `--addfragments` | Supported (add sequences to existing alignment via `addonetip`) |
 | `--parttree`, `--dpparttree` | Not implemented (PartTree for 10K+ sequences) |
 | `--allowshift` | Supported (long-range gap shift penalty) |
 | `--nofft` | Supported (disables FFT, forces pure DP) |
@@ -209,11 +224,11 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust unit tests | 91 | All crates, all modules |
+| Rust unit tests | 103 | All crates, all modules |
 | Rust integration tests | 4 | End-to-end on real data + C reference comparison |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total** | **136** | |
+| **Total** | **148** | |
 
 ## Known limitations
 
@@ -244,12 +259,8 @@ The following items explain the quality and feature gap between `mafft-rs` and t
 
 | Item | Description | Effort |
 |------|-------------|--------|
-| **`--add` / `--addfragments`** | Adding new sequences to an existing alignment (`addonetip` in C). Used frequently in incremental workflows. | Medium |
 | **`--retree N`** | Rebuilding the guide tree N times. Currently accepted but ignored (always builds once). | Low |
-| **`--op`, `--ep`, `--bl`, `--kimura`** | Gap penalty and distance model tuning. The parameters exist internally but aren't exposed via CLI. | Low |
-| **`n_disLN` matrix** | Log-normal scoring variant used in a specific code path. | Low |
-| **`ribosumdis[37][37]`** | RNA ribosum composite matrix. Raw data present but 37x37 assembly not done. | Low |
-| **Warp/shift (`--allowshift`)** | Extra DP state for long-range gap shifts. | Medium |
+| **`--kimura N`** | Kimura R parameter for DNA distance. Accepted and stored, pending custom PAM generation. | Low |
 
 ### Low impact (niche features)
 
@@ -282,16 +293,15 @@ To achieve byte-for-byte identical output with the C implementation on all test 
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 4 | **`--add` / `--addfragments`** | Add new sequences to an existing alignment (`addonetip` algorithm). Frequently used in incremental workflows. | Medium |
-| 5 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 6 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
-| 7 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
+| 4 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 5 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
+| 6 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
 
 #### Summary
 
 - **Items 1-2**: Quality improvements (per-group gap stripping, FFT anchor tuning).
 - **Item 3**: Behavioral parity (commongappick during refinement).
-- **Items 4-7**: Full feature completeness (all C flags supported).
+- **Items 4-6**: Full feature completeness (remaining C flags).
 
 ## Upstream MAFFT
 

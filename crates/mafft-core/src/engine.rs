@@ -10,6 +10,7 @@ use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
 use crate::progressive::{progressive_align, MultipleAlignment};
 use crate::refinement::{iterative_refine, RefinementParams};
+use crate::add::{add_sequences, add_sequences_keeplength};
 
 /// Alignment mode (strategy).
 #[derive(Debug, Clone)]
@@ -229,6 +230,58 @@ impl MafftEngine {
         }
 
         msa
+    }
+
+    /// Add new sequences to an existing alignment.
+    ///
+    /// `existing_input` is the already-aligned MSA (FASTA with gaps).
+    /// `new_input` contains the new unaligned sequences to add.
+    /// `keeplength` if true, preserves the existing alignment's column structure.
+    pub fn add_to_alignment(
+        &self,
+        existing_input: &SequenceSet,
+        new_input: &SequenceSet,
+        keeplength: bool,
+    ) -> MultipleAlignment {
+        let seq_type = existing_input.seq_type;
+        let scoring_model = if seq_type.is_nucleotide() {
+            ScoringModel::Dna
+        } else {
+            self.scoring_model
+        };
+
+        let mut scoring = build_context(scoring_model, seq_type);
+
+        if let Some(op) = self.gap_open {
+            let ppenalty = -(op * 1000.0) as i32;
+            let scale = if seq_type.is_nucleotide() { 3.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+            scoring.gap.open = (scale * ppenalty as f64 + 0.5) as i32;
+        }
+        if let Some(ep) = self.gap_offset {
+            let poffset = -(ep * 1000.0) as i32;
+            let scale = 600.0 / 1000.0;
+            scoring.gap.offset = (scale * poffset as f64 + 0.5) as i32;
+        }
+
+        let use_fft = !self.nofft && matches!(
+            self.mode,
+            AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. }
+        );
+
+        let existing = MultipleAlignment {
+            sequences: existing_input.sequences.iter().map(|s| s.data.clone()).collect(),
+            names: existing_input.sequences.iter().map(|s| s.name.clone()).collect(),
+            score: 0.0,
+        };
+
+        let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();
+        let new_names: Vec<String> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
+
+        if keeplength {
+            add_sequences_keeplength(&existing, &new_sequences, &new_names, &scoring, use_fft)
+        } else {
+            add_sequences(&existing, &new_sequences, &new_names, &scoring, use_fft)
+        }
     }
 
     /// Convenience: read FASTA file and align.

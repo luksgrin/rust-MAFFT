@@ -12,7 +12,9 @@
 mod progressive;
 mod refinement;
 mod engine;
+mod add;
 
 pub use progressive::progressive_align;
 pub use refinement::{iterative_refine, RefinementParams};
 pub use engine::{MafftEngine, AlignmentMode};
+pub use add::{add_sequences, add_sequences_keeplength};

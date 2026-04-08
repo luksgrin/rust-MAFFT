@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use mafft_core::{MafftEngine, AlignmentMode};
-use mafft_io::{read_fasta, read_fasta_from_reader, write_fasta_to_writer_with_width};
+use mafft_io::{read_fasta, read_fasta_from_reader};
 use mafft_types::{Sequence, SequenceSet, ScoringModel};
 
 /// MAFFT-rs: Multiple sequence alignment (Rust implementation)
@@ -31,6 +31,19 @@ struct Args {
     /// Use E-INS-i (generalized affine, iterative; for seqs with large gaps)
     #[arg(long)]
     genafpair: bool,
+
+    /// Add new sequences to an existing alignment (provide aligned FASTA as INPUT,
+    /// new sequences as --add FILE)
+    #[arg(long, value_name = "FILE")]
+    add: Option<PathBuf>,
+
+    /// Add fragment sequences to an existing alignment (same as --add but for short fragments)
+    #[arg(long, value_name = "FILE")]
+    addfragments: Option<PathBuf>,
+
+    /// Preserve existing alignment column structure when adding sequences
+    #[arg(long)]
+    keeplength: bool,
 
     /// Enable long-range gap shift penalty (warp)
     #[arg(long)]
@@ -133,7 +146,7 @@ fn main() {
         eprintln!("{nseq} sequences ({seq_type}), strategy: {mode_name}");
     }
 
-    // Align
+    // Build engine
     let mut engine = MafftEngine::new(mode).with_retree(args.retree);
     if let Some(op) = args.op {
         engine = engine.with_gap_open(op);
@@ -151,7 +164,21 @@ fn main() {
     if args.allowshift {
         engine = engine.with_allowshift(true);
     }
-    let msa = engine.align(&input);
+
+    // Handle --add / --addfragments
+    let add_file = args.add.as_ref().or(args.addfragments.as_ref());
+    let msa = if let Some(add_path) = add_file {
+        let new_input = read_fasta(add_path).unwrap_or_else(|e| {
+            eprintln!("Error reading {}: {e}", add_path.display());
+            std::process::exit(1);
+        });
+        if !args.quiet {
+            eprintln!("Adding {} sequences to existing alignment", new_input.nseq());
+        }
+        engine.add_to_alignment(&input, &new_input, args.keeplength)
+    } else {
+        engine.align(&input)
+    };
 
     if !args.quiet {
         eprintln!("Alignment: {} columns", msa.width());
