@@ -47,6 +47,8 @@ pub struct MafftEngine {
     pub gap_offset: Option<f64>,
     /// Disable FFT: force pure DP for all alignment steps.
     pub nofft: bool,
+    /// Enable long-range gap shift penalty (--allowshift).
+    pub allowshift: bool,
 }
 
 impl Default for MafftEngine {
@@ -58,13 +60,14 @@ impl Default for MafftEngine {
             gap_open: None,
             gap_offset: None,
             nofft: false,
+            allowshift: false,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None, nofft: false }
+        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -82,6 +85,12 @@ impl MafftEngine {
     /// Set offset/extension penalty (positive float, e.g. 0.123).
     pub fn with_gap_offset(mut self, ep: f64) -> Self {
         self.gap_offset = Some(ep);
+        self
+    }
+
+    /// Enable long-range gap shift penalty.
+    pub fn with_allowshift(mut self, allowshift: bool) -> Self {
+        self.allowshift = allowshift;
         self
     }
 
@@ -159,7 +168,14 @@ impl MafftEngine {
                 sequences.clone()
             };
 
-            msa = progressive_align(&input_seqs, &names, &topo, &scoring, use_fft);
+            // Shift penalty: penalty_shift = penalty_shift_factor * penalty
+            // Default factor = 100 (disabled). With --allowshift, factor = 0.8.
+            let shift = if self.allowshift {
+                Some(0.8 * scoring.gap.open as f64)
+            } else {
+                None
+            };
+            msa = progressive_align(&input_seqs, &names, &topo, &scoring, use_fft, shift);
 
             // If there's another pass, compute new distances from the alignment
             if pass + 1 < retree {

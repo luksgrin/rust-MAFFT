@@ -340,7 +340,7 @@ mod tests {
         dm.set(1, 2, 0.2);
         let topo = upgma(&dm);
 
-        let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false);
+        let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false, None);
         let params = RefinementParams {
             max_iterations: 10,
             cut: 0.0001,
@@ -379,7 +379,7 @@ mod tests {
         dm.set(1, 2, 0.15); dm.set(1, 3, 0.25); dm.set(2, 3, 0.15);
         let topo = upgma(&dm);
 
-        let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false);
+        let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false, None);
         let params = RefinementParams { max_iterations: 5, ..Default::default() };
 
         iterative_refine(&mut msa, &topo, &scoring, &params, None);
@@ -419,7 +419,7 @@ mod tests {
         }
         let topo = upgma(&dm);
 
-        let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false);
+        let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false, None);
         let params = RefinementParams { max_iterations: 3, ..Default::default() };
 
         iterative_refine(&mut msa, &topo, &scoring, &params, None);

@@ -32,6 +32,10 @@ struct Args {
     #[arg(long)]
     genafpair: bool,
 
+    /// Enable long-range gap shift penalty (warp)
+    #[arg(long)]
+    allowshift: bool,
+
     /// Maximum number of iterative refinement cycles [default: 0]
     #[arg(long, default_value_t = 0)]
     maxiterate: usize,
@@ -143,6 +147,9 @@ fn main() {
     // --kimura is stored for future use with custom Kimura R values
     if args.nofft {
         engine = engine.with_nofft(true);
+    }
+    if args.allowshift {
+        engine = engine.with_allowshift(true);
     }
     let msa = engine.align(&input);
 

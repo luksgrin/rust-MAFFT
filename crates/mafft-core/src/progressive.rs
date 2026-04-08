@@ -29,6 +29,7 @@ pub fn progressive_align(
     topology: &Topology,
     scoring: &ScoringContext,
     use_fft: bool,
+    shift_penalty: Option<f64>,
 ) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
@@ -46,7 +47,10 @@ pub fn progressive_align(
         .collect();
 
     let mut last_score = 0.0;
-    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let mut gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    if let Some(shift) = shift_penalty {
+        gap = gap.with_shift(shift);
+    }
 
     for step in &topology.steps {
         last_score = merge_step(
@@ -295,7 +299,7 @@ mod tests {
         let mut dm = DistanceMatrix::new(2);
         dm.set(0, 1, 0.0);
         let topo = upgma(&dm);
-        let result = progressive_align(&seqs, &names, &topo, &scoring, false);
+        let result = progressive_align(&seqs, &names, &topo, &scoring, false, None);
         assert_eq!(result.sequences[0], result.sequences[1]);
         check_alignment(&result, &seqs);
     }
@@ -312,7 +316,7 @@ mod tests {
         let mut dm = DistanceMatrix::new(3);
         dm.set(0, 1, 0.1); dm.set(0, 2, 0.3); dm.set(1, 2, 0.2);
         let topo = upgma(&dm);
-        let result = progressive_align(&seqs, &names, &topo, &scoring, false);
+        let result = progressive_align(&seqs, &names, &topo, &scoring, false, None);
         check_alignment(&result, &seqs);
     }
 
@@ -331,7 +335,7 @@ mod tests {
         let mut dm = DistanceMatrix::new(6);
         for i in 0..6 { for j in (i+1)..6 { dm.set(i, j, (j-i) as f64 * 0.1); } }
         let topo = upgma(&dm);
-        let result = progressive_align(&seqs, &names, &topo, &scoring, false);
+        let result = progressive_align(&seqs, &names, &topo, &scoring, false, None);
         check_alignment(&result, &seqs);
     }
 }

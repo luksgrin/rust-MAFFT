@@ -55,6 +55,16 @@ pub fn global_align(
         traceback[0][j] = 2;
     }
 
+    // Warp/shift state: previous row's best score at each column
+    // (for long-range gap jumps when --allowshift is enabled)
+    let try_warp = gap.shift.is_some();
+    let shift_penalty = gap.shift.unwrap_or(0.0);
+    let mut prev_warp_score = vec![f64::NEG_INFINITY; m + 1]; // best h from prev row
+    let mut prev_warp_i = vec![0usize; m + 1]; // row of that best score
+    let mut prev_warp_j = vec![0usize; m + 1]; // col of that best score
+    // 3 = warp traceback marker
+    let mut warp_sources: Vec<(usize, usize)> = Vec::new(); // (src_i, src_j) for each warp
+
     // Fill
     for i in 1..=n {
         for j in 1..=m {
@@ -84,6 +94,31 @@ pub fn global_align(
             if ins[i][j] > h[i][j] {
                 h[i][j] = ins[i][j];
                 traceback[i][j] = 2;
+            }
+
+            // Warp/shift: try jumping from a previous best score
+            if try_warp && j > 0 {
+                let warp_cost = shift_penalty
+                    + gap.extend * ((i as f64 - prev_warp_i[j - 1] as f64)
+                                  + (j as f64 - prev_warp_j[j - 1] as f64));
+                let g = prev_warp_score[j - 1] + warp_cost;
+                if g > h[i][j] {
+                    h[i][j] = g;
+                    // Encode warp source index in traceback
+                    traceback[i][j] = 3; // warp marker
+                    warp_sources.push((prev_warp_i[j - 1], prev_warp_j[j - 1]));
+                }
+            }
+        }
+
+        // Update warp state: store best score per column from this row
+        if try_warp {
+            for j in 0..=m {
+                if h[i][j] > prev_warp_score[j] {
+                    prev_warp_score[j] = h[i][j];
+                    prev_warp_i[j] = i;
+                    prev_warp_j[j] = j;
+                }
             }
         }
     }
@@ -148,6 +183,28 @@ pub fn global_align(
                 // Insertion (gap in seq1)
                 ops.push(AlignOp::Insert);
                 j -= 1;
+            }
+            3 => {
+                // Warp: jump to source position, emitting gaps for the skip
+                if let Some(&(src_i, src_j)) = warp_sources.last() {
+                    warp_sources.pop();
+                    // Emit gaps from current position to source
+                    while i > src_i + 1 {
+                        ops.push(AlignOp::Delete);
+                        i -= 1;
+                    }
+                    while j > src_j + 1 {
+                        ops.push(AlignOp::Insert);
+                        j -= 1;
+                    }
+                    if i > 0 && j > 0 {
+                        ops.push(AlignOp::Match);
+                        i -= 1;
+                        j -= 1;
+                    }
+                } else {
+                    break;
+                }
             }
             _ => break,
         }

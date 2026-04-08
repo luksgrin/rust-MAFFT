@@ -66,11 +66,20 @@ pub struct GapModel {
     pub open: f64,
     /// Gap extension penalty (negative value).
     pub extend: f64,
+    /// Shift/warp penalty for long-range gap jumps (--allowshift).
+    /// None = disabled (default). Some(penalty) = enabled.
+    pub shift: Option<f64>,
 }
 
 impl GapModel {
     pub fn new(open: f64, extend: f64) -> Self {
-        Self { open, extend }
+        Self { open, extend, shift: None }
+    }
+
+    /// Create with shift/warp enabled.
+    pub fn with_shift(mut self, shift_penalty: f64) -> Self {
+        self.shift = Some(shift_penalty);
+        self
     }
 }
 
@@ -79,6 +88,7 @@ impl Default for GapModel {
         Self {
             open: -918.0,  // MAFFT default: (int)(600/1000 * -1530 + 0.5)
             extend: 0.0,   // MAFFT default
+            shift: None,
         }
     }
 }
