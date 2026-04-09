@@ -252,7 +252,6 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 | 1 | **FFT anchor quality** | C's `seq_vec_3`, `getKouho`, `blockAlign2` are more tuned. Our FFT works but anchor placement may differ in large group merges. | Medium |
 | 2 | **Bidirectional group stripping** | C strips one group per merge (via `mergeoralign`); we strip group2 + global. Matching C's exact logic could close the remaining gap. | Low-Medium |
 | 3 | **Guide tree fidelity** | `musclesupg` is algorithmically equivalent but may differ in tie-breaking or float ordering. | Low |
-| 4 | **Distance computation** | C uses memoized frequency tables for 6-tuple distance; ours uses HashMap (slightly different values possible). | Low |
 
 ### Missing features
 
