@@ -160,8 +160,26 @@ fn realign_all(
     gap: &GapModel,
     constraints: Option<&LocalHomologyTable>,
 ) -> Option<(Vec<Vec<u8>>, f64)> {
-    let seqs1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
-    let seqs2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
+    let width = sequences[0].len();
+
+    // Per-group gap stripping (matching C's `commongappick` during refinement).
+    // Since group1 + group2 = ALL sequences, stripping both is safe:
+    // no "other" sequences need column re-insertion.
+    let gap1 = group_all_gap_columns(group1, sequences, width);
+    let gap2 = group_all_gap_columns(group2, sequences, width);
+    let kept1: Vec<usize> = (0..width).filter(|&c| !gap1[c]).collect();
+    let kept2: Vec<usize> = (0..width).filter(|&c| !gap2[c]).collect();
+
+    // Build stripped sequences
+    let stripped1: Vec<Vec<u8>> = group1.iter()
+        .map(|&i| kept1.iter().map(|&c| sequences[i][c]).collect())
+        .collect();
+    let stripped2: Vec<Vec<u8>> = group2.iter()
+        .map(|&i| kept2.iter().map(|&c| sequences[i][c]).collect())
+        .collect();
+
+    let s1_refs: Vec<&[u8]> = stripped1.iter().map(|s| s.as_slice()).collect();
+    let s2_refs: Vec<&[u8]> = stripped2.iter().map(|s| s.as_slice()).collect();
 
     let w1: Vec<f64> = group1.iter().map(|&i| weights[i]).collect();
     let w2: Vec<f64> = group2.iter().map(|&i| weights[i]).collect();
@@ -170,8 +188,8 @@ fn realign_all(
     let w1n: Vec<f64> = if sum1 > 0.0 { w1.iter().map(|w| w / sum1).collect() } else { vec![1.0; group1.len()] };
     let w2n: Vec<f64> = if sum2 > 0.0 { w2.iter().map(|w| w / sum2).collect() } else { vec![1.0; group2.len()] };
 
-    let prof1 = Profile::from_aligned(&seqs1, &w1n, &scoring.amino_map, scoring.nalphabets);
-    let prof2 = Profile::from_aligned(&seqs2, &w2n, &scoring.amino_map, scoring.nalphabets);
+    let prof1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
 
     if prof1.length == 0 || prof2.length == 0 {
         return None;
@@ -196,8 +214,6 @@ fn realign_all(
     };
 
     // Verify ops consume all columns from both profiles.
-    // Since both profiles have the same length (= current alignment width),
-    // and tail_gap=true forces the DP to (n,m), this should always hold.
     let consumed1 = aln.operations.iter()
         .filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete))
         .count();
@@ -210,51 +226,53 @@ fn realign_all(
             "WARN: ops mismatch: consumed1={} prof1.len={} consumed2={} prof2.len={}",
             consumed1, prof1.length, consumed2, prof2.length
         );
-        return None; // safety: reject if ops don't cover all columns
+        return None;
     }
 
-    // Build new sequences. Since ALL sequences are in one of the two groups,
-    // every sequence gets a well-defined column mapping.
-    let mut new_sequences = vec![Vec::new(); sequences.len()];
+    // Build new sequences using column mappings from stripped profiles.
+    // Since ALL sequences are in one of the two groups, no re-insertion needed.
+    let mut new_sequences = vec![Vec::with_capacity(aln.operations.len()); sequences.len()];
+    let mut cursor1 = 0usize;
+    let mut cursor2 = 0usize;
 
-    // Build membership lookup
-    let mut is_group1 = vec![false; sequences.len()];
-    for &i in group1 { is_group1[i] = true; }
-
-    for idx in 0..sequences.len() {
-        let old = &sequences[idx];
-        let mut new_seq = Vec::with_capacity(aln.operations.len());
-        let mut col = 0;
-
-        for op in &aln.operations {
-            if is_group1[idx] {
-                match op {
-                    AlignOp::Match | AlignOp::Delete => {
-                        new_seq.push(if col < old.len() { old[col] } else { b'-' });
-                        col += 1;
-                    }
-                    AlignOp::Insert => {
-                        new_seq.push(b'-');
-                    }
-                }
-            } else {
-                match op {
-                    AlignOp::Match | AlignOp::Insert => {
-                        new_seq.push(if col < old.len() { old[col] } else { b'-' });
-                        col += 1;
-                    }
-                    AlignOp::Delete => {
-                        new_seq.push(b'-');
-                    }
-                }
+    for op in &aln.operations {
+        match op {
+            AlignOp::Match => {
+                let oc1 = kept1[cursor1];
+                let oc2 = kept2[cursor2];
+                for &i in group1 { new_sequences[i].push(sequences[i][oc1]); }
+                for &i in group2 { new_sequences[i].push(sequences[i][oc2]); }
+                cursor1 += 1;
+                cursor2 += 1;
+            }
+            AlignOp::Delete => {
+                let oc1 = kept1[cursor1];
+                for &i in group1 { new_sequences[i].push(sequences[i][oc1]); }
+                for &i in group2 { new_sequences[i].push(b'-'); }
+                cursor1 += 1;
+            }
+            AlignOp::Insert => {
+                let oc2 = kept2[cursor2];
+                for &i in group1 { new_sequences[i].push(b'-'); }
+                for &i in group2 { new_sequences[i].push(sequences[i][oc2]); }
+                cursor2 += 1;
             }
         }
-
-        new_sequences[idx] = new_seq;
     }
 
-    // All sequences should now have the same width (= aln.operations.len())
     Some((new_sequences, aln.score))
+}
+
+fn group_all_gap_columns(group: &[usize], sequences: &[Vec<u8>], width: usize) -> Vec<bool> {
+    let mut all_gap = vec![true; width];
+    for &idx in group {
+        for (col, &ch) in sequences[idx].iter().enumerate() {
+            if ch != b'-' && ch != b'.' {
+                all_gap[col] = false;
+            }
+        }
+    }
+    all_gap
 }
 
 fn compute_split_score(

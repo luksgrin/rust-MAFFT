@@ -178,17 +178,19 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `mafft --clustalout input.fa` | `mafft-rs --format clustal input.fa` | Clustal output |
 | `mafft --phylipout input.fa` | `mafft-rs --format phylip input.fa` | PHYLIP output |
 
-### Features not yet supported
+### Feature support status
 
 | Original MAFFT flag | Status |
 |---------------------|--------|
-| `--add`, `--addfragments` | Supported (add sequences to existing alignment via `addonetip`) |
-| `--parttree`, `--dpparttree` | Not implemented (PartTree for 10K+ sequences) |
-| `--allowshift` | Supported (long-range gap shift penalty) |
-| `--nofft` | Supported (disables FFT, forces pure DP) |
+| `--maxiterate`, `--localpair`, `--globalpair`, `--genafpair` | Supported |
+| `--add`, `--addfragments`, `--keeplength` | Supported |
+| `--allowshift` | Supported |
+| `--nofft` | Supported |
 | `--retree N` | Supported (default 2, matching C) |
 | `--op`, `--ep`, `--bl` | Supported |
-| `--kimura N` | Accepted (stored, pending DNA PAM generation) |
+| `--thread N` | Supported (Rayon) |
+| `--kimura N` | Accepted (stored, pending custom PAM generation) |
+| `--parttree`, `--dpparttree` | Not implemented (PartTree for 10K+ sequences) |
 | RNA modes (`--qinsi`, `--xinsi`) | Not implemented |
 | Structure modes (`--scarnalike`) | Not implemented |
 
@@ -234,74 +236,32 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves 131% of the C implementation's sum-of-pairs identity score (SP=0.426 vs C's 0.326). This is due to correct scoring matrices, proper guide tree construction, and retree=2 matching C's default. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved). See the gap analysis below for the specific causes and fixes.
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves 110% of the C implementation's sum-of-pairs identity score (SP=0.358 vs C's 0.326). With per-group gap stripping in both progressive alignment and iterative refinement (matching C's `commongappick`), the alignment quality is very close to C's. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved). See the gap analysis below for remaining differences.
 
 ### Performance
 
-- Per-group gap stripping not yet implemented (DP matrices can be larger than necessary). See `TODO.md`.
+- Per-group gap stripping implemented (group2 in progressive, both groups in refinement), producing shorter profiles and faster DP.
 - No SIMD for the DP fill loops themselves (data dependencies prevent vectorization without anti-diagonal restructuring).
 
-## Gap analysis vs original MAFFT
+## Remaining gaps vs original MAFFT
 
-The following items explain the quality and feature gap between `mafft-rs` and the original C MAFFT, ordered by impact on alignment quality:
-
-### High impact (alignment quality)
-
-| Item | Description | Effort |
-|------|-------------|--------|
-| **Per-group gap stripping** | C strips columns all-gap within each group independently before profile alignment, producing shorter profiles. We strip only globally-all-gap columns. This directly affects profile quality and DP cost. | Medium — algorithm is correct but re-insertion interleaving has a bug on large inputs (see `TODO.md`) |
-| **FFT anchor quality** | The C code's `seq_vec_3` vectorization, `getKouho` candidate selection, and `blockAlign2` anchor pairing are more tuned. Our multi-channel FFT works but anchor placement may differ. | Medium |
-| **Guide tree fidelity** | Our `musclesupg` is equivalent algorithmically but may produce different trees due to tie-breaking or floating-point order differences. | Low — compare tree topologies |
-| **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses the full-width profiles. | Medium — same per-group stripping issue |
-| **Distance computation for guide tree** | C uses 6-tuple distance with memoized frequency tables. Our `ktuple_distance` uses HashMap, which may produce slightly different values. | Low |
-
-### Medium impact (missing features)
-
-| Item | Description | Effort |
-|------|-------------|--------|
-| **`--retree N`** | Rebuilding the guide tree N times. Currently accepted but ignored (always builds once). | Low |
-| **`--kimura N`** | Kimura R parameter for DNA distance. Accepted and stored, pending custom PAM generation. | Low |
-
-### Low impact (niche features)
-
-| Item | Description | Effort |
-|------|-------------|--------|
-| **PartTree (`--parttree`, `--dpparttree`)** | Divide-and-conquer tree for 10K+ sequences. | High |
-| **RNA modes (`--qinsi`, `--xinsi`)** | McCaskill/CONTRAfold RNA structure integration. | High — requires external tools |
-| **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH. | High — requires external tools |
-| **`veryfastsupg_int`** | Fast integer-distance UPGMA variant. | Low |
-| **`blockAlign3`** | O(n^2) anchor selection variant. | Low |
-
-### Path to 100% replication
-
-To achieve byte-for-byte identical output with the C implementation on all test cases, three categories of work are needed: quality fixes (close the SP score gap), behavioral parity (match C's exact logic), and feature completeness (support all C flags).
-
-#### Quality fixes (close the 52% → 100% SP score gap)
+### Alignment quality (10% SP score gap)
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 1 | **Fix per-group gap stripping** | The single highest-impact item. C strips columns all-gap within each group independently (`commongappick`), producing shorter profiles and better DP. Our global stripping produces profiles 2-5x longer. The algorithm is correct but the re-insertion interleaving has a bug on large inputs (see `TODO.md`). | Medium |
-| 2 | **FFT anchor position comparison** | Verified: for pairwise sequences, FFT and DP produce identical results (score ratio 1.0). For large group merges, anchor placement may differ from C but quality exceeds C's (131% SP). Further tuning possible but not needed. | Low |
+| 1 | **FFT anchor quality** | C's `seq_vec_3`, `getKouho`, `blockAlign2` are more tuned. Our FFT works but anchor placement may differ in large group merges. | Medium |
+| 2 | **Bidirectional group stripping** | C strips one group per merge (via `mergeoralign`); we strip group2 + global. Matching C's exact logic could close the remaining gap. | Low-Medium |
+| 3 | **Guide tree fidelity** | `musclesupg` is algorithmically equivalent but may differ in tie-breaking or float ordering. | Low |
+| 4 | **Distance computation** | C uses memoized frequency tables for 6-tuple distance; ours uses HashMap (slightly different values possible). | Low |
 
-#### Behavioral parity (match C's exact output)
-
-| # | Item | Description | Effort |
-|---|------|-------------|--------|
-| 3 | **`commongappick` during refinement** | C strips common gaps before each refinement re-alignment. Our refinement uses full-width profiles. Same per-group stripping fix as item 1. | Medium |
-
-#### Feature completeness (support all C modes and flags)
+### Missing features
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 4 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 5 | **RNA modes (`--qinsi`, `--xinsi`)** | Integrate McCaskill/CONTRAfold RNA secondary structure predictions into alignment scoring. | High |
-| 6 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH client. | High |
-
-#### Summary
-
-- **Items 1-2**: Quality improvements (per-group gap stripping, FFT anchor tuning).
-- **Item 3**: Behavioral parity (commongappick during refinement).
-- **Items 4-6**: Full feature completeness (remaining C flags).
+| 5 | **`--kimura N`** | Accepted and stored, pending custom PAM generation with user-specified R value. | Low |
+| 6 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 7 | **RNA modes (`--qinsi`, `--xinsi`)** | McCaskill/CONTRAfold RNA structure integration (requires external tools). | High |
+| 8 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH (requires external tools). | High |
 
 ## Upstream MAFFT
 
