@@ -45,7 +45,8 @@ pub fn block_align(
             track[i][j] = 0;
 
             // Skip segments in j (gap in group2's segments)
-            for k in 0..j.saturating_sub(1) {
+            // C: klim = j-2; for(k=0; k<klim; k++) → scans k=0..j-3
+            for k in 0..j.saturating_sub(2) {
                 let score = dp[i - 1][k] + gap_penalty;
                 if score > best {
                     best = score;
@@ -54,7 +55,8 @@ pub fn block_align(
             }
 
             // Skip segments in i (gap in group1's segments)
-            for k in 0..i.saturating_sub(1) {
+            // C: klim = i-2; for(k=0; k<klim; k++) → scans k=0..i-3
+            for k in 0..i.saturating_sub(2) {
                 let score = dp[k][j - 1] + gap_penalty;
                 if score > best {
                     best = score;

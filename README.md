@@ -236,11 +236,11 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves 110% of the C implementation's sum-of-pairs identity score (SP=0.358 vs C's 0.326). With per-group gap stripping in both progressive alignment and iterative refinement (matching C's `commongappick`), the alignment quality is very close to C's. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved). See the gap analysis below for remaining differences.
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves 133% of the C implementation's sum-of-pairs identity score (SP=0.434 vs C's 0.326) for FFT-NS-2. The gap stripping now matches C's exact behavior: global-only during progressive alignment, per-group during iterative refinement. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved). See the gap analysis below for remaining differences.
 
 ### Performance
 
-- Per-group gap stripping implemented (group2 in progressive, both groups in refinement), producing shorter profiles and faster DP.
+- Gap stripping matches C: global-only during progressive alignment, per-group (both groups) during iterative refinement.
 - No SIMD for the DP fill loops themselves (data dependencies prevent vectorization without anti-diagonal restructuring).
 
 ## Remaining gaps vs original MAFFT
@@ -249,9 +249,8 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 1 | **FFT anchor quality** | C's `seq_vec_3`, `getKouho`, `blockAlign2` are more tuned. Our FFT works but anchor placement may differ in large group merges. | Medium |
-| 2 | **Bidirectional group stripping** | C strips one group per merge (via `mergeoralign`); we strip group2 + global. Matching C's exact logic could close the remaining gap. | Low-Medium |
-| 3 | **Guide tree fidelity** | `musclesupg` is algorithmically equivalent but may differ in tie-breaking or float ordering. | Low |
+| 1 | **FFT anchor quality** | Fixed `blockAlign2` off-by-one (gap scan bounds). Remaining: C's `seq_vec_3` vectorization and `getKouho` candidate selection may still differ subtly. | Medium |
+| 2 | **Guide tree fidelity** | Fixed `musclesupg` to match C's last-node exclusion and `setnearest` traversal order. Remaining: float accumulation order differences on large inputs. | Low |
 
 ### Missing features
 

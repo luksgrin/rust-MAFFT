@@ -94,13 +94,15 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
 
     let mut steps_done = 0;
     while steps_done < n - 1 {
-        // Find cluster with minimum distance to its nearest neighbor
+        // Find cluster with minimum distance to its nearest neighbor.
+        // C's loop: for(acpti=ac; acpti->next!=NULL; ...) — skips the
+        // last node in the chain. We match this by checking next[i].is_some().
         let mut min_score = f64::MAX;
         let mut im = 0;
 
         let mut idx = Some(first_active);
         while let Some(i) = idx {
-            if active[i] && mindisfrom[i] < min_score {
+            if next[i].is_some() && active[i] && mindisfrom[i] < min_score {
                 min_score = mindisfrom[i];
                 im = i;
             }
@@ -211,6 +213,11 @@ fn set_half(eff: &mut [Option<Vec<f64>>], i: usize, j: usize, val: f64) {
 }
 
 /// Find nearest active neighbor for cluster `pos`.
+///
+/// Matches C's `setnearest()` traversal order: forward from pos first
+/// (pos+1, pos+2, ..., n-1), then backward (0, 1, ..., pos-1).
+/// With strict `<` comparison, this means for tied distances, the first
+/// encountered in forward direction wins, matching C's tie-breaking.
 fn find_nearest(
     pos: usize,
     eff: &[Option<Vec<f64>>],
@@ -222,8 +229,19 @@ fn find_nearest(
     let mut best_dist = f64::MAX;
     let mut best_idx = 0;
 
-    for j in 0..n {
-        if j == pos || !active[j] { continue; }
+    // Forward: pos+1 .. n-1
+    for j in (pos + 1)..n {
+        if !active[j] { continue; }
+        let d = get_half(eff, pos, j);
+        if d < best_dist {
+            best_dist = d;
+            best_idx = j;
+        }
+    }
+
+    // Backward: 0 .. pos-1
+    for j in 0..pos {
+        if !active[j] { continue; }
         let d = get_half(eff, pos, j);
         if d < best_dist {
             best_dist = d;

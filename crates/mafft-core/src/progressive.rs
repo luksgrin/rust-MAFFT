@@ -73,22 +73,15 @@ fn merge_step(
     let nseq = aligned.len();
     let width = aligned[0].len();
 
-    // Per-group gap stripping (matching C's `commongappick`).
+    // Global gap stripping (matching C's normal progressive alignment).
     //
-    // gap1: globally-all-gap columns (safe to strip from group1 without
-    //       losing any information for any sequence).
-    // gap2: per-group2-all-gap columns (strips columns where group2 has
-    //       only gaps, even if group1/other sequences have content there).
-    //
-    // This produces a shorter profile2 (tighter DP), matching C's behavior
-    // of stripping the "new" group's common gaps before profile alignment.
-    //
-    // Key invariant: kept2 ⊆ kept1, because globally-all-gap → group2-all-gap.
-    // This means Insert ops reference kept2 columns that are also in kept1,
-    // avoiding column duplication in the re-insertion pass.
+    // In C's `disttbfast.c`, normal progressive alignment sets
+    // `mergeoralign[i] = 'a'` for all steps, meaning NO per-group
+    // stripping — only globally-all-gap columns are removed.
+    // Per-group stripping (`commongappick`) is only used in --add mode.
     let all_seqs: Vec<usize> = (0..nseq).collect();
     let gap1 = group_all_gap_columns(&all_seqs, aligned, width);
-    let gap2 = group_all_gap_columns(group2, aligned, width);
+    let gap2 = gap1.clone();
 
     // kept1/kept2: original column indices that have content in each group
     let kept1: Vec<usize> = (0..width).filter(|&c| !gap1[c]).collect();
