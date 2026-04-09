@@ -189,7 +189,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--retree N` | Supported (default 2, matching C) |
 | `--op`, `--ep`, `--bl` | Supported |
 | `--thread N` | Supported (Rayon) |
-| `--kimura N` | Accepted (stored, pending custom PAM generation) |
+| `--kimura N` | Supported (custom Kimura R for DNA PAM generation) |
 | `--parttree`, `--dpparttree` | Not implemented (PartTree for 10K+ sequences) |
 | RNA modes (`--qinsi`, `--xinsi`) | Not implemented |
 | Structure modes (`--scarnalike`) | Not implemented |
@@ -257,10 +257,9 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 5 | **`--kimura N`** | Accepted and stored, pending custom PAM generation with user-specified R value. | Low |
-| 6 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 7 | **RNA modes (`--qinsi`, `--xinsi`)** | McCaskill/CONTRAfold RNA structure integration (requires external tools). | High |
-| 8 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH (requires external tools). | High |
+| 5 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 6 | **RNA modes (`--qinsi`, `--xinsi`)** | McCaskill/CONTRAfold RNA structure integration (requires external tools). | High |
+| 7 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH (requires external tools). | High |
 
 ## Upstream MAFFT
 

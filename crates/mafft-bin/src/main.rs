@@ -157,7 +157,9 @@ fn main() {
     if let Some(bl) = args.bl {
         engine = engine.with_scoring_model(ScoringModel::Blosum(bl));
     }
-    // --kimura is stored for future use with custom Kimura R values
+    if let Some(kr) = args.kimura {
+        engine = engine.with_kimura(kr);
+    }
     if args.nofft {
         engine = engine.with_nofft(true);
     }

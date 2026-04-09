@@ -30,10 +30,18 @@ use mafft_types::{SeqType, ScoringModel, ScoringContext, GapPenalties};
 /// Unlike the C version, this returns an owned struct instead of setting
 /// globals.
 pub fn build_context(model: ScoringModel, seq_type: SeqType) -> ScoringContext {
+    build_context_with_kimura(model, seq_type, 2)
+}
+
+/// Build scoring context with a custom Kimura R parameter for DNA.
+///
+/// `kimura_r` controls the transition/transversion ratio in the Kimura
+/// 2-parameter model used for DNA PAM matrix generation. Default is 2.
+pub fn build_context_with_kimura(model: ScoringModel, seq_type: SeqType, kimura_r: i32) -> ScoringContext {
     match seq_type {
-        SeqType::Dna | SeqType::Rna => build_dna_context(),
+        SeqType::Dna | SeqType::Rna => build_dna_context_with_kimura(kimura_r),
         SeqType::Protein => build_protein_context(model),
-        _ => build_protein_context(model), // default to protein
+        _ => build_protein_context(model),
     }
 }
 
@@ -66,12 +74,16 @@ fn build_fft_matrix(matrix: &[Vec<i32>], offset: i32, nscored: usize) -> Vec<Vec
 }
 
 fn build_dna_context() -> ScoringContext {
+    build_dna_context_with_kimura(2)
+}
+
+fn build_dna_context_with_kimura(kimura_r: i32) -> ScoringContext {
     let gap = default_dna_gap_params();
     let n = DNA_ALPHABET.len();
 
     // Generate 4x4 PAM matrix via Kimura model (default: R=2, pamN=200),
     // matching C's generatenuc1pam() + exponentiation + normalization.
-    let pam4x4 = dna::generate_dna_pam(2, 200, gap.offset);
+    let pam4x4 = dna::generate_dna_pam(kimura_r, 200, gap.offset);
 
     // Expand 4x4 → 10x10 (a,g,c,t,u,A,G,C,T,U) then → 26x26
     let mut matrix = vec![vec![0i32; n]; n];

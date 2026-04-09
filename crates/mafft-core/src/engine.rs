@@ -3,7 +3,7 @@
 use rayon::prelude::*;
 
 use mafft_io::read_fasta;
-use mafft_scoring::build_context;
+use mafft_scoring::{build_context, build_context_with_kimura};
 use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance, ktuple_distance};
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
@@ -50,6 +50,8 @@ pub struct MafftEngine {
     pub nofft: bool,
     /// Enable long-range gap shift penalty (--allowshift).
     pub allowshift: bool,
+    /// Kimura R parameter for DNA distance model (--kimura).
+    pub kimura_r: Option<i32>,
 }
 
 impl Default for MafftEngine {
@@ -62,13 +64,14 @@ impl Default for MafftEngine {
             gap_offset: None,
             nofft: false,
             allowshift: false,
+            kimura_r: None,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false }
+        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, kimura_r: None }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -86,6 +89,12 @@ impl MafftEngine {
     /// Set offset/extension penalty (positive float, e.g. 0.123).
     pub fn with_gap_offset(mut self, ep: f64) -> Self {
         self.gap_offset = Some(ep);
+        self
+    }
+
+    /// Set Kimura R parameter for DNA distance model (default 2).
+    pub fn with_kimura(mut self, kimura_r: i32) -> Self {
+        self.kimura_r = Some(kimura_r);
         self
     }
 
@@ -116,7 +125,11 @@ impl MafftEngine {
             self.scoring_model
         };
 
-        let mut scoring = build_context(scoring_model, seq_type);
+        let mut scoring = if let Some(kr) = self.kimura_r {
+            build_context_with_kimura(scoring_model, seq_type, kr)
+        } else {
+            build_context(scoring_model, seq_type)
+        };
 
         // Apply gap penalty overrides if set.
         // C convention: --op 1.53 means ppenalty = -1530 (multiply by -1000).
