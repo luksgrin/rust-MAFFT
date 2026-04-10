@@ -236,30 +236,29 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **101.7%** of the C implementation's sum-of-pairs identity score (SP=0.332 vs C's 0.326, width 661 vs 717) for FFT-NS-2. The progressive alignment now matches C's architecture: only the two merged groups are modified at each step, "other" sequences are untouched (preventing gap inflation). The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved).
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **101.4%** of the C implementation's sum-of-pairs identity score (SP=0.331 vs C's 0.326, width 673 vs 717) for FFT-NS-2. The progressive alignment matches C's architecture: only the two merged groups are modified at each step, "other" sequences are untouched. Profile alignment gap penalties match C's exact indexing (`ogcp2[j]`, `ogcp1[i]`). The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved).
 
 ### Performance
 
-- Gap stripping matches C: global-only during progressive alignment, per-group (both groups) during iterative refinement.
 - No SIMD for the DP fill loops themselves (data dependencies prevent vectorization without anti-diagonal restructuring).
 
 ## Remaining gaps vs original MAFFT
 
-### Alignment quality (10% SP score gap)
+### Alignment quality (1.4% SP score gap)
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 1 | **Progressive merge gap handling** | Fixed: only group1/group2 modified per step, "other" sequences untouched (matching C). Remaining 1.7% gap likely from minor profile alignment or tree differences. | Low |
-| 2 | **FFT anchor quality** | Fixed `blockAlign2` off-by-one. Remaining: subtle vectorization differences in large group merges. | Low |
-| 3 | **Guide tree fidelity** | Fixed `musclesupg` last-node exclusion and `setnearest` traversal order. Remaining: float ordering. | Low |
+| 1 | **Profile alignment initialization** | C uses `ogcp1[1]`/`ogcp2[1]` for DP boundary initialization (lines 798, 819). Minor index difference in edge row/column setup. | Low |
+| 2 | **FFT anchor subtleties** | C's `seq_vec_3` vectorization and `getKouho` candidate selection may still differ in edge cases for large group merges. | Low |
+| 3 | **Guide tree float ordering** | `musclesupg` may produce different trees on inputs with many tied distances due to float accumulation order. | Low |
 
 ### Missing features
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 5 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 6 | **RNA modes (`--qinsi`, `--xinsi`)** | McCaskill/CONTRAfold RNA structure integration (requires external tools). | High |
-| 7 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH (requires external tools). | High |
+| 4 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
+| 5 | **RNA modes (`--qinsi`, `--xinsi`)** | McCaskill/CONTRAfold RNA structure integration (requires external tools). | High |
+| 6 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH (requires external tools). | High |
 
 ## Upstream MAFFT
 

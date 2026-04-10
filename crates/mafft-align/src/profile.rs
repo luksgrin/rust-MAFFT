@@ -246,19 +246,29 @@ pub fn profile_align(
     // Compute position-specific gap cost profiles matching C's formula:
     // ogcp[i] = 0.5 * (1.0 - opening_count[i]) * penalty * nongap_freq[i]
     // fgcp[i] = 0.5 * (1.0 - closing_count[i]) * penalty * nongap_freq[i]
+    //
+    // C allocates these arrays with size lgth+2 (via AllocateFloatVec),
+    // so positions beyond the profile length are 0.0 (from calloc).
+    // The DP loop accesses ogcp2[j] where j goes 1..lgth2, so the last
+    // element accessed is ogcp2[lgth2] = 0.0. We add a trailing 0.0
+    // to match this behavior.
     let penalty = gap.open;
-    let ogcp1: Vec<f64> = (0..n).map(|i| {
+    let mut ogcp1: Vec<f64> = (0..n).map(|i| {
         0.5 * (1.0 - prof1.ogcp[i]) * penalty * prof1.nongap_freq[i]
     }).collect();
-    let fgcp1: Vec<f64> = (0..n).map(|i| {
+    ogcp1.push(0.0); // C's calloc padding
+    let mut fgcp1: Vec<f64> = (0..n).map(|i| {
         0.5 * (1.0 - prof1.fgcp[i]) * penalty * prof1.nongap_freq[i]
     }).collect();
-    let ogcp2: Vec<f64> = (0..m).map(|j| {
+    fgcp1.push(0.0);
+    let mut ogcp2: Vec<f64> = (0..m).map(|j| {
         0.5 * (1.0 - prof2.ogcp[j]) * penalty * prof2.nongap_freq[j]
     }).collect();
-    let fgcp2: Vec<f64> = (0..m).map(|j| {
+    ogcp2.push(0.0);
+    let mut fgcp2: Vec<f64> = (0..m).map(|j| {
         0.5 * (1.0 - prof2.fgcp[j]) * penalty * prof2.nongap_freq[j]
     }).collect();
+    fgcp2.push(0.0);
 
     let head_factor = if head_gap { 1.0 } else { 0.0 };
 
@@ -299,25 +309,28 @@ pub fn profile_align(
 
             let diag = h[i - 1][j - 1] + sub;
 
-            // Gap costs using C's formula:
+            // Gap costs using C's exact formula (MSalignmm.c lines 837-865):
             // Deletion (gap in seq2):
-            //   open:   ogcp2[j-1] * nongap_freq1[i-2] (previous position)
-            //   extend: fgcp2[j-1] * nongap_freq1[i-1] (current position)
-            let gf1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0);
-            let gf1_prev = if i >= 2 { prof1.nongap_freq[i - 2] } else { 1.0 };
-            let gf2 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0);
-            let gf2_prev = if j >= 2 { prof2.nongap_freq[j - 2] } else { 1.0 };
+            //   extend: fgcp2[j-1] * gapfreq1f[i]   (C line 837)
+            //   open:   ogcp2[j]   * gapfreq1f[i-1]  (C line 846)
+            // Insertion (gap in seq1):
+            //   extend: fgcp1[i-1] * gapfreq2f[j]   (C line 856)
+            //   open:   ogcp1[i]   * gapfreq2f[j-1]  (C line 865)
+            //
+            // In C, i,j are 1-based. gapfreq = nongap_freq (0-based).
+            // ogcp/fgcp arrays have length lgth+2 (indices 0..lgth+1).
+            // C's gapfreq arrays have size lgth+2, with positions beyond lgth = 0 (calloc).
+            let gf1_i = prof1.nongap_freq.get(i).copied().unwrap_or(0.0);     // gapfreq1f[i]
+            let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(0.0); // gapfreq1f[i-1]
+            let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(0.0);     // gapfreq2f[j]
+            let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(0.0); // gapfreq2f[j-1]
 
-            let d_ext = d[i - 1][j] + fgcp2.get(j - 1).copied().unwrap_or(penalty) * gf1;
-            let d_open = h[i - 1][j] + ogcp2.get(j - 1).copied().unwrap_or(penalty) * gf1_prev;
+            let d_ext = d[i - 1][j] + fgcp2[j - 1] * gf1_i;
+            let d_open = h[i - 1][j] + ogcp2[j] * gf1_im1;
             d[i][j] = d_ext.max(d_open);
 
-            // Insertion (gap in seq1):
-            //   open:   ogcp1[i-1] * nongap_freq2[j-2] (previous position)
-            //   extend: fgcp1[i-2] * nongap_freq2[j-1] (current position)
-            let fgcp1_prev = if i >= 2 { fgcp1[i - 2] } else { fgcp1.first().copied().unwrap_or(penalty) };
-            let i_ext = ins[i][j - 1] + fgcp1_prev * gf2;
-            let i_open = h[i][j - 1] + ogcp1.get(i - 1).copied().unwrap_or(penalty) * gf2_prev;
+            let i_ext = ins[i][j - 1] + fgcp1[i - 1] * gf2_j;
+            let i_open = h[i][j - 1] + ogcp1[i] * gf2_jm1;
             ins[i][j] = i_ext.max(i_open);
 
             h[i][j] = diag;
