@@ -270,112 +270,216 @@ pub fn profile_align(
     }).collect();
     fgcp2.push(0.0);
 
-    let head_factor = if head_gap { 1.0 } else { 0.0 };
+    // Exact port of C's MSalignmm_tanni (MSalignmm.c lines 770-888).
+    //
+    // C's DP formulation:
+    //   currentw[j] = sub(i,j) (pre-filled by match_calc)
+    //   wm = max(h[i-1][j-1], mi_extend, mj_extend)
+    //   h[i][j] = currentw[j] += wm  (sub added to ALL paths)
+    //   mi = max(mi, h[i-1][j-1] + ogcp2[j]*gf)  (open from DIAGONAL)
+    //   m[j] = max(m[j], h[i-1][j-1] + ogcp1[i]*gf)  (open from DIAGONAL)
+    //
+    // Traceback: ijp[i][j] = 0 (diagonal), >0 (skip rows=insertion in prof1),
+    //            <0 (skip cols=deletion in prof2).
 
-    // DP matrices
-    let mut h = vec![vec![f64::NEG_INFINITY; m + 1]; n + 1];
-    let mut d = vec![vec![f64::NEG_INFINITY; m + 1]; n + 1];
-    let mut ins = vec![vec![f64::NEG_INFINITY; m + 1]; n + 1];
-    let mut traceback = vec![vec![0u8; m + 1]; n + 1];
+    let hgf1 = prof1.nongap_freq.first().copied().unwrap_or(1.0); // headgapfreq1
+    let hgf2 = prof2.nongap_freq.first().copied().unwrap_or(1.0); // headgapfreq2
+    let gf1_0 = prof1.nongap_freq.first().copied().unwrap_or(1.0); // gapfreq1f[0]
+    let gf2_0 = prof2.nongap_freq.first().copied().unwrap_or(1.0); // gapfreq2f[0]
 
-    h[0][0] = 0.0;
+    // Full h matrix and ijp traceback (not rolling-row, but same values)
+    let mut h = vec![vec![0.0f64; m + 1]; n + 1];
+    let mut ijp = vec![vec![0i32; m + 1]; n + 1];
+
+    // initverticalw[i] = match_score(i-1, 0) + head gap cost  (C lines 776, 783-786)
+    // Note: C's match_calc fills initverticalw[1..n] with sub scores for
+    // prof1 positions vs prof2 position 0. We compute inline.
+    let mut initverticalw = vec![0.0f64; n + 1];
     for i in 1..=n {
-        // Terminal gap: ogcp1[0] * headgapfreq2 + fgcp1[i-1] * nongap2[0]
-        let cost = if head_gap {
-            ogcp1[0] * prof2.nongap_freq.first().copied().unwrap_or(1.0)
-                + fgcp1[i - 1] * prof2.nongap_freq.first().copied().unwrap_or(1.0)
-        } else {
-            gap.open * 0.0 // TERMGAPFAC = 0 for free terminal gaps
-        };
-        d[i][0] = if i == 1 { cost } else { d[i-1][0] + fgcp1[i-1] * prof2.nongap_freq.first().copied().unwrap_or(1.0) };
-        h[i][0] = d[i][0];
-        traceback[i][0] = 1;
+        initverticalw[i] = prof1.match_score(i - 1, prof2, 0, matrix);
+        if head_gap {
+            initverticalw[i] += ogcp1[0] * hgf2 + fgcp1[i - 1] * gf2_0;
+        }
     }
+
+    // currentw[j] = match_score(0, j-1) + head gap cost  (C lines 779, 790-793)
+    let mut currentw = vec![0.0f64; m + 1];
     for j in 1..=m {
-        let cost = if head_gap {
-            ogcp2[0] * prof1.nongap_freq.first().copied().unwrap_or(1.0)
-                + fgcp2[j - 1] * prof1.nongap_freq.first().copied().unwrap_or(1.0)
-        } else {
-            0.0
-        };
-        ins[0][j] = if j == 1 { cost } else { ins[0][j-1] + fgcp2[j-1] * prof1.nongap_freq.first().copied().unwrap_or(1.0) };
-        h[0][j] = ins[0][j];
-        traceback[0][j] = 2;
+        currentw[j] = prof1.match_score(0, prof2, j - 1, matrix);
+        if head_gap {
+            currentw[j] += ogcp2[0] * hgf1 + fgcp2[j - 1] * gf1_0;
+        }
     }
 
-    for i in 1..=n {
+    // Store h[0][j] = currentw[j] for traceback
+    for j in 0..=m { h[0][j] = currentw[j]; }
+    for i in 0..=n { h[i][0] = initverticalw[i]; }
+
+    // m[j] = insertion tracker (gap in prof1), persists across rows  (C line 798)
+    let mut mj = vec![f64::NEG_INFINITY; m + 1];
+    let mut mpj = vec![0usize; m + 1];
+    for j in 1..=m {
+        let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0);
+        mj[j] = currentw[j - 1] + ogcp1[1] * gf2_jm1;
+        mpj[j] = 0;
+    }
+
+    // ijp boundary: first column = +i+1, first row = -(j+1)  (C lines 568-575)
+    for i in 0..=n { ijp[i][0] = i as i32 + 1; }
+    for j in 0..=m { ijp[0][j] = -(j as i32 + 1); }
+
+    let mut previousw = vec![0.0f64; m + 1];
+    let mut lastverticalw = vec![0.0f64; n + 1];
+    lastverticalw[0] = currentw[m - 1];
+
+    // Main DP loop  (C lines 807-888)
+    let lasti = if tail_gap { n + 1 } else { n };
+    for i in 1..lasti {
+        // Swap rows  (C lines 809-811)
+        std::mem::swap(&mut previousw, &mut currentw);
+        previousw[0] = initverticalw[i - 1];
+
+        // Fill currentw with match scores for row i  (C line 816)
         for j in 1..=m {
-            let sub = prof1.match_score(i - 1, prof2, j - 1, matrix);
-
-            let diag = h[i - 1][j - 1] + sub;
-
-            // Gap costs using C's exact formula (MSalignmm.c lines 837-865):
-            // Deletion (gap in seq2):
-            //   extend: fgcp2[j-1] * gapfreq1f[i]   (C line 837)
-            //   open:   ogcp2[j]   * gapfreq1f[i-1]  (C line 846)
-            // Insertion (gap in seq1):
-            //   extend: fgcp1[i-1] * gapfreq2f[j]   (C line 856)
-            //   open:   ogcp1[i]   * gapfreq2f[j-1]  (C line 865)
-            //
-            // In C, i,j are 1-based. gapfreq = nongap_freq (0-based).
-            // ogcp/fgcp arrays have length lgth+2 (indices 0..lgth+1).
-            // C's gapfreq arrays have size lgth+1, computed via gapcountf then
-            // inverted (1.0 - gap_count). The element at index lgth = 1.0
-            // (no gap at the tail position). Use 1.0 as out-of-bounds fallback.
-            let gf1_i = prof1.nongap_freq.get(i).copied().unwrap_or(1.0);     // gapfreq1f[i]
-            let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0); // gapfreq1f[i-1]
-            let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(1.0);     // gapfreq2f[j]
-            let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0); // gapfreq2f[j-1]
-
-            let d_ext = d[i - 1][j] + fgcp2[j - 1] * gf1_i;
-            let d_open = h[i - 1][j] + ogcp2[j] * gf1_im1;
-            d[i][j] = d_ext.max(d_open);
-
-            let i_ext = ins[i][j - 1] + fgcp1[i - 1] * gf2_j;
-            let i_open = h[i][j - 1] + ogcp1[i] * gf2_jm1;
-            ins[i][j] = i_ext.max(i_open);
-
-            h[i][j] = diag;
-            traceback[i][j] = 0;
-            if d[i][j] > h[i][j] { h[i][j] = d[i][j]; traceback[i][j] = 1; }
-            if ins[i][j] > h[i][j] { h[i][j] = ins[i][j]; traceback[i][j] = 2; }
+            currentw[j] = prof1.match_score(i - 1, prof2, j - 1, matrix);
         }
+        currentw[0] = initverticalw[i];
+
+        // Initialize mi (deletion tracker) for this row  (C line 819)
+        let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0);
+        let mut mi = previousw[0] + ogcp2[1] * gf1_im1;
+        let mut mpi: usize = 0;
+
+        for j in 1..=m {
+            let gf1_i = prof1.nongap_freq.get(i).copied().unwrap_or(1.0);
+            let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0);
+            let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(1.0);
+            let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0);
+
+            // wm = diagonal score  (C line 831)
+            let mut wm = previousw[j - 1];
+            ijp[i][j] = 0;
+
+            // Deletion extend: mi + fgcp2[j-1] * gf1[i]  (C line 837)
+            let g = mi + fgcp2[j - 1] * gf1_i;
+            if g > wm {
+                wm = g;
+                ijp[i][j] = -(j as i32 - mpi as i32); // C line 844
+            }
+
+            // Deletion open from diagonal  (C line 846)
+            let g = previousw[j - 1] + ogcp2[j] * gf1_im1;
+            if g >= mi {
+                mi = g;
+                mpi = j - 1;
+            }
+
+            // Insertion extend: m[j] + fgcp1[i-1] * gf2[j]  (C line 856)
+            let g = mj[j] + fgcp1[i - 1] * gf2_j;
+            if g > wm {
+                wm = g;
+                ijp[i][j] = i as i32 - mpj[j] as i32; // C line 863
+            }
+
+            // Insertion open from diagonal  (C line 865)
+            let g = previousw[j - 1] + ogcp1[i] * gf2_jm1;
+            if g >= mj[j] {
+                mj[j] = g;
+                mpj[j] = i - 1;
+            }
+
+            // h[i][j] = sub(i,j) + wm  (C line 878: *curpt += wm)
+            currentw[j] += wm;
+            h[i][j] = currentw[j];
+        }
+        lastverticalw[i] = currentw[m - 1];
     }
 
-    // Find best endpoint
-    let (mut ei, mut ej) = (n, m);
-    let mut best_score = h[n][m];
-
+    // Tail gap handling  (C lines 512-536)
     if !tail_gap {
-        for j in 0..m {
-            if h[n][j] > best_score { best_score = h[n][j]; ei = n; ej = j; }
-        }
+        let mut wm = lastverticalw[0];
         for i in 0..n {
-            if h[i][m] > best_score { best_score = h[i][m]; ei = i; ej = m; }
+            if lastverticalw[i] >= wm {
+                wm = lastverticalw[i];
+                ijp[n][m] = (n - i) as i32;
+            }
+        }
+        for j in 0..m {
+            if h[n - 1][j] >= wm {
+                wm = h[n - 1][j];
+                ijp[n][m] = -((m - j) as i32);
+            }
         }
     }
 
-    // Traceback
-    let mut ops = Vec::new();
-    let (mut i, mut j) = (ei, ej);
+    // Traceback  (C lines 581-617)
+    let mut gaptable1 = Vec::new(); // 'o' = content, '-' = gap
+    let mut gaptable2 = Vec::new();
 
-    while i < n { ops.push(AlignOp::Delete); i += 1; }
-    while j < m { ops.push(AlignOp::Insert); j += 1; }
+    let (mut iin, mut jin) = (n as i32, m as i32);
+    let klim = n + m;
+    let mut k = 0;
+    while k <= klim {
+        let (ifi, jfi): (i32, i32);
+        let v = ijp[iin as usize][jin as usize];
+        if v < 0 {
+            // Deletion: skip columns
+            ifi = iin - 1;
+            jfi = jin + v;
+        } else if v > 0 {
+            // Insertion: skip rows
+            ifi = iin - v;
+            jfi = jin - 1;
+        } else {
+            // Diagonal
+            ifi = iin - 1;
+            jfi = jin - 1;
+        }
 
-    i = ei;
-    j = ej;
-    while i > 0 || j > 0 {
-        match traceback[i][j] {
-            0 if i > 0 && j > 0 => { ops.push(AlignOp::Match); i -= 1; j -= 1; }
-            1 if i > 0 => { ops.push(AlignOp::Delete); i -= 1; }
-            2 if j > 0 => { ops.push(AlignOp::Insert); j -= 1; }
-            _ => break,
+        // Emit gap in prof2 for skipped rows (insertion in prof1)
+        let mut l = iin - ifi;
+        while l > 1 {
+            gaptable1.push(b'o');
+            gaptable2.push(b'-');
+            k += 1;
+            l -= 1;
+        }
+        // Emit gap in prof1 for skipped columns (deletion in prof2)
+        let mut l = jin - jfi;
+        while l > 1 {
+            gaptable1.push(b'-');
+            gaptable2.push(b'o');
+            k += 1;
+            l -= 1;
+        }
+
+        if iin <= 0 || jin <= 0 { break; }
+        // Emit diagonal match
+        gaptable1.push(b'o');
+        gaptable2.push(b'o');
+        k += 1;
+        iin = ifi;
+        jin = jfi;
+    }
+
+    // Convert gaptable (built in reverse) to AlignOps
+    gaptable1.reverse();
+    gaptable2.reverse();
+
+    let mut ops = Vec::with_capacity(gaptable1.len());
+    for k in 0..gaptable1.len() {
+        match (gaptable1[k], gaptable2[k]) {
+            (b'o', b'o') => ops.push(AlignOp::Match),
+            (b'o', b'-') => ops.push(AlignOp::Delete),  // gap in prof2
+            (b'-', b'o') => ops.push(AlignOp::Insert),  // gap in prof1
+            _ => {}
         }
     }
-    ops.reverse();
+
+    let best_score = h[n][m];
 
     Alignment {
-        seq1: Vec::new(), // profiles don't produce sequence strings directly
+        seq1: Vec::new(),
         seq2: Vec::new(),
         score: best_score,
         operations: ops,

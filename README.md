@@ -236,7 +236,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **101.4%** of the C implementation's sum-of-pairs identity score (SP=0.331 vs C's 0.326, width 673 vs 717) for FFT-NS-2. The progressive alignment matches C's architecture: only the two merged groups are modified at each step, "other" sequences are untouched. Profile alignment gap penalties match C's exact indexing (`ogcp2[j]`, `ogcp1[i]`). The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved).
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **97.0%** of the C implementation's sum-of-pairs identity score (SP=0.316 vs C's 0.326, width 703 vs 717) for FFT-NS-2. The profile alignment DP now ports C's exact formulation: gap opening from diagonal, substitution score on all paths, `ijp` traceback with jump distances. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved).
 
 ### Performance
 
@@ -250,7 +250,7 @@ The remaining gap is small and likely comes from a combination of:
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 1 | **DP boundary initialization** | C's rolling-row DP uses `m[j] = currentw[j-1] + ogcp1[1] * gapfreq2f[j-1]` for insertion tracker init; our full-matrix DP initializes differently at the edges. | Low |
+| 1 | **DP boundary initialization** | C's `initverticalw`/`currentw` include match scores at boundary; our initialization uses pure gap costs. Also C's `lastverticalw`/`lasthorizontalw` for tail gap endpoint search differs slightly. | Low |
 | 2 | **FFT anchor subtleties** | C's `seq_vec_3` vectorization and `getKouho` candidate selection may still differ in edge cases for large group merges. | Low |
 | 3 | **Guide tree float ordering** | `musclesupg` may produce different trees on inputs with many tied distances due to float accumulation order. | Low |
 
