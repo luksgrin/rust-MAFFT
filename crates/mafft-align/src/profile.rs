@@ -319,11 +319,13 @@ pub fn profile_align(
             //
             // In C, i,j are 1-based. gapfreq = nongap_freq (0-based).
             // ogcp/fgcp arrays have length lgth+2 (indices 0..lgth+1).
-            // C's gapfreq arrays have size lgth+2, with positions beyond lgth = 0 (calloc).
-            let gf1_i = prof1.nongap_freq.get(i).copied().unwrap_or(0.0);     // gapfreq1f[i]
-            let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(0.0); // gapfreq1f[i-1]
-            let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(0.0);     // gapfreq2f[j]
-            let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(0.0); // gapfreq2f[j-1]
+            // C's gapfreq arrays have size lgth+1, computed via gapcountf then
+            // inverted (1.0 - gap_count). The element at index lgth = 1.0
+            // (no gap at the tail position). Use 1.0 as out-of-bounds fallback.
+            let gf1_i = prof1.nongap_freq.get(i).copied().unwrap_or(1.0);     // gapfreq1f[i]
+            let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0); // gapfreq1f[i-1]
+            let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(1.0);     // gapfreq2f[j]
+            let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0); // gapfreq2f[j-1]
 
             let d_ext = d[i - 1][j] + fgcp2[j - 1] * gf1_i;
             let d_open = h[i - 1][j] + ogcp2[j] * gf1_im1;

@@ -246,9 +246,11 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 
 ### Alignment quality (1.4% SP score gap)
 
+The remaining gap is small and likely comes from a combination of:
+
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 1 | **Profile alignment initialization** | C uses `ogcp1[1]`/`ogcp2[1]` for DP boundary initialization (lines 798, 819). Minor index difference in edge row/column setup. | Low |
+| 1 | **DP boundary initialization** | C's rolling-row DP uses `m[j] = currentw[j-1] + ogcp1[1] * gapfreq2f[j-1]` for insertion tracker init; our full-matrix DP initializes differently at the edges. | Low |
 | 2 | **FFT anchor subtleties** | C's `seq_vec_3` vectorization and `getKouho` candidate selection may still differ in edge cases for large group merges. | Low |
 | 3 | **Guide tree float ordering** | `musclesupg` may produce different trees on inputs with many tied distances due to float accumulation order. | Low |
 
