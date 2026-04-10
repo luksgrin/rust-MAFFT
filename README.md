@@ -244,15 +244,14 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 
 ## Remaining gaps vs original MAFFT
 
-### Alignment quality (1.4% SP score gap)
+### Alignment quality (3% SP score gap)
 
-The remaining gap is small and likely comes from a combination of:
+The profile alignment DP now uses C's exact formulation (diagonal gap opening, sub on all paths, `ijp` traceback). The remaining gap likely comes from:
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 1 | **DP boundary initialization** | C's `initverticalw`/`currentw` include match scores at boundary; our initialization uses pure gap costs. Also C's `lastverticalw`/`lasthorizontalw` for tail gap endpoint search differs slightly. | Low |
-| 2 | **FFT anchor subtleties** | C's `seq_vec_3` vectorization and `getKouho` candidate selection may still differ in edge cases for large group merges. | Low |
-| 3 | **Guide tree float ordering** | `musclesupg` may produce different trees on inputs with many tied distances due to float accumulation order. | Low |
+| 1 | **FFT anchor subtleties** | C's `seq_vec_3` vectorization and `getKouho` candidate selection may still differ in edge cases for large group merges. | Low |
+| 2 | **Minor numerical differences** | Float accumulation order in distance updates, `match_calc` batch vs inline computation, and boundary initialization details. | Low |
 
 ### Missing features
 

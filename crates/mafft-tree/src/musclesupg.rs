@@ -135,8 +135,8 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
             right_length: right_len,
         });
 
-        // Update distances: merge jm into im
-        mindisfrom[im] = f64::MAX;
+        // Update distances: merge jm into im  (C lines 8248-8298)
+        mindisfrom[im] = 999.9; // C uses 999.9, not f64::MAX
 
         let mut idx = Some(first_active);
         while let Some(i) = idx {
@@ -151,33 +151,24 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
 
             set_half(&mut eff, i, im, new_dist);
 
-            // Update nearest cache for i
+            // C lines 8283-8296: update nearest cache
             if new_dist < mindisfrom[i] {
                 mindisfrom[i] = new_dist;
                 nearest[i] = im;
-            } else if nearest[i] == jm {
-                nearest[i] = im;
-                if d_jm < d_im {
-                    // jm was closer, recompute
-                    find_nearest(i, &eff, &active, n, &mut mindisfrom[i], &mut nearest[i]);
-                }
             }
-
-            // Update nearest for im
             if new_dist < mindisfrom[im] {
                 mindisfrom[im] = new_dist;
                 nearest[im] = i;
+            }
+            // C line 8293: if nearest was jm, just redirect to im (no recompute)
+            if nearest[i] == jm {
+                nearest[i] = im;
             }
 
             idx = next[i];
         }
 
-        // Merge members
-        let jm_members = std::mem::take(&mut members[jm]);
-        members[im].extend(jm_members);
-        tmplen[im] = node_height;
-
-        // Remove jm from chain
+        // Remove jm from chain BEFORE revalidation (matching C lines 8301-8305)
         active[jm] = false;
         if let Some(p) = prev[jm] {
             next[p] = next[jm];
@@ -185,6 +176,25 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
         if let Some(nx) = next[jm] {
             prev[nx] = prev[jm];
         }
+
+        // Revalidation pass (C lines 8311-8330):
+        // For any cluster whose nearest is im, check if the cached distance
+        // is stale and recompute if needed.
+        let mut idx = Some(first_active);
+        while let Some(i) = idx {
+            if active[i] && nearest[i] == im {
+                let d = get_half(&eff, i, im);
+                if d > mindisfrom[i] {
+                    find_nearest(i, &eff, &active, n, &mut mindisfrom[i], &mut nearest[i]);
+                }
+            }
+            idx = next[i];
+        }
+
+        // Merge members
+        let jm_members = std::mem::take(&mut members[jm]);
+        members[im].extend(jm_members);
+        tmplen[im] = node_height;
         // Free jm's distance row
         eff[jm] = None;
         steps_done += 1;
