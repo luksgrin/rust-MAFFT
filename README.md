@@ -236,7 +236,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves 133% of the C implementation's sum-of-pairs identity score (SP=0.434 vs C's 0.326) for FFT-NS-2. The gap stripping now matches C's exact behavior: global-only during progressive alignment, per-group during iterative refinement. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved). See the gap analysis below for remaining differences.
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **101.7%** of the C implementation's sum-of-pairs identity score (SP=0.332 vs C's 0.326, width 661 vs 717) for FFT-NS-2. The progressive alignment now matches C's architecture: only the two merged groups are modified at each step, "other" sequences are untouched (preventing gap inflation). The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved).
 
 ### Performance
 
@@ -249,8 +249,9 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 1 | **FFT anchor quality** | Fixed `blockAlign2` off-by-one (gap scan bounds). Remaining: C's `seq_vec_3` vectorization and `getKouho` candidate selection may still differ subtly. | Medium |
-| 2 | **Guide tree fidelity** | Fixed `musclesupg` to match C's last-node exclusion and `setnearest` traversal order. Remaining: float accumulation order differences on large inputs. | Low |
+| 1 | **Progressive merge gap handling** | Fixed: only group1/group2 modified per step, "other" sequences untouched (matching C). Remaining 1.7% gap likely from minor profile alignment or tree differences. | Low |
+| 2 | **FFT anchor quality** | Fixed `blockAlign2` off-by-one. Remaining: subtle vectorization differences in large group merges. | Low |
+| 3 | **Guide tree fidelity** | Fixed `musclesupg` last-node exclusion and `setnearest` traversal order. Remaining: float ordering. | Low |
 
 ### Missing features
 

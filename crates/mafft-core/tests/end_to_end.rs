@@ -259,3 +259,81 @@ fn diagnostic_fft_anchoring() {
         assert!(ratio > 0.3, "FFT score too low vs DP: {:.1} vs {:.1}", fft_aln.score, dp_aln.score);
     }
 }
+
+#[test]
+fn diagnostic_fft_vs_nofft() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let c_ref = read_fasta(test_data_path("sample.fftns2")).unwrap();
+    let c_seqs: Vec<Vec<u8>> = c_ref.sequences.iter().map(|s| s.data.clone()).collect();
+
+    // FFT-NS-2
+    let msa_fft = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    // NW-NS-2 (pure DP, no FFT)
+    let msa_nofft = MafftEngine::new(AlignmentMode::FftNs2).with_nofft(true).align(&input);
+
+    let sp_fft = sum_of_pairs_identity(&msa_fft.sequences);
+    let sp_nofft = sum_of_pairs_identity(&msa_nofft.sequences);
+    let sp_c = sum_of_pairs_identity(&c_seqs);
+
+    eprintln!("C reference:   SP={:.4}, width={}", sp_c, c_seqs[0].len());
+    eprintln!("Rust FFT-NS-2: SP={:.4}, width={}", sp_fft, msa_fft.width());
+    eprintln!("Rust NW-NS-2:  SP={:.4}, width={}", sp_nofft, msa_nofft.width());
+    eprintln!("FFT/C ratio:   {:.4}", sp_fft / sp_c);
+    eprintln!("noFFT/C ratio: {:.4}", sp_nofft / sp_c);
+    eprintln!("FFT == noFFT:  {}", msa_fft.sequences == msa_nofft.sequences);
+}
+
+#[test]
+fn diagnostic_retree_widths() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    
+    let msa1 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input);
+    let msa2 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(2).align(&input);
+    
+    eprintln!("retree=1: width={}, SP={:.4}", msa1.width(), sum_of_pairs_identity(&msa1.sequences));
+    eprintln!("retree=2: width={}, SP={:.4}", msa2.width(), sum_of_pairs_identity(&msa2.sequences));
+}
+
+#[test]
+fn diagnostic_merge_widths() {
+    use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, sequence_weights};
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, profile_align, GapModel};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let nseq = input.nseq();
+
+    // Build distance matrix and tree
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            dm.set(i, j, ktuple_distance(&input.sequences[i].data, &input.sequences[j].data, 6));
+        }
+    }
+    let topo = musclesupg(&dm, ClusterMethod::default());
+
+    // Manually trace merge steps  
+    let max_len = input.sequences.iter().map(|s| s.data.len()).max().unwrap_or(0);
+    let mut aligned: Vec<Vec<u8>> = input.sequences.iter()
+        .map(|s| { let mut p = s.data.clone(); p.resize(max_len, b'-'); p })
+        .collect();
+
+    eprintln!("Initial width: {}", aligned[0].len());
+    eprintln!("Seq lengths: min={}, max={}", 
+        input.sequences.iter().map(|s| s.data.len()).min().unwrap(),
+        input.sequences.iter().map(|s| s.data.len()).max().unwrap());
+
+    for (step_idx, step) in topo.steps.iter().enumerate().take(10) {
+        let width = aligned[0].len();
+        let g1_len = step.left.len();
+        let g2_len = step.right.len();
+        eprintln!("Step {}: width={}, merge {} + {} seqs", step_idx, width, g1_len, g2_len);
+    }
+    eprintln!("...");
+    // Show last 3 steps
+    for (step_idx, step) in topo.steps.iter().enumerate().skip(topo.steps.len().saturating_sub(3)) {
+        eprintln!("Step {}: merge {} + {} seqs", step_idx, step.left.len(), step.right.len());
+    }
+}
