@@ -248,11 +248,10 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 
 ### Alignment quality (3% SP score gap)
 
-The profile alignment DP now uses C's exact formulation (diagonal gap opening, sub on all paths, `ijp` traceback). The remaining gap likely comes from:
+The profile alignment DP ports C's exact formulation (diagonal gap opening, sub on all paths, `ijp` traceback, `st_OpeningGapCount`/`st_FinalGapCount`, headgapfreq=1.0). The remaining 3% gap is from:
 
-| # | Item | Description | Effort |
-|---|------|-------------|--------|
-| 1 | **Accumulated numerical differences** | The 3% gap is distributed across 35 merge steps. Each step may produce slightly different gap placements due to float accumulation order, `match_calc` batch vs inline computation, and `cpmxhist` profile caching (C reuses profiles from child nodes; Rust recomputes from sequences). | Low |
+- **`cpmxhist` profile caching**: C reuses composition probability matrices from child tree nodes during progressive alignment (`cpmxchild0`/`cpmxchild1`). Rust recomputes profiles from sequences at each merge step. This causes small floating-point accumulation differences that cascade across 35 merge steps.
+- **`match_calc` batch computation**: C pre-fills entire rows of substitution scores in a batch using sparse profile representations (`cpmxpd`/`cpmxpdn`). Rust computes them inline. Mathematically identical but different float ordering.
 
 
 ## Upstream MAFFT

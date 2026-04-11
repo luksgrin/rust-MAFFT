@@ -69,7 +69,7 @@ impl Profile {
         let mut closing_count = vec![0.0f64; length];
 
         for (seq, &w) in sequences.iter().zip(weights.iter()) {
-            let mut prev_is_gap = false;
+            // Frequencies and gap counts
             for (pos, &ch) in seq.iter().enumerate() {
                 if pos >= length { break; }
                 let is_gap = ch == b'-' || ch == b'.';
@@ -81,15 +81,35 @@ impl Profile {
                         freqs[pos][idx] += w;
                     }
                 }
-                // Gap opening: non-gap → gap
-                if !prev_is_gap && is_gap {
-                    opening_count[pos] += w;
+            }
+
+            // Gap opening count: C's st_OpeningGapCount (mltaln9.c:12837)
+            // ogcp[i] counts non-gap→gap transitions at position i.
+            // gc starts as 0 (assumes non-gap before position 0).
+            {
+                let mut gc = false; // gc = 0 in C
+                for pos in 0..length {
+                    let gb = gc;
+                    gc = seq.get(pos).map_or(true, |&c| c == b'-' || c == b'.');
+                    if !gb && gc {
+                        opening_count[pos] += w;
+                    }
                 }
-                // Gap closing: gap → non-gap
-                if prev_is_gap && !is_gap {
-                    closing_count[pos] += w;
+            }
+
+            // Gap closing count: C's st_FinalGapCount (mltaln9.c:12880)
+            // fgcp[i] counts gap→non-gap transitions where gap is at position i
+            // and non-gap is at position i+1. gc starts as seq[0].
+            {
+                let mut gc = seq.first().map_or(true, |&c| c == b'-' || c == b'.');
+                for pos in 0..length {
+                    let gb = gc;
+                    gc = seq.get(pos + 1).map_or(false, |&c| c == b'-' || c == b'.');
+                    // C: gc = 0 at tail (assumes non-gap after last position)
+                    if gb && !gc {
+                        closing_count[pos] += w;
+                    }
                 }
-                prev_is_gap = is_gap;
             }
         }
 
@@ -282,8 +302,10 @@ pub fn profile_align(
     // Traceback: ijp[i][j] = 0 (diagonal), >0 (skip rows=insertion in prof1),
     //            <0 (skip cols=deletion in prof2).
 
-    let hgf1 = prof1.nongap_freq.first().copied().unwrap_or(1.0); // headgapfreq1
-    let hgf2 = prof2.nongap_freq.first().copied().unwrap_or(1.0); // headgapfreq2
+    // C sets headgapfreq1 = headgapfreq2 = 1.0 when sgap is NULL
+    // (the normal progressive alignment case, MSalignmm.c line 2252-2253).
+    let hgf1: f64 = 1.0; // headgapfreq1
+    let hgf2: f64 = 1.0; // headgapfreq2
     let gf1_0 = prof1.nongap_freq.first().copied().unwrap_or(1.0); // gapfreq1f[0]
     let gf2_0 = prof2.nongap_freq.first().copied().unwrap_or(1.0); // gapfreq2f[0]
 
