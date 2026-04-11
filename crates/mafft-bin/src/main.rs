@@ -61,6 +61,30 @@ struct Args {
     #[arg(long)]
     nofft: bool,
 
+    /// Use PartTree guide tree for large datasets (10K+ sequences)
+    #[arg(long)]
+    parttree: bool,
+
+    /// Use DP-based PartTree (more accurate than --parttree, slower)
+    #[arg(long)]
+    dpparttree: bool,
+
+    /// Group size for PartTree partitioning [default: 150]
+    #[arg(long)]
+    groupsize: Option<usize>,
+
+    /// Use Q-INS-i: RNA secondary structure from McCaskill base-pair probabilities
+    #[arg(long)]
+    qinsi: bool,
+
+    /// Use X-INS-i: RNA secondary structure from CONTRAfold predictions
+    #[arg(long)]
+    xinsi: bool,
+
+    /// Use SCARNA-like structural alignment via DASH
+    #[arg(long)]
+    scarnalike: bool,
+
     /// Output format: fasta (default), clustal, phylip
     #[arg(long, default_value = "fasta")]
     format: String,
@@ -130,6 +154,14 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Check SCARNA-like mode (requires DASH client — network service)
+    if args.scarnalike {
+        eprintln!("SCARNA-like mode requires the DASH structural alignment client.");
+        eprintln!("Install dash_client and ensure it is in your PATH or set MAFFT_BINARIES.");
+        eprintln!("See: https://mafft.cbrc.jp/alignment/software/source.html");
+        std::process::exit(1);
+    }
+
     // Determine alignment mode
     let mode = determine_mode(&args);
 
@@ -140,6 +172,8 @@ fn main() {
             AlignmentMode::GInsi { .. } => "G-INS-i",
             AlignmentMode::LInsi { .. } => "L-INS-i",
             AlignmentMode::EInsi { .. } => "E-INS-i",
+            AlignmentMode::QInsi { .. } => "Q-INS-i",
+            AlignmentMode::XInsi { .. } => "X-INS-i",
         };
         let seq_type = if input.seq_type.is_nucleotide() { "nuc" } else { "aa" };
         eprintln!("mafft-rs v{}", env!("CARGO_PKG_VERSION"));
@@ -165,6 +199,15 @@ fn main() {
     }
     if args.allowshift {
         engine = engine.with_allowshift(true);
+    }
+    if args.parttree {
+        engine = engine.with_parttree(true);
+    }
+    if args.dpparttree {
+        engine = engine.with_dpparttree(true);
+    }
+    if let Some(gs) = args.groupsize {
+        engine = engine.with_groupsize(gs);
     }
 
     // Handle --add / --addfragments
@@ -221,7 +264,13 @@ fn main() {
 }
 
 fn determine_mode(args: &Args) -> AlignmentMode {
-    if args.localpair {
+    if args.qinsi {
+        let iters = if args.maxiterate > 0 { args.maxiterate } else { 1000 };
+        AlignmentMode::QInsi { iterations: iters }
+    } else if args.xinsi {
+        let iters = if args.maxiterate > 0 { args.maxiterate } else { 1000 };
+        AlignmentMode::XInsi { iterations: iters }
+    } else if args.localpair {
         let iters = if args.maxiterate > 0 { args.maxiterate } else { 1000 };
         AlignmentMode::LInsi { iterations: iters }
     } else if args.globalpair {

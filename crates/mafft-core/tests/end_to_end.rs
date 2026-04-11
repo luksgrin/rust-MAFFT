@@ -337,3 +337,49 @@ fn diagnostic_merge_widths() {
         eprintln!("Step {}: merge {} + {} seqs", step_idx, step.left.len(), step.right.len());
     }
 }
+
+#[test]
+fn diagnostic_first_merge() {
+    use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance};
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, profile_align, GapModel};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let nseq = input.nseq();
+
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            dm.set(i, j, ktuple_distance(&input.sequences[i].data, &input.sequences[j].data, 6));
+        }
+    }
+    let topo = musclesupg(&dm, ClusterMethod::default());
+
+    // First merge step
+    let step = &topo.steps[0];
+    eprintln!("First merge: {:?} + {:?}", step.left, step.right);
+    
+    let s1 = &input.sequences[step.left[0]].data;
+    let s2 = &input.sequences[step.right[0]].data;
+    eprintln!("  Seq {} len={}", step.left[0], s1.len());
+    eprintln!("  Seq {} len={}", step.right[0], s2.len());
+
+    // Profile align these two
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let seqs1: Vec<&[u8]> = vec![s1.as_slice()];
+    let seqs2: Vec<&[u8]> = vec![s2.as_slice()];
+    let w = vec![1.0];
+    let prof1 = Profile::from_aligned(&seqs1, &w, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&seqs2, &w, &scoring.amino_map, scoring.nalphabets);
+    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    
+    eprintln!("  Alignment score: {:.1}", aln.score);
+    eprintln!("  Alignment width: {}", aln.operations.len());
+    
+    let matches = aln.operations.iter().filter(|op| matches!(op, mafft_align::AlignOp::Match)).count();
+    let deletes = aln.operations.iter().filter(|op| matches!(op, mafft_align::AlignOp::Delete)).count();
+    let inserts = aln.operations.iter().filter(|op| matches!(op, mafft_align::AlignOp::Insert)).count();
+    eprintln!("  Match={}, Delete={}, Insert={}", matches, deletes, inserts);
+}

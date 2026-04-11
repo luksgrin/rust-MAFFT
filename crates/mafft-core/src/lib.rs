@@ -13,6 +13,7 @@ mod progressive;
 mod refinement;
 mod engine;
 mod add;
+pub mod external;
 
 pub use progressive::progressive_align;
 pub use refinement::{iterative_refine, RefinementParams};

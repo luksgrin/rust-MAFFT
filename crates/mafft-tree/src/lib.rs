@@ -8,6 +8,7 @@ mod nj;
 mod upgma;
 mod musclesupg;
 mod addonetip;
+mod parttree;
 mod topology;
 mod weighting;
 
@@ -16,5 +17,6 @@ pub use nj::neighbor_joining;
 pub use upgma::{upgma, upgma_int};
 pub use musclesupg::{musclesupg, ClusterMethod};
 pub use addonetip::{addonetip, AddResult};
+pub use parttree::{parttree, PartTreeParams};
 pub use topology::{Topology, JoinStep};
 pub use weighting::sequence_weights;

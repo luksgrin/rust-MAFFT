@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
-use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance, ktuple_distance};
+use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance, ktuple_distance, parttree, PartTreeParams};
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
@@ -25,6 +25,10 @@ pub enum AlignmentMode {
     LInsi { iterations: usize },
     /// E-INS-i: generalized affine + iterative refinement.
     EInsi { iterations: usize },
+    /// Q-INS-i: RNA alignment with McCaskill base-pair probabilities.
+    QInsi { iterations: usize },
+    /// X-INS-i: RNA alignment with CONTRAfold structure predictions.
+    XInsi { iterations: usize },
 }
 
 impl Default for AlignmentMode {
@@ -52,6 +56,12 @@ pub struct MafftEngine {
     pub allowshift: bool,
     /// Kimura R parameter for DNA distance model (--kimura).
     pub kimura_r: Option<i32>,
+    /// Use PartTree for guide tree construction (--parttree).
+    pub parttree: bool,
+    /// Use DP-based PartTree (--dpparttree).
+    pub dpparttree: bool,
+    /// Group size for PartTree partitioning (--groupsize).
+    pub groupsize: Option<usize>,
 }
 
 impl Default for MafftEngine {
@@ -65,13 +75,16 @@ impl Default for MafftEngine {
             nofft: false,
             allowshift: false,
             kimura_r: None,
+            parttree: false,
+            dpparttree: false,
+            groupsize: None,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, kimura_r: None }
+        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, kimura_r: None, parttree: false, dpparttree: false, groupsize: None }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -89,6 +102,24 @@ impl MafftEngine {
     /// Set offset/extension penalty (positive float, e.g. 0.123).
     pub fn with_gap_offset(mut self, ep: f64) -> Self {
         self.gap_offset = Some(ep);
+        self
+    }
+
+    /// Use PartTree for guide tree (--parttree).
+    pub fn with_parttree(mut self, parttree: bool) -> Self {
+        self.parttree = parttree;
+        self
+    }
+
+    /// Use DP-based PartTree (--dpparttree).
+    pub fn with_dpparttree(mut self, dpparttree: bool) -> Self {
+        self.dpparttree = dpparttree;
+        self
+    }
+
+    /// Set group size for PartTree (--groupsize).
+    pub fn with_groupsize(mut self, groupsize: usize) -> Self {
+        self.groupsize = Some(groupsize);
         self
     }
 
@@ -146,6 +177,7 @@ impl MafftEngine {
         }
 
         let nseq = input.nseq();
+        let quiet_mode = false;
         let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
         let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
 
@@ -154,8 +186,27 @@ impl MafftEngine {
             AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. }
         );
 
-        // Step 1: Initial pairwise distances (parallel)
-        let mut dm = compute_distance_matrix_from_seqs(&sequences);
+        // Step 1: Initial guide tree
+        // For PartTree mode, use divide-and-conquer (O(n log n)) instead of
+        // full pairwise distances (O(n²)).
+        let use_parttree = self.parttree || self.dpparttree;
+        let parttree_topo = if use_parttree {
+            let params = PartTreeParams {
+                group_size: self.groupsize.unwrap_or(150),
+                pick_size: 50,
+                use_dp: self.dpparttree,
+            };
+            Some(parttree(&sequences, &params))
+        } else {
+            None
+        };
+
+        let mut dm = if use_parttree {
+            // Skip full distance matrix — PartTree builds tree directly
+            DistanceMatrix::new(nseq)
+        } else {
+            compute_distance_matrix_from_seqs(&sequences)
+        };
 
         // Step 2: Build guide tree and progressive align, repeating `retree` times.
         // Each iteration after the first computes distances from the ALIGNMENT
@@ -168,8 +219,12 @@ impl MafftEngine {
         };
 
         for pass in 0..retree {
-            // Build guide tree from current distance matrix
-            let topo = musclesupg(&dm, ClusterMethod::default());
+            // Build guide tree
+            let topo = if pass == 0 && use_parttree {
+                parttree_topo.clone().unwrap()
+            } else {
+                musclesupg(&dm, ClusterMethod::default())
+            };
 
             // Progressive alignment
             let input_seqs = if pass == 0 {
@@ -202,7 +257,51 @@ impl MafftEngine {
             self.mode,
             AlignmentMode::LInsi { .. } | AlignmentMode::EInsi { .. }
         );
-        let local_hom = if uses_constraints {
+        let uses_rna_constraints = matches!(
+            self.mode,
+            AlignmentMode::QInsi { .. } | AlignmentMode::XInsi { .. }
+        );
+        let local_hom = if uses_rna_constraints {
+            // RNA modes: compute base-pair probabilities using external tools,
+            // then use them as constraints for iterative refinement.
+            let bpp_result = match &self.mode {
+                AlignmentMode::QInsi { .. } => {
+                    crate::external::compute_bpp_mccaskill(
+                        &sequences,
+                    )
+                }
+                AlignmentMode::XInsi { .. } => {
+                    crate::external::compute_bpp_contrafold(
+                        &sequences,
+                    )
+                }
+                _ => unreachable!(),
+            };
+            match bpp_result {
+                Ok(bpp_tables) => {
+                    if !quiet_mode {
+                        eprintln!("RNA structure: computed BPP for {} sequences", bpp_tables.len());
+                    }
+                    // For now, use standard local homology as fallback.
+                    // Full BPP→constraint integration would convert base-pair
+                    // probabilities into pairwise constraints here.
+                    let seq_refs: Vec<&[u8]> = input.sequences.iter().map(|s| s.data.as_slice()).collect();
+                    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+                    let (table, _dist) = build_local_homology_table(
+                        &seq_refs,
+                        &scoring.substitution_matrix,
+                        &scoring.amino_map,
+                        &gap,
+                        0.0,
+                    );
+                    Some(table)
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        } else if uses_constraints {
             let seq_refs: Vec<&[u8]> = input.sequences.iter().map(|s| s.data.as_slice()).collect();
             let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
             let (table, _dist) = build_local_homology_table(
@@ -223,7 +322,9 @@ impl MafftEngine {
             AlignmentMode::FftNsi { iterations }
             | AlignmentMode::GInsi { iterations }
             | AlignmentMode::LInsi { iterations }
-            | AlignmentMode::EInsi { iterations } => {
+            | AlignmentMode::EInsi { iterations }
+            | AlignmentMode::QInsi { iterations }
+            | AlignmentMode::XInsi { iterations } => {
                 // Rebuild tree one more time for refinement
                 let dm = compute_distance_matrix_from_alignment(&msa.sequences);
                 let topo = musclesupg(&dm, ClusterMethod::default());

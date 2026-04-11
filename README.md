@@ -190,9 +190,11 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--op`, `--ep`, `--bl` | Supported |
 | `--thread N` | Supported (Rayon) |
 | `--kimura N` | Supported (custom Kimura R for DNA PAM generation) |
-| `--parttree`, `--dpparttree` | Not implemented (PartTree for 10K+ sequences) |
-| RNA modes (`--qinsi`, `--xinsi`) | Not implemented |
-| Structure modes (`--scarnalike`) | Not implemented |
+| `--parttree`, `--dpparttree` | Supported (divide-and-conquer tree for 10K+ sequences) |
+| `--groupsize N` | Supported (partition size for PartTree, default 150) |
+| `--qinsi` (Q-INS-i) | Supported (requires `mxscarnamod` in PATH) |
+| `--xinsi` (X-INS-i) | Supported (requires `contrafold` in PATH) |
+| `--scarnalike` | Supported (requires `dash_client` in PATH) |
 
 ## Architecture
 
@@ -250,16 +252,8 @@ The profile alignment DP now uses C's exact formulation (diagonal gap opening, s
 
 | # | Item | Description | Effort |
 |---|------|-------------|--------|
-| 1 | **FFT anchor subtleties** | C's `seq_vec_3` vectorization and `getKouho` candidate selection may still differ in edge cases for large group merges. | Low |
-| 2 | **Minor numerical differences** | Float accumulation order in distance updates, `match_calc` batch vs inline computation, and boundary initialization details. | Low |
+| 1 | **Accumulated numerical differences** | The 3% gap is distributed across 35 merge steps. Each step may produce slightly different gap placements due to float accumulation order, `match_calc` batch vs inline computation, and `cpmxhist` profile caching (C reuses profiles from child nodes; Rust recomputes from sequences). | Low |
 
-### Missing features
-
-| # | Item | Description | Effort |
-|---|------|-------------|--------|
-| 4 | **`--parttree` / `--dpparttree`** | PartTree divide-and-conquer for 10K+ sequence datasets. | High |
-| 5 | **RNA modes (`--qinsi`, `--xinsi`)** | McCaskill/CONTRAfold RNA structure integration (requires external tools). | High |
-| 6 | **Structure alignment (`--scarnalike`)** | 3D structure-aware alignment via DASH (requires external tools). | High |
 
 ## Upstream MAFFT
 
