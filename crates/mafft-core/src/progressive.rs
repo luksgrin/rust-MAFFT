@@ -2,9 +2,10 @@
 ///
 /// Matches C's `treebase()` from `disttbfast.c`: at each merge step,
 /// only group1 and group2 sequences are modified. "Other" sequences
-/// (not in either group) are left untouched, matching C's behavior
-/// where `mergeoralign = 'a'` means no special gap handling for others.
+/// are left untouched. Profiles are cached after each merge step
+/// (`cpmxhist`) to match C's exact float accumulation order.
 
+use std::collections::HashMap;
 use mafft_align::{profile_align, fft_profile_align, Profile, GapModel, Alignment, AlignOp, FftAlignParams};
 use mafft_tree::{Topology, sequence_weights};
 use mafft_types::ScoringContext;
@@ -25,6 +26,16 @@ impl MultipleAlignment {
     }
 }
 
+/// Cached profile from a previous merge step.
+/// Stores the blended composition probability matrix, gap frequencies,
+/// and opening/closing gap counts — matching C's `cpmxhist`.
+#[derive(Debug, Clone)]
+struct CachedProfile {
+    profile: Profile,
+    /// Effective weight of this group (orieff), for blending at the next merge.
+    eff: f64,
+}
+
 pub fn progressive_align(
     sequences: &[Vec<u8>],
     names: &[String],
@@ -42,9 +53,6 @@ pub fn progressive_align(
     }
 
     let weights = sequence_weights(topology);
-    // Start with original sequences (varying lengths, like C).
-    // No padding — sequences within a group will have matching widths
-    // because they were merged together at a previous step.
     let mut aligned: Vec<Vec<u8>> = sequences.to_vec();
 
     let mut last_score = 0.0;
@@ -53,16 +61,17 @@ pub fn progressive_align(
         gap = gap.with_shift(shift);
     }
 
+    // Profile cache: maps a set of sequence indices (sorted) to its cached profile.
+    // After each merge, the merged profile is stored so the next merge can reuse it.
+    let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
+
     for step in &topology.steps {
-        last_score = merge_step(
+        last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
+            &mut profile_cache,
         );
     }
 
-    // After all merges, pad all sequences to the same width for output.
-    // At this point, all sequences should have been involved in at least
-    // the final merge, so they should all have the same width. But pad
-    // just in case of any edge cases.
     let max_width = aligned.iter().map(|s| s.len()).max().unwrap_or(0);
     for seq in &mut aligned {
         seq.resize(max_width, b'-');
@@ -71,12 +80,7 @@ pub fn progressive_align(
     MultipleAlignment { sequences: aligned, names: names.to_vec(), score: last_score }
 }
 
-/// Merge two groups by profile alignment.
-///
-/// Matches C's behavior: only group1 and group2 sequences are modified.
-/// "Other" sequences are NOT touched — they keep their current content
-/// and width. This prevents spurious gap inflation.
-fn merge_step(
+fn merge_step_cached(
     group1: &[usize],
     group2: &[usize],
     aligned: &mut Vec<Vec<u8>>,
@@ -84,27 +88,28 @@ fn merge_step(
     scoring: &ScoringContext,
     gap: &GapModel,
     use_fft: bool,
+    cache: &mut HashMap<Vec<usize>, CachedProfile>,
 ) -> f64 {
-    // Group1 sequences should all have the same width (from their last merge).
-    // Group2 sequences should all have the same width (possibly different from group1).
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
 
-    // Build profiles directly from the group sequences.
-    // No global gap stripping needed — each group's sequences are already
-    // internally consistent from their previous merge.
-    let seqs1: Vec<&[u8]> = group1.iter().map(|&i| aligned[i].as_slice()).collect();
-    let seqs2: Vec<&[u8]> = group2.iter().map(|&i| aligned[i].as_slice()).collect();
+    // Look up cached profiles or build from sequences
+    let key1 = sorted_key(group1);
+    let key2 = sorted_key(group2);
 
-    let w1: Vec<f64> = group1.iter().map(|&i| weights[i]).collect();
-    let w2: Vec<f64> = group2.iter().map(|&i| weights[i]).collect();
-    let sum1: f64 = w1.iter().sum();
-    let sum2: f64 = w2.iter().sum();
-    let w1n: Vec<f64> = if sum1 > 0.0 { w1.iter().map(|w| w / sum1).collect() } else { vec![1.0; group1.len()] };
-    let w2n: Vec<f64> = if sum2 > 0.0 { w2.iter().map(|w| w / sum2).collect() } else { vec![1.0; group2.len()] };
+    let (prof1, eff1) = if let Some(cached) = cache.get(&key1) {
+        (cached.profile.clone(), cached.eff)
+    } else {
+        let (prof, eff) = build_profile_from_seqs(group1, aligned, weights, scoring);
+        (prof, eff)
+    };
 
-    let prof1 = Profile::from_aligned(&seqs1, &w1n, &scoring.amino_map, scoring.nalphabets);
-    let prof2 = Profile::from_aligned(&seqs2, &w2n, &scoring.amino_map, scoring.nalphabets);
+    let (prof2, eff2) = if let Some(cached) = cache.get(&key2) {
+        (cached.profile.clone(), cached.eff)
+    } else {
+        let (prof, eff) = build_profile_from_seqs(group2, aligned, weights, scoring);
+        (prof, eff)
+    };
 
     let aln = if use_fft && prof1.length > 80 && prof2.length > 80 {
         let fft_params = FftAlignParams {
@@ -124,13 +129,45 @@ fn merge_step(
         profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, true, true)
     };
 
-    // Build new sequences for group1 and group2 ONLY.
-    // "Other" sequences are not touched (matching C's behavior).
+    // Build gaptables for profile caching (matching C's gaptable1/gaptable2)
     let new_width = aln.operations.len();
+    let mut gaptable1 = Vec::with_capacity(new_width); // 'o' = content, '-' = gap
+    let mut gaptable2 = Vec::with_capacity(new_width);
+    for op in &aln.operations {
+        match op {
+            AlignOp::Match => { gaptable1.push(b'o'); gaptable2.push(b'o'); }
+            AlignOp::Delete => { gaptable1.push(b'o'); gaptable2.push(b'-'); }
+            AlignOp::Insert => { gaptable1.push(b'-'); gaptable2.push(b'o'); }
+        }
+    }
+
+    // Cache the merged profile (C's createcpmxresult)
+    let total_eff = eff1 + eff2;
+    if total_eff > 0.0 {
+        let norm_eff1 = eff1 / total_eff;
+        let norm_eff2 = eff2 / total_eff;
+        let merged_prof = blend_profiles(
+            &prof1, &prof2,
+            norm_eff1, norm_eff2,
+            &gaptable1, &gaptable2,
+            scoring.nalphabets,
+        );
+        let mut merged_key = group1.to_vec();
+        merged_key.extend_from_slice(group2);
+        merged_key.sort();
+        cache.insert(merged_key, CachedProfile {
+            profile: merged_prof,
+            eff: total_eff,
+        });
+    }
+
+    // Remove child caches (they won't be needed again)
+    cache.remove(&key1);
+    cache.remove(&key2);
+
+    // Build new sequences for group1 and group2 ONLY
     let mut cursor1 = 0usize;
     let mut cursor2 = 0usize;
-
-    // Pre-build new sequences for both groups
     let mut new_seqs_g1: Vec<Vec<u8>> = vec![Vec::with_capacity(new_width); group1.len()];
     let mut new_seqs_g2: Vec<Vec<u8>> = vec![Vec::with_capacity(new_width); group2.len()];
 
@@ -138,52 +175,122 @@ fn merge_step(
         match op {
             AlignOp::Match => {
                 for (gi, &idx) in group1.iter().enumerate() {
-                    new_seqs_g1[gi].push(
-                        if cursor1 < width1 { aligned[idx][cursor1] } else { b'-' }
-                    );
+                    new_seqs_g1[gi].push(if cursor1 < width1 { aligned[idx][cursor1] } else { b'-' });
                 }
                 for (gi, &idx) in group2.iter().enumerate() {
-                    new_seqs_g2[gi].push(
-                        if cursor2 < width2 { aligned[idx][cursor2] } else { b'-' }
-                    );
+                    new_seqs_g2[gi].push(if cursor2 < width2 { aligned[idx][cursor2] } else { b'-' });
                 }
                 cursor1 += 1;
                 cursor2 += 1;
             }
             AlignOp::Delete => {
                 for (gi, &idx) in group1.iter().enumerate() {
-                    new_seqs_g1[gi].push(
-                        if cursor1 < width1 { aligned[idx][cursor1] } else { b'-' }
-                    );
+                    new_seqs_g1[gi].push(if cursor1 < width1 { aligned[idx][cursor1] } else { b'-' });
                 }
-                for gi in 0..group2.len() {
-                    new_seqs_g2[gi].push(b'-');
-                }
+                for gi in 0..group2.len() { new_seqs_g2[gi].push(b'-'); }
                 cursor1 += 1;
             }
             AlignOp::Insert => {
-                for gi in 0..group1.len() {
-                    new_seqs_g1[gi].push(b'-');
-                }
+                for gi in 0..group1.len() { new_seqs_g1[gi].push(b'-'); }
                 for (gi, &idx) in group2.iter().enumerate() {
-                    new_seqs_g2[gi].push(
-                        if cursor2 < width2 { aligned[idx][cursor2] } else { b'-' }
-                    );
+                    new_seqs_g2[gi].push(if cursor2 < width2 { aligned[idx][cursor2] } else { b'-' });
                 }
                 cursor2 += 1;
             }
         }
     }
 
-    // Write back to aligned — only group1 and group2 are modified
-    for (gi, &idx) in group1.iter().enumerate() {
-        aligned[idx] = new_seqs_g1[gi].clone();
-    }
-    for (gi, &idx) in group2.iter().enumerate() {
-        aligned[idx] = new_seqs_g2[gi].clone();
-    }
+    for (gi, &idx) in group1.iter().enumerate() { aligned[idx] = new_seqs_g1[gi].clone(); }
+    for (gi, &idx) in group2.iter().enumerate() { aligned[idx] = new_seqs_g2[gi].clone(); }
 
     aln.score
+}
+
+fn sorted_key(group: &[usize]) -> Vec<usize> {
+    let mut k = group.to_vec();
+    k.sort();
+    k
+}
+
+fn build_profile_from_seqs(
+    group: &[usize],
+    aligned: &[Vec<u8>],
+    weights: &[f64],
+    scoring: &ScoringContext,
+) -> (Profile, f64) {
+    let seqs: Vec<&[u8]> = group.iter().map(|&i| aligned[i].as_slice()).collect();
+    let w: Vec<f64> = group.iter().map(|&i| weights[i]).collect();
+    let sum: f64 = w.iter().sum();
+    let wn: Vec<f64> = if sum > 0.0 { w.iter().map(|v| v / sum).collect() } else { vec![1.0; group.len()] };
+    let prof = Profile::from_aligned(&seqs, &wn, &scoring.amino_map, scoring.nalphabets);
+    (prof, sum)
+}
+
+/// Blend two profiles using the alignment gap tables, matching C's `createcpmxresult`.
+///
+/// For each position in the merged alignment:
+/// - If gaptable1[j] == 'o': take prof1's column (weighted by eff1)
+/// - If gaptable2[j] == 'o': take prof2's column (weighted by eff2)
+/// - Both can contribute at Match positions
+fn blend_profiles(
+    prof1: &Profile,
+    prof2: &Profile,
+    eff1: f64,
+    eff2: f64,
+    gaptable1: &[u8],
+    gaptable2: &[u8],
+    nalphabets: usize,
+) -> Profile {
+    let alen = gaptable1.len();
+    let mut freqs = vec![vec![0.0f64; nalphabets]; alen];
+    let mut gap_freq = vec![0.0f64; alen];
+    let mut nongap_freq = vec![0.0f64; alen];
+    let mut ogcp = vec![0.0f64; alen];
+    let mut fgcp = vec![0.0f64; alen];
+
+    // Blend frequencies from prof1
+    let mut p1 = 0usize;
+    for j in 0..alen {
+        if gaptable1[j] != b'-' {
+            if p1 < prof1.length {
+                for k in 0..nalphabets.min(prof1.freqs[p1].len()) {
+                    freqs[j][k] += prof1.freqs[p1][k] * eff1;
+                }
+                nongap_freq[j] += prof1.nongap_freq[p1] * eff1;
+                gap_freq[j] += prof1.gap_freq[p1] * eff1;
+                ogcp[j] += prof1.ogcp[p1] * eff1;
+                fgcp[j] += prof1.fgcp[p1] * eff1;
+            }
+            p1 += 1;
+        }
+    }
+
+    // Blend frequencies from prof2
+    let mut p2 = 0usize;
+    for j in 0..alen {
+        if gaptable2[j] != b'-' {
+            if p2 < prof2.length {
+                for k in 0..nalphabets.min(prof2.freqs[p2].len()) {
+                    freqs[j][k] += prof2.freqs[p2][k] * eff2;
+                }
+                nongap_freq[j] += prof2.nongap_freq[p2] * eff2;
+                gap_freq[j] += prof2.gap_freq[p2] * eff2;
+                ogcp[j] += prof2.ogcp[p2] * eff2;
+                fgcp[j] += prof2.fgcp[p2] * eff2;
+            }
+            p2 += 1;
+        }
+    }
+
+    Profile {
+        freqs,
+        gap_freq,
+        nongap_freq,
+        ogcp,
+        fgcp,
+        length: alen,
+        nalphabets,
+    }
 }
 
 fn group_all_gap_columns(group: &[usize], aligned: &[Vec<u8>], width: usize) -> Vec<bool> {
