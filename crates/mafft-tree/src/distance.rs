@@ -150,6 +150,95 @@ fn amino_group(c: u8) -> Option<u32> {
     }
 }
 
+/// Scoring-matrix-based pairwise distance from aligned sequences.
+///
+/// Ports C's `naivepairscore11` + distance formula. Used for guide tree
+/// rebuilding in the retree pass (instead of simple identity distance).
+///
+/// Algorithm: strip common gap columns, then score aligned positions using
+/// the substitution matrix. Gap blocks get a flat penalty (once per block).
+///
+/// Distance = (1.0 - score / min(selfscore_i, selfscore_j)) * 2.0
+pub fn scoring_matrix_distance(
+    seq1: &[u8],
+    seq2: &[u8],
+    matrix: &[Vec<i32>],
+    amino_map: &[u8; 256],
+    penalty: i32,
+) -> f64 {
+    let ss1 = self_score(seq1, matrix, amino_map, penalty);
+    let ss2 = self_score(seq2, matrix, amino_map, penalty);
+    let bunbo = if ss1 < ss2 { ss1 } else { ss2 };
+    if bunbo == 0.0 {
+        return 2.0;
+    }
+    let score = naive_pair_score(seq1, seq2, matrix, amino_map, penalty);
+    ((1.0 - score / bunbo) * 2.0).clamp(0.0, 2.0)
+}
+
+/// C's naivepairscore11: score two aligned sequences.
+fn naive_pair_score(
+    seq1: &[u8],
+    seq2: &[u8],
+    matrix: &[Vec<i32>],
+    amino_map: &[u8; 256],
+    penalty: i32,
+) -> f64 {
+    let nalpha = matrix.len();
+    // Strip common gap columns
+    let mut s1 = Vec::new();
+    let mut s2 = Vec::new();
+    let len = seq1.len().min(seq2.len());
+    for k in 0..len {
+        if seq1[k] != b'-' || seq2[k] != b'-' {
+            s1.push(seq1[k]);
+            s2.push(seq2[k]);
+        }
+    }
+
+    let mut score = 0.0f64;
+    let mut k = 0;
+    while k < s1.len() {
+        if s1[k] == b'-' {
+            score += penalty as f64;
+            while k < s1.len() && s1[k] == b'-' { k += 1; }
+            continue;
+        }
+        if s2[k] == b'-' {
+            score += penalty as f64;
+            while k < s2.len() && s2[k] == b'-' { k += 1; }
+            continue;
+        }
+        let i = amino_map[s1[k] as usize] as usize;
+        let j = amino_map[s2[k] as usize] as usize;
+        if i < nalpha && j < nalpha {
+            score += matrix[i][j] as f64;
+        }
+        k += 1;
+    }
+    score
+}
+
+/// Self-score: naivepairscore11(seq, seq) = sum of diagonal matrix values.
+fn self_score(
+    seq: &[u8],
+    matrix: &[Vec<i32>],
+    amino_map: &[u8; 256],
+    _penalty: i32,
+) -> f64 {
+    let nalpha = matrix.len();
+    let mut score = 0.0f64;
+    for &ch in seq {
+        if ch != b'-' {
+            let i = amino_map[ch as usize] as usize;
+            if i < nalpha {
+                score += matrix[i][i] as f64;
+            }
+        }
+    }
+    score
+}
+
 /// DNA base group mapping: A→0, C→1, G→2, T/U→3.
 fn nuc_group(c: u8) -> Option<u32> {
     match c.to_ascii_uppercase() {

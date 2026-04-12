@@ -6,7 +6,7 @@
 /// (`cpmxhist`) to match C's exact float accumulation order.
 
 use std::collections::HashMap;
-use mafft_align::{profile_align, fft_profile_align, Profile, GapModel, Alignment, AlignOp, FftAlignParams};
+use mafft_align::{profile_align, pairwise_align11, fft_profile_align, Profile, GapModel, Alignment, AlignOp, FftAlignParams};
 use mafft_tree::{Topology, sequence_weights};
 use mafft_types::ScoringContext;
 
@@ -111,7 +111,17 @@ fn merge_step_cached(
         (prof, eff)
     };
 
-    let aln = if use_fft && prof1.length > 80 && prof2.length > 80 {
+    // C uses G__align11 for single-sequence pairs (1-vs-1), which has flat gap
+    // penalties and character-indexed scoring. For multi-sequence groups, it uses
+    // MSalignmm (profile alignment with position-specific gap costs).
+    let aln = if group1.len() == 1 && group2.len() == 1 {
+        // G__align11 path: flat gap penalty, character-level scoring
+        pairwise_align11(
+            &aligned[group1[0]], &aligned[group2[0]],
+            &scoring.substitution_matrix, &scoring.amino_map,
+            scoring.gap.open as f64, true, true,
+        )
+    } else if use_fft && prof1.length > 80 && prof2.length > 80 {
         let fft_params = FftAlignParams {
             num_candidates: 20,
             segment_params: if scoring.seq_type.is_nucleotide() {
@@ -222,6 +232,8 @@ fn build_profile_from_seqs(
     scoring: &ScoringContext,
 ) -> (Profile, f64) {
     let seqs: Vec<&[u8]> = group.iter().map(|&i| aligned[i].as_slice()).collect();
+    // C normalizes weights to sum to 1.0 within each group for cpmx_calc_new,
+    // then tracks orieff (= raw sum) separately for createcpmxresult blending.
     let w: Vec<f64> = group.iter().map(|&i| weights[i]).collect();
     let sum: f64 = w.iter().sum();
     let wn: Vec<f64> = if sum > 0.0 { w.iter().map(|v| v / sum).collect() } else { vec![1.0; group.len()] };

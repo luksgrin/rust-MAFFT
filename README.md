@@ -238,17 +238,11 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **97.0%** of the C implementation's sum-of-pairs identity score (SP=0.316 vs C's 0.326, width 703 vs 717) for FFT-NS-2. The profile alignment DP now ports C's exact formulation: gap opening from diagonal, substitution score on all paths, `ijp` traceback with jump distances. The alignment is structurally correct (all sequences have the same width, ungapped sequences match originals, residue content is preserved).
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **97.8%** of the C implementation's sum-of-pairs identity score (SP=0.319 vs C's 0.326, width 664 vs 717) for FFT-NS-2. The profile alignment DP ports C's exact formulation: rolling-row scheme, batch `match_calc` with sparse dot product, diagonal gap opening, sub on all paths, `ijp` traceback, `G__align11` for 1-vs-1 pairs, scoring-matrix-based retree distances (`naivepairscore11`), and profile caching with `createcpmxresult`/`createogresult`/`createfgresult`. The remaining 2.2% gap is from accumulated minor differences in the first retree pass.
 
 ### Performance
 
 - No SIMD for the DP fill loops themselves (data dependencies prevent vectorization without anti-diagonal restructuring).
-
-## Remaining gaps vs original MAFFT
-
-### Alignment quality (3.2% SP score gap)
-
-The profile alignment DP ports C's exact formulation (diagonal gap opening, sub on all paths, `ijp` traceback, `st_OpeningGapCount`/`st_FinalGapCount`, headgapfreq=1.0, profile caching with exact `createogresult`/`createfgresult` block-boundary logic, gap characters in `cpmx`). Fusing the DP and profile blending was investigated but would not help — C's `createcpmxresult` uses the same read-only `cpmx` arrays as the DP, so the blending result is independent of DP execution order. The remaining gap is from accumulated float differences in weight normalization and guide tree construction across 35 merge steps.
 
 
 ## Upstream MAFFT

@@ -383,3 +383,234 @@ fn diagnostic_first_merge() {
     let inserts = aln.operations.iter().filter(|op| matches!(op, mafft_align::AlignOp::Insert)).count();
     eprintln!("  Match={}, Delete={}, Insert={}", matches, deletes, inserts);
 }
+
+#[test]
+fn diagnostic_distance_check() {
+    use mafft_tree::ktuple_distance;
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    // Print first 10 pairwise distances with high precision
+    let mut count = 0;
+    for i in 0..input.nseq() {
+        for j in (i+1)..input.nseq() {
+            if count >= 10 { break; }
+            let d = ktuple_distance(&input.sequences[i].data, &input.sequences[j].data, 6);
+            eprintln!("d({},{}) = {:.15}", i, j, d);
+            count += 1;
+        }
+        if count >= 10 { break; }
+    }
+}
+
+#[test]
+fn diagnostic_merge_trace() {
+    use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, sequence_weights};
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, profile_align, GapModel, AlignOp};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let nseq = input.nseq();
+
+    // Build distance matrix and tree (retree pass 1)
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            dm.set(i, j, ktuple_distance(&input.sequences[i].data, &input.sequences[j].data, 6));
+        }
+    }
+    let topo = musclesupg(&dm, ClusterMethod::default());
+    let weights = sequence_weights(&topo);
+
+    // Trace first 10 merge steps with alignment details
+    let mut aligned: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    for (step_idx, step) in topo.steps.iter().enumerate().take(10) {
+        let width1 = aligned[step.left[0]].len();
+        let width2 = aligned[step.right[0]].len();
+
+        let seqs1: Vec<&[u8]> = step.left.iter().map(|&i| aligned[i].as_slice()).collect();
+        let seqs2: Vec<&[u8]> = step.right.iter().map(|&i| aligned[i].as_slice()).collect();
+        let w1: Vec<f64> = step.left.iter().map(|&i| weights[i]).collect();
+        let w2: Vec<f64> = step.right.iter().map(|&i| weights[i]).collect();
+        let sum1: f64 = w1.iter().sum();
+        let sum2: f64 = w2.iter().sum();
+        let w1n: Vec<f64> = w1.iter().map(|v| v / sum1).collect();
+        let w2n: Vec<f64> = w2.iter().map(|v| v / sum2).collect();
+
+        let prof1 = Profile::from_aligned(&seqs1, &w1n, &scoring.amino_map, scoring.nalphabets);
+        let prof2 = Profile::from_aligned(&seqs2, &w2n, &scoring.amino_map, scoring.nalphabets);
+        let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+
+        let matches = aln.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
+        let deletes = aln.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
+        let inserts = aln.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
+
+        eprintln!("Step {:2}: {:?}+{:?} w1={:.6} w2={:.6} prof1={} prof2={} score={:.1} ops={} M/D/I={}/{}/{}",
+            step_idx, step.left, step.right, sum1, sum2,
+            prof1.length, prof2.length, aln.score,
+            aln.operations.len(), matches, deletes, inserts);
+
+        // Apply alignment to sequences (simplified — just track widths)
+        let new_width = aln.operations.len();
+        for &idx in &step.left {
+            let mut new_seq = Vec::with_capacity(new_width);
+            let mut cursor = 0;
+            for op in &aln.operations {
+                match op {
+                    AlignOp::Match | AlignOp::Delete => {
+                        new_seq.push(if cursor < width1 { aligned[idx][cursor] } else { b'-' });
+                        cursor += 1;
+                    }
+                    AlignOp::Insert => new_seq.push(b'-'),
+                }
+            }
+            aligned[idx] = new_seq;
+        }
+        for &idx in &step.right {
+            let mut new_seq = Vec::with_capacity(new_width);
+            let mut cursor = 0;
+            for op in &aln.operations {
+                match op {
+                    AlignOp::Match | AlignOp::Insert => {
+                        new_seq.push(if cursor < width2 { aligned[idx][cursor] } else { b'-' });
+                        cursor += 1;
+                    }
+                    AlignOp::Delete => new_seq.push(b'-'),
+                }
+            }
+            aligned[idx] = new_seq;
+        }
+    }
+}
+
+#[test]
+fn diagnostic_alignment_diff() {
+    let c_ref = read_fasta(test_data_path("sample.fftns2")).unwrap();
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let engine = MafftEngine::new(AlignmentMode::FftNs2);
+    let msa = engine.align(&input);
+
+    eprintln!("Rust width: {}, C width: {}", msa.width(), c_ref.sequences[0].data.len());
+    
+    // Count identical columns
+    let rust_width = msa.width();
+    let c_width = c_ref.sequences[0].data.len();
+    
+    // Compare first sequence's alignment character by character
+    let r0 = &msa.sequences[0];
+    let c0 = &c_ref.sequences[0].data;
+    
+    // Find first difference
+    let min_len = r0.len().min(c0.len());
+    let mut first_diff = min_len;
+    for k in 0..min_len {
+        if r0[k] != c0[k] {
+            first_diff = k;
+            break;
+        }
+    }
+    
+    if first_diff < min_len {
+        eprintln!("First diff at col {}: Rust='{}' C='{}'", 
+            first_diff, r0[first_diff] as char, c0[first_diff] as char);
+        // Show context around first diff
+        let start = first_diff.saturating_sub(5);
+        let end = (first_diff + 10).min(min_len);
+        eprintln!("Rust seq0[{}..{}]: {}", start, end, 
+            String::from_utf8_lossy(&r0[start..end]));
+        eprintln!("C    seq0[{}..{}]: {}", start, end,
+            String::from_utf8_lossy(&c0[start..end]));
+    } else {
+        eprintln!("Seq 0 matches for first {} chars!", min_len);
+    }
+    
+    // Count total matching columns across all sequences
+    let mut total_match = 0u64;
+    let mut total_cols = 0u64;
+    if rust_width == c_width {
+        for col in 0..rust_width {
+            let mut all_match = true;
+            for i in 0..msa.nseq() {
+                if msa.sequences[i][col] != c_ref.sequences[i].data[col] {
+                    all_match = false;
+                    break;
+                }
+            }
+            if all_match { total_match += 1; }
+            total_cols += 1;
+        }
+        eprintln!("Matching columns: {}/{} ({:.1}%)", total_match, total_cols,
+            100.0 * total_match as f64 / total_cols as f64);
+    }
+}
+
+#[test]
+fn diagnostic_gap_pattern() {
+    let c_ref = read_fasta(test_data_path("sample.fftns2")).unwrap();
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let engine = MafftEngine::new(AlignmentMode::FftNs2);
+    let msa = engine.align(&input);
+
+    // For each sequence, show the gap pattern (positions of first/last residue)
+    for i in 0..5.min(msa.nseq()) {
+        let r = &msa.sequences[i];
+        let c = &c_ref.sequences[i].data;
+        
+        let r_first = r.iter().position(|&c| c != b'-').unwrap_or(0);
+        let r_last = r.iter().rposition(|&c| c != b'-').unwrap_or(0);
+        let c_first = c.iter().position(|&c| c != b'-').unwrap_or(0);
+        let c_last = c.iter().rposition(|&c| c != b'-').unwrap_or(0);
+        let r_gaps: usize = r.iter().filter(|&&c| c == b'-').count();
+        let c_gaps: usize = c.iter().filter(|&&c| c == b'-').count();
+        
+        eprintln!("Seq {:2}: Rust first={:3} last={:3} gaps={:3} width={}  |  C first={:3} last={:3} gaps={:3} width={}",
+            i, r_first, r_last, r_gaps, r.len(), c_first, c_last, c_gaps, c.len());
+    }
+    
+    // Show the retree pass info
+    eprintln!("\n--- Retree pass 1 vs pass 2 ---");
+    let engine1 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1);
+    let engine2 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(2);
+    let msa1 = engine1.align(&input);
+    let msa2 = engine2.align(&input);
+    eprintln!("retree=1: width={} SP={:.4}", msa1.width(), sum_of_pairs_identity(&msa1.sequences));
+    eprintln!("retree=2: width={} SP={:.4}", msa2.width(), sum_of_pairs_identity(&msa2.sequences));
+}
+
+#[test]
+fn diagnostic_align11_vs_profile() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, profile_align, pairwise_align11, GapModel, AlignOp};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    // Compare align11 vs profile_align for seqs 19 and 20 (merged at step 1)
+    let s1 = &input.sequences[19].data;
+    let s2 = &input.sequences[20].data;
+
+    let aln11 = pairwise_align11(s1, s2, &scoring.substitution_matrix, &scoring.amino_map,
+        scoring.gap.open as f64, true, true);
+
+    let seqs1: Vec<&[u8]> = vec![s1.as_slice()];
+    let seqs2: Vec<&[u8]> = vec![s2.as_slice()];
+    let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let aln_prof = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+
+    let m11 = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
+    let d11 = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
+    let i11 = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
+    let mp = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
+    let dp = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
+    let ip = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
+
+    eprintln!("G__align11: score={:.1} width={} M/D/I={}/{}/{}", aln11.score, aln11.operations.len(), m11, d11, i11);
+    eprintln!("MSalignmm:  score={:.1} width={} M/D/I={}/{}/{}", aln_prof.score, aln_prof.operations.len(), mp, dp, ip);
+    eprintln!("Same ops: {}", aln11.operations == aln_prof.operations);
+    eprintln!("penalty={}", scoring.gap.open);
+}

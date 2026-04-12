@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
-use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance, ktuple_distance, parttree, PartTreeParams};
+use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance, ktuple_distance, scoring_matrix_distance, parttree, PartTreeParams};
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
@@ -247,8 +247,14 @@ impl MafftEngine {
             msa = progressive_align(&input_seqs, &names, &topo, &scoring, use_fft, shift);
 
             // If there's another pass, compute new distances from the alignment
+            // using scoring-matrix-based distance (C's naivepairscorefast),
+            // not simple identity distance.
             if pass + 1 < retree {
-                dm = compute_distance_matrix_from_alignment(&msa.sequences);
+                let penalty_dist = (600.0 / 1000.0 * scoring.gap.open as f64 + 0.5) as i32;
+                dm = compute_distance_matrix_scoring(
+                    &msa.sequences, &scoring.substitution_matrix,
+                    &scoring.amino_map, penalty_dist,
+                );
             }
         }
 
@@ -415,6 +421,36 @@ fn compute_distance_matrix_from_seqs(sequences: &[Vec<u8>]) -> DistanceMatrix {
             let seqs = sequences;
             ((i + 1)..nseq).into_par_iter().map(move |j| {
                 let d = ktuple_distance(&seqs[i], &seqs[j], 6);
+                (i, j, d)
+            })
+        })
+        .collect();
+
+    let mut dm = DistanceMatrix::new(nseq);
+    for (i, j, d) in pairs {
+        dm.set(i, j, d);
+    }
+    dm
+}
+
+/// Compute pairwise distances from aligned sequences using scoring matrix.
+///
+/// Ports C's `msadistmtxthread` which uses `naivepairscorefast` for the
+/// retree distance computation. This produces different distances from
+/// simple identity distance and thus a different guide tree.
+fn compute_distance_matrix_scoring(
+    sequences: &[Vec<u8>],
+    matrix: &[Vec<i32>],
+    amino_map: &[u8; 256],
+    penalty_dist: i32,
+) -> DistanceMatrix {
+    let nseq = sequences.len();
+    let pairs: Vec<(usize, usize, f64)> = (0..nseq)
+        .into_par_iter()
+        .flat_map(|i| {
+            let seqs = sequences;
+            ((i + 1)..nseq).into_par_iter().map(move |j| {
+                let d = scoring_matrix_distance(&seqs[i], &seqs[j], matrix, amino_map, penalty_dist);
                 (i, j, d)
             })
         })

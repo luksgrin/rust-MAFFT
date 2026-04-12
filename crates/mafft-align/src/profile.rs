@@ -293,53 +293,118 @@ pub fn profile_align(
     fgcp2.push(0.0);
 
     // Exact port of C's MSalignmm_tanni (MSalignmm.c lines 770-888).
-    //
-    // C's DP formulation:
-    //   currentw[j] = sub(i,j) (pre-filled by match_calc)
-    //   wm = max(h[i-1][j-1], mi_extend, mj_extend)
-    //   h[i][j] = currentw[j] += wm  (sub added to ALL paths)
-    //   mi = max(mi, h[i-1][j-1] + ogcp2[j]*gf)  (open from DIAGONAL)
-    //   m[j] = max(m[j], h[i-1][j-1] + ogcp1[i]*gf)  (open from DIAGONAL)
-    //
-    // Traceback: ijp[i][j] = 0 (diagonal), >0 (skip rows=insertion in prof1),
-    //            <0 (skip cols=deletion in prof2).
+    // Uses C's exact rolling-row scheme, batch match_calc with sparse
+    // dot product, and pointer-order-matching float accumulation.
 
-    // C sets headgapfreq1 = headgapfreq2 = 1.0 when sgap is NULL
-    // (the normal progressive alignment case, MSalignmm.c line 2252-2253).
-    let hgf1: f64 = 1.0; // headgapfreq1
-    let hgf2: f64 = 1.0; // headgapfreq2
-    let gf1_0 = prof1.nongap_freq.first().copied().unwrap_or(1.0); // gapfreq1f[0]
-    let gf2_0 = prof2.nongap_freq.first().copied().unwrap_or(1.0); // gapfreq2f[0]
+    let hgf1: f64 = 1.0;
+    let hgf2: f64 = 1.0;
+    let gf1_0 = prof1.nongap_freq.first().copied().unwrap_or(1.0);
+    let gf2_0 = prof2.nongap_freq.first().copied().unwrap_or(1.0);
+    let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
 
-    // Full h matrix and ijp traceback (not rolling-row, but same values)
+    // Build sparse representation of prof2 (C's cpmxpd/cpmxpdn, lines 196-212).
+    // For each position j, store only non-zero (alphabet_index, frequency) pairs.
+    let cpmx2_sparse: Vec<Vec<(usize, f64)>> = (0..m).map(|j| {
+        let mut entries = Vec::new();
+        for l in 0..nalpha {
+            let v = prof2.freqs[j][l];
+            if v != 0.0 {
+                entries.push((l, v));
+            }
+        }
+        entries
+    }).collect();
+
+    // Batch match_calc: compute scarr once per row, dot with sparse prof2.
+    // C's exact loop order (lines 216-223):
+    //   for l in 0..nalphabets:
+    //     scarr[l] = 0
+    //     for j in 0..nalphabets:
+    //       scarr[l] += matrix[j][l] * cpmx1[j][position]
+    let match_calc_row = |row_pos: usize, output: &mut [f64]| {
+        let mut scarr = vec![0.0f64; nalpha];
+        // C's exact order: outer=output_alphabet, inner=input_alphabet
+        for l in 0..nalpha {
+            scarr[l] = 0.0;
+            for j in 0..nalpha {
+                scarr[l] += matrix[j][l] as f64 * prof1.freqs[row_pos][j];
+            }
+        }
+        // Sparse dot product (C lines 227-234)
+        for j in 0..m {
+            output[j + 1] = 0.0;
+            for &(k, v) in &cpmx2_sparse[j] {
+                output[j + 1] += scarr[k] * v;
+            }
+        }
+    };
+
+    // h matrix (need full for traceback) and ijp
     let mut h = vec![vec![0.0f64; m + 1]; n + 1];
     let mut ijp = vec![vec![0i32; m + 1]; n + 1];
 
-    // initverticalw[i] = match_score(i-1, 0) + head gap cost  (C lines 776, 783-786)
-    // Note: C's match_calc fills initverticalw[1..n] with sub scores for
-    // prof1 positions vs prof2 position 0. We compute inline.
+    // initverticalw (C line 776): match_calc with prof2 pos 0 vs all prof1 positions.
+    // C calls match_calc with swapped profiles: cpmx2pt first, cpmx1pt second.
+    let cpmx1_sparse: Vec<Vec<(usize, f64)>> = (0..n).map(|i| {
+        let mut entries = Vec::new();
+        for l in 0..nalpha {
+            let v = prof1.freqs[i][l];
+            if v != 0.0 {
+                entries.push((l, v));
+            }
+        }
+        entries
+    }).collect();
+
     let mut initverticalw = vec![0.0f64; n + 1];
-    for i in 1..=n {
-        initverticalw[i] = prof1.match_score(i - 1, prof2, 0, matrix);
-        if head_gap {
+    {
+        // scarr from prof2 position 0 (C: cpmx2pt at jst=0)
+        let mut scarr = vec![0.0f64; nalpha];
+        for l in 0..nalpha {
+            scarr[l] = 0.0;
+            for j in 0..nalpha {
+                scarr[l] += matrix[j][l] as f64 * prof2.freqs[0][j];
+            }
+        }
+        for i in 0..n {
+            initverticalw[i + 1] = 0.0;
+            for &(k, v) in &cpmx1_sparse[i] {
+                initverticalw[i + 1] += scarr[k] * v;
+            }
+        }
+    }
+    if head_gap {
+        for i in 1..=n {
             initverticalw[i] += ogcp1[0] * hgf2 + fgcp1[i - 1] * gf2_0;
         }
     }
 
-    // currentw[j] = match_score(0, j-1) + head gap cost  (C lines 779, 790-793)
+    // currentw (C line 779): match_calc with prof1 pos 0 vs all prof2 positions.
     let mut currentw = vec![0.0f64; m + 1];
-    for j in 1..=m {
-        currentw[j] = prof1.match_score(0, prof2, j - 1, matrix);
-        if head_gap {
+    {
+        let mut scarr = vec![0.0f64; nalpha];
+        for l in 0..nalpha {
+            scarr[l] = 0.0;
+            for j in 0..nalpha {
+                scarr[l] += matrix[j][l] as f64 * prof1.freqs[0][j];
+            }
+        }
+        for j in 0..m {
+            currentw[j + 1] = 0.0;
+            for &(k, v) in &cpmx2_sparse[j] {
+                currentw[j + 1] += scarr[k] * v;
+            }
+        }
+    }
+    if head_gap {
+        for j in 1..=m {
             currentw[j] += ogcp2[0] * hgf1 + fgcp2[j - 1] * gf1_0;
         }
     }
 
-    // Store h[0][j] = currentw[j] for traceback
     for j in 0..=m { h[0][j] = currentw[j]; }
     for i in 0..=n { h[i][0] = initverticalw[i]; }
 
-    // m[j] = insertion tracker (gap in prof1), persists across rows  (C line 798)
     let mut mj = vec![f64::NEG_INFINITY; m + 1];
     let mut mpj = vec![0usize; m + 1];
     for j in 1..=m {
@@ -348,7 +413,6 @@ pub fn profile_align(
         mpj[j] = 0;
     }
 
-    // ijp boundary: first column = +i+1, first row = -(j+1)  (C lines 568-575)
     for i in 0..=n { ijp[i][0] = i as i32 + 1; }
     for j in 0..=m { ijp[0][j] = -(j as i32 + 1); }
 
@@ -356,20 +420,15 @@ pub fn profile_align(
     let mut lastverticalw = vec![0.0f64; n + 1];
     lastverticalw[0] = currentw[m - 1];
 
-    // Main DP loop  (C lines 807-888)
     let lasti = if tail_gap { n + 1 } else { n };
     for i in 1..lasti {
-        // Swap rows  (C lines 809-811)
         std::mem::swap(&mut previousw, &mut currentw);
         previousw[0] = initverticalw[i - 1];
 
-        // Fill currentw with match scores for row i  (C line 816)
-        for j in 1..=m {
-            currentw[j] = prof1.match_score(i - 1, prof2, j - 1, matrix);
-        }
+        // Batch match_calc for row i (C line 816)
+        match_calc_row(i - 1, &mut currentw);
         currentw[0] = initverticalw[i];
 
-        // Initialize mi (deletion tracker) for this row  (C line 819)
         let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0);
         let mut mi = previousw[0] + ogcp2[1] * gf1_im1;
         let mut mpi: usize = 0;
@@ -380,39 +439,33 @@ pub fn profile_align(
             let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(1.0);
             let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0);
 
-            // wm = diagonal score  (C line 831)
             let mut wm = previousw[j - 1];
             ijp[i][j] = 0;
 
-            // Deletion extend: mi + fgcp2[j-1] * gf1[i]  (C line 837)
             let g = mi + fgcp2[j - 1] * gf1_i;
             if g > wm {
                 wm = g;
-                ijp[i][j] = -(j as i32 - mpi as i32); // C line 844
+                ijp[i][j] = -(j as i32 - mpi as i32);
             }
 
-            // Deletion open from diagonal  (C line 846)
             let g = previousw[j - 1] + ogcp2[j] * gf1_im1;
             if g >= mi {
                 mi = g;
                 mpi = j - 1;
             }
 
-            // Insertion extend: m[j] + fgcp1[i-1] * gf2[j]  (C line 856)
             let g = mj[j] + fgcp1[i - 1] * gf2_j;
             if g > wm {
                 wm = g;
-                ijp[i][j] = i as i32 - mpj[j] as i32; // C line 863
+                ijp[i][j] = i as i32 - mpj[j] as i32;
             }
 
-            // Insertion open from diagonal  (C line 865)
             let g = previousw[j - 1] + ogcp1[i] * gf2_jm1;
             if g >= mj[j] {
                 mj[j] = g;
                 mpj[j] = i - 1;
             }
 
-            // h[i][j] = sub(i,j) + wm  (C line 878: *curpt += wm)
             currentw[j] += wm;
             h[i][j] = currentw[j];
         }
@@ -508,6 +561,190 @@ pub fn profile_align(
         score: best_score,
         operations: ops,
     }
+}
+
+/// Pairwise alignment for single-sequence pairs.
+///
+/// Ports C's `G__align11()` from Galign11.c. Uses character-indexed scoring
+/// matrix and flat gap penalties (no position-specific ogcp/fgcp weighting).
+/// C uses this instead of MSalignmm when both groups have exactly 1 sequence.
+pub fn pairwise_align11(
+    seq1: &[u8],
+    seq2: &[u8],
+    matrix: &[Vec<i32>],
+    amino_map: &[u8; 256],
+    penalty: f64,
+    head_gap: bool,
+    tail_gap: bool,
+) -> Alignment {
+    let n = seq1.len();
+    let m = seq2.len();
+    if n == 0 || m == 0 {
+        return Alignment { seq1: Vec::new(), seq2: Vec::new(), score: 0.0, operations: Vec::new() };
+    }
+
+    let nalpha = matrix.len();
+
+    // Build amino_dynamicmtx[char][char] (C line 1128-1129)
+    // For direct character lookup without going through amino_map during DP
+    let mut amino_mtx = vec![vec![0.0f64; 256]; 256];
+    // We need the reverse map: index -> char. Build from amino_map.
+    // Actually, just use amino_map inline during match_calc.
+
+    // match_calc_mtx: score = amino_dynamicmtx[seq1[i]][seq2[j]]
+    // Which equals matrix[amino_map[seq1[i]]][amino_map[seq2[j]]]
+    let score_pair = |c1: u8, c2: u8| -> f64 {
+        let i = amino_map[c1 as usize] as usize;
+        let j = amino_map[c2 as usize] as usize;
+        if i < nalpha && j < nalpha { matrix[i][j] as f64 } else { 0.0 }
+    };
+
+    // initverticalw: match_calc_mtx(seq2, seq1, 0, lgth1)
+    // = score of seq2[0] vs seq1[i] for each i
+    let mut initverticalw = vec![0.0f64; n + 1];
+    for i in 1..=n {
+        initverticalw[i] = score_pair(seq1[i - 1], seq2[0]);
+        if head_gap {
+            initverticalw[i] += penalty; // flat penalty, C line 1180
+        }
+    }
+
+    // currentw: match_calc_mtx(seq1, seq2, 0, lgth2)
+    // = score of seq1[0] vs seq2[j] for each j
+    let mut currentw = vec![0.0f64; m + 1];
+    for j in 1..=m {
+        currentw[j] = score_pair(seq1[0], seq2[j - 1]);
+        if head_gap {
+            currentw[j] += penalty; // flat penalty, C line 1188
+        }
+    }
+
+    let mut h = vec![vec![0.0f64; m + 1]; n + 1];
+    let mut ijp = vec![vec![0i32; m + 1]; n + 1];
+
+    for j in 0..=m { h[0][j] = currentw[j]; }
+    for i in 0..=n { h[i][0] = initverticalw[i]; }
+
+    // m[j] = currentw[j-1], NO ogcp multiplication (C line 1218)
+    let mut mj = vec![f64::NEG_INFINITY; m + 1];
+    let mut mpj = vec![0usize; m + 1];
+    for j in 1..=m {
+        mj[j] = currentw[j - 1];
+        mpj[j] = 0;
+    }
+
+    for i in 0..=n { ijp[i][0] = i as i32 + 1; }
+    for j in 0..=m { ijp[0][j] = -(j as i32 + 1); }
+
+    let mut previousw = vec![0.0f64; m + 1];
+    let mut lastverticalw = vec![0.0f64; n + 1];
+    if m > 0 { lastverticalw[0] = currentw[m - 1]; }
+
+    let lasti = if tail_gap { n + 1 } else { n };
+    for i in 1..lasti {
+        std::mem::swap(&mut previousw, &mut currentw);
+        previousw[0] = initverticalw[i - 1];
+
+        // match_calc_mtx for row i (C line 1252)
+        for j in 1..=m {
+            currentw[j] = score_pair(seq1[i - 1], seq2[j - 1]);
+        }
+        currentw[0] = initverticalw[i];
+
+        // mi = previousw[0], NO ogcp2 multiplication (C line 1275)
+        let mut mi = previousw[0];
+        let mut mpi: usize = 0;
+
+        for j in 1..=m {
+            let mut wm = previousw[j - 1];
+            ijp[i][j] = 0;
+
+            // Deletion: mi + fpenalty (flat, C line 1306)
+            let g = mi + penalty;
+            if g > wm {
+                wm = g;
+                ijp[i][j] = -(j as i32 - mpi as i32);
+            }
+            // Open from diagonal (C line 1311)
+            let g = previousw[j - 1];
+            if g >= mi {
+                mi = g;
+                mpi = j - 1;
+            }
+
+            // Insertion: m[j] + fpenalty (flat, C line 1325)
+            let g = mj[j] + penalty;
+            if g > wm {
+                wm = g;
+                ijp[i][j] = i as i32 - mpj[j] as i32;
+            }
+            // Open from diagonal (C line 1330)
+            let g = previousw[j - 1];
+            if g >= mj[j] {
+                mj[j] = g;
+                mpj[j] = i - 1;
+            }
+
+            currentw[j] += wm;
+            h[i][j] = currentw[j];
+        }
+        if m > 0 { lastverticalw[i] = currentw[m - 1]; }
+    }
+
+    // Tail gap handling
+    if !tail_gap {
+        let mut wm = lastverticalw[0];
+        for i in 0..n {
+            if lastverticalw[i] >= wm {
+                wm = lastverticalw[i];
+                ijp[n][m] = (n - i) as i32;
+            }
+        }
+        for j in 0..m {
+            if h[n - 1][j] >= wm {
+                wm = h[n - 1][j];
+                ijp[n][m] = -((m - j) as i32);
+            }
+        }
+    }
+
+    // Traceback (same ijp format as MSalignmm)
+    let mut gaptable1 = Vec::new();
+    let mut gaptable2 = Vec::new();
+    let (mut iin, mut jin) = (n as i32, m as i32);
+    let klim = n + m;
+    let mut k = 0;
+    while k <= klim {
+        let v = ijp[iin as usize][jin as usize];
+        let (ifi, jfi): (i32, i32) = if v < 0 {
+            (iin - 1, jin + v)
+        } else if v > 0 {
+            (iin - v, jin - 1)
+        } else {
+            (iin - 1, jin - 1)
+        };
+        let mut l = iin - ifi;
+        while l > 1 { gaptable1.push(b'o'); gaptable2.push(b'-'); k += 1; l -= 1; }
+        let mut l = jin - jfi;
+        while l > 1 { gaptable1.push(b'-'); gaptable2.push(b'o'); k += 1; l -= 1; }
+        if iin <= 0 || jin <= 0 { break; }
+        gaptable1.push(b'o'); gaptable2.push(b'o'); k += 1;
+        iin = ifi; jin = jfi;
+    }
+
+    gaptable1.reverse();
+    gaptable2.reverse();
+    let mut ops = Vec::with_capacity(gaptable1.len());
+    for k in 0..gaptable1.len() {
+        match (gaptable1[k], gaptable2[k]) {
+            (b'o', b'o') => ops.push(AlignOp::Match),
+            (b'o', b'-') => ops.push(AlignOp::Delete),
+            (b'-', b'o') => ops.push(AlignOp::Insert),
+            _ => {}
+        }
+    }
+
+    Alignment { seq1: Vec::new(), seq2: Vec::new(), score: h[n][m], operations: ops }
 }
 
 #[cfg(test)]
