@@ -65,11 +65,17 @@ pub fn progressive_align(
     // After each merge, the merged profile is stored so the next merge can reuse it.
     let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
 
-    for step in &topology.steps {
+    for (step_idx, step) in topology.steps.iter().enumerate() {
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
             &mut profile_cache,
         );
+        // Debug trace: match C's "DBG step clus1 clus2 width score"
+        if std::env::var("MAFFT_DEBUG_STEPS").is_ok() {
+            let w = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
+            eprintln!("RDBG {} {} {} {} {:.1}",
+                step_idx, step.left.len(), step.right.len(), w, last_score);
+        }
     }
 
     let max_width = aligned.iter().map(|s| s.len()).max().unwrap_or(0);
@@ -111,17 +117,21 @@ fn merge_step_cached(
         (prof, eff)
     };
 
-    // C uses G__align11 for single-sequence pairs (1-vs-1), which has flat gap
-    // penalties and character-indexed scoring. For multi-sequence groups, it uses
-    // MSalignmm (profile alignment with position-specific gap costs).
-    let aln = if group1.len() == 1 && group2.len() == 1 {
+    // C uses Falign (FFT-accelerated) for ALL steps when ffttry is true
+    // (nlen > clus, which is always true). G__align11 is only used when
+    // FFT is disabled (use_fft=false) and both groups are single sequences.
+    // When alg='A', the non-FFT fallback is A__align (= profile_align).
+    let aln = if !use_fft && group1.len() == 1 && group2.len() == 1 {
         // G__align11 path: flat gap penalty, character-level scoring
+        // Only used when FFT is disabled (--nofft)
         pairwise_align11(
             &aligned[group1[0]], &aligned[group2[0]],
             &scoring.substitution_matrix, &scoring.amino_map,
             scoring.gap.open as f64, true, true,
         )
-    } else if use_fft && prof1.length > 80 && prof2.length > 80 {
+    } else if use_fft {
+        // C uses Falign for ALL steps when use_fft=true (ffttry = nlen > clus,
+        // always true). No minimum profile length check.
         let fft_params = FftAlignParams {
             num_candidates: 20,
             segment_params: if scoring.seq_type.is_nucleotide() {

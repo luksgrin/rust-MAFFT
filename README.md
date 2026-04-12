@@ -238,7 +238,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **99.8%** of the C implementation's sum-of-pairs identity score (SP=0.3266 vs C's 0.3260, width 729 vs 717) for FFT-NS-2.
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **99.8%** of the C implementation's sum-of-pairs identity score (SP=0.3266 vs C's 0.3260, width 729 vs 717) for FFT-NS-2. Steps 0-2 match exactly (scores identical: 302431, 212964, 240956). The remaining 0.2% gap is from the FFT correlation index rearrangement (`soukan` array in Falign.c) which maps FFT output indices to lag values differently from our implementation due to C's custom FFT library conventions vs rustfft's output format.
 
 ### Performance
 

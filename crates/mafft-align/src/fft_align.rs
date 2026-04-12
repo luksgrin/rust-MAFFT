@@ -89,7 +89,8 @@ pub fn fft_profile_align(
     }
 
     // Step 1: Multi-channel FFT correlation using profile frequencies
-    let fft_size = (n + m).next_power_of_two();
+    // C computes FFT size as next_power_of_2(max(len1, len2)), NOT sum.
+    let fft_size = n.max(m).next_power_of_two();
     let channels_a = profile_to_channels(prof1, params.num_channels, fft_size);
     let channels_b = profile_to_channels(prof2, params.num_channels, fft_size);
     let correlation = multichannel_correlate(&channels_a, &channels_b);
