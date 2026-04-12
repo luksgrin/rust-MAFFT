@@ -246,12 +246,12 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 
 ## Remaining gaps vs original MAFFT
 
-### Alignment quality (3.3% SP score gap)
+### Alignment quality (3.2% SP score gap)
 
-The profile alignment DP ports C's exact formulation (diagonal gap opening, sub on all paths, `ijp` traceback, `st_OpeningGapCount`/`st_FinalGapCount`, headgapfreq=1.0, profile caching). The remaining gap is from:
+The profile alignment DP ports C's exact formulation (diagonal gap opening, sub on all paths, `ijp` traceback, `st_OpeningGapCount`/`st_FinalGapCount`, headgapfreq=1.0, profile caching with exact `createogresult`/`createfgresult` block-boundary logic). The remaining gap is from:
 
-- **Profile caching granularity**: C's `cpmxhist` blends profiles INSIDE the rolling-row DP using intermediate values. Our caching blends final profiles AFTER the DP. Mathematically equivalent but different float accumulation paths across 35 merge steps.
-- **`match_calc` sparse representation**: C uses `cpmxpd`/`cpmxpdn` sparse arrays to skip zero-frequency residues during score computation. Our `match_score` iterates all alphabet positions. Same result but different float ordering.
+- **Profile caching granularity**: C computes cached profiles INSIDE `MSalignmm_tanni` using the exact `cpmx1pt`/`cpmx2pt` pointers from the rolling-row DP. Our caching blends `Profile` structs after the DP completes. Closing this would require fusing the DP fill and profile blending into a single function.
+- **`match_calc` sparse representation**: C uses `cpmxpd`/`cpmxpdn` sparse arrays to skip zero-frequency residues. Our `match_score` iterates all alphabet positions. Same result but different float ordering.
 
 
 ## Upstream MAFFT

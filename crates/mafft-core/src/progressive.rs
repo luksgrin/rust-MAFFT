@@ -141,12 +141,15 @@ fn merge_step_cached(
         }
     }
 
-    // Cache the merged profile (C's createcpmxresult)
+    // Cache the merged profile (C's createcpmxresult + creategapfreqresult +
+    // createogresult + createfgresult). Only cache for groups > 20 sequences
+    // (matching C's condition at MSalignmm.c line 2431).
     let total_eff = eff1 + eff2;
-    if total_eff > 0.0 {
+    let combined_seqs = group1.len() + group2.len();
+    if total_eff > 0.0 && combined_seqs > 20 {
         let norm_eff1 = eff1 / total_eff;
         let norm_eff2 = eff2 / total_eff;
-        let merged_prof = blend_profiles(
+        let merged_prof = blend_profiles_exact(
             &prof1, &prof2,
             norm_eff1, norm_eff2,
             &gaptable1, &gaptable2,
@@ -226,13 +229,13 @@ fn build_profile_from_seqs(
     (prof, sum)
 }
 
-/// Blend two profiles using the alignment gap tables, matching C's `createcpmxresult`.
+/// Blend two profiles using C's exact createcpmxresult + creategapfreqresult +
+/// createogresult + createfgresult logic (MSalignmm.c lines 283-467).
 ///
-/// For each position in the merged alignment:
-/// - If gaptable1[j] == 'o': take prof1's column (weighted by eff1)
-/// - If gaptable2[j] == 'o': take prof2's column (weighted by eff2)
-/// - Both can contribute at Match positions
-fn blend_profiles(
+/// The ogcp/fgcp blending handles gap positions specially: at block boundaries
+/// (gap→non-gap or non-gap→gap), the value is interpolated from the source
+/// profile's nongap_freq. Within a gap block, the value is 0.
+fn blend_profiles_exact(
     prof1: &Profile,
     prof2: &Profile,
     eff1: f64,
@@ -243,53 +246,147 @@ fn blend_profiles(
 ) -> Profile {
     let alen = gaptable1.len();
     let mut freqs = vec![vec![0.0f64; nalphabets]; alen];
-    let mut gap_freq = vec![0.0f64; alen];
-    let mut nongap_freq = vec![0.0f64; alen];
+    let mut nongap_freq = vec![0.0f64; alen + 1]; // C uses alen+1
     let mut ogcp = vec![0.0f64; alen];
     let mut fgcp = vec![0.0f64; alen];
 
-    // Blend frequencies from prof1
-    let mut p1 = 0usize;
-    for j in 0..alen {
-        if gaptable1[j] != b'-' {
-            if p1 < prof1.length {
-                for k in 0..nalphabets.min(prof1.freqs[p1].len()) {
-                    freqs[j][k] += prof1.freqs[p1][k] * eff1;
+    // createcpmxresult: blend frequency matrices
+    {
+        let mut p = 0usize;
+        for j in 0..alen {
+            if gaptable1[j] != b'-' {
+                if p < prof1.length {
+                    for k in 0..nalphabets.min(prof1.freqs[p].len()) {
+                        freqs[j][k] += prof1.freqs[p][k] * eff1;
+                    }
                 }
-                nongap_freq[j] += prof1.nongap_freq[p1] * eff1;
-                gap_freq[j] += prof1.gap_freq[p1] * eff1;
-                ogcp[j] += prof1.ogcp[p1] * eff1;
-                fgcp[j] += prof1.fgcp[p1] * eff1;
+                p += 1;
             }
-            p1 += 1;
+        }
+    }
+    {
+        let mut p = 0usize;
+        for j in 0..alen {
+            if gaptable2[j] != b'-' {
+                if p < prof2.length {
+                    for k in 0..nalphabets.min(prof2.freqs[p].len()) {
+                        freqs[j][k] += prof2.freqs[p][k] * eff2;
+                    }
+                }
+                p += 1;
+            }
         }
     }
 
-    // Blend frequencies from prof2
-    let mut p2 = 0usize;
-    for j in 0..alen {
-        if gaptable2[j] != b'-' {
-            if p2 < prof2.length {
-                for k in 0..nalphabets.min(prof2.freqs[p2].len()) {
-                    freqs[j][k] += prof2.freqs[p2][k] * eff2;
+    // creategapfreqresult: blend nongap frequencies (C uses alen+1 positions)
+    {
+        let mut p = 0usize;
+        for j in 0..=alen {
+            if j < alen && gaptable1[j] == b'-' {
+                // gap position: skip
+            } else {
+                if p < prof1.nongap_freq.len() {
+                    nongap_freq[j] += prof1.nongap_freq[p] * eff1;
                 }
-                nongap_freq[j] += prof2.nongap_freq[p2] * eff2;
-                gap_freq[j] += prof2.gap_freq[p2] * eff2;
-                ogcp[j] += prof2.ogcp[p2] * eff2;
-                fgcp[j] += prof2.fgcp[p2] * eff2;
+                p += 1;
             }
-            p2 += 1;
         }
     }
+    {
+        let mut p = 0usize;
+        for j in 0..alen {
+            if gaptable2[j] == b'-' {
+                // gap position: skip
+            } else {
+                if p < prof2.nongap_freq.len() {
+                    nongap_freq[j] += prof2.nongap_freq[p] * eff2;
+                }
+                p += 1;
+            }
+        }
+    }
+    nongap_freq[alen] = 1.0; // C: gapfresult[j] = 1.0 at tail
+
+    // createogresult: blend opening gap counts with block-boundary handling
+    blend_og_one_side(&mut ogcp, &prof1.ogcp, &prof1.nongap_freq, gaptable1, eff1, prof1.length);
+    blend_og_one_side(&mut ogcp, &prof2.ogcp, &prof2.nongap_freq, gaptable2, eff2, prof2.length);
+
+    // createfgresult: blend closing gap counts with block-boundary handling
+    blend_fg_one_side(&mut fgcp, &prof1.fgcp, &prof1.nongap_freq, gaptable1, eff1, prof1.length);
+    blend_fg_one_side(&mut fgcp, &prof2.fgcp, &prof2.nongap_freq, gaptable2, eff2, prof2.length);
+
+    // Compute gap_freq from nongap_freq
+    let gap_freq: Vec<f64> = nongap_freq[..alen].iter().map(|&nf| (1.0 - nf).max(0.0)).collect();
+    let nongap_freq_trimmed = nongap_freq[..alen].to_vec();
 
     Profile {
         freqs,
         gap_freq,
-        nongap_freq,
+        nongap_freq: nongap_freq_trimmed,
         ogcp,
         fgcp,
         length: alen,
         nalphabets,
+    }
+}
+
+/// C's createogresult logic for one side (MSalignmm.c lines 354-378).
+fn blend_og_one_side(
+    result: &mut [f64],
+    ori: &[f64],     // raw opening counts
+    gf: &[f64],      // nongap_freq
+    gaptable: &[u8],
+    eff: f64,
+    prof_len: usize,
+) {
+    let alen = result.len();
+    let mut p = 0usize;
+    for j in 0..alen {
+        if gaptable[j] == b'-' {
+            if j == 0 {
+                result[j] += 1.0 * eff;
+            } else if gaptable[j - 1] != b'-' && p > 0 {
+                let gf_val = if p - 1 < gf.len() { gf[p - 1] } else { 1.0 };
+                result[j] += gf_val * eff;
+            }
+        } else {
+            if j == 0 || (j > 0 && gaptable[j - 1] != b'-') {
+                if p < ori.len() {
+                    result[j] += ori[p] * eff;
+                }
+            }
+            p += 1;
+        }
+    }
+}
+
+/// C's createfgresult logic for one side (MSalignmm.c lines 419-439).
+fn blend_fg_one_side(
+    result: &mut [f64],
+    ori: &[f64],     // raw closing counts
+    gf: &[f64],      // nongap_freq
+    gaptable: &[u8],
+    eff: f64,
+    prof_len: usize,
+) {
+    let alen = result.len();
+    let mut p = 0usize;
+    for j in 0..alen {
+        if gaptable[j] == b'-' {
+            if j == alen - 1 {
+                result[j] += eff;
+            } else if gaptable[j + 1] != b'-' {
+                let gf_val = if p < gf.len() { gf[p] } else { 1.0 };
+                result[j] += gf_val * eff;
+            }
+        } else {
+            if j < alen - 1 && gaptable[j + 1] != b'-' {
+                if p < ori.len() {
+                    result[j] += ori[p] * eff;
+                }
+            }
+            p += 1;
+        }
     }
 }
 
