@@ -614,3 +614,109 @@ fn diagnostic_align11_vs_profile() {
     eprintln!("Same ops: {}", aln11.operations == aln_prof.operations);
     eprintln!("penalty={}", scoring.gap.open);
 }
+
+#[test]
+fn diagnostic_fft_anchors() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, profile_align, fft_profile_align, GapModel, AlignOp, FftAlignParams};
+    use mafft_fft::SegmentParams;
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    // Test merge step 6: [28] + [29,30] — first multi-seq merge with different widths
+    let s1 = &input.sequences[28].data;
+    let s29 = &input.sequences[29].data;
+    let s30 = &input.sequences[30].data;
+
+    // Build profiles
+    let seqs1: Vec<&[u8]> = vec![s1.as_slice()];
+    let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
+
+    let seqs2: Vec<&[u8]> = vec![s29.as_slice(), s30.as_slice()];
+    let prof2 = Profile::from_aligned(&seqs2, &[0.5, 0.5], &scoring.amino_map, scoring.nalphabets);
+
+    let fft_params = FftAlignParams {
+        num_candidates: 20,
+        segment_params: SegmentParams::protein(),
+        gap: gap.clone(),
+        head_gap: true,
+        tail_gap: true,
+        num_channels: scoring.nscoredalphabets,
+    };
+
+    let aln_fft = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params);
+    let aln_dp = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+
+    let m_fft = aln_fft.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
+    let m_dp = aln_dp.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
+
+    eprintln!("Prof1 len={}, Prof2 len={}", prof1.length, prof2.length);
+    eprintln!("FFT: score={:.1} width={} matches={}", aln_fft.score, aln_fft.operations.len(), m_fft);
+    eprintln!("DP:  score={:.1} width={} matches={}", aln_dp.score, aln_dp.operations.len(), m_dp);
+    eprintln!("Same: {}", aln_fft.operations == aln_dp.operations);
+}
+
+#[test]
+fn diagnostic_matrix_diagonal() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    eprintln!("Matrix size: {}x{}", scoring.substitution_matrix.len(), scoring.substitution_matrix[0].len());
+    eprintln!("nalphabets: {}", scoring.nalphabets);
+    eprintln!("gap.open: {}, gap.extend: {}, gap.offset: {}", scoring.gap.open, scoring.gap.extend, scoring.gap.offset);
+    // Print first 5 diagonal values
+    for i in 0..5.min(scoring.substitution_matrix.len()) {
+        eprintln!("matrix[{}][{}] = {}", i, i, scoring.substitution_matrix[i][i]);
+    }
+    // Sum of diagonal for first 20 (amino acids)
+    let diag_sum: i32 = (0..20).map(|i| scoring.substitution_matrix[i][i]).sum();
+    eprintln!("Sum of diagonal (0..20): {}", diag_sum);
+    eprintln!("Mean diagonal: {:.1}", diag_sum as f64 / 20.0);
+}
+
+#[test]
+fn diagnostic_score_breakdown() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, profile_align, pairwise_align11, GapModel};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    let s33 = &input.sequences[33].data;
+    let s34 = &input.sequences[34].data;
+
+    // Profile-based score
+    let seqs: Vec<&[u8]> = vec![s33.as_slice()];
+    let prof = Profile::from_aligned(&seqs, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let aln_prof = profile_align(&prof, &prof, &scoring.substitution_matrix, &gap, true, true);
+    
+    // G__align11 score
+    let aln11 = pairwise_align11(s33, s34, &scoring.substitution_matrix, &scoring.amino_map,
+        scoring.gap.open as f64, true, true);
+
+    // Manual diagonal sum
+    let mut diag_sum = 0i64;
+    for &ch in s33 {
+        let i = scoring.amino_map[ch as usize] as usize;
+        if i < scoring.substitution_matrix.len() {
+            diag_sum += scoring.substitution_matrix[i][i] as i64;
+        }
+    }
+
+    eprintln!("profile_align score: {:.1}", aln_prof.score);
+    eprintln!("pairwise_align11 score: {:.1}", aln11.score);
+    eprintln!("Manual diagonal sum: {}", diag_sum);
+    eprintln!("C's score: 302431");
+    eprintln!("gap.open = {}", scoring.gap.open);
+    
+    // Check first few sub scores
+    for i in 0..3 {
+        let s = prof.match_score(i, &prof, i, &scoring.substitution_matrix);
+        eprintln!("match_score({},{}) = {:.1} (char={})", i, i, s, s33[i] as char);
+    }
+}

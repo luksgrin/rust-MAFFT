@@ -68,7 +68,7 @@ impl Default for MafftEngine {
     fn default() -> Self {
         Self {
             mode: AlignmentMode::FftNs2,
-            scoring_model: ScoringModel::Jtt,
+            scoring_model: ScoringModel::Blosum(62),
             retree: 2,
             gap_open: None,
             gap_offset: None,
@@ -84,7 +84,7 @@ impl Default for MafftEngine {
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Jtt, retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, kimura_r: None, parttree: false, dpparttree: false, groupsize: None }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, kimura_r: None, parttree: false, dpparttree: false, groupsize: None }
     }
 
     /// Set the number of guide tree rebuilds.

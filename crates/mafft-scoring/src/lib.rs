@@ -166,8 +166,13 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
 
     // Both BLOSUM and JTT/TM use the full normalization pipeline:
     // subtract weighted average, scale by 600/diag_avg, subtract offset.
-    // The C code sets makeaverage0=1 for both paths when pamN >= 0.
-    let normalized = build_scoring_matrix(&raw_20x20, &freq, gap_params.offset, true);
+    //
+    // IMPORTANT: C's shell script (mafft.tmpl) sets defaultaof="0.000",
+    // which means the scoring matrix offset (aof/poffset) is 0, not -123.
+    // The -123 default in constants.c is overridden by the shell script.
+    // So the scoring matrix does NOT include the offset subtraction.
+    // The gap_params.offset (-73) is only used for FFT/LN matrices.
+    let normalized = build_scoring_matrix(&raw_20x20, &freq, 0, true);
 
     // Expand 20x20 -> 26x26.
     // Matching C: initialize to zero, fill only the 20x20 core.

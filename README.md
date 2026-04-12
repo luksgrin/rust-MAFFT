@@ -238,7 +238,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **97.8%** of the C implementation's sum-of-pairs identity score (SP=0.319 vs C's 0.326, width 664 vs 717) for FFT-NS-2. The profile alignment DP ports C's exact formulation: rolling-row scheme, batch `match_calc` with sparse dot product, diagonal gap opening, sub on all paths, `ijp` traceback, `G__align11` for 1-vs-1 pairs, scoring-matrix-based retree distances (`naivepairscore11`), and profile caching with `createcpmxresult`/`createogresult`/`createfgresult`. The remaining 2.2% gap is from accumulated minor differences in the first retree pass.
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **99.8%** of the C implementation's sum-of-pairs identity score (SP=0.3266 vs C's 0.3260, width 729 vs 717) for FFT-NS-2.
 
 ### Performance
 
