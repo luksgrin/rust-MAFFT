@@ -248,10 +248,7 @@ On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`),
 
 ### Alignment quality (3.2% SP score gap)
 
-The profile alignment DP ports C's exact formulation (diagonal gap opening, sub on all paths, `ijp` traceback, `st_OpeningGapCount`/`st_FinalGapCount`, headgapfreq=1.0, profile caching with exact `createogresult`/`createfgresult` block-boundary logic). The remaining gap is from:
-
-- **Profile caching granularity**: C computes cached profiles INSIDE `MSalignmm_tanni` using the exact `cpmx1pt`/`cpmx2pt` pointers from the rolling-row DP. Our caching blends `Profile` structs after the DP completes. Closing this would require fusing the DP fill and profile blending into a single function.
-- **`match_calc` sparse representation**: C uses `cpmxpd`/`cpmxpdn` sparse arrays to skip zero-frequency residues. Our `match_score` iterates all alphabet positions. Same result but different float ordering.
+The profile alignment DP ports C's exact formulation (diagonal gap opening, sub on all paths, `ijp` traceback, `st_OpeningGapCount`/`st_FinalGapCount`, headgapfreq=1.0, profile caching with exact `createogresult`/`createfgresult` block-boundary logic, gap characters in `cpmx`). Fusing the DP and profile blending was investigated but would not help — C's `createcpmxresult` uses the same read-only `cpmx` arrays as the DP, so the blending result is independent of DP execution order. The remaining gap is from accumulated float differences in weight normalization and guide tree construction across 35 merge steps.
 
 
 ## Upstream MAFFT

@@ -69,17 +69,19 @@ impl Profile {
         let mut closing_count = vec![0.0f64; length];
 
         for (seq, &w) in sequences.iter().zip(weights.iter()) {
-            // Frequencies and gap counts
+            // Frequencies: C's cpmx_calc_new maps ALL characters through amino_n,
+            // including '-' (index 24) and '.' (index 23). Gap characters participate
+            // in the composition probability matrix and thus in match_score computation.
             for (pos, &ch) in seq.iter().enumerate() {
                 if pos >= length { break; }
                 let is_gap = ch == b'-' || ch == b'.';
                 if is_gap {
                     gap_freq[pos] += w;
-                } else {
-                    let idx = amino_map[ch as usize] as usize;
-                    if idx < nalphabets {
-                        freqs[pos][idx] += w;
-                    }
+                }
+                // Map ALL characters (including gaps) into freqs, matching C's cpmx_calc_new
+                let idx = amino_map[ch as usize] as usize;
+                if idx < nalphabets {
+                    freqs[pos][idx] += w;
                 }
             }
 
