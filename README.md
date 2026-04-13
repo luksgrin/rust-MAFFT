@@ -9,7 +9,7 @@ This project provides:
 
 ## Status
 
-**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence test dataset, alignment quality exceeds the C implementation (131% SP ratio). See [Gap Analysis](#gap-analysis-vs-original-mafft) for remaining work.
+**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, the Rust FFT-NS-2 alignment has SP=0.3266 versus C's SP=0.3260 (ratio 1.0016). The FFT and noFFT paths produce byte-identical output. Output is not yet byte-identical with C — see [Known limitations](#known-limitations) for the remaining gap.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -34,10 +34,10 @@ The binary is at `target/release/mafft-rs`.
 ### Run tests
 
 ```bash
-# Fast unit tests (all crates, ~91 tests)
-cargo test --workspace --lib
+# Fast unit tests (all crates, 111 tests)
+cargo test --workspace --exclude pymafft --lib
 
-# Integration tests (requires release build, ~4 tests)
+# Integration tests (requires release build, 26 tests)
 cargo test -p mafft-core --release --test end_to_end
 
 # Build and test C reference (optional)
@@ -228,11 +228,11 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust unit tests | 103 | All crates, all modules |
-| Rust integration tests | 4 | End-to-end on real data + C reference comparison |
+| Rust unit tests | 111 | All crates, all modules |
+| Rust integration tests | 26 | End-to-end on real data + C reference comparison + DP diagnostics |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total** | **148** | |
+| **Total** | **177** | |
 
 ## Known limitations
 
