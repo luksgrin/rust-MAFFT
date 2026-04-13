@@ -216,7 +216,7 @@ fn diagnostic_fft_anchoring() {
     use mafft_fft::SegmentParams;
 
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
     // Take two sequences and compare FFT-accelerated vs direct DP alignment
     let s1 = &input.sequences[0].data;
@@ -719,4 +719,285 @@ fn diagnostic_score_breakdown() {
         let s = prof.match_score(i, &prof, i, &scoring.substitution_matrix);
         eprintln!("match_score({},{}) = {:.1} (char={})", i, i, s, s33[i] as char);
     }
+}
+
+#[test]
+fn diagnostic_fft_pipeline() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, GapModel, FftAlignParams, fft_profile_align};
+    use mafft_fft::SegmentParams;
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    let s1 = &input.sequences[0].data;
+    let s2 = &input.sequences[1].data;
+    eprintln!("s1 len={} s2 len={}", s1.len(), s2.len());
+    
+    let seqs1: Vec<&[u8]> = vec![s1.as_slice()];
+    let seqs2: Vec<&[u8]> = vec![s2.as_slice()];
+    let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
+
+    let params = FftAlignParams {
+        num_candidates: 20,
+        segment_params: SegmentParams::protein(),
+        gap: gap.clone(),
+        head_gap: true,
+        tail_gap: true,
+        num_channels: scoring.nscoredalphabets,
+    };
+    let aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &params);
+    eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());
+}
+
+#[test]
+fn diagnostic_segment_align() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, GapModel, profile_align};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    let s1 = &input.sequences[0].data;
+    let s2 = &input.sequences[1].data;
+    
+    let seqs1: Vec<&[u8]> = vec![s1.as_slice()];
+    let seqs2: Vec<&[u8]> = vec![s2.as_slice()];
+    let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
+
+    // Full alignment
+    let full = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    eprintln!("Full alignment: score={} ops={}", full.score, full.operations.len());
+
+    // Sub-profile alignment: positions 0..28 of each
+    let sub1 = prof1.sub_profile(0, 28);
+    let sub2 = prof2.sub_profile(0, 28);
+    let seg = profile_align(&sub1, &sub2, &scoring.substitution_matrix, &gap, true, false);
+    eprintln!("Segment 0..28: score={} ops={}", seg.score, seg.operations.len());
+
+    // Same with head_gap=false (intermediate segment)
+    let seg2 = profile_align(&sub1, &sub2, &scoring.substitution_matrix, &gap, false, false);
+    eprintln!("Segment 0..28 (no head_gap): score={} ops={}", seg2.score, seg2.operations.len());
+}
+
+#[test]
+fn diagnostic_step3_anchors() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, GapModel, FftAlignParams, fft_profile_align};
+    use mafft_fft::SegmentParams;
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    let s7 = &input.sequences[7].data;
+    let s8 = &input.sequences[8].data;
+    eprintln!("s7 len={} s8 len={}", s7.len(), s8.len());
+
+    let seqs1: Vec<&[u8]> = vec![s7.as_slice()];
+    let seqs2: Vec<&[u8]> = vec![s8.as_slice()];
+    let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
+
+    let params = FftAlignParams {
+        num_candidates: 20,
+        segment_params: SegmentParams::protein(),
+        gap: gap.clone(),
+        head_gap: true,
+        tail_gap: true,
+        num_channels: scoring.nscoredalphabets,
+    };
+    let aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &params);
+    eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());
+
+    use mafft_align::profile_align;
+    let dp = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    eprintln!("DP result: score={} ops={}", dp.score, dp.operations.len());
+    eprintln!("C step3 score: 108355.0");
+}
+
+#[test]
+fn diagnostic_step3_dp() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, GapModel, profile_align, AlignOp};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    let s7 = &input.sequences[7].data;
+    let s8 = &input.sequences[8].data;
+
+    let seqs1: Vec<&[u8]> = vec![s7.as_slice()];
+    let seqs2: Vec<&[u8]> = vec![s8.as_slice()];
+    let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
+
+    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let m_count = aln.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
+    let d_count = aln.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
+    let i_count = aln.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
+    eprintln!("DP result: score={} ops={} M/D/I={}/{}/{}", aln.score, aln.operations.len(), m_count, d_count, i_count);
+
+    // Compute manual score: for each match position, look up what residues match
+    use mafft_align::pairwise_align11;
+    let aln11 = pairwise_align11(s7, s8, &scoring.substitution_matrix, &scoring.amino_map,
+        scoring.gap.open as f64, true, true);
+    let m_count = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
+    let d_count = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
+    let i_count = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
+    eprintln!("G__align11 result: score={} ops={} M/D/I={}/{}/{}", aln11.score, aln11.operations.len(), m_count, d_count, i_count);
+
+    eprintln!("C step3: score=108355, width=364");
+}
+
+#[test]
+fn diagnostic_step3_align_dump() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, GapModel, profile_align, AlignOp};
+
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    let s7 = &input.sequences[7].data;
+    let s8 = &input.sequences[8].data;
+
+    let seqs1: Vec<&[u8]> = vec![s7.as_slice()];
+    let seqs2: Vec<&[u8]> = vec![s8.as_slice()];
+    let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
+
+    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+
+    // Walk operations and dump first 30 positions
+    let mut p1 = 0;
+    let mut p2 = 0;
+    let mut a1 = String::new();
+    let mut a2 = String::new();
+    for (i, op) in aln.operations.iter().enumerate() {
+        if i >= 200 { break; }
+        match op {
+            AlignOp::Match => {
+                a1.push(s7[p1] as char);
+                a2.push(s8[p2] as char);
+                p1 += 1;
+                p2 += 1;
+            }
+            AlignOp::Delete => {
+                a1.push(s7[p1] as char);
+                a2.push('-');
+                p1 += 1;
+            }
+            AlignOp::Insert => {
+                a1.push('-');
+                a2.push(s8[p2] as char);
+                p2 += 1;
+            }
+        }
+    }
+    eprintln!("Alignment (first 200 positions):");
+    eprintln!("a1: {}", a1);
+    eprintln!("a2: {}", a2);
+    
+    // Count where the inserts and matches are
+    let leading_inserts = aln.operations.iter().take_while(|op| matches!(op, AlignOp::Insert)).count();
+    let trailing_inserts = aln.operations.iter().rev().take_while(|op| matches!(op, AlignOp::Insert)).count();
+    eprintln!("leading_inserts={}, trailing_inserts={}", leading_inserts, trailing_inserts);
+}
+
+#[test]
+fn diagnostic_simple_offset() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, GapModel, profile_align, AlignOp};
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    // Test: short ACDE in middle of long sequence padded with random residues
+    let s1: &[u8] = b"ACDE";
+    let s2: &[u8] = b"WWWWACDEWWWW";
+    
+    let prof1 = Profile::from_aligned(&[s1], &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&[s2], &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    
+    let mut p1 = 0; let mut p2 = 0;
+    let mut a1 = String::new();
+    let mut a2 = String::new();
+    for op in &aln.operations {
+        match op {
+            AlignOp::Match => { a1.push(s1[p1] as char); a2.push(s2[p2] as char); p1+=1; p2+=1; }
+            AlignOp::Delete => { a1.push(s1[p1] as char); a2.push('-'); p1+=1; }
+            AlignOp::Insert => { a1.push('-'); a2.push(s2[p2] as char); p2+=1; }
+        }
+    }
+    eprintln!("ACDE vs WWWWACDEWWWW:");
+    eprintln!("  a1: {}", a1);
+    eprintln!("  a2: {}", a2);
+    eprintln!("  score: {}", aln.score);
+    // Expected: optimal alignment is ----ACDE----, score should be sum of A-A, C-C, D-D, E-E
+}
+
+#[test]
+fn diagnostic_dp_score_bug() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_align::{Profile, GapModel, profile_align};
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    
+    eprintln!("matrix[0][0] (A-A) = {}", scoring.substitution_matrix[0][0]);
+    eprintln!("matrix[4][4] (C-C) = {}", scoring.substitution_matrix[4][4]);
+    eprintln!("matrix[3][3] (D-D) = {}", scoring.substitution_matrix[3][3]);
+    eprintln!("matrix[6][6] (E-E) = {}", scoring.substitution_matrix[6][6]);
+    eprintln!("matrix[17][17] (W-W) = {}", scoring.substitution_matrix[17][17]);
+    eprintln!("amino_map[A]={}", scoring.amino_map[b'A' as usize]);
+    eprintln!("amino_map[C]={}", scoring.amino_map[b'C' as usize]);
+    eprintln!("amino_map[D]={}", scoring.amino_map[b'D' as usize]);
+    eprintln!("amino_map[E]={}", scoring.amino_map[b'E' as usize]);
+    eprintln!("amino_map[W]={}", scoring.amino_map[b'W' as usize]);
+    eprintln!("gap.open={}", scoring.gap.open);
+
+    // Test align ACDE vs ACDE — should give max score
+    let s1: &[u8] = b"ACDE";
+    let prof1 = Profile::from_aligned(&[s1], &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let aln = profile_align(&prof1, &prof1, &scoring.substitution_matrix, &gap, true, true);
+    eprintln!("ACDE vs ACDE: score={}", aln.score);
+    // Expected: A-A + C-C + D-D + E-E
+}
+
+#[test]
+fn diagnostic_dp_trace() {
+    use mafft_scoring::build_context;
+    use mafft_types::{ScoringModel, SeqType};
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    
+    // Print key matrix values
+    let amap = &scoring.amino_map;
+    let m = &scoring.substitution_matrix;
+    let aw_idx = amap[b'A' as usize] as usize;
+    let cw_idx = amap[b'C' as usize] as usize;
+    let dw_idx = amap[b'D' as usize] as usize;
+    let ew_idx = amap[b'E' as usize] as usize;
+    let ww_idx = amap[b'W' as usize] as usize;
+    eprintln!("sub(A,A)={}  sub(A,W)={}", m[aw_idx][aw_idx], m[aw_idx][ww_idx]);
+    eprintln!("sub(C,A)={}  sub(C,W)={}", m[cw_idx][aw_idx], m[cw_idx][ww_idx]);
+    eprintln!("sub(C,C)={}  sub(D,D)={}  sub(E,E)={}", m[cw_idx][cw_idx], m[dw_idx][dw_idx], m[ew_idx][ew_idx]);
+    eprintln!("gap.open={}", scoring.gap.open);
+    
+    // What should the optimal score be?
+    let opt = m[aw_idx][aw_idx] + m[cw_idx][cw_idx] + m[dw_idx][dw_idx] + m[ew_idx][ew_idx] - 2 * (scoring.gap.open / 2);
+    eprintln!("Expected optimal score (4 matches + 2 gaps of 4): ~{}", opt);
 }

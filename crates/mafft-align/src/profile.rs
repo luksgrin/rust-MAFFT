@@ -212,11 +212,16 @@ pub fn align_with_anchors(
         if a1 > p1 || a2 > p2 {
             let sub1 = prof1.sub_profile(p1, a1);
             let sub2 = prof2.sub_profile(p2, a2);
-            let seg_aln = profile_align(&sub1, &sub2, matrix, gap, p1 == 0, false);
+            // Inter-anchor segments are FIXED-END alignments: the start position
+            // is determined by the previous anchor (or sequence start), the end
+            // by the next anchor. tail_gap=true forces ending at corner (n,m).
+            let seg_aln = profile_align(&sub1, &sub2, matrix, gap, p1 == 0, true);
             total_score += seg_aln.score;
             all_ops.extend(seg_aln.operations);
         }
         if a1 < prof1.length && a2 < prof2.length {
+            // Add the anchor's match score (was missing — caused FFT alignment scores to be ~7x too low)
+            total_score += prof1.match_score(a1, prof2, a2, matrix);
             all_ops.push(AlignOp::Match);
             p1 = a1 + 1;
             p2 = a2 + 1;
@@ -356,9 +361,10 @@ pub fn profile_align(
         entries
     }).collect();
 
+    // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
+    // Fills initverticalw[i] with match score between prof2[0] and prof1[i].
     let mut initverticalw = vec![0.0f64; n + 1];
     {
-        // scarr from prof2 position 0 (C: cpmx2pt at jst=0)
         let mut scarr = vec![0.0f64; nalpha];
         for l in 0..nalpha {
             scarr[l] = 0.0;
@@ -380,6 +386,7 @@ pub fn profile_align(
     }
 
     // currentw (C line 779): match_calc with prof1 pos 0 vs all prof2 positions.
+    // C fills currentw[0..lgth2-1] (NOT shifted by +1).
     let mut currentw = vec![0.0f64; m + 1];
     {
         let mut scarr = vec![0.0f64; nalpha];
@@ -473,6 +480,8 @@ pub fn profile_align(
     }
 
     // Tail gap handling  (C lines 512-536)
+    // For tail_gap=false, the main DP loop stops at row n-1 (lasti = n).
+    // Find the best ending position in the last computed row or last column.
     if !tail_gap {
         let mut wm = lastverticalw[0];
         for i in 0..n {
@@ -487,6 +496,8 @@ pub fn profile_align(
                 ijp[n][m] = -((m - j) as i32);
             }
         }
+        // Set h[n][m] to the best score found (for the score field).
+        h[n][m] = wm;
     }
 
     // Traceback  (C lines 581-617)

@@ -238,7 +238,23 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Alignment quality
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation achieves **99.8%** of the C implementation's sum-of-pairs identity score (SP=0.3266 vs C's 0.3260, width 729 vs 717) for FFT-NS-2. Steps 0-2 match exactly (scores identical: 302431, 212964, 240956). The remaining 0.2% gap is from the FFT correlation index rearrangement (`soukan` array in Falign.c) which maps FFT output indices to lag values differently from our implementation due to C's custom FFT library conventions vs rustfft's output format.
+On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`), the Rust implementation produces an alignment with **SP=0.3266 vs C's SP=0.3260** (ratio 1.0016 — slightly higher SP than C) and **width 729 vs C's 717** for FFT-NS-2. The FFT and noFFT paths now produce byte-identical output, confirming the FFT anchoring (`soukan` rearrangement, anchor scoring, inter-anchor segment alignment) is consistent with the direct DP path.
+
+**Remaining work to reach byte-identical C output:**
+
+The 12-column width gap stems from per-step DP score divergences during progressive merging. Per-step trace against C reference (15 steps traced):
+
+- Steps 0-2, 7-11, 14: scores match exactly (e.g., 302431, 212964, 240956)
+- Steps 3, 4, 5, 6, 12, 13: Rust scores lower than C
+
+Diagnostic test case `diagnostic_simple_offset` (`ACDE` vs `WWWWACDEWWWW`) reproduces the symptom: Rust DP picks `A----CDE----` (one match + leading gaps placed mid-sequence) instead of the optimal `----ACDE----` (four matches with all gaps leading). This indicates the position-specific gap penalty interaction with the boundary `initverticalw`/`currentw` initialization is biasing path selection, even though the boundary itself is now a faithful port of C's `match_calc(prof2[0], prof1[*])` followed by `ogcp/fgcp` accumulation.
+
+Suspected root cause: subtle difference in how `mj`/`mpj` (best-match-from-row) trackers are seeded on row 0 / column 0, or in the `ogcp[1]` term added at row entry. Next investigation: dump C's `currentw`, `initverticalw`, `mj`, `mpj` after initialization for a small 2-sequence pair and compare element-wise with our values. Once the simple case produces the optimal path, re-check steps 3-6 and 12-13 against C.
+
+Files involved:
+- `crates/mafft-align/src/profile.rs` — `profile_align` DP, boundary init at lines ~351-411
+- `crates/mafft-align/src/fft_align.rs` — FFT anchoring (now consistent with noFFT path)
+- `crates/mafft-core/tests/end_to_end.rs` — `diagnostic_simple_offset`, `diagnostic_fft_vs_nofft`, `compare_against_c_reference`
 
 ### Performance
 

@@ -93,16 +93,48 @@ pub fn fft_profile_align(
     let fft_size = n.max(m).next_power_of_two();
     let channels_a = profile_to_channels(prof1, params.num_channels, fft_size);
     let channels_b = profile_to_channels(prof2, params.num_channels, fft_size);
-    let correlation = multichannel_correlate(&channels_a, &channels_b);
+    let raw_corr = multichannel_correlate(&channels_a, &channels_b);
+
+    // Step 1b: Build soukan array matching C's exact layout (Falign.c lines 464-467).
+    //
+    // C's calcNaiseki computes `x * y.conj()` (fftFunctions.c:30-34), which is
+    // the conjugate of our `fa.conj() * fb`. This means C's naisekiNoWa[k]
+    // represents the correlation at lag -k (reversed from our raw_corr[k] = lag k).
+    //
+    // C's soukan rearrangement: soukan[m] = naisekiNoWa[nlen2-m] for m=0..nlen2
+    //                           soukan[m] = naisekiNoWa[nlen+nlen2-m] for m>nlen2
+    // With C's reversal: soukan[m] = corr_at_lag(m - nlen2).
+    //
+    // For OUR raw_corr (which is corr_at_lag(k) at index k):
+    //   soukan[m] = raw_corr[(m - nlen2).rem_euclid(nlen)]
+    let nlen = fft_size;
+    let nlen2 = nlen / 2;
+    let mut soukan = vec![0.0f64; nlen];
+    for m in 0..nlen {
+        let lag = m as i32 - nlen2 as i32;
+        let src = lag.rem_euclid(nlen as i32) as usize;
+        soukan[m] = raw_corr[src];
+    }
 
     // Step 2: Find top candidate lags
-    let candidates = get_top_candidates(&correlation, params.num_candidates);
+    // C's getKouho computes nlen4 = nlen/2, lag = idx - nlen/2.
+    let candidates = get_top_candidates(&soukan, params.num_candidates);
+
+    if std::env::var("MAFFT_DEBUG_FFT").is_ok() {
+        eprintln!("FFT_DBG fft_size={} top candidates:", fft_size);
+        for (i, c) in candidates.iter().take(5).enumerate() {
+            eprintln!("  cand[{}]: lag={} score={:.1}", i, c.lag, c.score);
+        }
+    }
 
     // Step 3: For each candidate lag, detect segments and collect all of them
     let mut all_segments: Vec<(i32, Vec<AlignableSegment>)> = Vec::new();
     for cand in &candidates {
         let shifted_scores = shift_and_score(prof1, prof2, matrix, cand.lag);
         let segments = alignable_segments(&shifted_scores, &params.segment_params);
+        if std::env::var("MAFFT_DEBUG_FFT").is_ok() {
+            eprintln!("  lag={}: {} segments", cand.lag, segments.len());
+        }
         if !segments.is_empty() {
             all_segments.push((cand.lag, segments));
         }
@@ -160,7 +192,14 @@ pub fn fft_profile_align(
         return profile_align(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap);
     }
 
-    // Step 6: Align using shared anchor alignment function
+    if std::env::var("MAFFT_DEBUG_FFT").is_ok() {
+        eprintln!("  best_lag={} anchors:", best_lag);
+        for (i, &a) in anchors.iter().take(10).enumerate() {
+            eprintln!("    anchor[{}]: ({}, {})", i, a.0, a.1);
+        }
+    }
+
+    // Step 6: Align using anchored DP (matching C's Falign behavior).
     align_with_anchors(prof1, prof2, matrix, &params.gap, &anchors)
 }
 
