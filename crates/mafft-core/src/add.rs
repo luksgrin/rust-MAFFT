@@ -92,6 +92,7 @@ pub fn add_sequences(
         sequences: combined_sequences,
         names: combined_names,
         score: 0.0,
+        step_trace: Vec::new(),
     }
 }
 
@@ -151,6 +152,7 @@ pub fn add_sequences_keeplength(
         sequences: all_sequences,
         names: all_names,
         score: 0.0,
+        step_trace: Vec::new(),
     }
 }
 
@@ -250,6 +252,7 @@ mod tests {
             ],
             names: vec!["s1".into(), "s2".into(), "s3".into()],
             score: 0.0,
+            step_trace: Vec::new(),
         }
     }
 

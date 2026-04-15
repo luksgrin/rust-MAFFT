@@ -173,8 +173,13 @@ pub fn scoring_matrix_distance(
         return 2.0;
     }
     let score = naive_pair_score(seq1, seq2, matrix, amino_map, penalty);
-    ((1.0 - score / bunbo) * 2.0).clamp(0.0, 2.0)
+    // C's distcompact_msa clamps high at 10.0 and low at 0.0 (with warning).
+    let mut d = (1.0 - score / bunbo) * 2.0;
+    if d > 10.0 { d = 10.0; }
+    if d < 0.0 { d = 0.0; }
+    d
 }
+
 
 /// C's naivepairscore11: score two aligned sequences.
 fn naive_pair_score(

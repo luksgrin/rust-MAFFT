@@ -15,7 +15,7 @@ mod engine;
 mod add;
 pub mod external;
 
-pub use progressive::progressive_align;
+pub use progressive::{progressive_align, MultipleAlignment, StepTrace};
 pub use refinement::{iterative_refine, RefinementParams};
 pub use engine::{MafftEngine, AlignmentMode};
 pub use add::{add_sequences, add_sequences_keeplength};

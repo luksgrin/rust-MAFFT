@@ -326,20 +326,27 @@ pub fn profile_align(
     //     scarr[l] = 0
     //     for j in 0..nalphabets:
     //       scarr[l] += matrix[j][l] * cpmx1[j][position]
+    // C's match_calc writes to output[0..lgth2-1] (0-based, no +1 shift).
+    // At the tail row (row_pos == n), C's over-allocated arrays give zeros.
     let match_calc_row = |row_pos: usize, output: &mut [f64]| {
+        if row_pos >= n {
+            // Out-of-bounds: C's calloc'd arrays produce zeros here
+            for j in 0..m {
+                output[j] = 0.0;
+            }
+            return;
+        }
         let mut scarr = vec![0.0f64; nalpha];
-        // C's exact order: outer=output_alphabet, inner=input_alphabet
         for l in 0..nalpha {
             scarr[l] = 0.0;
             for j in 0..nalpha {
                 scarr[l] += matrix[j][l] as f64 * prof1.freqs[row_pos][j];
             }
         }
-        // Sparse dot product (C lines 227-234)
         for j in 0..m {
-            output[j + 1] = 0.0;
+            output[j] = 0.0;
             for &(k, v) in &cpmx2_sparse[j] {
-                output[j + 1] += scarr[k] * v;
+                output[j] += scarr[k] * v;
             }
         }
     };
@@ -362,7 +369,8 @@ pub fn profile_align(
     }).collect();
 
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
-    // Fills initverticalw[i] with match score between prof2[0] and prof1[i].
+    // C fills initverticalw[0..lgth1-1] (0-based), then adds gap to [1..lgth1].
+    // Result: [0] = pure match score (no gap), [1..n-1] = match + gap, [n] = 0 + gap.
     let mut initverticalw = vec![0.0f64; n + 1];
     {
         let mut scarr = vec![0.0f64; nalpha];
@@ -373,9 +381,9 @@ pub fn profile_align(
             }
         }
         for i in 0..n {
-            initverticalw[i + 1] = 0.0;
+            initverticalw[i] = 0.0;
             for &(k, v) in &cpmx1_sparse[i] {
-                initverticalw[i + 1] += scarr[k] * v;
+                initverticalw[i] += scarr[k] * v;
             }
         }
     }
@@ -386,7 +394,8 @@ pub fn profile_align(
     }
 
     // currentw (C line 779): match_calc with prof1 pos 0 vs all prof2 positions.
-    // C fills currentw[0..lgth2-1] (NOT shifted by +1).
+    // C fills currentw[0..lgth2-1] (0-based), then adds gap to [1..lgth2].
+    // Result: [0] = pure match score (no gap), [1..m-1] = match + gap, [m] = 0 + gap.
     let mut currentw = vec![0.0f64; m + 1];
     {
         let mut scarr = vec![0.0f64; nalpha];
@@ -397,9 +406,9 @@ pub fn profile_align(
             }
         }
         for j in 0..m {
-            currentw[j + 1] = 0.0;
+            currentw[j] = 0.0;
             for &(k, v) in &cpmx2_sparse[j] {
-                currentw[j + 1] += scarr[k] * v;
+                currentw[j] += scarr[k] * v;
             }
         }
     }
@@ -415,7 +424,7 @@ pub fn profile_align(
     let mut mj = vec![f64::NEG_INFINITY; m + 1];
     let mut mpj = vec![0usize; m + 1];
     for j in 1..=m {
-        let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0);
+        let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(0.0);
         mj[j] = currentw[j - 1] + ogcp1[1] * gf2_jm1;
         mpj[j] = 0;
     }
@@ -432,19 +441,21 @@ pub fn profile_align(
         std::mem::swap(&mut previousw, &mut currentw);
         previousw[0] = initverticalw[i - 1];
 
-        // Batch match_calc for row i (C line 816)
-        match_calc_row(i - 1, &mut currentw);
+        // Batch match_calc for row i (C line 816: ist+i)
+        // Fills currentw[0..m-1]. Position m doesn't exist in prof2.
+        match_calc_row(i, &mut currentw);
+        currentw[m] = 0.0; // padding: no substitution score beyond prof2
         currentw[0] = initverticalw[i];
 
-        let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0);
+        let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(0.0);
         let mut mi = previousw[0] + ogcp2[1] * gf1_im1;
         let mut mpi: usize = 0;
 
         for j in 1..=m {
-            let gf1_i = prof1.nongap_freq.get(i).copied().unwrap_or(1.0);
-            let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(1.0);
-            let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(1.0);
-            let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(1.0);
+            let gf1_i = prof1.nongap_freq.get(i).copied().unwrap_or(0.0);
+            let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(0.0);
+            let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(0.0);
+            let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(0.0);
 
             let mut wm = previousw[j - 1];
             ijp[i][j] = 0;
@@ -611,21 +622,26 @@ pub fn pairwise_align11(
     };
 
     // initverticalw: match_calc_mtx(seq2, seq1, 0, lgth1)
-    // = score of seq2[0] vs seq1[i] for each i
+    // C fills initverticalw[0..lgth1-1] (0-based), then adds gap to [1..lgth1].
+    // Result: [0] = pure match score (no gap), [1..n-1] = match + gap, [n] = 0 + gap.
     let mut initverticalw = vec![0.0f64; n + 1];
-    for i in 1..=n {
-        initverticalw[i] = score_pair(seq1[i - 1], seq2[0]);
-        if head_gap {
+    for i in 0..n {
+        initverticalw[i] = score_pair(seq1[i], seq2[0]);
+    }
+    if head_gap {
+        for i in 1..=n {
             initverticalw[i] += penalty; // flat penalty, C line 1180
         }
     }
 
     // currentw: match_calc_mtx(seq1, seq2, 0, lgth2)
-    // = score of seq1[0] vs seq2[j] for each j
+    // C fills currentw[0..lgth2-1] (0-based), then adds gap to [1..lgth2].
     let mut currentw = vec![0.0f64; m + 1];
-    for j in 1..=m {
-        currentw[j] = score_pair(seq1[0], seq2[j - 1]);
-        if head_gap {
+    for j in 0..m {
+        currentw[j] = score_pair(seq1[0], seq2[j]);
+    }
+    if head_gap {
+        for j in 1..=m {
             currentw[j] += penalty; // flat penalty, C line 1188
         }
     }
@@ -656,10 +672,19 @@ pub fn pairwise_align11(
         std::mem::swap(&mut previousw, &mut currentw);
         previousw[0] = initverticalw[i - 1];
 
-        // match_calc_mtx for row i (C line 1252)
-        for j in 1..=m {
-            currentw[j] = score_pair(seq1[i - 1], seq2[j - 1]);
+        // match_calc_mtx for row i (C line 1252: uses index i, not i-1)
+        // C fills currentw[0..lgth2-1]. Position m is padding (0).
+        if i < n {
+            for j in 0..m {
+                currentw[j] = score_pair(seq1[i], seq2[j]);
+            }
+        } else {
+            // Out-of-bounds tail row: C's over-allocated arrays give zeros
+            for j in 0..m {
+                currentw[j] = 0.0;
+            }
         }
+        currentw[m] = 0.0; // padding: no substitution score beyond seq2
         currentw[0] = initverticalw[i];
 
         // mi = previousw[0], NO ogcp2 multiplication (C line 1275)
@@ -717,6 +742,8 @@ pub fn pairwise_align11(
                 ijp[n][m] = -((m - j) as i32);
             }
         }
+        // Set h[n][m] to the best score found (for the score field).
+        h[n][m] = wm;
     }
 
     // Traceback (same ijp format as MSalignmm)

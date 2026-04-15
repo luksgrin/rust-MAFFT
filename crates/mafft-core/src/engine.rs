@@ -216,7 +216,9 @@ impl MafftEngine {
             sequences: sequences.clone(),
             names: names.clone(),
             score: 0.0,
+            step_trace: Vec::new(),
         };
+        let mut accumulated_trace = Vec::new();
 
         for pass in 0..retree {
             // Build guide tree
@@ -245,18 +247,26 @@ impl MafftEngine {
                 None
             };
             msa = progressive_align(&input_seqs, &names, &topo, &scoring, use_fft, shift);
+            accumulated_trace.extend(msa.step_trace.iter().copied());
 
             // If there's another pass, compute new distances from the alignment
             // using scoring-matrix-based distance (C's naivepairscorefast),
             // not simple identity distance.
             if pass + 1 < retree {
-                let penalty_dist = (600.0 / 1000.0 * scoring.gap.open as f64 + 0.5) as i32;
+                // C computes penalty_dist from the RAW command-line penalty (ppenalty=-1530
+                // for default --op 1.53), not from an already-scaled penalty.
+                // Formula (constants.c): penalty_dist = (int)(0.6 * ppenalty + 0.5)
+                //                      = (int)(0.6 * -1530 + 0.5) = -917 for protein.
+                // Our scoring.gap.open is already the result of that same formula applied
+                // once to ppenalty, so it equals C's penalty_dist. Use it directly.
+                let penalty_dist = scoring.gap.open;
                 dm = compute_distance_matrix_scoring(
                     &msa.sequences, &scoring.substitution_matrix,
                     &scoring.amino_map, penalty_dist,
                 );
             }
         }
+        msa.step_trace = accumulated_trace;
 
         // Step 3: Build local homology table (for constrained modes)
         let uses_constraints = matches!(
@@ -392,6 +402,7 @@ impl MafftEngine {
             sequences: existing_input.sequences.iter().map(|s| s.data.clone()).collect(),
             names: existing_input.sequences.iter().map(|s| s.name.clone()).collect(),
             score: 0.0,
+            step_trace: Vec::new(),
         };
 
         let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();

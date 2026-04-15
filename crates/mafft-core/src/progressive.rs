@@ -15,6 +15,20 @@ pub struct MultipleAlignment {
     pub sequences: Vec<Vec<u8>>,
     pub names: Vec<String>,
     pub score: f64,
+    /// Per-merge-step trace: one entry per progressive merge. Each entry is
+    /// `(clus1_size, clus2_size, width_after_merge, score)` matching C's
+    /// `RDBG step clus1 clus2 width score` debug line. Used for regression
+    /// tests that assert byte-level parity with C on a per-step basis;
+    /// harmless to ignore.
+    pub step_trace: Vec<StepTrace>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StepTrace {
+    pub clus1: usize,
+    pub clus2: usize,
+    pub width: usize,
+    pub score: f64,
 }
 
 impl MultipleAlignment {
@@ -46,10 +60,10 @@ pub fn progressive_align(
 ) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
-        return MultipleAlignment { sequences: Vec::new(), names: Vec::new(), score: 0.0 };
+        return MultipleAlignment { sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new() };
     }
     if nseq == 1 {
-        return MultipleAlignment { sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0 };
+        return MultipleAlignment { sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new() };
     }
 
     let weights = sequence_weights(topology);
@@ -65,16 +79,23 @@ pub fn progressive_align(
     // After each merge, the merged profile is stored so the next merge can reuse it.
     let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
 
+    let mut step_trace: Vec<StepTrace> = Vec::with_capacity(topology.steps.len());
     for (step_idx, step) in topology.steps.iter().enumerate() {
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
             &mut profile_cache,
         );
+        let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
+        step_trace.push(StepTrace {
+            clus1: step.left.len(),
+            clus2: step.right.len(),
+            width,
+            score: last_score,
+        });
         // Debug trace: match C's "DBG step clus1 clus2 width score"
         if std::env::var("MAFFT_DEBUG_STEPS").is_ok() {
-            let w = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
             eprintln!("RDBG {} {} {} {} {:.1}",
-                step_idx, step.left.len(), step.right.len(), w, last_score);
+                step_idx, step.left.len(), step.right.len(), width, last_score);
         }
     }
 
@@ -83,7 +104,12 @@ pub fn progressive_align(
         seq.resize(max_width, b'-');
     }
 
-    MultipleAlignment { sequences: aligned, names: names.to_vec(), score: last_score }
+    MultipleAlignment {
+        sequences: aligned,
+        names: names.to_vec(),
+        score: last_score,
+        step_trace,
+    }
 }
 
 fn merge_step_cached(
@@ -121,13 +147,17 @@ fn merge_step_cached(
     // (nlen > clus, which is always true). G__align11 is only used when
     // FFT is disabled (use_fft=false) and both groups are single sequences.
     // When alg='A', the non-FFT fallback is A__align (= profile_align).
+    //
+    // C's disttbfast passes `outgap, outgap` for headgp/tailgp in G__align11
+    // and A__align. With the -O flag (always set by mafft script), outgap=0,
+    // which means no penalty is applied to terminal gaps (TERMGAPFAC=0).
     let aln = if !use_fft && group1.len() == 1 && group2.len() == 1 {
         // G__align11 path: flat gap penalty, character-level scoring
         // Only used when FFT is disabled (--nofft)
         pairwise_align11(
             &aligned[group1[0]], &aligned[group2[0]],
             &scoring.substitution_matrix, &scoring.amino_map,
-            scoring.gap.open as f64, true, true,
+            scoring.gap.open as f64, false, false,
         )
     } else if use_fft {
         // C uses Falign for ALL steps when use_fft=true (ffttry = nlen > clus,
@@ -140,13 +170,13 @@ fn merge_step_cached(
                 mafft_fft::SegmentParams::protein()
             },
             gap: gap.clone(),
-            head_gap: true,
-            tail_gap: true,
+            head_gap: false,
+            tail_gap: false,
             num_channels: scoring.nscoredalphabets,
         };
         fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params)
     } else {
-        profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, true, true)
+        profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, false, false)
     };
 
     // Build gaptables for profile caching (matching C's gaptable1/gaptable2)

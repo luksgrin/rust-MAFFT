@@ -11,6 +11,19 @@ fn test_data_path(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Path to a fixture file in `crates/mafft-core/tests/fixtures/`.
+///
+/// Unlike `test_data_path`, which points into the upstream submodule (and
+/// thus contains only files shipped by upstream MAFFT), this points to
+/// fixtures committed in our own repo — typically C-reference outputs
+/// generated for alignment modes that upstream doesn't ship references for
+/// (e.g., NW-NS-2 / `--nofft`).
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
 #[test]
 fn align_sample_fasta() {
     let engine = MafftEngine::new(AlignmentMode::FftNs2);
@@ -120,6 +133,117 @@ fn compare_against_c_reference() {
     assert!(
         ratio > 0.3,
         "Rust alignment quality too low: {rust_sp:.4} vs C's {c_sp:.4} (ratio {ratio:.4})"
+    );
+}
+
+/// Every NW-NS-2 merge step's `(clus1, clus2, width, score)` must match C's.
+///
+/// This is a finer-grained regression guard than `nofft_byte_identical_to_c`:
+/// it catches intermediate DP regressions that happen to produce the same
+/// final output. Reference: `tests/fixtures/sample.nwns2.steps` (one RDBG
+/// line per merge across both retree passes, 70 lines total).
+#[test]
+fn nofft_per_step_matches_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_nofft(true)
+        .align(&input);
+
+    let ref_txt = std::fs::read_to_string(fixture_path("sample.nwns2.steps"))
+        .expect("missing tests/fixtures/sample.nwns2.steps — see fixtures/README.md");
+    let expected: Vec<(usize, usize, usize, f64)> = ref_txt
+        .lines()
+        .filter(|l| l.starts_with("RDBG"))
+        .map(|l| {
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            // RDBG <step_idx> <clus1> <clus2> <width> <score>
+            (
+                parts[2].parse().unwrap(),
+                parts[3].parse().unwrap(),
+                parts[4].parse().unwrap(),
+                parts[5].parse().unwrap(),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        msa.step_trace.len(), expected.len(),
+        "step count differs: Rust has {} steps, C has {}",
+        msa.step_trace.len(), expected.len()
+    );
+
+    let mut first_mismatch: Option<usize> = None;
+    for (i, (got, want)) in msa.step_trace.iter().zip(expected.iter()).enumerate() {
+        let matches = got.clus1 == want.0
+            && got.clus2 == want.1
+            && got.width == want.2
+            && (got.score - want.3).abs() < 0.1;
+        if !matches && first_mismatch.is_none() {
+            first_mismatch = Some(i);
+            eprintln!(
+                "first step mismatch at index {i}: \
+                 Rust=({} {} {} {:.1}), C=({} {} {} {:.1})",
+                got.clus1, got.clus2, got.width, got.score,
+                want.0, want.1, want.2, want.3
+            );
+        }
+    }
+    assert!(
+        first_mismatch.is_none(),
+        "per-step trace diverges from C at step {}; see stderr",
+        first_mismatch.unwrap()
+    );
+}
+
+/// NW-NS-2 (`--nofft`) must be byte-identical to C's output on `test/sample`.
+///
+/// This is a regression guard for the suite of fixes that brought the NW-NS-2
+/// pipeline to exact parity with C MAFFT: 0-based `match_calc` indexing,
+/// `outgap=0` boundary handling, `nongap_freq` default 0.0, `match_calc_row(i)`
+/// position, and the retree-2 `penalty_dist` scaling. If any of these
+/// regresses, the diff below grows from 0 lines to many.
+///
+/// Reference: `tests/fixtures/sample.nwns2` (C 7.526 `mafft --nofft --quiet`).
+#[test]
+fn nofft_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.nwns2"))
+        .expect("missing tests/fixtures/sample.nwns2 — see fixtures/README.md");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_nofft(true)
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq(), "different number of sequences");
+
+    let rust_width = msa.sequences[0].len();
+    let c_width = c_ref.sequences[0].data.len();
+    assert_eq!(
+        rust_width, c_width,
+        "alignment width differs: Rust={rust_width}, C={c_width}"
+    );
+
+    // Every sequence must match byte-for-byte (including gap positions).
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+            if mismatches <= 3 {
+                let first_diff = msa.sequences[i]
+                    .iter()
+                    .zip(c_ref.sequences[i].data.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(usize::MAX);
+                eprintln!(
+                    "seq {i} (name: {:?}) differs; first diff at position {first_diff}",
+                    c_ref.sequences[i].name
+                );
+            }
+        }
+    }
+    assert_eq!(
+        mismatches, 0,
+        "{mismatches} sequence(s) differ from C's --nofft output"
     );
 }
 
@@ -593,26 +717,39 @@ fn diagnostic_align11_vs_profile() {
     let s1 = &input.sequences[19].data;
     let s2 = &input.sequences[20].data;
 
+    // Use the same boundary convention the engine uses (outgap=0 → false, false).
     let aln11 = pairwise_align11(s1, s2, &scoring.substitution_matrix, &scoring.amino_map,
-        scoring.gap.open as f64, true, true);
+        scoring.gap.open as f64, false, false);
 
     let seqs1: Vec<&[u8]> = vec![s1.as_slice()];
     let seqs2: Vec<&[u8]> = vec![s2.as_slice()];
     let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
-    let aln_prof = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let aln_prof = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, false, false);
 
     let m11 = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
     let d11 = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
     let i11 = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
-    let mp = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
-    let dp = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
-    let ip = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
+    let mp_n = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
+    let dp_n = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
+    let ip_n = aln_prof.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
 
     eprintln!("G__align11: score={:.1} width={} M/D/I={}/{}/{}", aln11.score, aln11.operations.len(), m11, d11, i11);
-    eprintln!("MSalignmm:  score={:.1} width={} M/D/I={}/{}/{}", aln_prof.score, aln_prof.operations.len(), mp, dp, ip);
-    eprintln!("Same ops: {}", aln11.operations == aln_prof.operations);
-    eprintln!("penalty={}", scoring.gap.open);
+    eprintln!("MSalignmm:  score={:.1} width={} M/D/I={}/{}/{}", aln_prof.score, aln_prof.operations.len(), mp_n, dp_n, ip_n);
+
+    // Regression guard: the two pairwise code paths (G__align11 and MSalignmm
+    // specialized to 1×1) must produce identical alignment operations and
+    // matching scores on any real input pair. Any future divergence means one
+    // of them has broken its port of C's algorithm.
+    assert_eq!(
+        aln11.operations, aln_prof.operations,
+        "pairwise_align11 and profile_align disagree on 1×1 alignment"
+    );
+    assert!(
+        (aln11.score - aln_prof.score).abs() < 0.01,
+        "pairwise_align11 score {} ≠ profile_align score {}",
+        aln11.score, aln_prof.score
+    );
 }
 
 #[test]
@@ -946,7 +1083,21 @@ fn diagnostic_simple_offset() {
     eprintln!("  a1: {}", a1);
     eprintln!("  a2: {}", a2);
     eprintln!("  score: {}", aln.score);
-    // Expected: optimal alignment is ----ACDE----, score should be sum of A-A, C-C, D-D, E-E
+
+    // Regression guard: this minimal reproducer originally returned
+    // `A----CDE----` before we fixed the boundary indexing. The optimal
+    // alignment is `----ACDE----`: all 4 residues aligned diagonally to the
+    // matching stretch of s2, with the 8 surrounding gaps on both ends.
+    assert_eq!(
+        a1, "----ACDE----",
+        "DP found suboptimal alignment — boundary initialization may have regressed"
+    );
+    assert_eq!(a2, "WWWWACDEWWWW");
+    assert_eq!(
+        aln.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count(),
+        4,
+        "expected 4 matches (A-A, C-C, D-D, E-E)"
+    );
 }
 
 #[test]
@@ -1001,3 +1152,4 @@ fn diagnostic_dp_trace() {
     let opt = m[aw_idx][aw_idx] + m[cw_idx][cw_idx] + m[dw_idx][dw_idx] + m[ew_idx][ew_idx] - 2 * (scoring.gap.open / 2);
     eprintln!("Expected optimal score (4 matches + 2 gaps of 4): ~{}", opt);
 }
+
