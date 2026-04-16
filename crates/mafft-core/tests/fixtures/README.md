@@ -19,6 +19,33 @@ MAFFT_BINARIES=$PWD/mafft-upstream/binaries \
   > crates/mafft-core/tests/fixtures/sample.nwns2
 ```
 
+## `sample.nwns2.op25`
+
+C's alignment output for `mafft --nofft --op 2.5 mafft-upstream/test/sample`.
+The `nofft_op_override_byte_identical_to_c` test asserts Rust's NW-NS-2
+output with `--op 2.5` matches this byte-for-byte, guarding the command-line
+gap-opening override (`GapParams` application in `crates/mafft-core/src/engine.rs`).
+
+```bash
+MAFFT_BINARIES=$PWD/mafft-upstream/binaries \
+  $PWD/mafft-upstream/scripts/mafft --nofft --op 2.5 --quiet $PWD/mafft-upstream/test/sample \
+  > crates/mafft-core/tests/fixtures/sample.nwns2.op25
+```
+
+## `samplerna.nwns2`
+
+C's alignment output for `mafft --nofft mafft-upstream/test/samplerna` (a
+5-sequence RNA input). The `rna_nofft_case_insensitive_identical_to_c` test
+asserts Rust's output matches this byte-for-byte **after case normalization**
+on both sides. C preserves the input lowercase; Rust currently uppercases
+before alignment. The alignment columns themselves are identical.
+
+```bash
+MAFFT_BINARIES=$PWD/mafft-upstream/binaries \
+  $PWD/mafft-upstream/scripts/mafft --nofft --quiet $PWD/mafft-upstream/test/samplerna \
+  > crates/mafft-core/tests/fixtures/samplerna.nwns2
+```
+
 ## `sample.nwns2.steps`
 
 C's per-step progressive-alignment scores for `--nofft` on the same input

@@ -247,6 +247,75 @@ fn nofft_byte_identical_to_c() {
     );
 }
 
+/// NW-NS-2 with a non-default `--op` override must match C byte-for-byte.
+///
+/// Guards the command-line gap-opening override application. Our scaling
+/// (`ppenalty = -op * 1000`, then `penalty = 0.6 * ppenalty`) must match
+/// C's `constants()` routine for any `--op` value, not just the default.
+///
+/// Reference: `tests/fixtures/sample.nwns2.op25` (`mafft --nofft --op 2.5`).
+#[test]
+fn nofft_op_override_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.nwns2.op25"))
+        .expect("missing tests/fixtures/sample.nwns2.op25 — see fixtures/README.md");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_nofft(true)
+        .with_gap_open(2.5)
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --op 2.5"
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --op 2.5 output"
+        );
+    }
+}
+
+/// RNA NW-NS-2 must match C byte-for-byte, ignoring ASCII case.
+///
+/// Guards the nucleotide alignment path end-to-end. Currently the only
+/// difference between our output and C's is that C preserves the input
+/// lowercase while Rust uppercases residues before alignment; the gap
+/// placement is identical. This test normalizes case on both sides so it
+/// asserts alignment equality (column-for-column) without being sensitive
+/// to that pre-alignment casing choice.
+///
+/// Reference: `tests/fixtures/samplerna.nwns2`
+/// (`mafft --nofft mafft-upstream/test/samplerna`).
+#[test]
+fn rna_nofft_case_insensitive_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("samplerna.nwns2"))
+        .expect("missing tests/fixtures/samplerna.nwns2 — see fixtures/README.md");
+    let input = read_fasta(test_data_path("samplerna")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_nofft(true)
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "RNA alignment width differs"
+    );
+
+    fn lower(bytes: &[u8]) -> Vec<u8> {
+        bytes.iter().map(|b| b.to_ascii_lowercase()).collect()
+    }
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            lower(&msa.sequences[i]), lower(&c_ref.sequences[i].data),
+            "RNA seq {i} differs from C (case-insensitive)"
+        );
+    }
+}
+
 /// Compute sum-of-pairs identity score for an alignment.
 fn sum_of_pairs_identity(sequences: &[Vec<u8>]) -> f64 {
     let n = sequences.len();

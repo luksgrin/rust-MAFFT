@@ -229,15 +229,17 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests | 111 | All crates, all modules |
-| Rust integration tests | 28 | End-to-end on real data, byte-level parity with C `--nofft`, DP diagnostics |
+| Rust integration tests | 30 | End-to-end on real data, byte-level parity with C `--nofft`, DP diagnostics |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total** | **179** | |
+| **Total** | **181** | |
 
 Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
 
 - `nofft_byte_identical_to_c` — final alignment matches C MAFFT 7.526's `--nofft` output byte-for-byte (fixture: `tests/fixtures/sample.nwns2`).
 - `nofft_per_step_matches_c` — every per-merge `(clus1, clus2, width, score)` tuple matches C's across both retree passes (fixture: `tests/fixtures/sample.nwns2.steps`, 70 merges).
+- `nofft_op_override_byte_identical_to_c` — NW-NS-2 with `--op 2.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.op25`), guarding the gap-opening override path.
+- `rna_nofft_case_insensitive_identical_to_c` — RNA NW-NS-2 output matches C byte-for-byte after case normalization (fixture: `tests/fixtures/samplerna.nwns2`), guarding the nucleotide alignment path.
 - `diagnostic_simple_offset` — the minimal `ACDE` vs `WWWWACDEWWWW` reproducer must produce the optimal `----ACDE----` alignment with 4 matches.
 - `diagnostic_align11_vs_profile` — `pairwise_align11` and `profile_align` must agree on 1×1 inputs (same operations, same score).
 
@@ -267,18 +269,27 @@ Relevant files for comparison and debugging:
 
 ### Missing C-parity regression tests
 
-The `nofft_byte_identical_to_c` and `nofft_per_step_matches_c` tests cover the NW-NS-2 path, but several other code paths still have no C-reference regression guard. Each of these should get an equivalent pair of tests (final-output byte match + per-step score match) once the path reaches parity:
+Several code paths still have no C-reference regression guard, either because the path itself diverges from C (blocked on real bug-fixes) or because the path reaches parity but we haven't yet written the test. For any new test, follow the pattern in `crates/mafft-core/tests/fixtures/README.md`: commit the C reference output and wire up a byte-equality assertion.
+
+**Blocked on fixing the FFT-NS-2 anchor divergence first:**
 
 - **FFT-NS-2 (default strategy).** Blocked on reaching C parity (currently 24 columns wider). Once matched, add `fftns2_byte_identical_to_c` against `mafft-upstream/test/sample.fftns2` (already shipped by upstream).
 - **FFT-NS-i** (progressive + iterative refinement). Reference: `mafft-upstream/test/sample.fftnsi`.
-- **G-INS-i, L-INS-i, E-INS-i** (global / local / generalized-affine iterative). References: `sample.ginsi`, `sample.linsi`, plus the existing `sample.gins1`, `sample.lins1`.
+- **G-INS-i, L-INS-i, E-INS-i** (global / local / generalized-affine iterative) — use `Falign` internally, so unblocks once FFT-NS-2 matches. References: `sample.ginsi`, `sample.linsi`, plus the existing `sample.gins1`, `sample.lins1`.
 - **`--allowshift`** variant of G-INS-i. Reference: `sample.ginsi.allowshift`.
-- **PartTree / DPPartTree** (divide-and-conquer tree for 10K+ seqs). References: `sample.parttree`, `sample.dpparttree`.
-- **DNA / RNA alignment.** `align_rna_sample` runs a nucleotide input end-to-end but only asserts `width > 0`. No C-reference comparison exists for any nucleotide strategy. Need to generate a `test/rna_sample.nwns2`-style fixture in our repo (upstream doesn't ship one).
-- **Non-default gap penalties.** Every current C-parity test uses the default `--op 1.53`, `--ep 0.00`, `--bl 62`. A regression in how we apply command-line overrides (e.g., `--op`, `--ep`, `--bl`, `--kimura`) would not be caught. Add at least one fixture per affected flag.
-- **Adding sequences** (`--add`, `--addfragments`, `--keeplength`). The `add.rs` pipeline is untested against C. Need fixtures for each of the three modes.
 
-For any new test of this kind, follow the pattern in `crates/mafft-core/tests/fixtures/README.md`: commit the C reference output, wire it up with a byte-equality assertion and (ideally) a per-merge score assertion. Each costs ~100 ms to run and catches a distinct class of regression.
+**Blocked on newly-discovered bugs — the NW-NS-2 path exists and works, but diverges from C on these specific flags:**
+
+- **`--bl N` (non-default BLOSUM matrix).** `mafft --nofft --bl 80 mafft-upstream/test/sample` gives a ~900-line diff. Our scoring-matrix construction must mis-scale for non-62 values.
+- **`--ep N` (gap-extension penalty override).** `mafft --nofft --ep 0.5` gives a ~900-line diff. The `ep` scaling path in `engine.rs` is likely wrong or never reaches the DP.
+- **`--parttree`** under `--nofft`: ~940-line diff. Needs investigation in `crates/mafft-tree/src/parttree.rs`.
+- **`--add`** under `--nofft`: ~900-line diff. Add-pipeline divergence from C's `addsingle`.
+
+**Untested but likely unblocked (just need fixtures and tests):**
+
+- **`--addfragments`, `--keeplength`** — same path as `--add`, but exercises different options.
+- **`--kimura N`** for DNA — test needs a DNA input aligned with `--nofft --kimura 2`.
+- **Per-step trace for RNA / `--op` overrides** — add `.steps` fixtures analogous to `sample.nwns2.steps`.
 
 ### Performance
 
