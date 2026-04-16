@@ -21,7 +21,8 @@
 use rayon::prelude::*;
 
 use mafft_align::{
-    profile_align, constrained_profile_align, ConstrainedAlignParams,
+    profile_align, fft_profile_align, constrained_profile_align,
+    ConstrainedAlignParams, FftAlignParams,
     Profile, GapModel, AlignOp,
 };
 use mafft_fft::SegmentParams;
@@ -157,7 +158,7 @@ pub fn iterative_refine(
 
                 let new_seqs = realign_all(
                     group1, group2, &alignment.sequences, &weights, scoring, &gap,
-                    constraints,
+                    constraints, params.use_fft,
                 );
 
                 if let Some((new_seqs, _new_score)) = new_seqs {
@@ -232,6 +233,11 @@ pub fn iterative_refine(
 ///
 /// Since group1 + group2 = ALL sequences, there are no "other" sequences
 /// to worry about. Every sequence is in exactly one group.
+///
+/// Gap stripping is always applied first. When `use_fft` is true,
+/// `fft_profile_align()` (FFT correlation → anchors → segmented DP) is
+/// used on the stripped profiles, matching C's use of Falign in refinement.
+/// When false, plain `profile_align()` is used.
 fn realign_all(
     group1: &[usize],
     group2: &[usize],
@@ -240,6 +246,7 @@ fn realign_all(
     scoring: &ScoringContext,
     gap: &GapModel,
     constraints: Option<&LocalHomologyTable>,
+    use_fft: bool,
 ) -> Option<(Vec<Vec<u8>>, f64)> {
     let width = sequences[0].len();
 
@@ -276,11 +283,16 @@ fn realign_all(
         return None;
     }
 
-    // Use constrained alignment if local homology table is available
+    // Use constrained alignment if local homology table is available,
+    // otherwise FFT-accelerated (Falign) or plain profile alignment.
     let aln = if let Some(lh_table) = constraints {
-        let params = ConstrainedAlignParams {
+        let cparams = ConstrainedAlignParams {
             gap: gap.clone(),
-            segment_params: SegmentParams::protein(),
+            segment_params: if scoring.seq_type.is_nucleotide() {
+                SegmentParams::dna()
+            } else {
+                SegmentParams::protein()
+            },
             constraint_weight: 1.0,
         };
         constrained_profile_align(
@@ -288,8 +300,22 @@ fn realign_all(
             &scoring.substitution_matrix,
             lh_table,
             group1, group2,
-            &params,
+            &cparams,
         )
+    } else if use_fft {
+        let fft_params = FftAlignParams {
+            num_candidates: 20,
+            segment_params: if scoring.seq_type.is_nucleotide() {
+                SegmentParams::dna()
+            } else {
+                SegmentParams::protein()
+            },
+            gap: gap.clone(),
+            head_gap: true,
+            tail_gap: true,
+            num_channels: scoring.nscoredalphabets,
+        };
+        fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params)
     } else {
         profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, true, true)
     };
@@ -303,10 +329,6 @@ fn realign_all(
         .count();
 
     if consumed1 != prof1.length || consumed2 != prof2.length {
-        eprintln!(
-            "WARN: ops mismatch: consumed1={} prof1.len={} consumed2={} prof2.len={}",
-            consumed1, prof1.length, consumed2, prof2.length
-        );
         return None;
     }
 
@@ -672,6 +694,58 @@ mod tests {
             let residues = seq.iter().filter(|&&c| c != b'-').count();
             assert_eq!(residues, seqs[i].len(),
                 "sequence {i} lost residues during refinement");
+        }
+    }
+
+    /// Guard: FFT-accelerated refinement produces valid results and
+    /// does not cause width explosion.
+    ///
+    /// C always uses Falign (FFT) in refinement. This test verifies that
+    /// use_fft=true in RefinementParams produces a valid alignment with
+    /// bounded width growth (no exponential blow-up).
+    #[test]
+    fn refinement_fft_no_width_explosion() {
+        let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+        let seqs = vec![
+            b"ACDEFGHIKLMNPQRSTVWY".to_vec(),
+            b"ACDEFHIKLMNPQRSTVWY".to_vec(),
+            b"ACDEHIKLMNPQRSTVWY".to_vec(),
+            b"ACDHIKLMNPQRSTVWY".to_vec(),
+            b"ACDHIKLMNPQR".to_vec(),
+            b"ACDHIKLM".to_vec(),
+        ];
+        let names: Vec<String> = (0..6).map(|i| format!("s{i}")).collect();
+
+        let mut dm = DistanceMatrix::new(6);
+        for i in 0..6 {
+            for j in (i + 1)..6 {
+                dm.set(i, j, (j - i) as f64 * 0.1);
+            }
+        }
+        let topo = upgma(&dm);
+
+        let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false, None);
+        let pre_width = msa.width();
+
+        let params = RefinementParams {
+            max_iterations: 5,
+            use_fft: true,
+            ..Default::default()
+        };
+
+        iterative_refine(&mut msa, &topo, &scoring, &params, None);
+
+        let post_width = msa.width();
+        // Width should not blow up — allow at most 2x growth for reasonable
+        // refinement (C typically keeps width within ~10% of progressive).
+        assert!(post_width <= pre_width * 2,
+            "width explosion: {} -> {} (>2x growth)", pre_width, post_width);
+
+        for (i, seq) in msa.sequences.iter().enumerate() {
+            assert_eq!(seq.len(), post_width, "sequence {i} has wrong width");
+            let residues = seq.iter().filter(|&&c| c != b'-').count();
+            assert_eq!(residues, seqs[i].len(),
+                "sequence {i} lost residues during FFT refinement");
         }
     }
 }

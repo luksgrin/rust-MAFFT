@@ -1,22 +1,18 @@
 # Pending Work
 
-## FFT-accelerated alignment in iterative refinement
+## Non-stripped FFT alignment in refinement
 
-**Status**: Not implemented (using plain `profile_align` instead of `Falign`)
-**Priority**: High (last source of divergence in the refinement loop)
+**Status**: Partially addressed (FFT on gap-stripped profiles; C uses FFT on non-stripped profiles)
+**Priority**: Low (FFT-NS-i width is 731 vs C's 721 on the sample dataset — close but not identical)
 **Location**: `crates/mafft-core/src/refinement.rs`, `realign_all()`
 
-C's `TreeDependentIteration()` calls `Falign()` (FFT-accelerated profile alignment with anchor detection) for re-alignment during refinement when FFT is enabled (`tditeration.c` line ~2153). Our refinement loop always uses plain `profile_align()`. This means FFT-NS-i diverges from C; NW-NS-i (which doesn't use FFT) is unaffected.
+C's Falign in refinement operates on non-stripped character arrays in a fixed-size buffer (`alloclen`), mutating sequences in-place. Our `fft_profile_align` builds new `Vec<u8>` from alignment operations (functional style). Without gap stripping, this causes unbounded width explosion: on non-stripped 717-column profiles, width grew to 26,454+ in a single iteration because the FFT's `profile_align` fallback (when anchors are poor) can produce width up to `prof1.len + prof2.len`.
 
-### How to fix
+Current state: `fft_profile_align` is called on gap-stripped profiles. This avoids the explosion and uses the correct algorithm (FFT correlation → anchors → segmented DP), but the different input (stripped vs non-stripped columns) produces different anchor positions.
 
-Wire `fft_profile_align()` (from `crates/mafft-align/src/fft_align.rs`) into `realign_all()` when `RefinementParams::use_fft` is true. The function already exists and is used in progressive alignment — it just needs to be called from the refinement path as well:
+### How to close the remaining gap
 
-1. Thread the `use_fft` flag and scoring context's FFT-related fields into `realign_all()`.
-2. When `use_fft` is true, call `fft_profile_align()` instead of `profile_align()`.
-3. C also calls `commongappick_record()` (which records the gap map) before FFT alignment but skips it for non-FFT — match this behavior.
-
-Note: `RefinementParams` already has a `use_fft` field, and the engine already passes the correct value. Only the `realign_all()` function needs updating.
+Port C's in-place mutation model: operate on `&mut [u8]` slices within a capacity-bounded buffer, overwriting sequences in-place. This requires restructuring `realign_all` to work with mutable character arrays instead of building new Vecs from operations. The `alloclen` bound prevents width explosion naturally.
 
 ## Per-group gap stripping in progressive alignment
 

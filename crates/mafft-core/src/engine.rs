@@ -373,9 +373,12 @@ impl MafftEngine {
                 // parallelization strategy (scripts/mafft line ~1515). This matters
                 // because more iterations doesn't always improve — it can over-refine.
                 let capped_iterations = (*iterations).min(16);
+                // C's mafft script always passes -F (use_fft=1) to dvtditr
+                // for refinement (scripts/mafft line 1531: rnaoptit=" -F "),
+                // regardless of whether progressive alignment used FFT.
                 let params = RefinementParams {
                     max_iterations: capped_iterations,
-                    use_fft,
+                    use_fft: true,
                     ..Default::default()
                 };
                 iterative_refine(
@@ -637,4 +640,5 @@ mod tests {
         let params = crate::refinement::RefinementParams::default();
         assert_eq!(params.cut, 0.0);
     }
+
 }

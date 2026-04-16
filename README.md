@@ -251,9 +251,16 @@ Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retre
 
 ### Iterative refinement (FFT-NS-i, G-INS-i, L-INS-i, E-INS-i)
 
-The progressive alignment phase (FFT-NS-2, NW-NS-2) is byte-identical to C. The iterative refinement phase (`--maxiterate > 0`) produces valid alignments and its branch enumeration, tree construction, acceptance criteria, and oscillation detection all match C's `TreeDependentIteration()`. The iteration count is correctly capped at 16 (matching C's mafft script). One source of divergence remains:
+The progressive alignment phase (FFT-NS-2, NW-NS-2) is byte-identical to C. The iterative refinement phase (`--maxiterate > 0`) produces valid alignments. The following match C's `TreeDependentIteration()`:
 
-- **FFT in refinement.** C uses `Falign` (FFT-accelerated alignment) for realignment within refinement when FFT is enabled (`tditeration.c` line ~2153). We always use plain `profile_align`. This means FFT-NS-i diverges from C; NW-NS-i (which doesn't use FFT) is unaffected.
+- **Branch enumeration order** — root-skip, alternating direction, `(nseq-1)*2-1` branches per iteration.
+- **Refinement tree** — built from scoring-matrix distances (matching C's `hat2` file).
+- **FFT-accelerated realignment** — uses `fft_profile_align` (Falign) for all modes, matching C's mafft script which always passes `-F` to dvtditr.
+- **Acceptance threshold** — `cut = 0.0` (accept only strict improvements).
+- **Oscillation detection** — per-branch score history with even-iteration lookback.
+- **Iteration cap** — 16 iterations (matching C's mafft script).
+
+Remaining divergence: C calls Falign on **non-stripped** profiles (operating in-place on fixed-size character buffers), while we call `fft_profile_align` on **gap-stripped** profiles. The gap stripping is necessary because our functional approach (building new sequences from alignment operations) causes unbounded width explosion on non-stripped profiles. On the 36-sequence sample, FFT-NS-i produces width 731 vs C's 721 (progressive phase: 717, byte-identical).
 
 ### Non-default BLOSUM matrices (`--bl N`)
 
