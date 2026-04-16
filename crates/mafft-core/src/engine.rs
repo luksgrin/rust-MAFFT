@@ -360,11 +360,17 @@ impl MafftEngine {
             | AlignmentMode::EInsi { iterations }
             | AlignmentMode::QInsi { iterations }
             | AlignmentMode::XInsi { iterations } => {
-                // Rebuild tree one more time for refinement
+                // Rebuild tree for refinement.
+                // C's dvtditr reads the hat2 file (scoring-matrix-based distances
+                // written by disttbfast during retree pass 2) and builds UPGMA.
                 let dm = compute_distance_matrix_from_alignment(&msa.sequences);
                 let topo = musclesupg(&dm, ClusterMethod::default());
+                // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)
+                // parallelization strategy (scripts/mafft line ~1515). This matters
+                // because more iterations doesn't always improve — it can over-refine.
+                let capped_iterations = (*iterations).min(16);
                 let params = RefinementParams {
-                    max_iterations: *iterations,
+                    max_iterations: capped_iterations,
                     cut: 0.0001,
                     use_fft,
                 };
