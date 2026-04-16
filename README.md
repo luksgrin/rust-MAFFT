@@ -249,37 +249,38 @@ Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retre
 
 ## Known limitations
 
-### Alignment quality
+### Iterative refinement (FFT-NS-i, G-INS-i, L-INS-i, E-INS-i)
 
-On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`):
+The progressive alignment phase (FFT-NS-2, NW-NS-2) is byte-identical to C. The iterative refinement phase (`--maxiterate > 0`) diverges — FFT-NS-i produces width 733 vs C's 721 on the sample dataset. Root causes:
 
-- **FFT-NS-2 (default): byte-identical to C.** Both `diff` and the `fftns2_byte_identical_to_c` test confirm 0 differences against `mafft-upstream/test/sample.fftns2`. SP=0.3260, width=717.
-- **NW-NS-2 (`--nofft`): byte-identical to C.** All 70 progressive merge steps across both retree passes match C exactly. SP=0.3260, width=717.
-- **`--op N` override:** byte-identical to C (tested with `--op 2.5`).
-- **`--ep N` override:** byte-identical to C (tested with `--ep 0.5`).
-- **RNA NW-NS-2:** byte-identical to C after case normalization (C preserves input lowercase, we uppercase).
+- **Branch enumeration order.** C's `TreeDependentIteration()` in `tditeration.c` iterates over tree branches using `topol[k][0]` (one subtree side) vs its complement. Our code enumerates both sides of each topology step, producing 2x as many branch splits. This changes which realignments are attempted and in what order.
+- **FFT in refinement.** C uses `Falign` (FFT-accelerated alignment) for realignment within refinement when FFT is enabled (`tditeration.c` line ~1035). We always use plain `profile_align`.
+- **Refinement tree distance.** C reads the `hat2` file (scoring-matrix-based distances from the last retree pass) and builds UPGMA for the refinement tree. We currently use identity distance from the alignment.
+- **Convergence criteria.** C uses `cut *= 2.0` cooling with per-branch convergence tracking. Our implementation is simpler.
 
-### Missing C-parity regression tests
+All iterative modes (FFT-NS-i, G-INS-i, L-INS-i, E-INS-i, `--allowshift`) are blocked on fixing the refinement loop. The progressive phase for these modes works correctly.
 
-Several code paths still have no C-reference regression guard, either because the path itself diverges from C (blocked on real bug-fixes) or because the path reaches parity but we haven't yet written the test. For any new test, follow the pattern in `crates/mafft-core/tests/fixtures/README.md`: commit the C reference output and wire up a byte-equality assertion.
+The iteration count is correctly capped at 16 (matching C's mafft script behavior for the default parallelization strategy).
 
-**Unblocked — need fixtures and byte-equality tests:**
+### Non-default BLOSUM matrices (`--bl N`)
 
-- **FFT-NS-i** (progressive + iterative refinement). Reference: `mafft-upstream/test/sample.fftnsi`.
-- **G-INS-i, L-INS-i, E-INS-i** (global / local / generalized-affine iterative). References: `sample.ginsi`, `sample.linsi`, `sample.gins1`, `sample.lins1`.
-- **`--allowshift`** variant of G-INS-i. Reference: `sample.ginsi.allowshift`.
+`--bl 80` under `--nofft` diverges from C (width 700 vs 712). The raw BLOSUM80 data and normalization are correct (shared code path with BLOSUM62 which matches C exactly). Divergence starts at retree 1 step 19 — needs per-step RDBG comparison to isolate the cause.
 
-**Blocked on newly-discovered bugs — the NW-NS-2 path exists and works, but diverges from C on these specific flags:**
+### PartTree (`--parttree`, `--dpparttree`)
 
-- **`--bl N` (non-default BLOSUM matrix).** `mafft --nofft --bl 80 mafft-upstream/test/sample` gives a ~630-line diff (width 700 vs C's 712). The raw BLOSUM80 data and normalization are correct (shared code with BLOSUM62), but the different matrix values cause alignment divergence starting at retree 1 step 19. Needs per-step RDBG comparison against C.
-- **`--parttree`** under `--nofft`: ~940-line diff. Needs investigation in `crates/mafft-tree/src/parttree.rs`.
-- **`--add`** under `--nofft`: ~900-line diff. Add-pipeline divergence from C's `addsingle`.
+`--parttree --nofft` diverges from C (~940-line diff). Needs investigation in `crates/mafft-tree/src/parttree.rs`.
 
-**Untested but likely unblocked (just need fixtures and tests):**
+### Adding sequences (`--add`, `--addfragments`, `--keeplength`)
 
-- **`--addfragments`, `--keeplength`** — same path as `--add`, but exercises different options.
-- **`--kimura N`** for DNA — test needs a DNA input aligned with `--nofft --kimura 2`.
-- **Per-step trace for RNA / `--op` overrides** — add `.steps` fixtures analogous to `sample.nwns2.steps`.
+`--add --nofft` diverges from C (~900-line diff). The add pipeline in `crates/mafft-core/src/add.rs` needs investigation against C's `addsingle`.
+
+### Per-group gap stripping (performance)
+
+The progressive alignment strips only columns that are all-gap across **all sequences globally**, instead of stripping per-group as C does. This is functionally correct (produces the same alignment) but wastes DP computation. See `TODO.md` for a detailed diagnosis and attempted approaches. The correct fix requires porting C's `insertnewgaps()` from `addfunctions.c`.
+
+### Case preservation
+
+C preserves the input case of residues (e.g., lowercase RNA). We uppercase all residues before alignment. The alignment itself (gap placement) is identical. The `rna_nofft_case_insensitive_identical_to_c` test verifies this.
 
 ### Performance
 
