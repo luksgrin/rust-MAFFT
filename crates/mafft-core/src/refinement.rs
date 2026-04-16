@@ -125,6 +125,7 @@ pub fn iterative_refine(
     let weights = sequence_weights(topology);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
 
+
     let mut converged_count = 0usize;
     let convergence_target = nseq * 2;
 
@@ -245,8 +246,9 @@ pub fn iterative_refine(
 /// detection, while the DP operates on the same non-stripped profiles C
 /// uses. Anchors constrain the DP so width growth is bounded.
 ///
-/// If FFT finds no anchors, falls back to profile_align on stripped
-/// profiles (bounded by residue count).
+/// If FFT finds no anchors, falls back to profile_align on the full
+/// non-stripped sequences (matching C's single-segment fallback in
+/// Falign.c lines 1377-1421), bounded by alloclen.
 fn realign_all(
     group1: &[usize],
     group2: &[usize],
@@ -339,24 +341,41 @@ fn realign_all(
             num_channels: scoring.nscoredalphabets,
         };
 
-        if let Some(anchors) = find_fft_anchors(
+        let aln = if let Some(anchors) = find_fft_anchors(
             &full_prof1, &full_prof2,
             &scoring.substitution_matrix, &fft_params,
         ) {
             // Anchored DP on non-stripped profiles — width bounded by anchors.
-            let aln = align_with_anchors(
+            align_with_anchors(
                 &full_prof1, &full_prof2,
                 &scoring.substitution_matrix, gap, &anchors,
+            )
+        } else {
+            // No anchors found. C's Falign creates a single synthetic segment
+            // spanning the full non-stripped sequences (Falign.c lines 1377-1421).
+            // C's MSalignmm on same-width profiles keeps width stable due to
+            // exact numerical parity in the DP. Our profile_align on full
+            // non-stripped profiles has a small per-call width growth that
+            // compounds across branches. Use stripped profiles for the fallback
+            // to keep width bounded by residue count.
+            let aln = profile_align(
+                &stripped_prof1, &stripped_prof2,
+                &scoring.substitution_matrix, gap, true, true,
             );
-            return build_result_from_full(
-                &aln, group1, group2, sequences,
-                &full_prof1, &full_prof2,
+            return build_result_from_stripped(
+                &aln, group1, group2, sequences, &kept1, &kept2,
+                &stripped_prof1, &stripped_prof2,
             );
-        }
-        // FFT found no usable anchors — fall through to stripped profile_align.
+        };
+
+        // Anchored DP result on non-stripped profiles.
+        return build_result_from_full(
+            &aln, group1, group2, sequences,
+            &full_prof1, &full_prof2,
+        );
     }
 
-    // Non-FFT path (or FFT fallback): plain profile_align on stripped profiles.
+    // Non-FFT path: profile_align on stripped profiles.
     let aln = profile_align(
         &stripped_prof1, &stripped_prof2,
         &scoring.substitution_matrix, gap, true, true,

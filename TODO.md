@@ -1,18 +1,20 @@
 # Pending Work
 
-## Refinement no-anchor fallback (width 731 vs C's 721)
+## Refinement profile_align width growth (731 vs C's 721)
 
-**Status**: Partially addressed — anchored path matches C; no-anchor fallback diverges
-**Priority**: Low (FFT-NS-i width 731 vs C's 721 on the sample dataset)
-**Location**: `crates/mafft-core/src/refinement.rs`, `realign_all()`
+**Status**: Diagnosed — profile_align DP numerical divergence on non-stripped profiles
+**Priority**: Low (FFT-NS-i width 731 vs C's 721 on the sample dataset — 1.4% divergence)
+**Location**: `crates/mafft-align/src/profile.rs`, `profile_align()`
 
-When FFT finds anchors, both C and Rust run anchored DP on non-stripped profiles — this path matches. The divergence comes from branches where FFT finds **no anchors** (asymmetric splits like 1-vs-35):
-- C creates a single synthetic segment spanning the full sequences and aligns it (bounded by `alloclen = nlenmax * 9`).
-- Rust falls back to `profile_align` on gap-stripped profiles (bounded by residue count).
+C's `MSalignmm` on two same-width non-stripped profiles (from the same alignment) produces near-zero width growth per call. Our `profile_align` produces ~7 columns growth per call, compounding to +484 across 69 branches in one iteration (717 → 1201). The profiles, gap penalties (ogcp/fgcp), scoring matrix, and DP algorithm are functionally identical. The divergence is a subtle numerical difference (likely in floating-point accumulation order or tie-breaking in the traceback) that only manifests on non-stripped profiles with many gap columns. Progressive alignment (which uses stripped profiles) is byte-identical to C.
+
+### Current workaround
+
+The no-anchor fallback (all refinement branches, since FFT segment detection fails on gap-diluted non-stripped profiles) uses `profile_align` on gap-stripped profiles, keeping width bounded by residue count.
 
 ### How to close the remaining gap
 
-Port C's single-segment fallback from Falign.c (lines 1377-1421): when count=0, set `cut1[0]=0, cut2[0]=0, cut1[1]=len1, cut2[1]=len2` and align the full sequences as one segment. This requires an `alloclen`-style width cap to prevent explosion. Could be implemented as `align_with_anchors` on non-stripped profiles with no anchors (equivalent to one big segment), plus a max-width check that rejects the result if `ops.len() > alloclen` and falls back to stripped alignment.
+Investigate the per-position DP scores and traceback decisions for a single refinement branch, comparing C's MSalignmm output against ours. The divergence likely originates at gap-rich positions where the tie-breaking between Match and Insert/Delete differs. Adding per-cell RDBG output to both C and Rust would isolate the exact position and state.
 
 ## Per-group gap stripping in progressive alignment
 
