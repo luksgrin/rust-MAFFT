@@ -196,6 +196,15 @@ impl Profile {
 /// Align two profiles using anchor points, running DP within each segment.
 ///
 /// Shared implementation used by both `fft_align` and `constrained_align`.
+///
+/// Segment gap handling matches C's Falign (lines 686-687):
+///   - First segment:       headgp = outgap (0), tailgp = 1
+///   - Intermediate:        headgp = 1,          tailgp = 1
+///   - Last segment:        headgp = 1,          tailgp = outgap (0)
+///
+/// With outgap=0 (always set by the mafft script via `-O`):
+///   first segment gets head_gap=false, last gets tail_gap=false,
+///   and all intermediate segments get head_gap=true, tail_gap=true.
 pub fn align_with_anchors(
     prof1: &Profile,
     prof2: &Profile,
@@ -208,19 +217,23 @@ pub fn align_with_anchors(
     let mut p1 = 0usize;
     let mut p2 = 0usize;
 
-    for &(a1, a2) in anchors {
+    // Collect segment boundaries: each anchor defines a break point.
+    // Segments are: [0..anchor0), anchor0, [anchor0+1..anchor1), anchor1, ... [lastanchor+1..end)
+    // C counts: segment 0 = before first anchor, segment count-2 = after last anchor.
+    let num_anchors = anchors.len();
+
+    for (anchor_idx, &(a1, a2)) in anchors.iter().enumerate() {
         if a1 > p1 || a2 > p2 {
             let sub1 = prof1.sub_profile(p1, a1);
             let sub2 = prof2.sub_profile(p2, a2);
-            // Inter-anchor segments are FIXED-END alignments: the start position
-            // is determined by the previous anchor (or sequence start), the end
-            // by the next anchor. tail_gap=true forces ending at corner (n,m).
-            let seg_aln = profile_align(&sub1, &sub2, matrix, gap, p1 == 0, true);
+            let is_first = anchor_idx == 0;
+            // headgp: first segment gets outgap (false), others get 1 (true).
+            // tailgp: all pre-anchor segments are followed by an anchor, so tailgp=1 (true).
+            let seg_aln = profile_align(&sub1, &sub2, matrix, gap, !is_first, true);
             total_score += seg_aln.score;
             all_ops.extend(seg_aln.operations);
         }
         if a1 < prof1.length && a2 < prof2.length {
-            // Add the anchor's match score (was missing — caused FFT alignment scores to be ~7x too low)
             total_score += prof1.match_score(a1, prof2, a2, matrix);
             all_ops.push(AlignOp::Match);
             p1 = a1 + 1;
@@ -228,10 +241,15 @@ pub fn align_with_anchors(
         }
     }
 
+    // Trailing segment (after last anchor): headgp=1, tailgp=outgap (false).
     if p1 < prof1.length || p2 < prof2.length {
         let sub1 = prof1.sub_profile(p1, prof1.length);
         let sub2 = prof2.sub_profile(p2, prof2.length);
-        let seg_aln = profile_align(&sub1, &sub2, matrix, gap, false, true);
+        let is_only_segment = num_anchors == 0;
+        // headgp: if there are anchors, this follows an anchor → headgp=1.
+        //         if there are no anchors, this is the first (and only) segment → headgp=outgap (false).
+        // tailgp: last segment → tailgp=outgap (false).
+        let seg_aln = profile_align(&sub1, &sub2, matrix, gap, !is_only_segment, false);
         total_score += seg_aln.score;
         all_ops.extend(seg_aln.operations);
     }

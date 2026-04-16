@@ -94,45 +94,46 @@ fn align_sample_with_refinement() {
     }
 }
 
+/// FFT-NS-2 (default strategy) must be byte-identical to C's reference output.
+///
+/// The reference is `mafft-upstream/test/sample.fftns2`, shipped by upstream.
+/// This test guards the full pipeline: FFT correlation, anchor selection,
+/// anchor segment head/tail gap handling, inter-anchor DP, retree distance,
+/// and UPGMA tree reconstruction.
 #[test]
-fn compare_against_c_reference() {
-    // Read the C reference alignment (test/sample.fftns2)
+fn fftns2_byte_identical_to_c() {
     let c_ref = read_fasta(test_data_path("sample.fftns2")).unwrap();
-
-    // Run Rust engine on same input
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let engine = MafftEngine::new(AlignmentMode::FftNs2);
-    let msa = engine.align(&input);
 
-    // 1. Same number of sequences
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+
     assert_eq!(msa.nseq(), c_ref.nseq(), "different number of sequences");
-
-    // 2. Same residue content per sequence (ungapped)
-    for i in 0..msa.nseq() {
-        let rust_ungapped: Vec<u8> = msa.sequences[i].iter().filter(|&&c| c != b'-').cloned().collect();
-        let c_ungapped: Vec<u8> = c_ref.sequences[i].data.iter().filter(|&&c| c != b'-').cloned().collect();
-        assert_eq!(
-            rust_ungapped, c_ungapped,
-            "sequence {i} has different residue content between Rust and C"
-        );
-    }
-
-    // 3. Compare alignment quality via sum-of-pairs identity
-    let rust_sp = sum_of_pairs_identity(&msa.sequences);
-    let c_seqs: Vec<Vec<u8>> = c_ref.sequences.iter().map(|s| s.data.clone()).collect();
-    let c_sp = sum_of_pairs_identity(&c_seqs);
-
-    // Report quality comparison (not a hard failure — different algorithms
-    // produce different alignments, but quality should be in the same ballpark)
-    let ratio = if c_sp > 0.0 { rust_sp / c_sp } else { 1.0 };
-    eprintln!(
-        "Alignment quality: Rust SP={rust_sp:.4}, C SP={c_sp:.4}, ratio={ratio:.4}"
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "FFT-NS-2 width differs: Rust={}, C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len()
     );
-    // Rust alignment should be at least 50% as good as C's
-    // (a loose bound — we're not matching C's exact algorithm)
-    assert!(
-        ratio > 0.3,
-        "Rust alignment quality too low: {rust_sp:.4} vs C's {c_sp:.4} (ratio {ratio:.4})"
+
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+            if mismatches <= 3 {
+                let first_diff = msa.sequences[i]
+                    .iter()
+                    .zip(c_ref.sequences[i].data.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(usize::MAX);
+                eprintln!(
+                    "seq {i} (name: {:?}) differs; first diff at position {first_diff}",
+                    c_ref.sequences[i].name
+                );
+            }
+        }
+    }
+    assert_eq!(
+        mismatches, 0,
+        "{mismatches} sequence(s) differ from C's FFT-NS-2 output"
     );
 }
 

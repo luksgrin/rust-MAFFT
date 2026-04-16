@@ -9,7 +9,7 @@ This project provides:
 
 ## Status
 
-**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, **the NW-NS-2 (`--nofft`) output is byte-identical to C's `--nofft` output** — all 70 progressive merge steps across both retree passes produce exactly matching scores and widths, and the final 36-sequence alignment is character-for-character identical (SP=0.3260, width=717). The FFT-NS-2 path still differs slightly — see [Known limitations](#known-limitations).
+**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, **both FFT-NS-2 (default) and NW-NS-2 (`--nofft`) produce byte-identical output to C MAFFT 7.526** — all 70 progressive merge steps across both retree passes produce exactly matching scores and widths, and `diff rust_output.fa c_output.fa` returns 0 lines (SP=0.3260, width=717). See [Known limitations](#known-limitations) for remaining gaps.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -229,21 +229,23 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests | 111 | All crates, all modules |
-| Rust integration tests | 30 | End-to-end on real data, byte-level parity with C `--nofft`, DP diagnostics |
+| Rust integration tests | 31 | End-to-end on real data, byte-level parity with C (FFT-NS-2 + NW-NS-2), DP diagnostics |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total** | **181** | |
+| **Total** | **182** | |
 
 Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
 
 - `nofft_byte_identical_to_c` — final alignment matches C MAFFT 7.526's `--nofft` output byte-for-byte (fixture: `tests/fixtures/sample.nwns2`).
 - `nofft_per_step_matches_c` — every per-merge `(clus1, clus2, width, score)` tuple matches C's across both retree passes (fixture: `tests/fixtures/sample.nwns2.steps`, 70 merges).
+- `fftns2_byte_identical_to_c` — FFT-NS-2 (default strategy) output matches C's `mafft-upstream/test/sample.fftns2` reference byte-for-byte, guarding the full pipeline: FFT anchoring, segment gap handling, inter-anchor DP, retree distance, and UPGMA.
 - `nofft_op_override_byte_identical_to_c` — NW-NS-2 with `--op 2.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.op25`), guarding the gap-opening override path.
+- `nofft_ep_override_byte_identical_to_c` — NW-NS-2 with `--ep 0.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.ep05`), guarding the scoring-matrix offset override path.
 - `rna_nofft_case_insensitive_identical_to_c` — RNA NW-NS-2 output matches C byte-for-byte after case normalization (fixture: `tests/fixtures/samplerna.nwns2`), guarding the nucleotide alignment path.
 - `diagnostic_simple_offset` — the minimal `ACDE` vs `WWWWACDEWWWW` reproducer must produce the optimal `----ACDE----` alignment with 4 matches.
 - `diagnostic_align11_vs_profile` — `pairwise_align11` and `profile_align` must agree on 1×1 inputs (same operations, same score).
 
-Any regression in DP indexing, boundary handling, retree distance, or pairwise/profile consistency will fail at least one of these.
+Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, or pairwise/profile consistency will fail at least one of these.
 
 ## Known limitations
 
@@ -251,31 +253,20 @@ Any regression in DP indexing, boundary handling, retree distance, or pairwise/p
 
 On the included 36-sequence protein test dataset (`mafft-upstream/test/sample`):
 
-- **NW-NS-2 (`--nofft`): byte-identical to C.** All 70 progressive merge steps across both retree passes produce exactly matching scores and widths, and `diff rust_output.fa c_output.fa` returns 0 lines. SP=0.3260, width=717 (matches C exactly).
-- **FFT-NS-2 (default): SP=0.3328, width=741 (vs C's SP=0.3260, width=717, ratio 1.0207).** The FFT-anchored path still diverges because anchor selection interacts with the DP scoring.
-
-**Remaining work — FFT path:**
-
-The FFT-NS-2 path still differs from C by ~24 columns (741 vs 717). Root cause is in anchor selection: the FFT cross-correlation finds candidate anchor positions and the `blockAlign2` code picks a subset of them. The selected anchors then split the alignment into segments, each aligned by `profile_align` (which is now C-exact). Different anchor choices produce different segment splits and therefore different overall alignments.
-
-Suspected areas to investigate:
-- `crates/mafft-fft/src/segment.rs` — the `alignableReagion` segment detection
-- `crates/mafft-fft/src/block_align.rs` — the anchor-picking greedy algorithm
-- Numerical precision in FFT cross-correlation output indexing (`soukan` rearrangement)
-
-Relevant files for comparison and debugging:
-- `crates/mafft-core/tests/end_to_end.rs` — `diagnostic_fft_vs_nofft`, `compare_against_c_reference` (quality metrics)
-- `crates/mafft-align/src/fft_align.rs` — FFT anchoring path (calls `profile_align` on inter-anchor segments)
+- **FFT-NS-2 (default): byte-identical to C.** Both `diff` and the `fftns2_byte_identical_to_c` test confirm 0 differences against `mafft-upstream/test/sample.fftns2`. SP=0.3260, width=717.
+- **NW-NS-2 (`--nofft`): byte-identical to C.** All 70 progressive merge steps across both retree passes match C exactly. SP=0.3260, width=717.
+- **`--op N` override:** byte-identical to C (tested with `--op 2.5`).
+- **`--ep N` override:** byte-identical to C (tested with `--ep 0.5`).
+- **RNA NW-NS-2:** byte-identical to C after case normalization (C preserves input lowercase, we uppercase).
 
 ### Missing C-parity regression tests
 
 Several code paths still have no C-reference regression guard, either because the path itself diverges from C (blocked on real bug-fixes) or because the path reaches parity but we haven't yet written the test. For any new test, follow the pattern in `crates/mafft-core/tests/fixtures/README.md`: commit the C reference output and wire up a byte-equality assertion.
 
-**Blocked on fixing the FFT-NS-2 anchor divergence first:**
+**Unblocked — need fixtures and byte-equality tests:**
 
-- **FFT-NS-2 (default strategy).** Blocked on reaching C parity (currently 24 columns wider). Once matched, add `fftns2_byte_identical_to_c` against `mafft-upstream/test/sample.fftns2` (already shipped by upstream).
 - **FFT-NS-i** (progressive + iterative refinement). Reference: `mafft-upstream/test/sample.fftnsi`.
-- **G-INS-i, L-INS-i, E-INS-i** (global / local / generalized-affine iterative) — use `Falign` internally, so unblocks once FFT-NS-2 matches. References: `sample.ginsi`, `sample.linsi`, plus the existing `sample.gins1`, `sample.lins1`.
+- **G-INS-i, L-INS-i, E-INS-i** (global / local / generalized-affine iterative). References: `sample.ginsi`, `sample.linsi`, `sample.gins1`, `sample.lins1`.
 - **`--allowshift`** variant of G-INS-i. Reference: `sample.ginsi.allowshift`.
 
 **Blocked on newly-discovered bugs — the NW-NS-2 path exists and works, but diverges from C on these specific flags:**
