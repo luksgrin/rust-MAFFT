@@ -172,8 +172,27 @@ impl MafftEngine {
         }
         if let Some(ep) = self.gap_offset {
             let poffset = -(ep * 1000.0) as i32;
-            let scale = 600.0 / 1000.0;
-            scoring.gap.offset = (scale * poffset as f64 + 0.5) as i32;
+            let scale = if seq_type.is_nucleotide() { 1.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+            let new_offset = (scale * poffset as f64 + 0.5) as i32;
+            // C's constants() bakes the offset into the scoring matrix during
+            // construction: `n_distmp[i][j] -= offset`. Our build_context()
+            // builds the matrix with offset=0 (matching C's default aof=0 from
+            // the shell script), NOT with gap_params.offset. So the "old"
+            // offset baked into the matrix is 0, regardless of what
+            // scoring.gap.offset says.
+            let matrix_offset = 0i32;
+            let delta = new_offset - matrix_offset;
+            if delta != 0 {
+                let nscored = scoring.nscoredalphabets;
+                for i in 0..nscored {
+                    for j in 0..nscored {
+                        scoring.substitution_matrix[i][j] -= delta;
+                        scoring.consweight_matrix[i][j] = scoring.substitution_matrix[i][j] as f64;
+                        scoring.fft_matrix[i][j] = scoring.substitution_matrix[i][j] + new_offset;
+                    }
+                }
+            }
+            scoring.gap.offset = new_offset;
         }
 
         let nseq = input.nseq();
@@ -389,8 +408,21 @@ impl MafftEngine {
         }
         if let Some(ep) = self.gap_offset {
             let poffset = -(ep * 1000.0) as i32;
-            let scale = 600.0 / 1000.0;
-            scoring.gap.offset = (scale * poffset as f64 + 0.5) as i32;
+            let scale = if seq_type.is_nucleotide() { 1.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+            let new_offset = (scale * poffset as f64 + 0.5) as i32;
+            let matrix_offset = 0i32;
+            let delta = new_offset - matrix_offset;
+            if delta != 0 {
+                let nscored = scoring.nscoredalphabets;
+                for i in 0..nscored {
+                    for j in 0..nscored {
+                        scoring.substitution_matrix[i][j] -= delta;
+                        scoring.consweight_matrix[i][j] = scoring.substitution_matrix[i][j] as f64;
+                        scoring.fft_matrix[i][j] = scoring.substitution_matrix[i][j] + new_offset;
+                    }
+                }
+            }
+            scoring.gap.offset = new_offset;
         }
 
         let use_fft = !self.nofft && matches!(

@@ -280,8 +280,7 @@ Several code paths still have no C-reference regression guard, either because th
 
 **Blocked on newly-discovered bugs — the NW-NS-2 path exists and works, but diverges from C on these specific flags:**
 
-- **`--bl N` (non-default BLOSUM matrix).** `mafft --nofft --bl 80 mafft-upstream/test/sample` gives a ~900-line diff. Our scoring-matrix construction must mis-scale for non-62 values.
-- **`--ep N` (gap-extension penalty override).** `mafft --nofft --ep 0.5` gives a ~900-line diff. The `ep` scaling path in `engine.rs` is likely wrong or never reaches the DP.
+- **`--bl N` (non-default BLOSUM matrix).** `mafft --nofft --bl 80 mafft-upstream/test/sample` gives a ~630-line diff (width 700 vs C's 712). The raw BLOSUM80 data and normalization are correct (shared code with BLOSUM62), but the different matrix values cause alignment divergence starting at retree 1 step 19. Needs per-step RDBG comparison against C.
 - **`--parttree`** under `--nofft`: ~940-line diff. Needs investigation in `crates/mafft-tree/src/parttree.rs`.
 - **`--add`** under `--nofft`: ~900-line diff. Add-pipeline divergence from C's `addsingle`.
 

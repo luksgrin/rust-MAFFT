@@ -278,6 +278,38 @@ fn nofft_op_override_byte_identical_to_c() {
     }
 }
 
+/// NW-NS-2 with a non-default `--ep` override must match C byte-for-byte.
+///
+/// Guards the scoring-matrix offset application. C's `--ep` flag maps to
+/// `aof` in the shell script (negated), then to `poffset` in disttbfast,
+/// then to `offset` which is subtracted from the scoring matrix. This test
+/// ensures that override path correctly adjusts the already-built matrix.
+///
+/// Reference: `tests/fixtures/sample.nwns2.ep05` (`mafft --nofft --ep 0.5`).
+#[test]
+fn nofft_ep_override_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.nwns2.ep05"))
+        .expect("missing tests/fixtures/sample.nwns2.ep05 — see fixtures/README.md");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_nofft(true)
+        .with_gap_offset(0.5)
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --ep 0.5"
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --ep 0.5 output"
+        );
+    }
+}
+
 /// RNA NW-NS-2 must match C byte-for-byte, ignoring ASCII case.
 ///
 /// Guards the nucleotide alignment path end-to-end. Currently the only
