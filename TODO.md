@@ -1,18 +1,18 @@
 # Pending Work
 
-## Non-stripped FFT alignment in refinement
+## Refinement no-anchor fallback (width 731 vs C's 721)
 
-**Status**: Partially addressed (FFT on gap-stripped profiles; C uses FFT on non-stripped profiles)
-**Priority**: Low (FFT-NS-i width is 731 vs C's 721 on the sample dataset — close but not identical)
+**Status**: Partially addressed — anchored path matches C; no-anchor fallback diverges
+**Priority**: Low (FFT-NS-i width 731 vs C's 721 on the sample dataset)
 **Location**: `crates/mafft-core/src/refinement.rs`, `realign_all()`
 
-C's Falign in refinement operates on non-stripped character arrays in a fixed-size buffer (`alloclen`), mutating sequences in-place. Our `fft_profile_align` builds new `Vec<u8>` from alignment operations (functional style). Without gap stripping, this causes unbounded width explosion: on non-stripped 717-column profiles, width grew to 26,454+ in a single iteration because the FFT's `profile_align` fallback (when anchors are poor) can produce width up to `prof1.len + prof2.len`.
-
-Current state: `fft_profile_align` is called on gap-stripped profiles. This avoids the explosion and uses the correct algorithm (FFT correlation → anchors → segmented DP), but the different input (stripped vs non-stripped columns) produces different anchor positions.
+When FFT finds anchors, both C and Rust run anchored DP on non-stripped profiles — this path matches. The divergence comes from branches where FFT finds **no anchors** (asymmetric splits like 1-vs-35):
+- C creates a single synthetic segment spanning the full sequences and aligns it (bounded by `alloclen = nlenmax * 9`).
+- Rust falls back to `profile_align` on gap-stripped profiles (bounded by residue count).
 
 ### How to close the remaining gap
 
-Port C's in-place mutation model: operate on `&mut [u8]` slices within a capacity-bounded buffer, overwriting sequences in-place. This requires restructuring `realign_all` to work with mutable character arrays instead of building new Vecs from operations. The `alloclen` bound prevents width explosion naturally.
+Port C's single-segment fallback from Falign.c (lines 1377-1421): when count=0, set `cut1[0]=0, cut2[0]=0, cut1[1]=len1, cut2[1]=len2` and align the full sequences as one segment. This requires an `alloclen`-style width cap to prevent explosion. Could be implemented as `align_with_anchors` on non-stripped profiles with no anchors (equivalent to one big segment), plus a max-width check that rejects the result if `ops.len() > alloclen` and falls back to stripped alignment.
 
 ## Per-group gap stripping in progressive alignment
 

@@ -61,91 +61,53 @@ pub struct Anchor {
     pub pos2: usize,
 }
 
-/// Perform FFT-accelerated profile alignment.
+/// Find FFT-based anchor points between two profiles.
 ///
-/// 1. Converts profiles to per-residue-type complex vectors.
-/// 2. Uses multi-channel FFT cross-correlation to find the best lags.
-/// 3. Detects alignable segments at each candidate lag.
-/// 4. Selects optimal non-overlapping anchor pairs via DP (block_align).
-/// 5. Runs full DP alignment within each segment.
-///
-/// Falls back to direct profile DP if no good anchors are found.
-pub fn fft_profile_align(
+/// Performs the FFT correlation, segment detection, and anchor selection
+/// steps of Falign, returning the anchors without running the DP.
+/// Returns `None` if no good anchors are found.
+pub fn find_fft_anchors(
     prof1: &Profile,
     prof2: &Profile,
     matrix: &[Vec<i32>],
     params: &FftAlignParams,
-) -> Alignment {
+) -> Option<Vec<(usize, usize)>> {
     let n = prof1.length;
     let m = prof2.length;
 
     if n == 0 || m == 0 {
-        return Alignment {
-            seq1: Vec::new(),
-            seq2: Vec::new(),
-            score: 0.0,
-            operations: Vec::new(),
-        };
+        return None;
     }
 
-    // Step 1: Multi-channel FFT correlation using profile frequencies
-    // C computes FFT size as next_power_of_2(max(len1, len2)), NOT sum.
     let fft_size = n.max(m).next_power_of_two();
     let channels_a = profile_to_channels(prof1, params.num_channels, fft_size);
     let channels_b = profile_to_channels(prof2, params.num_channels, fft_size);
     let raw_corr = multichannel_correlate(&channels_a, &channels_b);
 
-    // Step 1b: Build soukan array matching C's exact layout (Falign.c lines 464-467).
-    //
-    // C's calcNaiseki computes `x * y.conj()` (fftFunctions.c:30-34), which is
-    // the conjugate of our `fa.conj() * fb`. This means C's naisekiNoWa[k]
-    // represents the correlation at lag -k (reversed from our raw_corr[k] = lag k).
-    //
-    // C's soukan rearrangement: soukan[m] = naisekiNoWa[nlen2-m] for m=0..nlen2
-    //                           soukan[m] = naisekiNoWa[nlen+nlen2-m] for m>nlen2
-    // With C's reversal: soukan[m] = corr_at_lag(m - nlen2).
-    //
-    // For OUR raw_corr (which is corr_at_lag(k) at index k):
-    //   soukan[m] = raw_corr[(m - nlen2).rem_euclid(nlen)]
     let nlen = fft_size;
     let nlen2 = nlen / 2;
     let mut soukan = vec![0.0f64; nlen];
-    for m in 0..nlen {
-        let lag = m as i32 - nlen2 as i32;
+    for idx in 0..nlen {
+        let lag = idx as i32 - nlen2 as i32;
         let src = lag.rem_euclid(nlen as i32) as usize;
-        soukan[m] = raw_corr[src];
+        soukan[idx] = raw_corr[src];
     }
 
-    // Step 2: Find top candidate lags
-    // C's getKouho computes nlen4 = nlen/2, lag = idx - nlen/2.
     let candidates = get_top_candidates(&soukan, params.num_candidates);
 
-    if std::env::var("MAFFT_DEBUG_FFT").is_ok() {
-        eprintln!("FFT_DBG fft_size={} top candidates:", fft_size);
-        for (i, c) in candidates.iter().take(5).enumerate() {
-            eprintln!("  cand[{}]: lag={} score={:.1}", i, c.lag, c.score);
-        }
-    }
-
-    // Step 3: For each candidate lag, detect segments and collect all of them
     let mut all_segments: Vec<(i32, Vec<AlignableSegment>)> = Vec::new();
     for cand in &candidates {
         let shifted_scores = shift_and_score(prof1, prof2, matrix, cand.lag);
         let segments = alignable_segments(&shifted_scores, &params.segment_params);
-        if std::env::var("MAFFT_DEBUG_FFT").is_ok() {
-            eprintln!("  lag={}: {} segments", cand.lag, segments.len());
-        }
         if !segments.is_empty() {
             all_segments.push((cand.lag, segments));
         }
     }
 
     if all_segments.is_empty() {
-        return profile_align(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap);
+        return None;
     }
 
-    // Step 4: Pick the lag with the best segments, then use block_align for
-    // optimal anchor pair selection
     let (best_lag, best_segments) = all_segments
         .into_iter()
         .max_by(|a, b| {
@@ -157,23 +119,16 @@ pub fn fft_profile_align(
 
     let nseg = best_segments.len();
     if nseg == 0 {
-        return profile_align(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap);
+        return None;
     }
 
-    // Build cross-score matrix for block_align
     let mut cross_scores = vec![vec![0.0f64; nseg]; nseg];
     for i in 0..nseg {
-        for j in 0..nseg {
-            // Diagonal gets actual score, off-diagonal gets 0
-            if i == j {
-                cross_scores[i][j] = best_segments[i].score;
-            }
-        }
+        cross_scores[i][i] = best_segments[i].score;
     }
 
     let (sel_i, _sel_j) = block_align(&cross_scores, params.gap.open);
 
-    // Step 5: Convert selected segments to anchors
     let anchors: Vec<(usize, usize)> = sel_i
         .iter()
         .map(|&si| {
@@ -189,18 +144,40 @@ pub fn fft_profile_align(
         .collect();
 
     if anchors.is_empty() {
-        return profile_align(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap);
+        None
+    } else {
+        Some(anchors)
+    }
+}
+
+/// Perform FFT-accelerated profile alignment.
+///
+/// 1. Converts profiles to per-residue-type complex vectors.
+/// 2. Uses multi-channel FFT cross-correlation to find the best lags.
+/// 3. Detects alignable segments at each candidate lag.
+/// 4. Selects optimal non-overlapping anchor pairs via DP (block_align).
+/// 5. Runs full DP alignment within each segment.
+///
+/// Falls back to direct profile DP if no good anchors are found.
+pub fn fft_profile_align(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<i32>],
+    params: &FftAlignParams,
+) -> Alignment {
+    if prof1.length == 0 || prof2.length == 0 {
+        return Alignment {
+            seq1: Vec::new(),
+            seq2: Vec::new(),
+            score: 0.0,
+            operations: Vec::new(),
+        };
     }
 
-    if std::env::var("MAFFT_DEBUG_FFT").is_ok() {
-        eprintln!("  best_lag={} anchors:", best_lag);
-        for (i, &a) in anchors.iter().take(10).enumerate() {
-            eprintln!("    anchor[{}]: ({}, {})", i, a.0, a.1);
-        }
+    match find_fft_anchors(prof1, prof2, matrix, params) {
+        Some(anchors) => align_with_anchors(prof1, prof2, matrix, &params.gap, &anchors),
+        None => profile_align(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap),
     }
-
-    // Step 6: Align using anchored DP (matching C's Falign behavior).
-    align_with_anchors(prof1, prof2, matrix, &params.gap, &anchors)
 }
 
 /// Convert profile frequencies to per-channel complex vectors for FFT.

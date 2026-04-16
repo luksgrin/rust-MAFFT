@@ -21,8 +21,8 @@
 use rayon::prelude::*;
 
 use mafft_align::{
-    profile_align, fft_profile_align, constrained_profile_align,
-    ConstrainedAlignParams, FftAlignParams,
+    profile_align, find_fft_anchors, align_with_anchors,
+    constrained_profile_align, ConstrainedAlignParams, FftAlignParams,
     Profile, GapModel, AlignOp,
 };
 use mafft_fft::SegmentParams;
@@ -234,10 +234,19 @@ pub fn iterative_refine(
 /// Since group1 + group2 = ALL sequences, there are no "other" sequences
 /// to worry about. Every sequence is in exactly one group.
 ///
-/// Gap stripping is always applied first. When `use_fft` is true,
-/// `fft_profile_align()` (FFT correlation → anchors → segmented DP) is
-/// used on the stripped profiles, matching C's use of Falign in refinement.
-/// When false, plain `profile_align()` is used.
+/// When `use_fft` is true (matching C's Falign path in tditeration.c):
+/// 1. Strip per-group gap columns → build stripped profiles
+/// 2. Run FFT anchor detection on stripped profiles (clean, residue-rich data)
+/// 3. Map anchors back to non-stripped coordinates via kept1/kept2
+/// 4. Build non-stripped profiles from full sequences
+/// 5. Run anchored DP on non-stripped profiles (matching C's input)
+///
+/// The anchor mapping ensures the FFT sees clean data for good anchor
+/// detection, while the DP operates on the same non-stripped profiles C
+/// uses. Anchors constrain the DP so width growth is bounded.
+///
+/// If FFT finds no anchors, falls back to profile_align on stripped
+/// profiles (bounded by residue count).
 fn realign_all(
     group1: &[usize],
     group2: &[usize],
@@ -250,24 +259,11 @@ fn realign_all(
 ) -> Option<(Vec<Vec<u8>>, f64)> {
     let width = sequences[0].len();
 
-    // Per-group gap stripping (matching C's `commongappick` during refinement).
-    // Since group1 + group2 = ALL sequences, stripping both is safe:
-    // no "other" sequences need column re-insertion.
+    // Per-group gap stripping.
     let gap1 = group_all_gap_columns(group1, sequences, width);
     let gap2 = group_all_gap_columns(group2, sequences, width);
     let kept1: Vec<usize> = (0..width).filter(|&c| !gap1[c]).collect();
     let kept2: Vec<usize> = (0..width).filter(|&c| !gap2[c]).collect();
-
-    // Build stripped sequences
-    let stripped1: Vec<Vec<u8>> = group1.iter()
-        .map(|&i| kept1.iter().map(|&c| sequences[i][c]).collect())
-        .collect();
-    let stripped2: Vec<Vec<u8>> = group2.iter()
-        .map(|&i| kept2.iter().map(|&c| sequences[i][c]).collect())
-        .collect();
-
-    let s1_refs: Vec<&[u8]> = stripped1.iter().map(|s| s.as_slice()).collect();
-    let s2_refs: Vec<&[u8]> = stripped2.iter().map(|s| s.as_slice()).collect();
 
     let w1: Vec<f64> = group1.iter().map(|&i| weights[i]).collect();
     let w2: Vec<f64> = group2.iter().map(|&i| weights[i]).collect();
@@ -276,16 +272,25 @@ fn realign_all(
     let w1n: Vec<f64> = if sum1 > 0.0 { w1.iter().map(|w| w / sum1).collect() } else { vec![1.0; group1.len()] };
     let w2n: Vec<f64> = if sum2 > 0.0 { w2.iter().map(|w| w / sum2).collect() } else { vec![1.0; group2.len()] };
 
-    let prof1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
-    let prof2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
+    // Build stripped sequences and profiles (used for FFT anchor detection
+    // and as fallback for unconstrained non-FFT alignment).
+    let stripped1: Vec<Vec<u8>> = group1.iter()
+        .map(|&i| kept1.iter().map(|&c| sequences[i][c]).collect())
+        .collect();
+    let stripped2: Vec<Vec<u8>> = group2.iter()
+        .map(|&i| kept2.iter().map(|&c| sequences[i][c]).collect())
+        .collect();
+    let s1_refs: Vec<&[u8]> = stripped1.iter().map(|s| s.as_slice()).collect();
+    let s2_refs: Vec<&[u8]> = stripped2.iter().map(|s| s.as_slice()).collect();
+    let stripped_prof1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
+    let stripped_prof2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
 
-    if prof1.length == 0 || prof2.length == 0 {
+    if stripped_prof1.length == 0 || stripped_prof2.length == 0 {
         return None;
     }
 
-    // Use constrained alignment if local homology table is available,
-    // otherwise FFT-accelerated (Falign) or plain profile alignment.
-    let aln = if let Some(lh_table) = constraints {
+    if let Some(lh_table) = constraints {
+        // Constrained alignment (L-INS-i, E-INS-i): operates on stripped profiles.
         let cparams = ConstrainedAlignParams {
             gap: gap.clone(),
             segment_params: if scoring.seq_type.is_nucleotide() {
@@ -295,14 +300,32 @@ fn realign_all(
             },
             constraint_weight: 1.0,
         };
-        constrained_profile_align(
-            &prof1, &prof2,
+        let aln = constrained_profile_align(
+            &stripped_prof1, &stripped_prof2,
             &scoring.substitution_matrix,
-            lh_table,
-            group1, group2,
-            &cparams,
-        )
-    } else if use_fft {
+            lh_table, group1, group2, &cparams,
+        );
+        return build_result_from_stripped(
+            &aln, group1, group2, sequences, &kept1, &kept2,
+            &stripped_prof1, &stripped_prof2,
+        );
+    }
+
+    if use_fft {
+        // FFT path matching C's Falign in tditeration.c:
+        // 1. Build non-stripped profiles from full sequences
+        // 2. Run FFT anchor detection on non-stripped profiles (matching C's
+        //    seq_vec_3 which operates on the full character sequences)
+        // 3. Run anchored DP on non-stripped profiles
+        // 4. If no anchors found, fall back to profile_align on stripped
+        //    profiles (C falls back to a single full-span segment, but our
+        //    unconstrained profile_align on non-stripped profiles causes
+        //    width explosion; stripped fallback is bounded and correct)
+        let full1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
+        let full2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
+        let full_prof1 = Profile::from_aligned(&full1, &w1n, &scoring.amino_map, scoring.nalphabets);
+        let full_prof2 = Profile::from_aligned(&full2, &w2n, &scoring.amino_map, scoring.nalphabets);
+
         let fft_params = FftAlignParams {
             num_candidates: 20,
             segment_params: if scoring.seq_type.is_nucleotide() {
@@ -315,54 +338,124 @@ fn realign_all(
             tail_gap: true,
             num_channels: scoring.nscoredalphabets,
         };
-        fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params)
-    } else {
-        profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, true, true)
-    };
 
-    // Verify ops consume all columns from both profiles.
+        if let Some(anchors) = find_fft_anchors(
+            &full_prof1, &full_prof2,
+            &scoring.substitution_matrix, &fft_params,
+        ) {
+            // Anchored DP on non-stripped profiles — width bounded by anchors.
+            let aln = align_with_anchors(
+                &full_prof1, &full_prof2,
+                &scoring.substitution_matrix, gap, &anchors,
+            );
+            return build_result_from_full(
+                &aln, group1, group2, sequences,
+                &full_prof1, &full_prof2,
+            );
+        }
+        // FFT found no usable anchors — fall through to stripped profile_align.
+    }
+
+    // Non-FFT path (or FFT fallback): plain profile_align on stripped profiles.
+    let aln = profile_align(
+        &stripped_prof1, &stripped_prof2,
+        &scoring.substitution_matrix, gap, true, true,
+    );
+    build_result_from_stripped(
+        &aln, group1, group2, sequences, &kept1, &kept2,
+        &stripped_prof1, &stripped_prof2,
+    )
+}
+
+/// Build result sequences from an alignment on stripped profiles.
+/// Maps alignment operations back to original column positions via kept1/kept2.
+fn build_result_from_stripped(
+    aln: &mafft_align::Alignment,
+    group1: &[usize],
+    group2: &[usize],
+    sequences: &[Vec<u8>],
+    kept1: &[usize],
+    kept2: &[usize],
+    prof1: &Profile,
+    prof2: &Profile,
+) -> Option<(Vec<Vec<u8>>, f64)> {
     let consumed1 = aln.operations.iter()
-        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete))
-        .count();
+        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete)).count();
     let consumed2 = aln.operations.iter()
-        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Insert))
-        .count();
-
+        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Insert)).count();
     if consumed1 != prof1.length || consumed2 != prof2.length {
         return None;
     }
 
-    // Build new sequences using column mappings from stripped profiles.
-    // Since ALL sequences are in one of the two groups, no re-insertion needed.
     let mut new_sequences = vec![Vec::with_capacity(aln.operations.len()); sequences.len()];
-    let mut cursor1 = 0usize;
-    let mut cursor2 = 0usize;
-
+    let mut c1 = 0usize;
+    let mut c2 = 0usize;
     for op in &aln.operations {
         match op {
             AlignOp::Match => {
-                let oc1 = kept1[cursor1];
-                let oc2 = kept2[cursor2];
+                let oc1 = kept1[c1];
+                let oc2 = kept2[c2];
                 for &i in group1 { new_sequences[i].push(sequences[i][oc1]); }
                 for &i in group2 { new_sequences[i].push(sequences[i][oc2]); }
-                cursor1 += 1;
-                cursor2 += 1;
+                c1 += 1; c2 += 1;
             }
             AlignOp::Delete => {
-                let oc1 = kept1[cursor1];
+                let oc1 = kept1[c1];
                 for &i in group1 { new_sequences[i].push(sequences[i][oc1]); }
                 for &i in group2 { new_sequences[i].push(b'-'); }
-                cursor1 += 1;
+                c1 += 1;
             }
             AlignOp::Insert => {
-                let oc2 = kept2[cursor2];
+                let oc2 = kept2[c2];
                 for &i in group1 { new_sequences[i].push(b'-'); }
                 for &i in group2 { new_sequences[i].push(sequences[i][oc2]); }
-                cursor2 += 1;
+                c2 += 1;
             }
         }
     }
+    Some((new_sequences, aln.score))
+}
 
+/// Build result sequences from an alignment on non-stripped (full) profiles.
+/// Cursors index directly into the full-width sequences.
+fn build_result_from_full(
+    aln: &mafft_align::Alignment,
+    group1: &[usize],
+    group2: &[usize],
+    sequences: &[Vec<u8>],
+    prof1: &Profile,
+    prof2: &Profile,
+) -> Option<(Vec<Vec<u8>>, f64)> {
+    let consumed1 = aln.operations.iter()
+        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete)).count();
+    let consumed2 = aln.operations.iter()
+        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Insert)).count();
+    if consumed1 != prof1.length || consumed2 != prof2.length {
+        return None;
+    }
+
+    let mut new_sequences = vec![Vec::with_capacity(aln.operations.len()); sequences.len()];
+    let mut c1 = 0usize;
+    let mut c2 = 0usize;
+    for op in &aln.operations {
+        match op {
+            AlignOp::Match => {
+                for &i in group1 { new_sequences[i].push(sequences[i][c1]); }
+                for &i in group2 { new_sequences[i].push(sequences[i][c2]); }
+                c1 += 1; c2 += 1;
+            }
+            AlignOp::Delete => {
+                for &i in group1 { new_sequences[i].push(sequences[i][c1]); }
+                for &i in group2 { new_sequences[i].push(b'-'); }
+                c1 += 1;
+            }
+            AlignOp::Insert => {
+                for &i in group1 { new_sequences[i].push(b'-'); }
+                for &i in group2 { new_sequences[i].push(sequences[i][c2]); }
+                c2 += 1;
+            }
+        }
+    }
     Some((new_sequences, aln.score))
 }
 

@@ -260,7 +260,7 @@ The progressive alignment phase (FFT-NS-2, NW-NS-2) is byte-identical to C. The 
 - **Oscillation detection** — per-branch score history with even-iteration lookback.
 - **Iteration cap** — 16 iterations (matching C's mafft script).
 
-Remaining divergence: C calls Falign on **non-stripped** profiles (operating in-place on fixed-size character buffers), while we call `fft_profile_align` on **gap-stripped** profiles. The gap stripping is necessary because our functional approach (building new sequences from alignment operations) causes unbounded width explosion on non-stripped profiles. On the 36-sequence sample, FFT-NS-i produces width 731 vs C's 721 (progressive phase: 717, byte-identical).
+Remaining divergence: when FFT finds anchors, both C and Rust use FFT-anchored DP on non-stripped profiles — this path matches. When FFT finds no anchors (some asymmetric splits), C aligns the full sequences as a single segment while Rust falls back to `profile_align` on gap-stripped profiles to prevent unbounded width growth (C bounds width via fixed-size `alloclen` buffers; Rust builds new `Vec<u8>` from operations). On the 36-sequence sample, FFT-NS-i produces width 731 vs C's 721 (progressive phase: 717, byte-identical).
 
 ### Non-default BLOSUM matrices (`--bl N`)
 
