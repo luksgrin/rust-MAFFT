@@ -8,12 +8,21 @@
 /// Key insight from the C code: at each tree branch, ALL sequences are
 /// split into two groups (subtree vs everything else). There are never
 /// "uninvolved" sequences — every sequence is in one group or the other.
+///
+/// Branch enumeration matches C exactly:
+/// - For each topology step, both sides (k=0: left, k=1: right) are
+///   processed, EXCEPT the root step (last step) where only k=1 (right)
+///   is used (since at the root, left-vs-complement and right-vs-complement
+///   produce the same split, just flipped).
+/// - Even iterations traverse steps forward (0 → N-1), odd iterations
+///   traverse backward (N-1 → 0). Within each step, k always goes 0→1.
+/// - Total branches per iteration: (nseq-1)*2 - 1.
 
 use rayon::prelude::*;
 
 use mafft_align::{
     profile_align, constrained_profile_align, ConstrainedAlignParams,
-    Profile, GapModel, Alignment, AlignOp,
+    Profile, GapModel, AlignOp,
 };
 use mafft_fft::SegmentParams;
 use mafft_tree::{Topology, sequence_weights};
@@ -26,7 +35,8 @@ use crate::progressive::MultipleAlignment;
 pub struct RefinementParams {
     /// Maximum number of iterations.
     pub max_iterations: usize,
-    /// Score improvement threshold (fraction).
+    /// Score improvement threshold (fraction of old score).
+    /// C default is 0.0 (accept only strict improvements).
     pub cut: f64,
     /// Whether to use FFT-accelerated alignment during refinement.
     pub use_fft: bool,
@@ -36,11 +46,15 @@ impl Default for RefinementParams {
     fn default() -> Self {
         Self {
             max_iterations: 100,
-            cut: 0.0001,
+            cut: 0.0,
             use_fft: false,
         }
     }
 }
+
+/// A branch identifier for oscillation tracking: (step_index, side).
+/// side 0 = left, side 1 = right.
+type BranchId = (usize, usize);
 
 /// Iteratively refine a multiple alignment.
 ///
@@ -63,81 +77,133 @@ pub fn iterative_refine(
 
     let mut converged_count = 0usize;
     let convergence_target = nseq * 2;
-    let mut score_history: Vec<f64> = Vec::new();
 
-    // Build the branch splits: for each topology step, we get two branches.
-    // Branch k side 0: step.left vs everything else
-    // Branch k side 1: step.right vs everything else
+    let nsteps = topology.steps.len();
+    let root_idx = nsteps - 1;
     let all_indices: Vec<usize> = (0..nseq).collect();
-    let mut branches: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
-    for step in &topology.steps {
-        // Branch side 0: step.left vs complement
-        let complement_left: Vec<usize> = all_indices
-            .iter()
-            .filter(|i| !step.left.contains(i))
-            .copied()
-            .collect();
-        if !step.left.is_empty() && !complement_left.is_empty() {
-            branches.push((step.left.clone(), complement_left));
+
+    // Pre-compute branch splits for all (step, side) pairs.
+    // For each step, side 0 = left vs complement, side 1 = right vs complement.
+    // Root step only has side 1 (side 0 is redundant at the root).
+    let mut branch_map: Vec<Vec<(usize, Vec<usize>, Vec<usize>)>> = Vec::with_capacity(nsteps);
+    for (step_idx, step) in topology.steps.iter().enumerate() {
+        let is_root = step_idx == root_idx;
+        let mut sides = Vec::new();
+
+        if !is_root {
+            // Side 0: step.left vs complement
+            let complement: Vec<usize> = all_indices
+                .iter()
+                .filter(|i| !step.left.contains(i))
+                .copied()
+                .collect();
+            if !step.left.is_empty() && !complement.is_empty() {
+                sides.push((0, step.left.clone(), complement));
+            }
         }
 
-        // Branch side 1: step.right vs complement
-        let complement_right: Vec<usize> = all_indices
+        // Side 1: step.right vs complement
+        let complement: Vec<usize> = all_indices
             .iter()
             .filter(|i| !step.right.contains(i))
             .copied()
             .collect();
-        if !step.right.is_empty() && !complement_right.is_empty() {
-            branches.push((step.right.clone(), complement_right));
+        if !step.right.is_empty() && !complement.is_empty() {
+            sides.push((1, step.right.clone(), complement));
         }
+
+        branch_map.push(sides);
     }
+
+    // Per-branch score history for oscillation detection.
+    // history[iteration][(step_idx, side)] = score after processing that branch.
+    let mut history: Vec<std::collections::HashMap<BranchId, f64>> = Vec::new();
 
     let mut iteration = 0;
     for iter in 0..params.max_iterations {
         iteration = iter + 1;
         let mut any_change = false;
+        let mut iter_scores: std::collections::HashMap<BranchId, f64> = std::collections::HashMap::new();
 
-        for (group1, group2) in &branches {
-            let old_score = compute_split_score(
-                group1, group2, &alignment.sequences, &weights, scoring,
-            );
+        // C alternates step traversal direction: even → forward, odd → reverse.
+        let step_order: Vec<usize> = if iter % 2 == 0 {
+            (0..nsteps).collect()
+        } else {
+            (0..nsteps).rev().collect()
+        };
 
-            let new_seqs = realign_all(
-                group1, group2, &alignment.sequences, &weights, scoring, &gap,
-                constraints,
-            );
+        for &step_idx in &step_order {
+            for (side, group1, group2) in &branch_map[step_idx] {
+                let branch_id: BranchId = (step_idx, *side);
 
-            if let Some((new_seqs, new_score)) = new_seqs {
-                let threshold = old_score - params.cut * old_score.abs();
-                if new_score > threshold {
+                let old_score = compute_split_score(
+                    group1, group2, &alignment.sequences, &weights, scoring,
+                );
+
+                let new_seqs = realign_all(
+                    group1, group2, &alignment.sequences, &weights, scoring, &gap,
+                    constraints,
+                );
+
+                if let Some((new_seqs, _new_score)) = new_seqs {
+                    // C's identity check: compare representative sequences
                     let changed = (0..nseq).any(|i| alignment.sequences[i] != new_seqs[i]);
-                    if changed {
-                        alignment.sequences = new_seqs;
-                        any_change = true;
-                        converged_count = 0;
-                    } else {
+
+                    if !changed {
+                        // Identical — no change, count toward convergence
+                        let tscore = old_score;
+                        iter_scores.insert(branch_id, tscore);
                         converged_count += 1;
+                    } else {
+                        // Compute score of the new alignment for this split
+                        let tscore = compute_split_score(
+                            group1, group2, &new_seqs, &weights, scoring,
+                        );
+
+                        let threshold = old_score - params.cut / 100.0 * old_score;
+                        if tscore > threshold {
+                            // Accept
+                            alignment.sequences = new_seqs;
+                            any_change = true;
+                            converged_count = 0;
+                        } else {
+                            // Reject
+                            converged_count += 1;
+                        }
+                        iter_scores.insert(branch_id, tscore);
                     }
                 } else {
+                    iter_scores.insert(branch_id, old_score);
                     converged_count += 1;
                 }
-            } else {
-                converged_count += 1;
-            }
 
-            if converged_count >= convergence_target {
-                return iteration;
+                if converged_count >= convergence_target {
+                    return iteration;
+                }
+
+                // Oscillation detection: check if this branch's score matches
+                // the score from 2, 4, 6... iterations ago (same branch).
+                if iter >= 2 {
+                    let tscore = iter_scores[&branch_id];
+                    let mut oscillating = false;
+                    let mut ii = history.len() as isize - 2; // iterate-2
+                    while ii >= 0 {
+                        if let Some(&prev_score) = history[ii as usize].get(&branch_id) {
+                            if tscore == prev_score {
+                                oscillating = true;
+                                break;
+                            }
+                        }
+                        ii -= 2;
+                    }
+                    if oscillating {
+                        return iteration;
+                    }
+                }
             }
         }
 
-        let total_score = compute_total_score(&alignment.sequences, &weights, scoring);
-        if score_history.len() >= 2 {
-            let prev = score_history[score_history.len() - 2];
-            if (total_score - prev).abs() < 1e-10 {
-                return iteration;
-            }
-        }
-        score_history.push(total_score);
+        history.push(iter_scores);
 
         if !any_change {
             return iteration;
@@ -322,18 +388,6 @@ fn pairwise_score(seq1: &[u8], seq2: &[u8], scoring: &ScoringContext) -> f64 {
     acc as f64
 }
 
-fn compute_total_score(sequences: &[Vec<u8>], weights: &[f64], scoring: &ScoringContext) -> f64 {
-    let n = sequences.len();
-    (0..n)
-        .into_par_iter()
-        .map(|i| {
-            ((i + 1)..n)
-                .map(|j| pairwise_score(&sequences[i], &sequences[j], scoring) * weights[i] * weights[j])
-                .sum::<f64>()
-        })
-        .sum()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,8 +415,7 @@ mod tests {
         let mut msa = progressive_align(&seqs, &names, &topo, &scoring, false, None);
         let params = RefinementParams {
             max_iterations: 10,
-            cut: 0.0001,
-            use_fft: false,
+            ..Default::default()
         };
 
         let iters = iterative_refine(&mut msa, &topo, &scoring, &params, None);

@@ -251,16 +251,9 @@ Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retre
 
 ### Iterative refinement (FFT-NS-i, G-INS-i, L-INS-i, E-INS-i)
 
-The progressive alignment phase (FFT-NS-2, NW-NS-2) is byte-identical to C. The iterative refinement phase (`--maxiterate > 0`) diverges — FFT-NS-i produces width 733 vs C's 721 on the sample dataset. Root causes:
+The progressive alignment phase (FFT-NS-2, NW-NS-2) is byte-identical to C. The iterative refinement phase (`--maxiterate > 0`) produces valid alignments and its branch enumeration, tree construction, acceptance criteria, and oscillation detection all match C's `TreeDependentIteration()`. The iteration count is correctly capped at 16 (matching C's mafft script). One source of divergence remains:
 
-- **Branch enumeration order.** C's `TreeDependentIteration()` in `tditeration.c` iterates over tree branches using `topol[k][0]` (one subtree side) vs its complement. Our code enumerates both sides of each topology step, producing 2x as many branch splits. This changes which realignments are attempted and in what order.
-- **FFT in refinement.** C uses `Falign` (FFT-accelerated alignment) for realignment within refinement when FFT is enabled (`tditeration.c` line ~1035). We always use plain `profile_align`.
-- **Refinement tree distance.** C reads the `hat2` file (scoring-matrix-based distances from the last retree pass) and builds UPGMA for the refinement tree. We currently use identity distance from the alignment.
-- **Convergence criteria.** C uses `cut *= 2.0` cooling with per-branch convergence tracking. Our implementation is simpler.
-
-All iterative modes (FFT-NS-i, G-INS-i, L-INS-i, E-INS-i, `--allowshift`) are blocked on fixing the refinement loop. The progressive phase for these modes works correctly.
-
-The iteration count is correctly capped at 16 (matching C's mafft script behavior for the default parallelization strategy).
+- **FFT in refinement.** C uses `Falign` (FFT-accelerated alignment) for realignment within refinement when FFT is enabled (`tditeration.c` line ~2153). We always use plain `profile_align`. This means FFT-NS-i diverges from C; NW-NS-i (which doesn't use FFT) is unaffected.
 
 ### Non-default BLOSUM matrices (`--bl N`)
 

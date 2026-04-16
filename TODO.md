@@ -1,5 +1,23 @@
 # Pending Work
 
+## FFT-accelerated alignment in iterative refinement
+
+**Status**: Not implemented (using plain `profile_align` instead of `Falign`)
+**Priority**: High (last source of divergence in the refinement loop)
+**Location**: `crates/mafft-core/src/refinement.rs`, `realign_all()`
+
+C's `TreeDependentIteration()` calls `Falign()` (FFT-accelerated profile alignment with anchor detection) for re-alignment during refinement when FFT is enabled (`tditeration.c` line ~2153). Our refinement loop always uses plain `profile_align()`. This means FFT-NS-i diverges from C; NW-NS-i (which doesn't use FFT) is unaffected.
+
+### How to fix
+
+Wire `fft_profile_align()` (from `crates/mafft-align/src/fft_align.rs`) into `realign_all()` when `RefinementParams::use_fft` is true. The function already exists and is used in progressive alignment — it just needs to be called from the refinement path as well:
+
+1. Thread the `use_fft` flag and scoring context's FFT-related fields into `realign_all()`.
+2. When `use_fft` is true, call `fft_profile_align()` instead of `profile_align()`.
+3. C also calls `commongappick_record()` (which records the gap map) before FFT alignment but skips it for non-FFT — match this behavior.
+
+Note: `RefinementParams` already has a `use_fft` field, and the engine already passes the correct value. Only the `realign_all()` function needs updating.
+
 ## Per-group gap stripping in progressive alignment
 
 **Status**: Not implemented (using global-all-gap stripping instead)

@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
-use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, pairwise_identity_distance, ktuple_distance, scoring_matrix_distance, parttree, PartTreeParams};
+use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, scoring_matrix_distance, parttree, PartTreeParams};
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
@@ -363,7 +363,11 @@ impl MafftEngine {
                 // Rebuild tree for refinement.
                 // C's dvtditr reads the hat2 file (scoring-matrix-based distances
                 // written by disttbfast during retree pass 2) and builds UPGMA.
-                let dm = compute_distance_matrix_from_alignment(&msa.sequences);
+                let penalty_dist = scoring.gap.open;
+                let dm = compute_distance_matrix_scoring(
+                    &msa.sequences, &scoring.substitution_matrix,
+                    &scoring.amino_map, penalty_dist,
+                );
                 let topo = musclesupg(&dm, ClusterMethod::default());
                 // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)
                 // parallelization strategy (scripts/mafft line ~1515). This matters
@@ -371,8 +375,8 @@ impl MafftEngine {
                 let capped_iterations = (*iterations).min(16);
                 let params = RefinementParams {
                     max_iterations: capped_iterations,
-                    cut: 0.0001,
                     use_fft,
+                    ..Default::default()
                 };
                 iterative_refine(
                     &mut msa,
@@ -512,26 +516,6 @@ fn compute_distance_matrix_scoring(
     dm
 }
 
-/// Compute pairwise identity distances from aligned sequences (with gaps).
-fn compute_distance_matrix_from_alignment(sequences: &[Vec<u8>]) -> DistanceMatrix {
-    let nseq = sequences.len();
-    let pairs: Vec<(usize, usize, f64)> = (0..nseq)
-        .into_par_iter()
-        .flat_map(|i| {
-            let seqs = sequences;
-            ((i + 1)..nseq).into_par_iter().map(move |j| {
-                let d = pairwise_identity_distance(&seqs[i], &seqs[j]);
-                (i, j, d)
-            })
-        })
-        .collect();
-
-    let mut dm = DistanceMatrix::new(nseq);
-    for (i, j, d) in pairs {
-        dm.set(i, j, d);
-    }
-    dm
-}
 
 #[cfg(test)]
 mod tests {
