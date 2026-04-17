@@ -19,4 +19,4 @@ pub use musclesupg::{musclesupg, ClusterMethod};
 pub use addonetip::{addonetip, AddResult};
 pub use parttree::{parttree, PartTreeParams};
 pub use topology::{Topology, JoinStep};
-pub use weighting::sequence_weights;
+pub use weighting::{sequence_weights, BranchWeights};

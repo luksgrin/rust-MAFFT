@@ -26,7 +26,7 @@ use mafft_align::{
     Profile, GapModel, AlignOp,
 };
 use mafft_fft::SegmentParams;
-use mafft_tree::{Topology, sequence_weights};
+use mafft_tree::{Topology, sequence_weights, BranchWeights};
 use mafft_types::{ScoringContext, LocalHomologyTable};
 
 use crate::progressive::MultipleAlignment;
@@ -122,7 +122,12 @@ pub fn iterative_refine(
         return 0;
     }
 
-    let weights = sequence_weights(topology);
+    // C computes per-branch weights using weightFromABranch (weight=4 mode).
+    // BranchWeights implements this but needs validation against C's output.
+    // For now, use global weights (which produce 731 vs C's 721).
+    // TODO: validate BranchWeights against C and switch to per-branch.
+    let _branch_weights = BranchWeights::new(topology);
+    let global_weights = sequence_weights(topology);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
 
 
@@ -152,6 +157,8 @@ pub fn iterative_refine(
         for &step_idx in &step_order {
             for (side, group1, group2) in &branch_map[step_idx] {
                 let branch_id: BranchId = (step_idx, *side);
+
+                let weights = &global_weights;
 
                 let old_score = compute_split_score(
                     group1, group2, &alignment.sequences, &weights, scoring,
@@ -351,12 +358,10 @@ fn realign_all(
                 &scoring.substitution_matrix, gap, &anchors,
             )
         } else {
-            // No anchors found. C creates a single segment spanning the full
-            // non-stripped sequences (Falign.c lines 1377-1421) and calls
-            // MSalignmm. C's MSalignmm on same-width non-stripped profiles
-            // produces near-zero width growth per call, but our profile_align
-            // produces Insert+Delete pairs at gap-ambiguous positions that
-            // compound across branches. Fall back to stripped profiles.
+            // No anchors found. C's Falign (lines 1377-1421) creates a single
+            // segment spanning the full sequences, calls commongappick to strip
+            // per-group gap columns (line 1610/1617), then calls MSalignmm on
+            // the stripped sequences. Match this exactly.
             let aln = profile_align(
                 &stripped_prof1, &stripped_prof2,
                 &scoring.substitution_matrix, gap, true, true,

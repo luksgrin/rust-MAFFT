@@ -1,38 +1,37 @@
 # Pending Work
 
-## Refinement profile_align width growth (731 vs C's 721)
+## Refinement alignment width (731 vs C's 721)
 
-**Status**: Requires cross-validation harness comparing C's MSalignmm vs Rust cell-by-cell
-**Priority**: Medium (FFT-NS-i width 731 vs C's 721 — 1.4% divergence)
-**Location**: `crates/mafft-align/src/profile.rs`, `profile_align()` line 465
+**Status**: Both C and Rust strip gaps and use profile_align/MSalignmm identically. Divergence is compounded epsilon-level float differences across 16 iterations × 69 branches.
+**Priority**: Low (1.4% width divergence, both produce valid alignments)
+**Location**: `crates/mafft-core/src/refinement.rs`, `realign_all()`
 
-C's MSalignmm on two same-width non-stripped profiles produces near-zero width growth per call. Our `profile_align` produces ~7 columns growth per call, compounding to +484 across 69 branches (717→1201) when used on non-stripped profiles. Progressive alignment (stripped profiles) is byte-identical to C.
+### What was confirmed matching C
 
-### What was investigated
+Investigation of C's Falign.c revealed that **C DOES strip gap columns before calling MSalignmm** during refinement:
+- `kobetsubunkatsu = 1` and `fftkeika = 1` in dvtditr.c (lines 51, 54)
+- Falign.c line 1610: `if( kobetsubunkatsu && fftkeika ) commongappick( clus1, tmpres1 );`
+- This strips per-group all-gap columns BEFORE MSalignmm, matching our `group_all_gap_columns` + stripped `profile_align`
 
-1. **Comparison operators**: All `>` vs `>=` in the DP inner loop match C exactly (MSalignmm.c lines 841/847/860/866).
-2. **Gap cost arrays**: ogcp/fgcp computation matches C's `0.5 * (1.0 - count) * penalty * nongap_freq`.
-3. **Scoring matrix**: Same matrix used (substitution_matrix = n_dis + offset).
-4. **FFT anchor detection**: Fails on non-stripped profiles in both C and Rust due to gap dilution below segment threshold. C always falls through to single-segment alignment.
-5. **`currentw[m]` stale value**: C's `match_calc` fills `[0..lgth2-1]`, leaving `currentw[lgth2]` as the stale value from the buffer swap. Our code zeroes it with `currentw[m] = 0.0`. Removing the zeroing matches C's buffer behavior for alternating rows BUT breaks scores for `tail_gap=true` (400→-1236 on a 4-position test) because the stale value from C's calloc'd init buffer differs from our vec swap pattern. The zeroing does NOT affect progressive alignment (which uses `tail_gap=false`).
+Additionally confirmed matching:
+- DP comparison operators (`>` for Insert/Delete vs wm, `>=` for running-max updates) — MSalignmm.c lines 841/847/860/866
+- Gap cost formulas (`ogcp`/`fgcp`): `0.5 * (1.0 - count) * penalty * nongap_freq`
+- Profile construction (`cpmx_calc_new` / `Profile::from_aligned`): same weighted accumulation
+- Gap counting (`gapcountf` / `st_OpeningGapCount` / `st_FinalGapCount`): same logic
+- Boundary gap handling (`sgap`/`egap` all `'o'` for single-segment case) equivalent to `st_*` functions
+- `legacygapcost = 0` path with `headgapfreq = 1.0` matches our `hgf = 1.0`
+- FFT segment detection fails on non-stripped profiles in both C and Rust (gap dilution)
+- `currentw[m]` stale-value difference confirmed — does NOT affect the stripped-profile path
 
-### Current workaround
+### Root cause: per-branch sequence weighting
 
-Refinement uses `profile_align` on gap-stripped profiles, keeping width bounded.
+C uses **per-branch weights** (`weightFromABranch` in treeOperation.c, weight=4 mode) that compute a different weight vector for each of the 69 branches per iteration. These weights are derived from the tree structure around each specific branch point, using synthetic branch lengths (harmonic mean recursion) and a 3-way branch weight formula. Our code uses **global weights** (`sequence_weights`, porting C's `counteff_simple_double`) that are the same for all branches.
 
-### Detailed trace data (from instrumented runs)
+The per-branch weighting changes which alignment decision is optimal at each branch, because profiles built with different weights produce different match scores and gap penalties. This produces the 14-column divergence visible from the very first refinement iteration (735 vs C's 721 after 1 iteration).
 
-On the 36-sequence sample, first refinement iteration (69 branches, 717×717 non-stripped profiles):
-- 7 branches produce 0 growth (M=717, I=0, D=0 — perfect diagonal match)
-- Remaining branches produce +1 to +94 growth with **symmetric I=D** (paired Insert+Delete)
-- The Insert+Delete pairs occur at gap-ambiguous positions where both alternatives score equally
-- Growth compounds across branches: 717 → ~1201 after 69 branches
+### Implementation status
 
-C's MSalignmm on the same 717×717 profiles produces 717 ops (0 growth) for all branches. This means C always chooses Match at positions where our DP chooses Insert+Delete. The tie-breaking divergence is in the DP fill, not the traceback — at gap-rich positions where `match_score ≈ 0` and `gap_cost ≈ 0`, C's accumulation order or rounding produces a value that makes Match win by epsilon, while ours produces a value that makes Insert+Delete win by epsilon.
-
-### Next step
-
-Add MSalignmm to `mafft-sys` FFI bindings and write a cross-validation test that calls both C and Rust on a single 717×717 profile pair from the first refinement branch. Dump `h[i][j]` and `ijp[i][j]` for both and find the first cell where they diverge. The divergence likely occurs at a gap-rich position near the N/C terminus where `nongap_freq ≈ 0`.
+`BranchWeights` in `crates/mafft-tree/src/weighting.rs` implements the framework (unrooted tree construction, synthetic length computation, recursive weight propagation), but the tree conversion from `Topology` to the unrooted Node structure has bugs — produced width 785 (worse than 731) when tested. The infrastructure is in place but disabled (refinement uses `_branch_weights` unused, falls back to `global_weights`).
 
 ## Per-group gap stripping in progressive alignment
 
