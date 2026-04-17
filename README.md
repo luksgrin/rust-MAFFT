@@ -260,7 +260,7 @@ The progressive alignment phase (FFT-NS-2, NW-NS-2) is byte-identical to C. The 
 - **Oscillation detection** — per-branch score history with even-iteration lookback.
 - **Iteration cap** — 16 iterations (matching C's mafft script).
 
-Remaining divergence: C's `profile_align` (`MSalignmm`) on two same-width non-stripped profiles produces near-zero width growth per call, while ours produces a small per-call growth (~7 columns) that compounds across branches. The root cause is an unidentified numerical difference in the DP that does not affect progressive alignment (which is byte-identical). The no-anchor fallback uses gap-stripped `profile_align` to keep width bounded. On the 36-sequence sample, FFT-NS-i produces width 731 vs C's 721 (progressive phase: 717, byte-identical).
+Remaining divergence: our `profile_align` on same-width non-stripped profiles produces symmetric Insert+Delete pairs at gap-ambiguous positions (where `match_score ≈ 0` and `gap_cost ≈ 0`), growing width ~7 columns per branch. C's MSalignmm on the same profiles always chooses Match at these tie positions. The DP comparison operators, gap cost formulas, and scoring matrices are identical — the divergence is a floating-point accumulation-order difference that tips the tie at gap-rich positions. Since this compounds across branches, refinement uses gap-stripped `profile_align` to keep width bounded. On the 36-sequence sample, FFT-NS-i produces width 731 vs C's 721 (progressive phase: 717, byte-identical).
 
 ### Non-default BLOSUM matrices (`--bl N`)
 

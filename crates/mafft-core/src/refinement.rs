@@ -351,13 +351,12 @@ fn realign_all(
                 &scoring.substitution_matrix, gap, &anchors,
             )
         } else {
-            // No anchors found. C's Falign creates a single synthetic segment
-            // spanning the full non-stripped sequences (Falign.c lines 1377-1421).
-            // C's MSalignmm on same-width profiles keeps width stable due to
-            // exact numerical parity in the DP. Our profile_align on full
-            // non-stripped profiles has a small per-call width growth that
-            // compounds across branches. Use stripped profiles for the fallback
-            // to keep width bounded by residue count.
+            // No anchors found. C creates a single segment spanning the full
+            // non-stripped sequences (Falign.c lines 1377-1421) and calls
+            // MSalignmm. C's MSalignmm on same-width non-stripped profiles
+            // produces near-zero width growth per call, but our profile_align
+            // produces Insert+Delete pairs at gap-ambiguous positions that
+            // compound across branches. Fall back to stripped profiles.
             let aln = profile_align(
                 &stripped_prof1, &stripped_prof2,
                 &scoring.substitution_matrix, gap, true, true,
