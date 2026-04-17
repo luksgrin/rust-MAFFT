@@ -221,6 +221,30 @@ unsafe extern "C" {
         off2pt: *mut c_int,
     ) -> c_double;
 
+    // -- Tree weighting --
+    pub fn treeCnv(
+        stopol: *mut Node,
+        locnseq: c_int,
+        topol: *mut *mut *mut c_int,
+        len: *mut *mut c_double,
+        bw: *mut *mut c_double,
+    );
+    pub fn calcBranchWeight(
+        bw: *mut *mut c_double,
+        locnseq: c_int,
+        stopol: *mut Node,
+        topol: *mut *mut *mut c_int,
+        len: *mut *mut c_double,
+    );
+    pub fn weightFromABranch(
+        nseq: c_int,
+        result: *mut c_double,
+        stopol: *mut Node,
+        topol: *mut *mut *mut c_int,
+        step: c_int,
+        LorR: c_int,
+    );
+
     // -- Utility --
     pub fn seqlen(seq: *mut c_char) -> c_int;
     pub fn commongappick(nseq: c_int, seq: *mut *mut c_char);

@@ -122,11 +122,7 @@ pub fn iterative_refine(
         return 0;
     }
 
-    // C computes per-branch weights using weightFromABranch (weight=4 mode).
-    // BranchWeights implements this but needs validation against C's output.
-    // For now, use global weights (which produce 731 vs C's 721).
-    // TODO: validate BranchWeights against C and switch to per-branch.
-    let _branch_weights = BranchWeights::new(topology);
+    let branch_weights = BranchWeights::new(topology);
     let global_weights = sequence_weights(topology);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
 
@@ -158,6 +154,9 @@ pub fn iterative_refine(
             for (side, group1, group2) in &branch_map[step_idx] {
                 let branch_id: BranchId = (step_idx, *side);
 
+                // Per-branch weights (correct algorithm, not yet C-validated):
+                // let weights = branch_weights.weights_for_branch(topology, step_idx, *side);
+                // Using global weights until per-branch weights are validated via FFI:
                 let weights = &global_weights;
 
                 let old_score = compute_split_score(
@@ -274,8 +273,11 @@ fn realign_all(
     let kept1: Vec<usize> = (0..width).filter(|&c| !gap1[c]).collect();
     let kept2: Vec<usize> = (0..width).filter(|&c| !gap2[c]).collect();
 
-    let w1: Vec<f64> = group1.iter().map(|&i| weights[i]).collect();
-    let w2: Vec<f64> = group2.iter().map(|&i| weights[i]).collect();
+    // C clamps per-sequence weights to minimumweight (0.00001 from mafft script,
+    // applied in fastconjuction_noname at tddis.c line 548).
+    const MINIMUM_WEIGHT: f64 = 0.00001;
+    let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
+    let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
     let sum1: f64 = w1.iter().sum();
     let sum2: f64 = w2.iter().sum();
     let w1n: Vec<f64> = if sum1 > 0.0 { w1.iter().map(|w| w / sum1).collect() } else { vec![1.0; group1.len()] };

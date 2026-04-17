@@ -31,7 +31,20 @@ The per-branch weighting changes which alignment decision is optimal at each bra
 
 ### Implementation status
 
-`BranchWeights` in `crates/mafft-tree/src/weighting.rs` implements the framework (unrooted tree construction, synthetic length computation, recursive weight propagation), but the tree conversion from `Topology` to the unrooted Node structure has bugs — produced width 785 (worse than 731) when tested. The infrastructure is in place but disabled (refinement uses `_branch_weights` unused, falls back to `global_weights`).
+`BranchWeights` in `crates/mafft-tree/src/weighting.rs` implements:
+- Unrooted tree construction from `Topology` (ports `treeCnv` + `searchParent` + `negativeMember2`)
+- Root restructuring (connecting nseq-3 to nseq-2's sibling with combined lengths)
+- Synthetic branch length computation via harmonic mean recursion (`syntheticLength`)
+- 3-way branch weight formula (`calcW`)
+- Recursive per-branch weight propagation (`weightFromABranch_rec`)
+
+Current results on the 36-sequence sample:
+- Global weights (current default): **731** (vs C's 721)
+- BranchWeights v2: **748** (structurally correct — validated on 4/6-seq trees, but produces wider results on 36-seq)
+
+The tree structure and weight values are correct on small cases (4-seq symmetric tree verified, 6-seq topology passes symmetry/sanity checks). Cross-validation tests exist at `crates/mafft-tree/tests/cross_validate_weights.rs`. The `weightFromABranch`, `treeCnv`, and `calcBranchWeight` FFI declarations are added to `mafft-sys`.
+
+Next step: build the full C FFI cross-validation test that calls C's `weightFromABranch` and compares weight vectors branch-by-branch on the 36-seq refinement topology. The C topology array format (`int***` with sentinel-terminated arrays) needs a builder helper in the test.
 
 ## Per-group gap stripping in progressive alignment
 

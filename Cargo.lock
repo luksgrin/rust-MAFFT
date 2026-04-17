@@ -425,6 +425,7 @@ name = "mafft-tree"
 version = "0.1.0"
 dependencies = [
  "mafft-scoring",
+ "mafft-sys",
  "mafft-types",
 ]
 
