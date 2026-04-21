@@ -244,6 +244,78 @@ unsafe extern "C" {
         step: c_int,
         LorR: c_int,
     );
+    pub fn fastconjuction_noname(
+        memlist: *mut c_int,
+        seq: *mut *mut c_char,
+        aseq: *mut *mut c_char,
+        peff: *mut c_double,
+        eff: *mut c_double,
+        d: *mut c_char,
+        mineff: c_double,
+        oritotal: *mut c_double,
+    ) -> c_int;
+    pub fn cpmx_calc_new(
+        seq: *mut *mut c_char,
+        cpmx: *mut *mut c_double,
+        eff: *mut c_double,
+        lgth: c_int,
+        clus: c_int,
+    );
+    pub fn st_OpeningGapCount(
+        ogcp: *mut c_double,
+        clus: c_int,
+        seq: *mut *mut c_char,
+        eff: *mut c_double,
+        len: c_int,
+    );
+    pub fn st_FinalGapCount(
+        fgcp: *mut c_double,
+        clus: c_int,
+        seq: *mut *mut c_char,
+        eff: *mut c_double,
+        len: c_int,
+    );
+    pub fn gapcountf(
+        freq: *mut c_double,
+        seq: *mut *mut c_char,
+        nseq: c_int,
+        eff: *mut c_double,
+        lgth: c_int,
+    );
+    pub fn MSalignmm(
+        n_dynamicmtx: *mut *mut c_double,
+        seq1: *mut *mut c_char,
+        seq2: *mut *mut c_char,
+        eff1: *mut c_double,
+        eff2: *mut c_double,
+        icyc: c_int,
+        jcyc: c_int,
+        alloclen: c_int,
+        sgap1: *mut c_char,
+        sgap2: *mut c_char,
+        egap1: *mut c_char,
+        egap2: *mut c_char,
+        chudanpt: *mut c_int,
+        chudanref: c_int,
+        chudanres: *mut c_int,
+        headgp: c_int,
+        tailgp: c_int,
+        cpmxchild0: *mut *mut *mut c_double,
+        cpmxchild1: *mut *mut *mut c_double,
+        cpmxresult: *mut *mut *mut c_double,
+        orieff1: c_double,
+        orieff2: c_double,
+    ) -> c_double;
+    pub fn intergroup_score(
+        seq1: *mut *mut c_char,
+        seq2: *mut *mut c_char,
+        eff1: *mut c_double,
+        eff2: *mut c_double,
+        clus1: c_int,
+        clus2: c_int,
+        len: c_int,
+        value: *mut c_double,
+    );
 
     // -- Utility --
     pub fn seqlen(seq: *mut c_char) -> c_int;

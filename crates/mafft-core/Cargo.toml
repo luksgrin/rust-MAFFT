@@ -19,3 +19,6 @@ mafft-tree = { path = "../mafft-tree", version = "0.1.0" }
 mafft-fft = { path = "../mafft-fft", version = "0.1.0" }
 mafft-io = { path = "../mafft-io", version = "0.1.0" }
 rayon = "1"
+
+[dev-dependencies]
+mafft-sys = { path = "../mafft-sys" }

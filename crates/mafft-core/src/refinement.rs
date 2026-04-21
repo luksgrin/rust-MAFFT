@@ -26,7 +26,7 @@ use mafft_align::{
     Profile, GapModel, AlignOp,
 };
 use mafft_fft::SegmentParams;
-use mafft_tree::{Topology, sequence_weights, BranchWeights};
+use mafft_tree::{Topology, BranchWeights};
 use mafft_types::{ScoringContext, LocalHomologyTable};
 
 use crate::progressive::MultipleAlignment;
@@ -123,7 +123,6 @@ pub fn iterative_refine(
     }
 
     let branch_weights = BranchWeights::new(topology);
-    let global_weights = sequence_weights(topology);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
 
 
@@ -154,10 +153,7 @@ pub fn iterative_refine(
             for (side, group1, group2) in &branch_map[step_idx] {
                 let branch_id: BranchId = (step_idx, *side);
 
-                // Per-branch weights (correct algorithm, not yet C-validated):
-                // let weights = branch_weights.weights_for_branch(topology, step_idx, *side);
-                // Using global weights until per-branch weights are validated via FFI:
-                let weights = &global_weights;
+                let weights = branch_weights.weights_for_branch(topology, step_idx, *side);
 
                 let old_score = compute_split_score(
                     group1, group2, &alignment.sequences, &weights, scoring,
@@ -185,12 +181,10 @@ pub fn iterative_refine(
 
                         let threshold = old_score - params.cut / 100.0 * old_score;
                         if tscore > threshold {
-                            // Accept
                             alignment.sequences = new_seqs;
                             any_change = true;
                             converged_count = 0;
                         } else {
-                            // Reject
                             converged_count += 1;
                         }
                         iter_scores.insert(branch_id, tscore);
@@ -360,10 +354,9 @@ fn realign_all(
                 &scoring.substitution_matrix, gap, &anchors,
             )
         } else {
-            // No anchors found. C's Falign (lines 1377-1421) creates a single
-            // segment spanning the full sequences, calls commongappick to strip
-            // per-group gap columns (line 1610/1617), then calls MSalignmm on
-            // the stripped sequences. Match this exactly.
+            // No anchors found. Fall back to profile_align on stripped profiles
+            // (bounded, matches C's MSalignmm-on-stripped behavior). Using full
+            // profiles here causes width explosion due to freely-placed gap runs.
             let aln = profile_align(
                 &stripped_prof1, &stripped_prof2,
                 &scoring.substitution_matrix, gap, true, true,
@@ -485,10 +478,11 @@ fn build_result_from_full(
 }
 
 fn group_all_gap_columns(group: &[usize], sequences: &[Vec<u8>], width: usize) -> Vec<bool> {
+    // Match C's commongappick: only '-' counts as gap (not '.').
     let mut all_gap = vec![true; width];
     for &idx in group {
         for (col, &ch) in sequences[idx].iter().enumerate() {
-            if ch != b'-' && ch != b'.' {
+            if ch != b'-' {
                 all_gap[col] = false;
             }
         }
@@ -503,15 +497,29 @@ fn compute_split_score(
     weights: &[f64],
     scoring: &ScoringContext,
 ) -> f64 {
-    group1
-        .par_iter()
-        .map(|&i| {
-            group2
-                .iter()
-                .map(|&j| pairwise_score(&sequences[i], &sequences[j], scoring) * weights[i] * weights[j])
-                .sum::<f64>()
-        })
-        .sum()
+    // Port of C's intergroup_score flow: weights are per-group normalized
+    // by fastconjuction_noname (tddis.c line 548) before being passed.
+    // Apply the same normalization here: each group's weights sum to 1.0.
+    const MINIMUM_WEIGHT: f64 = 0.00001;
+    let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
+    let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
+    let s1: f64 = w1.iter().sum();
+    let s2: f64 = w2.iter().sum();
+    let w1n: Vec<f64> = if s1 > 0.0 { w1.iter().map(|w| w / s1).collect() } else { vec![1.0; group1.len()] };
+    let w2n: Vec<f64> = if s2 > 0.0 { w2.iter().map(|w| w / s2).collect() } else { vec![1.0; group2.len()] };
+
+    // Sequential sum to match C's deterministic accumulation order.
+    // par_iter gives non-deterministic summation order, which causes
+    // small FP divergence that cascades into accept/reject decisions.
+    let mut total = 0.0f64;
+    for (i_local, &i) in group1.iter().enumerate() {
+        let wi = w1n[i_local];
+        for (j_local, &j) in group2.iter().enumerate() {
+            let wj = w2n[j_local];
+            total += pairwise_score(&sequences[i], &sequences[j], scoring) * wi * wj;
+        }
+    }
+    total
 }
 
 /// Branchless pairwise scoring for auto-vectorization.
@@ -524,23 +532,49 @@ fn pairwise_score(seq1: &[u8], seq2: &[u8], scoring: &ScoringContext) -> f64 {
     let mtx = &scoring.substitution_matrix;
     let mtx_size = mtx.len();
 
-    // Accumulate in i64 to avoid f64 conversion per position.
-    // The substitution matrix contains i32 values; summing as i64 is exact.
-    let mut acc = 0i64;
-
-    for k in 0..seq1.len().min(seq2.len()) {
+    // Port of C's intergroup_score (mltaln9.c lines 404-475):
+    // - Gap-gap positions: skipped (continue).
+    // - Match positions: add amino_dis[c1][c2].
+    // - Gap in seq1: add `penalty` (gap open), then consume all consecutive
+    //   '-' in seq1. Same for seq2.
+    // - amino_dis_consweight_multi[gap][*] = 0, so gap-region positions
+    //   contribute only the single gap-open penalty per gap run.
+    let penalty = scoring.gap.open as f64;
+    let len = seq1.len().min(seq2.len());
+    let mut score = 0.0f64;
+    let mut k = 0;
+    while k < len {
         let a = seq1[k];
         let b = seq2[k];
-        // Branchless: non_gap is 1 if both are not '-', else 0
-        let non_gap = ((a != b'-') & (b != b'-')) as i64;
+        if a == b'-' && b == b'-' {
+            k += 1;
+            continue;
+        }
+        if a == b'-' {
+            score += penalty;
+            // Consume all consecutive gaps in seq1 (C's while-loop at line 448).
+            k += 1;
+            while k < len && seq1[k] == b'-' {
+                k += 1;
+            }
+            continue;
+        }
+        if b == b'-' {
+            score += penalty;
+            k += 1;
+            while k < len && seq2[k] == b'-' {
+                k += 1;
+            }
+            continue;
+        }
         let i = map[a as usize] as usize;
         let j = map[b as usize] as usize;
-        // Bounds check is predictable (almost always true for valid sequences)
-        let s = if i < mtx_size && j < mtx_size { mtx[i][j] as i64 } else { 0 };
-        acc += s * non_gap;
+        if i < mtx_size && j < mtx_size {
+            score += mtx[i][j] as f64;
+        }
+        k += 1;
     }
-
-    acc as f64
+    score
 }
 
 #[cfg(test)]

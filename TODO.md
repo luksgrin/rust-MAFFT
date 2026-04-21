@@ -1,50 +1,50 @@
 # Pending Work
 
-## Refinement alignment width (731 vs C's 721)
+## Refinement alignment width (729 vs C's 721)
 
-**Status**: Both C and Rust strip gaps and use profile_align/MSalignmm identically. Divergence is compounded epsilon-level float differences across 16 iterations × 69 branches.
-**Priority**: Low (1.4% width divergence, both produce valid alignments)
+**Status**: 8-column gap remaining. Per-branch weights and all profile/DP components are FFI-validated byte-identical to C. Divergence comes from C's `Falign`-based segmented DP with FFT anchors, which our code does not fully replicate.
+**Priority**: Low (1.1% width divergence, both produce valid alignments)
 **Location**: `crates/mafft-core/src/refinement.rs`, `realign_all()`
 
-### What was confirmed matching C
+### What was confirmed matching C (FFI cross-validation)
 
-Investigation of C's Falign.c revealed that **C DOES strip gap columns before calling MSalignmm** during refinement:
-- `kobetsubunkatsu = 1` and `fftkeika = 1` in dvtditr.c (lines 51, 54)
-- Falign.c line 1610: `if( kobetsubunkatsu && fftkeika ) commongappick( clus1, tmpres1 );`
-- This strips per-group all-gap columns BEFORE MSalignmm, matching our `group_all_gap_columns` + stripped `profile_align`
+All individually-testable components FFI-validated byte-identical to C:
+1. **Per-branch weights** (`weightFromABranch`): all 70 branches of 36-seq topology match to 2.22e-16.
+2. **Per-group normalization** (`fastconjuction_noname`): exact match.
+3. **Profile construction** (`cpmx_calc_new` + `st_OpeningGapCount` + `st_FinalGapCount` + `gapcountf`): exact match for any weights.
+4. **Intergroup scoring** (`intergroup_score`): exact match.
+5. **Profile alignment** (`MSalignmm` on stripped profiles): byte-identical at every branch of iter 0 on both the clean FFT-NS-2 input and the evolving state as refinement proceeds.
 
-Additionally confirmed matching:
-- DP comparison operators (`>` for Insert/Delete vs wm, `>=` for running-max updates) — MSalignmm.c lines 841/847/860/866
-- Gap cost formulas (`ogcp`/`fgcp`): `0.5 * (1.0 - count) * penalty * nongap_freq`
-- Profile construction (`cpmx_calc_new` / `Profile::from_aligned`): same weighted accumulation
-- Gap counting (`gapcountf` / `st_OpeningGapCount` / `st_FinalGapCount`): same logic
-- Boundary gap handling (`sgap`/`egap` all `'o'` for single-segment case) equivalent to `st_*` functions
-- `legacygapcost = 0` path with `headgapfreq = 1.0` matches our `hgf = 1.0`
-- FFT segment detection fails on non-stripped profiles in both C and Rust (gap dilution)
-- `currentw[m]` stale-value difference confirmed — does NOT affect the stripped-profile path
+### Bugs fixed this session
 
-### Root cause: per-branch sequence weighting
+- **MINLEN clamp** in `BranchWeights::new` (`crates/mafft-tree/src/weighting.rs`): C's `checkMinusLength` clamps branch lengths < 0.001. Without this, identical sequences produced 50x-smaller weights. After fix, weights match C to 3.47e-17.
+- **Nongap-freq boundary** in `profile_align` (`crates/mafft-align/src/profile.rs`): C pads `gapfreq1pt[lgth1] = 1.0`; we were returning 0 for out-of-bounds. Fixed by explicit `if i < n { prof1.nongap_freq[i] } else { 1.0 }` at the DP boundary. Resolved 4 late-branch divergences that were visible in clean-state `profile_align` vs `MSalignmm` comparison.
+- **`compute_split_score`** made sequential (no `par_iter`): deterministic accumulation order.
 
-C uses **per-branch weights** (`weightFromABranch` in treeOperation.c, weight=4 mode) that compute a different weight vector for each of the 69 branches per iteration. These weights are derived from the tree structure around each specific branch point, using synthetic branch lengths (harmonic mean recursion) and a 3-way branch weight formula. Our code uses **global weights** (`sequence_weights`, porting C's `counteff_simple_double`) that are the same for all branches.
+### Root cause of remaining 8-column gap
 
-The per-branch weighting changes which alignment decision is optimal at each branch, because profiles built with different weights produce different match scores and gap penalties. This produces the 14-column divergence visible from the very first refinement iteration (735 vs C's 721 after 1 iteration).
+C's refinement calls `Falign` which:
+1. Runs FFT anchor detection on **full** (unstripped) sequences.
+2. Splits the sequences into segments at anchors.
+3. Calls `MSalignmm` on each segment of the **full** sequences.
 
-### Implementation status
+Our code:
+1. Strips common-gap columns per group first.
+2. Runs FFT anchor detection on full profiles.
+3. If anchors found, runs anchored DP on full profiles.
+4. If no anchors, runs `profile_align` on **stripped** profiles.
 
-`BranchWeights` in `crates/mafft-tree/src/weighting.rs` implements:
-- Unrooted tree construction from `Topology` (ports `treeCnv` + `searchParent` + `negativeMember2`)
-- Root restructuring (connecting nseq-3 to nseq-2's sibling with combined lengths)
-- Synthetic branch length computation via harmonic mean recursion (`syntheticLength`)
-- 3-way branch weight formula (`calcW`)
-- Recursive per-branch weight propagation (`weightFromABranch_rec`)
+When our `profile_align(stripped)` and C's `MSalignmm(stripped)` are compared directly, they are byte-identical (0/69 divergences). But C's refinement actually calls `MSalignmm(full)` (inside `Falign`), which produces a different alignment width (746 vs our 717 on clean state). The full-vs-stripped alignment difference at specific branches cascades through the 16 iterations × 69 branches.
 
-Current results on the 36-sequence sample:
-- Global weights (current default): **731** (vs C's 721)
-- BranchWeights v2: **748** (structurally correct — validated on 4/6-seq trees, but produces wider results on 36-seq)
+### How to fix
 
-The tree structure and weight values are correct on small cases (4-seq symmetric tree verified, 6-seq topology passes symmetry/sanity checks). Cross-validation tests exist at `crates/mafft-tree/tests/cross_validate_weights.rs`. The `weightFromABranch`, `treeCnv`, and `calcBranchWeight` FFI declarations are added to `mafft-sys`.
+Port C's `Falign` fully — including its segment generation for the 0-anchor case — so that per-branch DP runs on the full sequences (not stripped). Naive attempts (just switching fallback to `profile_align` on full profiles) produce width explosion (829+) because our DP freely places gap columns when match scores are 0 at all-gap columns. Full Falign-parity requires replicating the segment-boundary logic and any internal constraints that bound gap placement.
 
-Next step: build the full C FFI cross-validation test that calls C's `weightFromABranch` and compares weight vectors branch-by-branch on the 36-seq refinement topology. The C topology array format (`int***` with sentinel-terminated arrays) needs a builder helper in the test.
+## Other diverging modes
+
+- **--bl 80** (BLOSUM80): diverges at retree 1 step 19.
+- **--parttree/--dpparttree**: ~940-line diff.
+- **--add/--addfragments**: ~900-line diff.
 
 ## Per-group gap stripping in progressive alignment
 

@@ -68,6 +68,20 @@ pub struct BranchWeights {
     nseq: usize,
 }
 
+impl BranchWeights {
+    /// Debug: get (children_indices, branch_weights) for a node.
+    pub fn debug_node(&self, idx: usize) -> ([i32; 3], [f64; 3]) {
+        (self.nodes[idx].children, self.nodes[idx].branch_weight)
+    }
+
+    /// Debug: get members[d] for a node.
+    pub fn debug_members(&self, idx: usize, d: usize) -> Vec<i32> {
+        self.nodes[idx].members[d].clone()
+    }
+
+    pub fn nseq(&self) -> usize { self.nseq }
+}
+
 /// Search for which topology step (in range start..end) contains `seq_idx`
 /// in either its left or right member list. Returns (step, lor).
 /// Ports C's `searchParent`.
@@ -122,12 +136,21 @@ impl BranchWeights {
         }).collect();
         let mut count = vec![0usize; total];
 
+        // C's checkMinusLength (treeOperation.c:16): clamp lengths < MINLEN=0.001.
+        // This prevents degenerate cases where identical sequences produce 0-length
+        // branches, which would otherwise make calc_w return MAXBW (=1.0) and
+        // propagate wrong weights through the whole tree.
+        const MINLEN: f64 = 0.001;
+        let clamped_lengths: Vec<(f64, f64)> = topo.steps.iter().map(|s| {
+            (s.left_length.max(MINLEN), s.right_length.max(MINLEN))
+        }).collect();
+
         // Phase 1: Connect leaf nodes (C lines 160-183).
         // For each sequence (leaf), find the first topology step that mentions it.
         for seq_idx in 0..nseq {
             let leaf = nseq + seq_idx;
             let (pstep, plor) = search_parent(topo, seq_idx, 0, nseq - 1);
-            let branch_len = if plor == 0 { topo.steps[pstep].left_length } else { topo.steps[pstep].right_length };
+            let branch_len = if plor == 0 { clamped_lengths[pstep].0 } else { clamped_lengths[pstep].1 };
             let members = topo_members(topo, pstep, plor);
 
             // Parent → leaf
@@ -146,12 +169,10 @@ impl BranchWeights {
         }
 
         // Phase 2: Connect internal nodes (C lines 184-215).
-        // For each merge step i (0..nseq-3), find the later step that contains
-        // the merged cluster.
         for i in 0..nseq.saturating_sub(2) {
             let rep = topo.steps[i].left[0].min(topo.steps[i].right[0]);
             let (pstep, plor) = search_parent(topo, rep, i + 1, nseq - 1);
-            let branch_len = if plor == 0 { topo.steps[pstep].left_length } else { topo.steps[pstep].right_length };
+            let branch_len = if plor == 0 { clamped_lengths[pstep].0 } else { clamped_lengths[pstep].1 };
             let members = topo_members(topo, pstep, plor);
 
             // Parent → internal node i
@@ -188,7 +209,7 @@ impl BranchWeights {
 
             if sibling_dir != usize::MAX {
                 let sibling = nodes[root].children[sibling_dir] as usize;
-                let combined = topo.steps[root].left_length + topo.steps[root].right_length;
+                let combined = clamped_lengths[root].0 + clamped_lengths[root].1;
 
                 // subroot slot 2 → sibling
                 nodes[subroot].children[2] = sibling as i32;

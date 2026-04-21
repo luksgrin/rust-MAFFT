@@ -380,6 +380,7 @@ dependencies = [
  "mafft-fft",
  "mafft-io",
  "mafft-scoring",
+ "mafft-sys",
  "mafft-tree",
  "mafft-types",
  "rayon",

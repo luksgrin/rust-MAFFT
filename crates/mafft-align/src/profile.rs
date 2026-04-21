@@ -115,14 +115,11 @@ impl Profile {
             }
         }
 
-        let nongap_freq: Vec<f64> = gap_freq.iter().map(|&g| (1.0 - g).max(0.0)).collect();
-
-        // Clamp opening/closing counts to [0, 1] range.
-        // C's st_OpeningGapCount/st_FinalGapCount produce values in this
-        // range because sequence weights sum to 1. Our weights may not be
-        // normalized, so we clamp.
-        for v in &mut opening_count { *v = v.clamp(0.0, 1.0); }
-        for v in &mut closing_count { *v = v.clamp(0.0, 1.0); }
+        // C: nongap_freq = 1.0 - gap_freq (no clamping).
+        // C's convention is that weights sum to 1.0 (normalized before passing),
+        // but we preserve C's exact formula even with unnormalized weights
+        // to match cpmx_calc_new + gapcountf + st_*GapCount behavior exactly.
+        let nongap_freq: Vec<f64> = gap_freq.iter().map(|&g| 1.0 - g).collect();
 
         // Store raw opening/closing counts; actual ogcp/fgcp are computed
         // in profile_align when the penalty parameter is known.
@@ -454,6 +451,9 @@ pub fn profile_align(
     let mut lastverticalw = vec![0.0f64; n + 1];
     lastverticalw[0] = currentw[m - 1];
 
+    // C pads gapfreq1pt[lgth1] = 1.0 and gapfreq2pt[lgth2] = 1.0 (tditeration.c's
+    // `for(i=0;i<lgth+1;i++) gapfreq[i] = 1.0 - gapfreq[i];` with calloc'd 0 → 1).
+    // Our DP needs these boundary values when i==n or j==m.
     let lasti = if tail_gap { n + 1 } else { n };
     for i in 1..lasti {
         std::mem::swap(&mut previousw, &mut currentw);
@@ -465,15 +465,17 @@ pub fn profile_align(
         currentw[m] = 0.0; // padding: no substitution score beyond prof2
         currentw[0] = initverticalw[i];
 
-        let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(0.0);
+        let gf1_im1 = prof1.nongap_freq[i - 1]; // i-1 in 0..n-1, always valid
         let mut mi = previousw[0] + ogcp2[1] * gf1_im1;
         let mut mpi: usize = 0;
 
         for j in 1..=m {
-            let gf1_i = prof1.nongap_freq.get(i).copied().unwrap_or(0.0);
-            let gf1_im1 = prof1.nongap_freq.get(i - 1).copied().unwrap_or(0.0);
-            let gf2_j = prof2.nongap_freq.get(j).copied().unwrap_or(0.0);
-            let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(0.0);
+            // Out-of-bounds positions in nongap_freq correspond to C's padded
+            // gapfreq1pt[lgth1] / gapfreq2pt[lgth2] = 1.0.
+            let gf1_i = if i < n { prof1.nongap_freq[i] } else { 1.0 };
+            let gf1_im1 = prof1.nongap_freq[i - 1];
+            let gf2_j = if j < m { prof2.nongap_freq[j] } else { 1.0 };
+            let gf2_jm1 = prof2.nongap_freq[j - 1];
 
             let mut wm = previousw[j - 1];
             ijp[i][j] = 0;
