@@ -16,7 +16,13 @@ static C_MUTEX: Mutex<()> = Mutex::new(());
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Initialize C globals to NOTSPECIFIED so constants() applies defaults.
+/// Initialize C globals to match what the MAFFT shell script sets.
+///
+/// `mafft.tmpl` sets `defaultaof="0.000"` and invokes the C binaries with
+/// `-h 0.000`, which translates to `poffset = 0` (see tbfast.c case 'h').
+/// Setting poffset=0 here matches the production invocation path that our
+/// Rust `build_context()` targets. Other parameters are left NOTSPECIFIED so
+/// `constants()` applies its usual defaults for them.
 unsafe fn init_c_globals() {
     mafft_sys::initglobalvariables();
     std::ptr::addr_of_mut!(mafft_sys::ppenalty).write(mafft_sys::NOTSPECIFIED);
@@ -24,7 +30,7 @@ unsafe fn init_c_globals() {
     std::ptr::addr_of_mut!(mafft_sys::ppenalty_EX).write(mafft_sys::NOTSPECIFIED);
     std::ptr::addr_of_mut!(mafft_sys::ppenalty_OP).write(mafft_sys::NOTSPECIFIED);
     std::ptr::addr_of_mut!(mafft_sys::ppenalty_dist).write(mafft_sys::NOTSPECIFIED);
-    std::ptr::addr_of_mut!(mafft_sys::poffset).write(mafft_sys::NOTSPECIFIED);
+    std::ptr::addr_of_mut!(mafft_sys::poffset).write(0); // mafft.tmpl: -h 0.000
     std::ptr::addr_of_mut!(mafft_sys::kimuraR).write(mafft_sys::NOTSPECIFIED);
     std::ptr::addr_of_mut!(mafft_sys::pamN).write(mafft_sys::NOTSPECIFIED);
 }

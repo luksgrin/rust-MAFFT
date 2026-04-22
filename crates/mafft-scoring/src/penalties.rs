@@ -42,11 +42,16 @@ fn scale(value: f64, factor: f64) -> i32 {
 }
 
 /// Default gap parameters for DNA alignment.
+///
+/// Matches what the MAFFT shell script (`mafft.tmpl`, `defaultaof="0.000"`)
+/// passes to the C binaries via `-h 0.000`: `poffset = 0`, giving `offset = 0`.
+/// C's `constants()` defaults `poffset = DEFAULTOFS_N = -369` (→ offset = -221)
+/// when invoked without the shell script, but that path never runs in practice.
 pub fn default_dna_gap_params() -> GapParams {
     GapParams {
         penalty: scale(DEFAULTGOP_N, DNA_SCALE),
         penalty_ex: scale(DEFAULTGEP_N, DNA_SCALE),
-        offset: scale(DEFAULTOFS_N, 1.0 * 600.0 / 1000.0),
+        offset: 0, // matches mafft.tmpl defaultaof="0.000" (-h 0.000)
         penalty_ln: scale(-2000.0, DNA_SCALE),
         penalty_ex_ln: scale(-100.0, DNA_SCALE),
         offset_ln: scale(100.0, 1.0 * 600.0 / 1000.0),
@@ -55,11 +60,16 @@ pub fn default_dna_gap_params() -> GapParams {
 }
 
 /// Default gap parameters for protein alignment (BLOSUM / JTT).
+///
+/// Matches what the MAFFT shell script (`mafft.tmpl`, `defaultaof="0.000"`)
+/// passes to the C binaries via `-h 0.000`: `poffset = 0`, giving `offset = 0`.
+/// C's `constants()` defaults `poffset = DEFAULTOFS_B = -123` (→ offset = -73)
+/// when invoked without the shell script, but that path never runs in practice.
 pub fn default_protein_gap_params() -> GapParams {
     GapParams {
         penalty: scale(DEFAULTGOP_B, PROTEIN_SCALE),
         penalty_ex: scale(DEFAULTGEP_B, PROTEIN_SCALE),
-        offset: scale(DEFAULTOFS_B, PROTEIN_SCALE),
+        offset: 0, // matches mafft.tmpl defaultaof="0.000" (-h 0.000)
         penalty_ln: scale(-2000.0, PROTEIN_SCALE),
         penalty_ex_ln: scale(-100.0, PROTEIN_SCALE),
         offset_ln: scale(100.0, PROTEIN_SCALE),
@@ -84,7 +94,7 @@ mod tests {
         let p = default_protein_gap_params();
         // penalty = (int)(600.0 / 1000.0 * -1530 + 0.5) = (int)(-918 + 0.5)
         assert_eq!(p.penalty, -917);
-        // offset = (int)(600.0 / 1000.0 * -123 + 0.5) = (int)(-73.8 + 0.5) = -73
-        assert_eq!(p.offset, -73);
+        // offset = 0 because mafft.tmpl sets defaultaof="0.000" (poffset = 0).
+        assert_eq!(p.offset, 0);
     }
 }

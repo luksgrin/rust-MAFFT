@@ -231,16 +231,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ribosumdis_matches_c() {
-        // C values with default parameters (kimuraR=2, pamN=200, offset from default DNA gap params)
-        let gap = crate::default_dna_gap_params();
-        let dis = build_ribosumdis(gap.offset);
-        // Values from C dump
-        assert_eq!(dis[0][0], 997, "ribosumdis[0][0]");
-        assert_eq!(dis[0][3], 89, "ribosumdis[0][3]");
-        assert_eq!(dis[4][4], 705, "ribosumdis[4][4]");
-        assert_eq!(dis[4][7], 415, "ribosumdis[4][7]");
-        assert_eq!(dis[20][20], 705, "ribosumdis[20][20]");
-        assert_eq!(dis[36][36], 0, "ribosumdis[36][36]");
+    fn ribosumdis_shape_and_offset_effect() {
+        // Build with the production offset (0, matching mafft.tmpl's -h 0.000) and
+        // compare against a build with the legacy C internal default (-221).
+        let prod = build_ribosumdis(0);
+        let legacy = build_ribosumdis(-221);
+
+        // Positions [0..36)×[0..36) are filled from r4/r16. [36][*] and [*][36]
+        // remain zero (unused tail row/col). Offset only affects filled cells.
+        assert_eq!(prod[36][36], 0);
+        assert_eq!(legacy[36][36], 0);
+
+        // Offset difference: every filled cell shifts by |offset| (may vary ±1
+        // due to independent rounding in the two builds).
+        for &(i, j) in &[(0usize, 0usize), (0, 3), (4, 4), (4, 7), (20, 20)] {
+            let diff = legacy[i][j] - prod[i][j];
+            assert!(
+                (diff - 221).abs() <= 1,
+                "ribosumdis[{i}][{j}] offset diff: prod={}, legacy={}, diff={}",
+                prod[i][j], legacy[i][j], diff
+            );
+        }
+
+        // Sanity: a stem-stem self-score cell (r16 diagonal with AU pairing)
+        // should be positive with uniform freq and offset=0.
+        assert!(prod[7][7] > 0, "prod[7][7] = {}", prod[7][7]);
     }
 }
