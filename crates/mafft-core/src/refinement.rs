@@ -21,11 +21,11 @@
 use rayon::prelude::*;
 
 use mafft_align::{
-    profile_align, find_fft_anchors, align_with_anchors,
-    constrained_profile_align, ConstrainedAlignParams, FftAlignParams,
+    profile_align,
+    constrained_profile_align, ConstrainedAlignParams,
     Profile, GapModel, AlignOp,
 };
-use mafft_fft::SegmentParams;
+use mafft_fft::{alignable_segments, SegmentParams};
 use mafft_tree::{Topology, BranchWeights};
 use mafft_types::{ScoringContext, LocalHomologyTable};
 
@@ -317,61 +317,155 @@ fn realign_all(
     }
 
     if use_fft {
-        // FFT path matching C's Falign in tditeration.c:
-        // 1. Build non-stripped profiles from full sequences
-        // 2. Run FFT anchor detection on non-stripped profiles (matching C's
-        //    seq_vec_3 which operates on the full character sequences)
-        // 3. Run anchored DP on non-stripped profiles
-        // 4. If no anchors found, fall back to profile_align on stripped
-        //    profiles (C falls back to a single full-span segment, but our
-        //    unconstrained profile_align on non-stripped profiles causes
-        //    width explosion; stripped fallback is bounded and correct)
-        let full1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
-        let full2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
-        let full_prof1 = Profile::from_aligned(&full1, &w1n, &scoring.amino_map, scoring.nalphabets);
-        let full_prof2 = Profile::from_aligned(&full2, &w2n, &scoring.amino_map, scoring.nalphabets);
+        // C's Falign path for dvtditr (kobetsubunkatsu=1 in dvtditr.c:54):
+        // 1. SKIP the FFT block (Falign.c:1110 `if(!kobetsubunkatsu)` is skipped)
+        // 2. alignableReagion runs ONCE with lag=0 (Falign.c:1299 maxk=1,kouho[0]=0)
+        // 3. Collected segments define cut points: [0, center0, center1, ..., width]
+        // 4. Per segment, commongappick strips per-group all-gap columns
+        //    (Falign.c:1610 `if(kobetsubunkatsu && fftkeika)`)
+        // 5. MSalignmm aligns the stripped segment
+        // 6. Results concatenated
+        let width = sequences[0].len();
+        let full_prof1 = Profile::from_aligned(
+            &group1.iter().map(|&i| sequences[i].as_slice()).collect::<Vec<_>>(),
+            &w1n, &scoring.amino_map, scoring.nalphabets);
+        let full_prof2 = Profile::from_aligned(
+            &group2.iter().map(|&i| sequences[i].as_slice()).collect::<Vec<_>>(),
+            &w2n, &scoring.amino_map, scoring.nalphabets);
 
-        let fft_params = FftAlignParams {
-            num_candidates: 20,
-            segment_params: if scoring.seq_type.is_nucleotide() {
-                SegmentParams::dna()
-            } else {
-                SegmentParams::protein()
-            },
-            gap: gap.clone(),
-            head_gap: true,
-            tail_gap: true,
-            num_channels: scoring.nscoredalphabets,
-        };
-
-        let aln = if let Some(anchors) = find_fft_anchors(
-            &full_prof1, &full_prof2,
-            &scoring.substitution_matrix, &fft_params,
-        ) {
-            // Anchored DP on non-stripped profiles — width bounded by anchors.
-            align_with_anchors(
-                &full_prof1, &full_prof2,
-                &scoring.substitution_matrix, gap, &anchors,
-            )
+        let segment_params = if scoring.seq_type.is_nucleotide() {
+            SegmentParams::dna()
         } else {
-            // No anchors found. Fall back to profile_align on stripped profiles
-            // (bounded, matches C's MSalignmm-on-stripped behavior). Using full
-            // profiles here causes width explosion due to freely-placed gap runs.
-            let aln = profile_align(
-                &stripped_prof1, &stripped_prof2,
-                &scoring.substitution_matrix, gap, true, true,
-            );
-            return build_result_from_stripped(
-                &aln, group1, group2, sequences, &kept1, &kept2,
-                &stripped_prof1, &stripped_prof2,
-            );
+            SegmentParams::protein()
         };
 
-        // Anchored DP result on non-stripped profiles.
-        return build_result_from_full(
-            &aln, group1, group2, sequences,
-            &full_prof1, &full_prof2,
-        );
+        // Step 1: Compute per-position site scores at lag=0 (C's alignableReagion,
+        // fftFunctions.c:282-287). For refinement, prof1.length == prof2.length,
+        // so we score pairwise at matching columns. C uses n_disFFT which equals
+        // substitution_matrix when offset=0 (mafft default).
+        // C divides by totaleff = sum eff1[i]*eff2[j]; with normalized weights this is 1.
+        let totaleff: f64 = w1n.iter().sum::<f64>() * w2n.iter().sum::<f64>();
+        let len = full_prof1.length.min(full_prof2.length);
+        let mut site_scores = vec![0.0f64; len];
+        for i in 0..len {
+            site_scores[i] =
+                full_prof1.match_score(i, &full_prof2, i, &scoring.substitution_matrix)
+                / totaleff;
+        }
+
+        // Step 2: Find alignable segments via the sliding window threshold test.
+        let segments = alignable_segments(&site_scores, &segment_params);
+
+        // Step 3: Build cut points from segment centers (Falign.c:1414).
+        // kobetsubunkatsu=1: cut1[i+1] = sortedseg1[i]->center, plus [0] and [len].
+        // For refinement (lag=0), cut1[i] == cut2[i], so a single cut list suffices.
+        let mut cuts: Vec<usize> = Vec::with_capacity(segments.len() + 2);
+        cuts.push(0);
+        for seg in &segments {
+            cuts.push(seg.center.min(width));
+        }
+        cuts.push(width);
+        // Ensure strictly increasing (segments might overlap/coincide — dedupe).
+        cuts.sort();
+        cuts.dedup();
+
+        // Step 4-5: Per-segment strip + align, then concatenate.
+        let mut new_sequences: Vec<Vec<u8>> = vec![Vec::new(); sequences.len()];
+        let mut total_score = 0.0f64;
+        for win in cuts.windows(2) {
+            let a = win[0];
+            let b = win[1];
+            if a >= b { continue; }
+
+            // Slice the segment [a, b) from each sequence.
+            let seg1: Vec<Vec<u8>> = group1.iter()
+                .map(|&i| sequences[i][a..b].to_vec()).collect();
+            let seg2: Vec<Vec<u8>> = group2.iter()
+                .map(|&i| sequences[i][a..b].to_vec()).collect();
+
+            // commongappick on the segment: strip columns where all sequences in
+            // THIS GROUP have a gap within THIS SEGMENT. (C's commongappick)
+            let seg_width = b - a;
+            let seg_gap1: Vec<bool> = (0..seg_width)
+                .map(|c| seg1.iter().all(|s| s[c] == b'-')).collect();
+            let seg_gap2: Vec<bool> = (0..seg_width)
+                .map(|c| seg2.iter().all(|s| s[c] == b'-')).collect();
+            let seg_kept1: Vec<usize> = (0..seg_width).filter(|&c| !seg_gap1[c]).collect();
+            let seg_kept2: Vec<usize> = (0..seg_width).filter(|&c| !seg_gap2[c]).collect();
+
+            let stripped_seg1: Vec<Vec<u8>> = seg1.iter()
+                .map(|s| seg_kept1.iter().map(|&c| s[c]).collect()).collect();
+            let stripped_seg2: Vec<Vec<u8>> = seg2.iter()
+                .map(|s| seg_kept2.iter().map(|&c| s[c]).collect()).collect();
+
+            if stripped_seg1.is_empty() || stripped_seg1[0].is_empty() ||
+               stripped_seg2.is_empty() || stripped_seg2[0].is_empty() {
+                // One side is empty — emit gaps for both as-is (only possible
+                // when whole segment is all-gap for one group in every column).
+                let len1 = if stripped_seg1.is_empty() { 0 } else { stripped_seg1[0].len() };
+                let len2 = if stripped_seg2.is_empty() { 0 } else { stripped_seg2[0].len() };
+                for (k, &i) in group1.iter().enumerate() {
+                    new_sequences[i].extend_from_slice(&stripped_seg1[k]);
+                    new_sequences[i].extend(std::iter::repeat(b'-').take(len2));
+                }
+                for (k, &i) in group2.iter().enumerate() {
+                    new_sequences[i].extend(std::iter::repeat(b'-').take(len1));
+                    new_sequences[i].extend_from_slice(&stripped_seg2[k]);
+                }
+                continue;
+            }
+
+            let s1_refs: Vec<&[u8]> = stripped_seg1.iter().map(|s| s.as_slice()).collect();
+            let s2_refs: Vec<&[u8]> = stripped_seg2.iter().map(|s| s.as_slice()).collect();
+            let prof_seg1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
+            let prof_seg2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
+
+            // C's Falign segment loop (lines 1521-1522):
+            //   headgp = (i==0) ? outgap : 1   ;   tailgp = (i==count-2) ? outgap : 1
+            // outgap=1 in dvtditr.c:73, so headgp=tailgp=1 for every segment.
+            let seg_aln = profile_align(
+                &prof_seg1, &prof_seg2, &scoring.substitution_matrix, gap, true, true,
+            );
+            total_score += seg_aln.score;
+
+            // Reconstruct the segment's output by applying ops to the stripped segments.
+            let mut i1 = 0usize;
+            let mut i2 = 0usize;
+            for op in &seg_aln.operations {
+                match op {
+                    AlignOp::Match => {
+                        for (k, &idx) in group1.iter().enumerate() {
+                            new_sequences[idx].push(stripped_seg1[k][i1]);
+                        }
+                        for (k, &idx) in group2.iter().enumerate() {
+                            new_sequences[idx].push(stripped_seg2[k][i2]);
+                        }
+                        i1 += 1;
+                        i2 += 1;
+                    }
+                    AlignOp::Delete => {
+                        for (k, &idx) in group1.iter().enumerate() {
+                            new_sequences[idx].push(stripped_seg1[k][i1]);
+                        }
+                        for &idx in group2 {
+                            new_sequences[idx].push(b'-');
+                        }
+                        i1 += 1;
+                    }
+                    AlignOp::Insert => {
+                        for &idx in group1 {
+                            new_sequences[idx].push(b'-');
+                        }
+                        for (k, &idx) in group2.iter().enumerate() {
+                            new_sequences[idx].push(stripped_seg2[k][i2]);
+                        }
+                        i2 += 1;
+                    }
+                }
+            }
+        }
+
+        return Some((new_sequences, total_score));
     }
 
     // Non-FFT path: profile_align on stripped profiles.

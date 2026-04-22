@@ -21,24 +21,35 @@ All individually-testable components FFI-validated byte-identical to C:
 - **Nongap-freq boundary** in `profile_align` (`crates/mafft-align/src/profile.rs`): C pads `gapfreq1pt[lgth1] = 1.0`; we were returning 0 for out-of-bounds. Fixed by explicit `if i < n { prof1.nongap_freq[i] } else { 1.0 }` at the DP boundary. Resolved 4 late-branch divergences that were visible in clean-state `profile_align` vs `MSalignmm` comparison.
 - **`compute_split_score`** made sequential (no `par_iter`): deterministic accumulation order.
 
-### Root cause of remaining 8-column gap
+### C's actual flow (discovered after inspecting dvtditr.c/Falign.c)
 
-C's refinement calls `Falign` which:
-1. Runs FFT anchor detection on **full** (unstripped) sequences.
-2. Splits the sequences into segments at anchors.
-3. Calls `MSalignmm` on each segment of the **full** sequences.
+dvtditr.c sets `kobetsubunkatsu = 1` (line 54) and `use_fft = 1` (via `-F`). In Falign.c with kobetsubunkatsu=1:
+1. The FFT correlation block (lines 1110–1282, guarded by `!kobetsubunkatsu`) is **SKIPPED**. C does **not** compute FFT for refinement.
+2. `alignableReagion` runs ONCE at **lag=0** (maxk=1, kouho[0]=0): a deterministic sliding-window scan over the position-wise weighted match score `stra[i] = Σ n_disFFT[k][j]·prf1[k]·prf2[j]` / totaleff.
+3. Collected segment centers become cut points: `[0, center_0, center_1, …, len]`.
+4. For each segment `[cut1[i], cut1[i+1]]`: extract slice → `commongappick` strips per-group all-gap columns in the slice → `MSalignmm` aligns the stripped slice with boundary gap states `sgap/egap`.
+5. Segment outputs are concatenated.
 
-Our code:
-1. Strips common-gap columns per group first.
-2. Runs FFT anchor detection on full profiles.
-3. If anchors found, runs anchored DP on full profiles.
-4. If no anchors, runs `profile_align` on **stripped** profiles.
+### What was ported (this session)
 
-When our `profile_align(stripped)` and C's `MSalignmm(stripped)` are compared directly, they are byte-identical (0/69 divergences). But C's refinement actually calls `MSalignmm(full)` (inside `Falign`), which produces a different alignment width (746 vs our 717 on clean state). The full-vs-stripped alignment difference at specific branches cascades through the 16 iterations × 69 branches.
+`realign_all()` in `crates/mafft-core/src/refinement.rs` was rewritten to match C's kobetsubunkatsu=1 flow:
+- Compute per-position site scores at lag=0 via `full_prof1.match_score(i, full_prof2, i, substitution_matrix)`, divided by totaleff.
+- `alignable_segments` (already ports C's `alignableReagion` sliding window) returns segment centers.
+- Cut points assembled from `[0, centers…, width]` (deduped, sorted).
+- For each segment slice, per-group `commongappick`-equivalent stripping (`seg_gap1`, `seg_gap2`, `seg_kept1`, `seg_kept2`).
+- `profile_align` on the stripped segment with `head_gap=true, tail_gap=true` (matches outgap=1 in dvtditr).
+- Per-segment outputs concatenated into `new_sequences`.
 
-### How to fix
+The previous FFT-anchor path (`find_fft_anchors` + `align_with_anchors`) is **no longer used** for refinement. C never runs FFT for refinement.
 
-Port C's `Falign` fully — including its segment generation for the 0-anchor case — so that per-branch DP runs on the full sequences (not stripped). Naive attempts (just switching fallback to `profile_align` on full profiles) produce width explosion (829+) because our DP freely places gap columns when match scores are 0 at all-gap columns. Full Falign-parity requires replicating the segment-boundary logic and any internal constraints that bound gap placement.
+### What remains to match C exactly
+
+- **Boundary gap state (`sgap/egap`) in segment DPs**. C's `MSalignmm_variousdist` switches from `st_OpeningGapCount` to `new_OpeningGapCount(sgappat)` when boundary gap info is supplied. This affects the opening/closing gap costs at segment boundaries. Our `Profile::from_aligned` always acts as `st_OpeningGapCount`. Impact: multi-segment branches only (15/207 ≈ 7% of branches in the 36-seq sample run 3 iterations). For the 0-segment single-segment case, `sgap1` is all `'o'` in C which is equivalent to `st_OpeningGapCount`, so our behavior matches.
+- **Verification gap**: the 192/207 branches with 0 segments use effectively the same path as C (single segment, per-group strip, MSalignmm-equivalent DP), and `profile_align(stripped)` is FFI-validated byte-identical to `MSalignmm(stripped)`. Yet the full pipeline still diverges by 8 columns, suggesting the boundary-gap handling on the 15 multi-segment branches is the remaining source — or that `alignableReagion`'s segment output differs from ours (same algorithm but potentially different segment centers due to FP accumulation).
+
+### Next investigation step
+
+FFI-call C's `Falign` (or instrument C's MSalignmm_variousdist branch) for one of the specific divergent branches (e.g., iter 0 step 26 side 1 in our Rust trace, which C marks "identical") and compare segment counts, cut points, and per-segment alignments. The answer will either identify a boundary-gap bug or show that alignableReagion segment centers differ.
 
 ## Other diverging modes
 
