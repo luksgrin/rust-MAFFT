@@ -32,6 +32,9 @@ unsafe fn init_c_protein() {
         std::ptr::addr_of_mut!(mafft_sys::poffset).write(0);
         std::ptr::addr_of_mut!(mafft_sys::kimuraR).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::pamN).write(mafft_sys::NOTSPECIFIED);
+        // Ensure FFT window/threshold are filled in by constants() defaults.
+        std::ptr::addr_of_mut!(mafft_sys::fftWinSize).write(mafft_sys::NOTSPECIFIED);
+        std::ptr::addr_of_mut!(mafft_sys::fftThreshold).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::dorp).write(b'p' as i32);
         std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(1);
         std::ptr::addr_of_mut!(mafft_sys::nblosum).write(62);
@@ -815,6 +818,667 @@ fn full_sequence_profile_align_vs_msalignmm() {
             }
         }
         eprintln!("Full-sequence divergences: {}/{}", divergences, total);
+        mafft_sys::freeconstants();
+    }
+}
+
+/// Run C's real refinement pipeline for 1 iteration via FFI — compare against
+/// our Rust refinement after 1 iteration to see if states diverge.
+#[test]
+fn rust_refine_vs_c_direct_iter1() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let initial: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    // Run our real refinement for iter=1
+    let mut msa = mafft_core::MultipleAlignment {
+        sequences: initial.clone(),
+        names: vec![String::new(); nseq],
+        score: 0.0,
+        step_trace: Vec::new(),
+    };
+    // Build topology
+    let penalty_dist = scoring.gap.open;
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = scoring_matrix_distance(&initial[i], &initial[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            dm.set(i, j, d);
+        }
+    }
+    let topo = musclesupg(&dm, ClusterMethod::default());
+
+    let params = mafft_core::RefinementParams {
+        max_iterations: 1, use_fft: true, ..Default::default()
+    };
+    mafft_core::iterative_refine(&mut msa, &topo, &scoring, &params, None);
+
+    let rust_after: Vec<Vec<u8>> = msa.sequences.clone();
+    eprintln!("Rust iter 1 width: {}", rust_after[0].len());
+
+    unsafe {
+        init_c_protein();
+        // Just run Falign on branch 6 side 0 with the CLEAN state to compare
+        // its output to what real Rust refinement produced.
+        let bw = BranchWeights::new(&topo);
+        let (step, side) = (6usize, 0usize);
+        let group1: Vec<usize> = topo.steps[step].left.clone();
+        let group2: Vec<usize> = (0..nseq).filter(|i| !group1.contains(i)).collect();
+        let weights = bw.weights_for_branch(&topo, step, side);
+        const MIN_W: f64 = 0.00001;
+        let rw1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MIN_W)).collect();
+        let rw2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MIN_W)).collect();
+        let rs1: f64 = rw1.iter().sum(); let rs2: f64 = rw2.iter().sum();
+        let rw1n: Vec<f64> = rw1.iter().map(|w| w / rs1).collect();
+        let rw2n: Vec<f64> = rw2.iter().map(|w| w / rs2).collect();
+
+        let width = initial[0].len();
+        let alloclen = width * 3;
+        let nalpha = scoring.substitution_matrix.len() as c_int;
+        let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
+        for i in 0..scoring.substitution_matrix.len() {
+            for j in 0..scoring.substitution_matrix[i].len() {
+                *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
+            }
+        }
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+
+        let mut fftlog: c_int = 0;
+        let c_s1_boxed: Vec<Box<[u8]>> = group1.iter().map(|&i| {
+            let mut v = initial[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
+        }).collect();
+        let c_s2_boxed: Vec<Box<[u8]>> = group2.iter().map(|&i| {
+            let mut v = initial[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
+        }).collect();
+        let mut c_s1_ptrs: Vec<*mut c_char> = c_s1_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+        let mut c_s2_ptrs: Vec<*mut c_char> = c_s2_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+        let e1: *mut c_double = alloc_zeroed(group1.len() * std::mem::size_of::<c_double>()) as _;
+        for (i, &w) in rw1n.iter().enumerate() { *e1.add(i) = w; }
+        let e2: *mut c_double = alloc_zeroed(group2.len() * std::mem::size_of::<c_double>()) as _;
+        for (i, &w) in rw2n.iter().enumerate() { *e2.add(i) = w; }
+        let _ = mafft_sys::Falign(
+            std::ptr::null_mut(), std::ptr::null_mut(), n_dyn,
+            c_s1_ptrs.as_mut_ptr(), c_s2_ptrs.as_mut_ptr(),
+            e1, e2, std::ptr::null_mut(), std::ptr::null_mut(),
+            group1.len() as c_int, group2.len() as c_int,
+            alloclen as c_int, &mut fftlog as *mut c_int,
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+        );
+        let c_aln_len = {
+            let s = c_s1_ptrs[0];
+            let mut n = 0; while *s.add(n) != 0 { n += 1; } n
+        };
+        eprintln!("C Falign(step=6 side=0, clean): output width = {}", c_aln_len);
+
+        // Compare C's output for group1 idx=0 to Rust's real refinement state at same idx
+        let c_first = &c_s1_boxed[0][..c_aln_len];
+        let rust_first = &rust_after[group1[0]];
+        if c_first != rust_first.as_slice() {
+            // Find first difference
+            let min = c_first.len().min(rust_first.len());
+            let mut first_diff = None;
+            for i in 0..min {
+                if c_first[i] != rust_first[i] { first_diff = Some(i); break; }
+            }
+            eprintln!("C vs Rust real refinement seq[group1[0]]: c_len={}, r_len={}, first_diff={:?}",
+                c_first.len(), rust_first.len(), first_diff);
+            if let Some(d) = first_diff {
+                let s = d.saturating_sub(5);
+                let e = (d + 10).min(min);
+                eprintln!("  c[{s}..{e}] = {}", String::from_utf8_lossy(&c_first[s..e]));
+                eprintln!("  r[{s}..{e}] = {}", String::from_utf8_lossy(&rust_first[s..e]));
+            }
+        } else {
+            eprintln!("C Falign output matches Rust real refinement at seq[group1[0]]");
+        }
+
+        mafft_sys::Falign(
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, 0, 0, std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+        );
+        mafft_sys::alignableReagion(0, 0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        mafft_sys::freeconstants();
+    }
+}
+
+/// Simulate a full Rust iter 0 refinement while also running C's Falign at each
+/// branch with the SAME evolving state, and compare sequences / accept decisions.
+#[test]
+fn evolving_state_rust_vs_c_falign_iter0() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let mut sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    let penalty_dist = scoring.gap.open;
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = scoring_matrix_distance(&sequences[i], &sequences[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            dm.set(i, j, d);
+        }
+    }
+    let topo = musclesupg(&dm, ClusterMethod::default());
+    let bw = BranchWeights::new(&topo);
+
+    unsafe {
+        init_c_protein();
+        let nalpha = scoring.substitution_matrix.len() as c_int;
+        let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
+        for i in 0..scoring.substitution_matrix.len() {
+            for j in 0..scoring.substitution_matrix[i].len() {
+                *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
+            }
+        }
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+
+        let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+        let nsteps = topo.steps.len();
+        let mut branches: Vec<(usize, usize)> = Vec::new();
+        for step in 0..nsteps {
+            if step == nsteps - 1 { branches.push((step, 1)); }
+            else { branches.push((step, 0)); branches.push((step, 1)); }
+        }
+
+        let mut divergences = 0usize;
+        let mut first_diverge: Option<(usize, usize)> = None;
+        for (step, side) in &branches {
+            let group1: Vec<usize> = if *side == 0 { topo.steps[*step].left.clone() } else { topo.steps[*step].right.clone() };
+            let group2: Vec<usize> = (0..nseq).filter(|i| !group1.contains(i)).collect();
+            if group1.is_empty() || group2.is_empty() { continue; }
+
+            let weights = bw.weights_for_branch(&topo, *step, *side);
+            const MIN_W: f64 = 0.00001;
+            let rw1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MIN_W)).collect();
+            let rw2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MIN_W)).collect();
+            let rs1: f64 = rw1.iter().sum(); let rs2: f64 = rw2.iter().sum();
+            let rw1n: Vec<f64> = rw1.iter().map(|w| w / rs1).collect();
+            let rw2n: Vec<f64> = rw2.iter().map(|w| w / rs2).collect();
+
+            let width = sequences[0].len();
+
+            // ---- Rust segmented pipeline ----
+            let full1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
+            let full2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
+            let full_prof1 = Profile::from_aligned(&full1, &rw1n, &scoring.amino_map, scoring.nalphabets);
+            let full_prof2 = Profile::from_aligned(&full2, &rw2n, &scoring.amino_map, scoring.nalphabets);
+            let totaleff = rw1n.iter().sum::<f64>() * rw2n.iter().sum::<f64>();
+            let len = full_prof1.length.min(full_prof2.length);
+            let mut scores = vec![0.0f64; len];
+            for i in 0..len {
+                scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.substitution_matrix) / totaleff;
+            }
+            let segs = mafft_fft::alignable_segments(&scores, &mafft_fft::SegmentParams::protein());
+            let mut cuts: Vec<usize> = Vec::with_capacity(segs.len() + 2);
+            cuts.push(0);
+            for s in &segs { cuts.push(s.center.min(width)); }
+            cuts.push(width);
+            cuts.sort(); cuts.dedup();
+
+            let mut rust_new: Vec<Vec<u8>> = vec![Vec::new(); nseq];
+            for w in cuts.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                if a >= b { continue; }
+                let seg1: Vec<Vec<u8>> = group1.iter().map(|&i| sequences[i][a..b].to_vec()).collect();
+                let seg2: Vec<Vec<u8>> = group2.iter().map(|&i| sequences[i][a..b].to_vec()).collect();
+                let sw = b - a;
+                let gap1: Vec<bool> = (0..sw).map(|c| seg1.iter().all(|s| s[c] == b'-')).collect();
+                let gap2: Vec<bool> = (0..sw).map(|c| seg2.iter().all(|s| s[c] == b'-')).collect();
+                let kept1: Vec<usize> = (0..sw).filter(|&c| !gap1[c]).collect();
+                let kept2: Vec<usize> = (0..sw).filter(|&c| !gap2[c]).collect();
+                let s1: Vec<Vec<u8>> = seg1.iter().map(|s| kept1.iter().map(|&c| s[c]).collect()).collect();
+                let s2: Vec<Vec<u8>> = seg2.iter().map(|s| kept2.iter().map(|&c| s[c]).collect()).collect();
+                if s1.is_empty() || s1[0].is_empty() || s2.is_empty() || s2[0].is_empty() { continue; }
+                let r1: Vec<&[u8]> = s1.iter().map(|s| s.as_slice()).collect();
+                let r2: Vec<&[u8]> = s2.iter().map(|s| s.as_slice()).collect();
+                let p1 = Profile::from_aligned(&r1, &rw1n, &scoring.amino_map, scoring.nalphabets);
+                let p2 = Profile::from_aligned(&r2, &rw2n, &scoring.amino_map, scoring.nalphabets);
+                let aln = profile_align(&p1, &p2, &scoring.substitution_matrix, &gap, true, true);
+                let mut i1 = 0usize; let mut i2 = 0usize;
+                for op in &aln.operations {
+                    match op {
+                        mafft_align::AlignOp::Match => {
+                            for (k, &idx) in group1.iter().enumerate() { rust_new[idx].push(s1[k][i1]); }
+                            for (k, &idx) in group2.iter().enumerate() { rust_new[idx].push(s2[k][i2]); }
+                            i1 += 1; i2 += 1;
+                        }
+                        mafft_align::AlignOp::Delete => {
+                            for (k, &idx) in group1.iter().enumerate() { rust_new[idx].push(s1[k][i1]); }
+                            for &idx in &group2 { rust_new[idx].push(b'-'); }
+                            i1 += 1;
+                        }
+                        mafft_align::AlignOp::Insert => {
+                            for &idx in &group1 { rust_new[idx].push(b'-'); }
+                            for (k, &idx) in group2.iter().enumerate() { rust_new[idx].push(s2[k][i2]); }
+                            i2 += 1;
+                        }
+                    }
+                }
+            }
+
+            // ---- C Falign on same inputs ----
+            let mut fftlog: c_int = 0;
+            let alloclen = width * 3;
+            let c_s1_boxed: Vec<Box<[u8]>> = group1.iter().map(|&i| {
+                let mut v = sequences[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
+            }).collect();
+            let c_s2_boxed: Vec<Box<[u8]>> = group2.iter().map(|&i| {
+                let mut v = sequences[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
+            }).collect();
+            let mut c_s1_ptrs: Vec<*mut c_char> = c_s1_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+            let mut c_s2_ptrs: Vec<*mut c_char> = c_s2_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+            let e1: *mut c_double = alloc_zeroed(group1.len() * std::mem::size_of::<c_double>()) as _;
+            for (i, &w) in rw1n.iter().enumerate() { *e1.add(i) = w; }
+            let e2: *mut c_double = alloc_zeroed(group2.len() * std::mem::size_of::<c_double>()) as _;
+            for (i, &w) in rw2n.iter().enumerate() { *e2.add(i) = w; }
+            let _ = mafft_sys::Falign(
+                std::ptr::null_mut(), std::ptr::null_mut(), n_dyn,
+                c_s1_ptrs.as_mut_ptr(), c_s2_ptrs.as_mut_ptr(),
+                e1, e2, std::ptr::null_mut(), std::ptr::null_mut(),
+                group1.len() as c_int, group2.len() as c_int,
+                alloclen as c_int, &mut fftlog as *mut c_int,
+                std::ptr::null_mut(), 0, std::ptr::null_mut(),
+            );
+            let c_aln_len = {
+                let s = c_s1_ptrs[0];
+                let mut n = 0; while *s.add(n) != 0 { n += 1; } n
+            };
+
+            let rust_len = rust_new[group1[0]].len();
+            let mut byte_mismatches = 0usize;
+            if rust_len == c_aln_len {
+                for (k, &idx) in group1.iter().enumerate() {
+                    if rust_new[idx].as_slice() != &c_s1_boxed[k][..c_aln_len] { byte_mismatches += 1; }
+                }
+                for (k, &idx) in group2.iter().enumerate() {
+                    if rust_new[idx].as_slice() != &c_s2_boxed[k][..c_aln_len] { byte_mismatches += 1; }
+                }
+            }
+            if rust_len != c_aln_len || byte_mismatches > 0 {
+                divergences += 1;
+                if first_diverge.is_none() { first_diverge = Some((*step, *side)); }
+                if divergences <= 3 {
+                    eprintln!("step={} side={} DIFF: rust_len={} c_len={} byte_mm={}",
+                        step, side, rust_len, c_aln_len, byte_mismatches);
+                }
+            }
+
+            // Check if C's output equals input (C's identity check on representatives).
+            // `OneClusterAndTheOther_fast` picks s1, s2 as the first members of each group.
+            let s1_idx = group1[0];
+            let s2_idx = group2[0];
+            let c_s1_out = &c_s1_boxed[0][..c_aln_len];
+            let c_s2_out = &c_s2_boxed[0][..c_aln_len];
+            let c_identity = c_aln_len == width
+                && c_s1_out == sequences[s1_idx].as_slice()
+                && c_s2_out == sequences[s2_idx].as_slice();
+
+            // Apply C's accept decision to evolve state.
+            let old_score = compute_intergroup_score_rust(&group1, &group2, &sequences, &rw1n, &rw2n, &scoring);
+            // Reconstruct C's output into a full new_sequences to compute tscore
+            let mut c_new: Vec<Vec<u8>> = vec![Vec::new(); nseq];
+            for (k, &idx) in group1.iter().enumerate() { c_new[idx] = c_s1_boxed[k][..c_aln_len].to_vec(); }
+            for (k, &idx) in group2.iter().enumerate() { c_new[idx] = c_s2_boxed[k][..c_aln_len].to_vec(); }
+            let tscore = compute_intergroup_score_rust(&group1, &group2, &c_new, &rw1n, &rw2n, &scoring);
+
+            let rust_changed_all = (0..nseq).any(|i| sequences[i] != rust_new[i]);
+            let rust_changed_reps = sequences[s1_idx] != rust_new[s1_idx] || sequences[s2_idx] != rust_new[s2_idx];
+            if *step == 26 && *side == 1 {
+                eprintln!("step=26 side=1: width={} c_len={} c_identity={} rust_changed_all={} rust_changed_reps={} old={:.3} tscore={:.3} delta={:.3}",
+                    width, c_aln_len, c_identity, rust_changed_all, rust_changed_reps, old_score, tscore, tscore - old_score);
+            }
+            if !c_identity && tscore > old_score {
+                sequences = c_new;
+            }
+        }
+        eprintln!("Evolving-state Rust vs C Falign divergences (iter 0): {}/{}", divergences, branches.len());
+        if let Some((s, sd)) = first_diverge {
+            eprintln!("First divergence at step={} side={}", s, sd);
+        }
+
+        mafft_sys::Falign(
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, 0, 0, std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+        );
+        mafft_sys::alignableReagion(0, 0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        mafft_sys::freeconstants();
+    }
+}
+
+/// Compare our per-segment Falign-equivalent pipeline output against C's Falign
+/// output at every branch of iter 0. Uses MSalignmm per segment (no sgap/egap
+/// — same as our Rust code) and concatenates.
+#[test]
+fn compare_segmented_falign_with_c_iter0() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    let penalty_dist = scoring.gap.open;
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = scoring_matrix_distance(&sequences[i], &sequences[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            dm.set(i, j, d);
+        }
+    }
+    let topo = musclesupg(&dm, ClusterMethod::default());
+    let bw = BranchWeights::new(&topo);
+
+    unsafe {
+        init_c_protein();
+        let nalpha = scoring.substitution_matrix.len() as c_int;
+        let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
+        for i in 0..scoring.substitution_matrix.len() {
+            for j in 0..scoring.substitution_matrix[i].len() {
+                *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
+            }
+        }
+        let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+        let nsteps = topo.steps.len();
+        let mut branches: Vec<(usize, usize)> = Vec::new();
+        for step in 0..nsteps {
+            if step == nsteps - 1 { branches.push((step, 1)); }
+            else { branches.push((step, 0)); branches.push((step, 1)); }
+        }
+
+        let width = sequences[0].len();
+        let mut divergences = 0usize;
+        for (step, side) in &branches {
+            let group1: Vec<usize> = if *side == 0 { topo.steps[*step].left.clone() } else { topo.steps[*step].right.clone() };
+            let group2: Vec<usize> = (0..nseq).filter(|i| !group1.contains(i)).collect();
+            if group1.is_empty() || group2.is_empty() { continue; }
+
+            let weights = bw.weights_for_branch(&topo, *step, *side);
+            const MIN_W: f64 = 0.00001;
+            let rw1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MIN_W)).collect();
+            let rw2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MIN_W)).collect();
+            let rs1: f64 = rw1.iter().sum(); let rs2: f64 = rw2.iter().sum();
+            let rw1n: Vec<f64> = rw1.iter().map(|w| w / rs1).collect();
+            let rw2n: Vec<f64> = rw2.iter().map(|w| w / rs2).collect();
+
+            // --- Run our segmented Rust pipeline (mirroring realign_all use_fft path) ---
+            let full1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
+            let full2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
+            let full_prof1 = Profile::from_aligned(&full1, &rw1n, &scoring.amino_map, scoring.nalphabets);
+            let full_prof2 = Profile::from_aligned(&full2, &rw2n, &scoring.amino_map, scoring.nalphabets);
+            let totaleff = rw1n.iter().sum::<f64>() * rw2n.iter().sum::<f64>();
+            let len = full_prof1.length.min(full_prof2.length);
+            let mut scores = vec![0.0f64; len];
+            for i in 0..len {
+                scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.substitution_matrix) / totaleff;
+            }
+            let segs = mafft_fft::alignable_segments(&scores, &mafft_fft::SegmentParams::protein());
+            let mut cuts: Vec<usize> = Vec::with_capacity(segs.len() + 2);
+            cuts.push(0);
+            for s in &segs { cuts.push(s.center.min(width)); }
+            cuts.push(width);
+            cuts.sort(); cuts.dedup();
+
+            let mut rust_new: Vec<Vec<u8>> = vec![Vec::new(); nseq];
+            for w in cuts.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                if a >= b { continue; }
+                let seg1: Vec<Vec<u8>> = group1.iter().map(|&i| sequences[i][a..b].to_vec()).collect();
+                let seg2: Vec<Vec<u8>> = group2.iter().map(|&i| sequences[i][a..b].to_vec()).collect();
+                let sw = b - a;
+                let gap1: Vec<bool> = (0..sw).map(|c| seg1.iter().all(|s| s[c] == b'-')).collect();
+                let gap2: Vec<bool> = (0..sw).map(|c| seg2.iter().all(|s| s[c] == b'-')).collect();
+                let kept1: Vec<usize> = (0..sw).filter(|&c| !gap1[c]).collect();
+                let kept2: Vec<usize> = (0..sw).filter(|&c| !gap2[c]).collect();
+                let s1: Vec<Vec<u8>> = seg1.iter().map(|s| kept1.iter().map(|&c| s[c]).collect()).collect();
+                let s2: Vec<Vec<u8>> = seg2.iter().map(|s| kept2.iter().map(|&c| s[c]).collect()).collect();
+                if s1.is_empty() || s1[0].is_empty() || s2.is_empty() || s2[0].is_empty() { continue; }
+                let r1: Vec<&[u8]> = s1.iter().map(|s| s.as_slice()).collect();
+                let r2: Vec<&[u8]> = s2.iter().map(|s| s.as_slice()).collect();
+                let p1 = Profile::from_aligned(&r1, &rw1n, &scoring.amino_map, scoring.nalphabets);
+                let p2 = Profile::from_aligned(&r2, &rw2n, &scoring.amino_map, scoring.nalphabets);
+                let aln = profile_align(&p1, &p2, &scoring.substitution_matrix, &gap, true, true);
+                let mut i1 = 0usize; let mut i2 = 0usize;
+                for op in &aln.operations {
+                    match op {
+                        mafft_align::AlignOp::Match => {
+                            for (k, &idx) in group1.iter().enumerate() { rust_new[idx].push(s1[k][i1]); }
+                            for (k, &idx) in group2.iter().enumerate() { rust_new[idx].push(s2[k][i2]); }
+                            i1 += 1; i2 += 1;
+                        }
+                        mafft_align::AlignOp::Delete => {
+                            for (k, &idx) in group1.iter().enumerate() { rust_new[idx].push(s1[k][i1]); }
+                            for &idx in &group2 { rust_new[idx].push(b'-'); }
+                            i1 += 1;
+                        }
+                        mafft_align::AlignOp::Insert => {
+                            for &idx in &group1 { rust_new[idx].push(b'-'); }
+                            for (k, &idx) in group2.iter().enumerate() { rust_new[idx].push(s2[k][i2]); }
+                            i2 += 1;
+                        }
+                    }
+                }
+            }
+
+            // --- Run C's Falign on the same inputs ---
+            let mut fftlog: c_int = 0;
+            let alloclen = width * 3;
+            let c_s1_boxed: Vec<Box<[u8]>> = group1.iter().map(|&i| {
+                let mut v = sequences[i].clone();
+                v.resize(alloclen + 1, 0);
+                v.into_boxed_slice()
+            }).collect();
+            let c_s2_boxed: Vec<Box<[u8]>> = group2.iter().map(|&i| {
+                let mut v = sequences[i].clone();
+                v.resize(alloclen + 1, 0);
+                v.into_boxed_slice()
+            }).collect();
+            let mut c_s1_ptrs: Vec<*mut c_char> = c_s1_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+            let mut c_s2_ptrs: Vec<*mut c_char> = c_s2_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+
+            let e1: *mut c_double = alloc_zeroed(group1.len() * std::mem::size_of::<c_double>()) as _;
+            for (i, &w) in rw1n.iter().enumerate() { *e1.add(i) = w; }
+            let e2: *mut c_double = alloc_zeroed(group2.len() * std::mem::size_of::<c_double>()) as _;
+            for (i, &w) in rw2n.iter().enumerate() { *e2.add(i) = w; }
+
+            // Ensure C's alg is set to 'M' (MSalignmm) and fftkeika=1 so Falign
+            // uses the commongappick-per-segment path we want.
+            std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as i8);
+            std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
+            std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
+            std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
+            std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+
+            let _ = mafft_sys::Falign(
+                std::ptr::null_mut(), std::ptr::null_mut(), n_dyn,
+                c_s1_ptrs.as_mut_ptr(), c_s2_ptrs.as_mut_ptr(),
+                e1, e2, std::ptr::null_mut(), std::ptr::null_mut(),
+                group1.len() as c_int, group2.len() as c_int,
+                alloclen as c_int, &mut fftlog as *mut c_int,
+                std::ptr::null_mut(), 0, std::ptr::null_mut(),
+            );
+
+            // Read back C's output sequences.
+            let c_aln_len = {
+                let s = c_s1_ptrs[0];
+                let mut n = 0; while *s.add(n) != 0 { n += 1; } n
+            };
+
+            let rust_len = rust_new[group1[0]].len();
+            if rust_len != c_aln_len {
+                divergences += 1;
+                if divergences <= 3 {
+                    eprintln!("step={} side={} DIFF: rust_len={}, c_len={}", step, side, rust_len, c_aln_len);
+                }
+                continue;
+            }
+            let mut byte_mismatches = 0usize;
+            for (k, &idx) in group1.iter().enumerate() {
+                let r = &rust_new[idx];
+                let c = &c_s1_boxed[k][..c_aln_len];
+                if r.as_slice() != c { byte_mismatches += 1; }
+            }
+            for (k, &idx) in group2.iter().enumerate() {
+                let r = &rust_new[idx];
+                let c = &c_s2_boxed[k][..c_aln_len];
+                if r.as_slice() != c { byte_mismatches += 1; }
+            }
+            if byte_mismatches > 0 {
+                divergences += 1;
+                if divergences <= 3 {
+                    eprintln!("step={} side={} SAME LEN {} but {} seq rows differ",
+                        step, side, rust_len, byte_mismatches);
+                }
+            }
+        }
+        eprintln!("Segmented-Falign divergences (iter 0, clean state): {}/{}", divergences, branches.len());
+
+        mafft_sys::Falign(
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, 0, 0, std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+        );
+        mafft_sys::alignableReagion(0, 0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        mafft_sys::freeconstants();
+    }
+}
+
+/// Compare Rust `alignable_segments` output to C's `alignableReagion` at lag=0
+/// for every branch of iter 0 on the clean FFT-NS-2 input.
+#[test]
+fn compare_alignable_regions_with_c_iter0() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    let penalty_dist = scoring.gap.open;
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = scoring_matrix_distance(&sequences[i], &sequences[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            dm.set(i, j, d);
+        }
+    }
+    let topo = musclesupg(&dm, ClusterMethod::default());
+    let bw = BranchWeights::new(&topo);
+
+    unsafe {
+        init_c_protein();
+
+        // fftWinSize/fftThreshold are set by constants() → defaults 20 / 80.
+        // Ensure they match our Rust defaults.
+        let c_fftwinsize = std::ptr::addr_of!(mafft_sys::fftWinSize).read();
+        let c_fftthreshold = std::ptr::addr_of!(mafft_sys::fftThreshold).read();
+        eprintln!("C fftWinSize={c_fftwinsize}, fftThreshold={c_fftthreshold}");
+
+        let nsteps = topo.steps.len();
+        let mut branches: Vec<(usize, usize)> = Vec::new();
+        for step in 0..nsteps {
+            if step == nsteps - 1 { branches.push((step, 1)); }
+            else { branches.push((step, 0)); branches.push((step, 1)); }
+        }
+
+        let mut mismatches: Vec<(usize, usize, usize, usize)> = Vec::new();
+        for (step, side) in &branches {
+            let group1: Vec<usize> = if *side == 0 { topo.steps[*step].left.clone() } else { topo.steps[*step].right.clone() };
+            let group2: Vec<usize> = (0..nseq).filter(|i| !group1.contains(i)).collect();
+            if group1.is_empty() || group2.is_empty() { continue; }
+
+            let weights = bw.weights_for_branch(&topo, *step, *side);
+            const MIN_W: f64 = 0.00001;
+            let rw1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MIN_W)).collect();
+            let rw2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MIN_W)).collect();
+            let rs1: f64 = rw1.iter().sum();
+            let rs2: f64 = rw2.iter().sum();
+            let rw1n: Vec<f64> = rw1.iter().map(|w| w / rs1).collect();
+            let rw2n: Vec<f64> = rw2.iter().map(|w| w / rs2).collect();
+
+            // Rust side: compute site scores at lag=0 and run alignable_segments.
+            let full1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
+            let full2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
+            let prof1 = Profile::from_aligned(&full1, &rw1n, &scoring.amino_map, scoring.nalphabets);
+            let prof2 = Profile::from_aligned(&full2, &rw2n, &scoring.amino_map, scoring.nalphabets);
+            let totaleff = rw1n.iter().sum::<f64>() * rw2n.iter().sum::<f64>();
+            let len = prof1.length.min(prof2.length);
+            let mut scores = vec![0.0f64; len];
+            for i in 0..len {
+                scores[i] = prof1.match_score(i, &prof2, i, &scoring.substitution_matrix) / totaleff;
+            }
+            let rust_segs = mafft_fft::alignable_segments(&scores, &mafft_fft::SegmentParams::protein());
+            let rust_centers: Vec<usize> = rust_segs.iter().map(|s| s.center).collect();
+
+            // C side: call alignableReagion with the same inputs at lag=0.
+            let g1_seqs: Vec<CString> = group1.iter().map(|&i| CString::new(sequences[i].clone()).unwrap()).collect();
+            let g2_seqs: Vec<CString> = group2.iter().map(|&i| CString::new(sequences[i].clone()).unwrap()).collect();
+            let mut g1_ptrs: Vec<*mut c_char> = g1_seqs.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+            let mut g2_ptrs: Vec<*mut c_char> = g2_seqs.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+            let e1: *mut c_double = alloc_zeroed(group1.len() * std::mem::size_of::<c_double>()) as _;
+            for (i, &w) in rw1n.iter().enumerate() { *e1.add(i) = w; }
+            let e2: *mut c_double = alloc_zeroed(group2.len() * std::mem::size_of::<c_double>()) as _;
+            for (i, &w) in rw2n.iter().enumerate() { *e2.add(i) = w; }
+
+            // Allocate MAXSEG Segment slots (ballpark — 1000 is plenty)
+            const MAX_SEG: usize = 1000;
+            let seg_buf: *mut mafft_sys::Segment = alloc_zeroed(MAX_SEG * std::mem::size_of::<mafft_sys::Segment>()) as _;
+            let c_count = mafft_sys::alignableReagion(
+                group1.len() as c_int,
+                group2.len() as c_int,
+                g1_ptrs.as_mut_ptr(),
+                g2_ptrs.as_mut_ptr(),
+                e1,
+                e2,
+                seg_buf,
+            ) as usize;
+            let c_centers: Vec<usize> = (0..c_count).map(|i| (*seg_buf.add(i)).center as usize).collect();
+
+            if rust_centers != c_centers {
+                mismatches.push((*step, *side, rust_centers.len(), c_count));
+                if mismatches.len() <= 5 {
+                    eprintln!("step={} side={}: rust centers={:?}, c centers={:?}", step, side, rust_centers, c_centers);
+                }
+            }
+        }
+        eprintln!("Segment mismatch branches (iter 0, clean state): {}/{}", mismatches.len(), branches.len());
+
+        // Deallocate C state
+        mafft_sys::alignableReagion(0, 0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
         mafft_sys::freeconstants();
     }
 }

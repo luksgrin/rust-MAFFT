@@ -317,6 +317,36 @@ unsafe extern "C" {
         value: *mut c_double,
     );
 
+    // -- FFT / segment detection --
+    pub fn alignableReagion(
+        clus1: c_int,
+        clus2: c_int,
+        seq1: *mut *mut c_char,
+        seq2: *mut *mut c_char,
+        eff1: *mut c_double,
+        eff2: *mut c_double,
+        seg: *mut Segment,
+    ) -> c_int;
+
+    pub fn Falign(
+        whichmtx: *mut *mut c_int,
+        scoringmatrices: *mut *mut *mut c_double,
+        n_dynamicmtx: *mut *mut c_double,
+        seq1: *mut *mut c_char,
+        seq2: *mut *mut c_char,
+        eff1: *mut c_double,
+        eff2: *mut c_double,
+        eff1s: *mut *mut c_double,
+        eff2s: *mut *mut c_double,
+        clus1: c_int,
+        clus2: c_int,
+        alloclen: c_int,
+        fftlog: *mut c_int,
+        chudanpt: *mut c_int,
+        chudanref: c_int,
+        chudanres: *mut c_int,
+    ) -> c_double;
+
     // -- Utility --
     pub fn seqlen(seq: *mut c_char) -> c_int;
     pub fn commongappick(nseq: c_int, seq: *mut *mut c_char);
@@ -376,6 +406,8 @@ unsafe extern "C" {
     pub static mut fftThreshold: c_int;
     pub static mut fftRepeatStop: c_int;
     pub static mut fftNoAnchStop: c_int;
+    pub static mut fftkeika: c_int;
+    pub static mut kobetsubunkatsu: c_int;
 
     pub static mut outgap: c_int;
     pub static mut kimuraR: c_int;

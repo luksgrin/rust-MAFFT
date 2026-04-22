@@ -123,6 +123,8 @@ pub fn iterative_refine(
     }
 
     let branch_weights = BranchWeights::new(topology);
+    let global_weights = mafft_tree::sequence_weights(topology);
+    let use_global_weights = std::env::var("RUST_MAFFT_GLOBAL_WEIGHTS").is_ok();
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
 
 
@@ -153,7 +155,11 @@ pub fn iterative_refine(
             for (side, group1, group2) in &branch_map[step_idx] {
                 let branch_id: BranchId = (step_idx, *side);
 
-                let weights = branch_weights.weights_for_branch(topology, step_idx, *side);
+                let weights = if use_global_weights {
+                    global_weights.clone()
+                } else {
+                    branch_weights.weights_for_branch(topology, step_idx, *side)
+                };
 
                 let old_score = compute_split_score(
                     group1, group2, &alignment.sequences, &weights, scoring,
@@ -165,8 +171,17 @@ pub fn iterative_refine(
                 );
 
                 if let Some((new_seqs, _new_score)) = new_seqs {
-                    // C's identity check: compare representative sequences
-                    let changed = (0..nseq).any(|i| alignment.sequences[i] != new_seqs[i]);
+                    // C's identity check (tditeration.c:2184-2185): compare only
+                    // the representative sequences s1=memlist1[0], s2=memlist2[0]
+                    // (from OneClusterAndTheOther_fast in tddis.c:834-835).
+                    // `group1` is memlist1, `group2` is memlist2, so s1=group1[0],
+                    // s2=group2[0]. Checking ALL sequences would incorrectly treat
+                    // column-rearrangements that preserve the two representatives
+                    // as "changed", causing spurious accepts.
+                    let s1 = group1[0];
+                    let s2 = group2[0];
+                    let changed = alignment.sequences[s1] != new_seqs[s1]
+                        || alignment.sequences[s2] != new_seqs[s2];
 
                     if !changed {
                         // Identical — no change, count toward convergence
@@ -181,6 +196,9 @@ pub fn iterative_refine(
 
                         let threshold = old_score - params.cut / 100.0 * old_score;
                         if tscore > threshold {
+                            if std::env::var("RUST_MAFFT_TRACE").is_ok() {
+                                eprintln!("ACCEPT iter={iter} step={step_idx} side={side} w={}", new_seqs[0].len());
+                            }
                             alignment.sequences = new_seqs;
                             any_change = true;
                             converged_count = 0;
@@ -417,8 +435,62 @@ fn realign_all(
 
             let s1_refs: Vec<&[u8]> = stripped_seg1.iter().map(|s| s.as_slice()).collect();
             let s2_refs: Vec<&[u8]> = stripped_seg2.iter().map(|s| s.as_slice()).collect();
-            let prof_seg1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
-            let prof_seg2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
+            let mut prof_seg1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
+            let mut prof_seg2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
+
+            // C's Falign segment loop (lines 1549-1565):
+            //   sgap[j] = (cut1[i]  > 0)    ? (seq[j][cut1[i]-1]   == '-') : 'o'
+            //   egap[j] = (cut1[i+1] != len)? (seq[j][cut1[i+1]]   == '-') : 'o'
+            // These per-sequence boundary gap states are passed to MSalignmm,
+            // which switches from `st_OpeningGapCount` to `new_OpeningGapCount`
+            // (mltaln9.c:12557): a sequence already in a gap just before the
+            // segment's first column does NOT count as "opening" at position 0.
+            // `Profile::from_aligned` applies `st_OpeningGapCount` semantics
+            // (gc starts at 0), so we correct the first/last counts here.
+            let sgap_inside = a > 0;
+            let egap_inside = b < width;
+            if sgap_inside || egap_inside {
+                if !prof_seg1.ogcp.is_empty() {
+                    for (k, &idx) in group1.iter().enumerate() {
+                        if sgap_inside
+                            && sequences[idx][a - 1] == b'-'
+                            && !stripped_seg1[k].is_empty()
+                            && stripped_seg1[k][0] == b'-'
+                        {
+                            prof_seg1.ogcp[0] -= w1n[k];
+                        }
+                        let l1 = stripped_seg1[k].len();
+                        if egap_inside
+                            && l1 > 0
+                            && stripped_seg1[k][l1 - 1] == b'-'
+                            && sequences[idx][b] == b'-'
+                        {
+                            let last = prof_seg1.fgcp.len() - 1;
+                            prof_seg1.fgcp[last] -= w1n[k];
+                        }
+                    }
+                }
+                if !prof_seg2.ogcp.is_empty() {
+                    for (k, &idx) in group2.iter().enumerate() {
+                        if sgap_inside
+                            && sequences[idx][a - 1] == b'-'
+                            && !stripped_seg2[k].is_empty()
+                            && stripped_seg2[k][0] == b'-'
+                        {
+                            prof_seg2.ogcp[0] -= w2n[k];
+                        }
+                        let l2 = stripped_seg2[k].len();
+                        if egap_inside
+                            && l2 > 0
+                            && stripped_seg2[k][l2 - 1] == b'-'
+                            && sequences[idx][b] == b'-'
+                        {
+                            let last = prof_seg2.fgcp.len() - 1;
+                            prof_seg2.fgcp[last] -= w2n[k];
+                        }
+                    }
+                }
+            }
 
             // C's Falign segment loop (lines 1521-1522):
             //   headgp = (i==0) ? outgap : 1   ;   tailgp = (i==count-2) ? outgap : 1
