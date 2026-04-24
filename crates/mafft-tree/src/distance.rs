@@ -49,6 +49,25 @@ impl DistanceMatrix {
             self.data[j][i - j - 1] = val;
         }
     }
+
+    /// Apply the precision loss of C's hat2 file round-trip.
+    ///
+    /// C writes distances with `DFORMAT = "%#6.3f"` and reads them back with
+    /// `atof`, which quantizes every distance to 3 decimal digits. The
+    /// refinement tree in `dvtditr` is built from these rounded values, so
+    /// the Rust pipeline must apply the same precision loss before handing
+    /// the matrix to `musclesupg`, otherwise the branch lengths (and hence
+    /// the weights that drive Falign) diverge from C at later tree steps.
+    pub fn quantize_hat2(&mut self) {
+        for row in self.data.iter_mut() {
+            for v in row.iter_mut() {
+                let s = format!("{:.3}", *v);
+                if let Ok(parsed) = s.parse::<f64>() {
+                    *v = parsed;
+                }
+            }
+        }
+    }
 }
 
 /// Compute identity-based distance between two aligned sequences.

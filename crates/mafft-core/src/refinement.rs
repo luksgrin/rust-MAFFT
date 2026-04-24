@@ -351,10 +351,13 @@ fn realign_all(
             &group2.iter().map(|&i| sequences[i].as_slice()).collect::<Vec<_>>(),
             &w2n, &scoring.amino_map, scoring.nalphabets);
 
+        // mafft.tmpl passes `-z 50` to dvtditr, setting fftThreshold=50 for the
+        // alignableReagion sliding window (default from constants.c is 80, but
+        // the script overrides it). Match that here.
         let segment_params = if scoring.seq_type.is_nucleotide() {
-            SegmentParams::dna()
+            SegmentParams::dna().with_threshold(50.0)
         } else {
-            SegmentParams::protein()
+            SegmentParams::protein().with_threshold(50.0)
         };
 
         // Step 1: Compute per-position site scores at lag=0 (C's alignableReagion,

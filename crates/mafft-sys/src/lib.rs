@@ -328,6 +328,20 @@ unsafe extern "C" {
         seg: *mut Segment,
     ) -> c_int;
 
+    pub fn searchAnchors(
+        nseq: c_int,
+        seq: *mut *mut c_char,
+        seg: *mut Segment,
+    ) -> c_int;
+
+    pub fn fixed_musclesupg_double_treeout(
+        nseq: c_int,
+        eff: *mut *mut c_double,
+        topol: *mut *mut *mut c_int,
+        len: *mut *mut c_double,
+        name: *mut *mut c_char,
+    );
+
     pub fn Falign(
         whichmtx: *mut *mut c_int,
         scoringmatrices: *mut *mut *mut c_double,
@@ -408,6 +422,26 @@ unsafe extern "C" {
     pub static mut fftNoAnchStop: c_int;
     pub static mut fftkeika: c_int;
     pub static mut kobetsubunkatsu: c_int;
+    pub static mut divWinSize: c_int;
+    pub static mut divThreshold: c_int;
+    pub static mut score_check: c_int;
+    pub static mut bunkatsu: c_int;
+    pub static mut penalty_shift_factor: c_double;
+    pub static mut cooling: c_int;
+    pub static mut legacygapcost: c_int;
+    pub static mut consweight_multi: c_double;
+    pub static mut specificityconsideration: c_double;
+    pub static mut maxdistclass: c_int;
+    pub static mut randomseed: c_int;
+    pub static mut scmtd: c_int;
+    pub static mut refine: c_int;
+    pub static mut check: c_int;
+    pub static mut cut: c_double;
+    pub static mut intop: c_int;
+    pub static mut intree: c_int;
+    pub static mut devide: c_int;
+    pub static mut rnakozo: c_int;
+    pub static mut rnaprediction: c_char;
 
     pub static mut outgap: c_int;
     pub static mut kimuraR: c_int;

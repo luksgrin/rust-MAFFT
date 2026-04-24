@@ -363,11 +363,15 @@ impl MafftEngine {
                 // Rebuild tree for refinement.
                 // C's dvtditr reads the hat2 file (scoring-matrix-based distances
                 // written by disttbfast during retree pass 2) and builds UPGMA.
+                // hat2 uses `%#6.3f` format — distances are 3-decimal quantized,
+                // so the refinement tree is built from quantized values. Emulate
+                // that precision loss or branch lengths diverge from C.
                 let penalty_dist = scoring.gap.open;
-                let dm = compute_distance_matrix_scoring(
+                let mut dm = compute_distance_matrix_scoring(
                     &msa.sequences, &scoring.substitution_matrix,
                     &scoring.amino_map, penalty_dist,
                 );
+                dm.quantize_hat2();
                 let topo = musclesupg(&dm, ClusterMethod::default());
                 // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)
                 // parallelization strategy (scripts/mafft line ~1515). This matters

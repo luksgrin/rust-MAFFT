@@ -137,6 +137,26 @@ fn fftns2_byte_identical_to_c() {
     );
 }
 
+#[test]
+fn fftnsi_width_matches_c() {
+    let c_ref = read_fasta(test_data_path("sample.fftnsi")).unwrap();
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    // C test driver uses `--maxiterate 100`; script caps to 16 internally.
+    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 }).align(&input);
+
+    eprintln!("Rust fftnsi width = {}", msa.sequences[0].len());
+    eprintln!("C fftnsi width    = {}", c_ref.sequences[0].data.len());
+
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+        }
+    }
+    eprintln!("{}/{} sequences differ from C fftnsi", mismatches, msa.nseq());
+}
+
 /// Every NW-NS-2 merge step's `(clus1, clus2, width, score)` must match C's.
 ///
 /// This is a finer-grained regression guard than `nofft_byte_identical_to_c`:

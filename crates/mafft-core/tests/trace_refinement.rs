@@ -23,27 +23,60 @@ unsafe fn alloc_zeroed(size: usize) -> *mut u8 {
 unsafe fn init_c_protein() {
     unsafe {
         mafft_sys::initglobalvariables();
+        // Match dvtditr's arginit() defaults (dvtditr.c:40-105) followed by
+        // the command-line args mafft.tmpl passes to dvtditr.
         std::ptr::addr_of_mut!(mafft_sys::ppenalty).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::ppenalty_ex).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::ppenalty_EX).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::ppenalty_OP).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::ppenalty_dist).write(mafft_sys::NOTSPECIFIED);
-        // MAFFT script: -h 0.000 → poffset=0
-        std::ptr::addr_of_mut!(mafft_sys::poffset).write(0);
         std::ptr::addr_of_mut!(mafft_sys::kimuraR).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::pamN).write(mafft_sys::NOTSPECIFIED);
-        // Ensure FFT window/threshold are filled in by constants() defaults.
+        // dvtditr defaults
+        std::ptr::addr_of_mut!(mafft_sys::randomseed).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::score_check).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::bunkatsu).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::nblosum).write(62);
+        std::ptr::addr_of_mut!(mafft_sys::divWinSize).write(20);
+        std::ptr::addr_of_mut!(mafft_sys::divThreshold).write(65);
+        std::ptr::addr_of_mut!(mafft_sys::fftscore).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::fftRepeatStop).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::fftNoAnchStop).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::scmtd).write(5);
+        std::ptr::addr_of_mut!(mafft_sys::cooling).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::weight).write(4);
+        std::ptr::addr_of_mut!(mafft_sys::utree).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::refine).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::check).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::cut).write(0.0);
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::use_fft).write(0); // enabled by -F later
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::treemethod).write(b'X' as i32);
+        std::ptr::addr_of_mut!(mafft_sys::sueff_global).write(0.1);
+        std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::dorp).write(b'p' as i32);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(1000.0);
+        std::ptr::addr_of_mut!(mafft_sys::legacygapcost).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::consweight_multi).write(1.0);
+        std::ptr::addr_of_mut!(mafft_sys::specificityconsideration).write(0.0);
         std::ptr::addr_of_mut!(mafft_sys::fftWinSize).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::fftThreshold).write(mafft_sys::NOTSPECIFIED);
-        std::ptr::addr_of_mut!(mafft_sys::dorp).write(b'p' as i32);
-        std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(1);
-        std::ptr::addr_of_mut!(mafft_sys::nblosum).write(62);
-        std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
+        // Apply mafft.tmpl's -h 0.000, -z 50, -Q 100.0, -f -1.53 args
+        std::ptr::addr_of_mut!(mafft_sys::poffset).write(0);
 
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
         let mut seq_ptr = seq_data.as_ptr() as *mut i8;
         let seq_arr: *mut *mut i8 = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
+
+        // After constants(), set the -z 50 (fftThreshold) override and use_fft=1 (-F)
+        std::ptr::addr_of_mut!(mafft_sys::fftThreshold).write(50);
+        std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(100.0);
     }
 }
 
@@ -822,6 +855,962 @@ fn full_sequence_profile_align_vs_msalignmm() {
     }
 }
 
+/// Confirm C's `searchAnchors` finds top-level segments before iteration.
+#[test]
+fn c_search_anchors_on_sample() {
+    let _guard = C_MUTEX.lock().unwrap();
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let nseq = input.sequences.len();
+    let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    unsafe {
+        init_c_protein();
+        // divWinSize and divThreshold are set by dvtditr.c, not constants.c.
+        // Need to set them manually here to match dvtditr's setup.
+        std::ptr::addr_of_mut!(mafft_sys::divWinSize).write(20);
+        std::ptr::addr_of_mut!(mafft_sys::divThreshold).write(65);
+
+        let cseqs: Vec<CString> = sequences.iter().map(|s| CString::new(s.clone()).unwrap()).collect();
+        let mut cptrs: Vec<*mut c_char> = cseqs.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+
+        const MAX_SEG: usize = 1000;
+        let seg_buf: *mut mafft_sys::Segment = alloc_zeroed(MAX_SEG * std::mem::size_of::<mafft_sys::Segment>()) as _;
+        let count = mafft_sys::searchAnchors(nseq as c_int, cptrs.as_mut_ptr(), seg_buf) as usize;
+        eprintln!("searchAnchors: {} segments found on sample.fftns2 (width={})",
+            count, sequences[0].len());
+        for i in 0..count.min(20) {
+            let s = &*seg_buf.add(i);
+            eprintln!("  seg[{i}]: start={} end={} center={} score={}", s.start, s.end, s.center, s.score);
+        }
+        mafft_sys::freeconstants();
+    }
+}
+
+/// FFI-compare the refinement tree distance matrix (Rust vs dndpre formula).
+#[test]
+fn dndpre_distance_matrix_matches_rust() {
+    let _guard = C_MUTEX.lock().unwrap();
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    // Rust distance matrix (via scoring_matrix_distance, same as engine.rs)
+    let penalty_dist = scoring.gap.open;
+    let mut rust_d = vec![vec![0.0f64; nseq]; nseq];
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            rust_d[i][j] = scoring_matrix_distance(
+                &sequences[i], &sequences[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+        }
+    }
+
+    // C distance matrix (dndpre formula) via FFI: d = maxdist*(1 - pairscore/min_self)
+    // where maxdist=2, pairscore = naivepairscore11(seq[i], seq[j], penalty).
+    unsafe {
+        init_c_protein();
+        let penalty = std::ptr::addr_of!(mafft_sys::penalty).read();
+        eprintln!("C penalty = {}", penalty);
+
+        let cseqs: Vec<CString> = sequences.iter().map(|s| CString::new(s.clone()).unwrap()).collect();
+        let cptrs: Vec<*mut c_char> = cseqs.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+
+        let mut self_score = vec![0.0f64; nseq];
+        for i in 0..nseq {
+            self_score[i] = mafft_sys::naivepairscore11(cptrs[i], cptrs[i], penalty);
+        }
+
+        let maxdist = 2.0f64; // C's dndpre default
+        let mut c_d = vec![vec![0.0f64; nseq]; nseq];
+        for i in 0..nseq {
+            for j in (i + 1)..nseq {
+                let pairsc = mafft_sys::naivepairscore11(cptrs[i], cptrs[j], penalty);
+                let bunbo = self_score[i].min(self_score[j]);
+                let d = if bunbo == 0.0 { maxdist } else {
+                    let mut d = maxdist * (1.0 - pairsc / bunbo);
+                    if d > 10.0 { d = 10.0; }
+                    if d < 0.0 { d = 0.0; }
+                    d
+                };
+                c_d[i][j] = d;
+            }
+        }
+
+        let mut max_diff = 0.0f64;
+        let mut mismatch_count = 0usize;
+        for i in 0..nseq {
+            for j in (i + 1)..nseq {
+                let diff = (rust_d[i][j] - c_d[i][j]).abs();
+                if diff > 1e-9 { mismatch_count += 1; }
+                if diff > max_diff { max_diff = diff; }
+            }
+        }
+        eprintln!("Distance matrix: max_diff = {:.2e}, mismatches = {}/{}",
+            max_diff, mismatch_count, nseq * (nseq - 1) / 2);
+        if mismatch_count > 0 {
+            // print first few differences
+            let mut printed = 0;
+            for i in 0..nseq {
+                for j in (i + 1)..nseq {
+                    if (rust_d[i][j] - c_d[i][j]).abs() > 1e-9 {
+                        eprintln!("  [{}][{}]: rust={:.6} c={:.6} diff={:.2e}",
+                            i, j, rust_d[i][j], c_d[i][j], rust_d[i][j] - c_d[i][j]);
+                        printed += 1;
+                        if printed >= 5 { break; }
+                    }
+                }
+                if printed >= 5 { break; }
+            }
+        }
+
+        mafft_sys::freeconstants();
+    }
+}
+
+/// Dump Rust topology to stderr for manual comparison.
+#[test]
+fn dump_rust_topology() {
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+    let penalty_dist = scoring.gap.open;
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = scoring_matrix_distance(&sequences[i], &sequences[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            dm.set(i, j, d);
+        }
+    }
+    eprintln!("Rust dm sample:");
+    eprintln!("  d(33,34)={}", dm.get(33, 34));
+    eprintln!("  d(29,30)={}", dm.get(29, 30));
+    eprintln!("  d(28,29)={}", dm.get(28, 29));
+    eprintln!("  d(28,30)={}", dm.get(28, 30));
+    let topo = musclesupg(&dm, ClusterMethod::default());
+    eprintln!("Rust topology: {} steps", topo.steps.len());
+    for k in [0, 1, 32] {
+        let step = &topo.steps[k];
+        eprintln!("  step {k}: left={:?} right={:?} l_len={:.18} r_len={:.18}",
+            step.left, step.right, step.left_length, step.right_length);
+    }
+}
+
+/// Compare C's `fixed_musclesupg_double_treeout` topology to our Rust `musclesupg`
+/// topology, cell-by-cell.
+#[test]
+fn tree_topology_rust_vs_c() {
+    let _guard = C_MUTEX.lock().unwrap();
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+    let penalty_dist = scoring.gap.open;
+
+    // Build distance matrix
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = scoring_matrix_distance(&sequences[i], &sequences[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            dm.set(i, j, d);
+        }
+    }
+
+    // Rust topology
+    let topo_rust = musclesupg(&dm, ClusterMethod::default());
+    eprintln!("Rust topology: {} steps", topo_rust.steps.len());
+
+    // C topology via FFI
+    unsafe {
+        init_c_protein();
+        std::ptr::addr_of_mut!(mafft_sys::treemethod).write(b'X' as i32);
+        std::ptr::addr_of_mut!(mafft_sys::sueff_global).write(0.1);
+
+        // Convert dm to C's eff layout (NxN full matrix, only eff[i][j] for i<j used).
+        let eff: *mut *mut c_double = alloc_zeroed(nseq * std::mem::size_of::<*mut c_double>()) as _;
+        for i in 0..nseq {
+            let row: *mut c_double = alloc_zeroed(nseq * std::mem::size_of::<c_double>()) as _;
+            for j in (i + 1)..nseq {
+                *row.add(j) = dm.get(i, j);
+            }
+            *eff.add(i) = row;
+        }
+
+        // Allocate topol: nseq-1 steps, each [2][...] with -1 terminator
+        let topol: *mut *mut *mut c_int = alloc_zeroed((nseq - 1) * std::mem::size_of::<*mut *mut c_int>()) as _;
+        for k in 0..(nseq - 1) {
+            let row: *mut *mut c_int = alloc_zeroed(2 * std::mem::size_of::<*mut c_int>()) as _;
+            for side in 0..2 {
+                let s: *mut c_int = alloc_zeroed((nseq + 1) * std::mem::size_of::<c_int>()) as _;
+                for x in 0..=nseq { *s.add(x) = -1; }
+                *row.add(side) = s;
+            }
+            *topol.add(k) = row;
+        }
+
+        let len_mtx: *mut *mut c_double = alloc_zeroed((nseq - 1) * std::mem::size_of::<*mut c_double>()) as _;
+        for k in 0..(nseq - 1) {
+            let row: *mut c_double = alloc_zeroed(2 * std::mem::size_of::<c_double>()) as _;
+            *len_mtx.add(k) = row;
+        }
+
+        // Names (required by fixed_musclesupg_double_treeout — include leading space,
+        // since the function strips a prefix).
+        let names: *mut *mut c_char = alloc_zeroed(nseq * std::mem::size_of::<*mut c_char>()) as _;
+        for i in 0..nseq {
+            // Use format matching actual mafft names (leading space, then number prefix)
+            let name_str = format!(" name{i}");
+            let cname = CString::new(name_str.clone()).unwrap();
+            let buf: *mut c_char = alloc_zeroed(200) as _;
+            let bytes = cname.as_bytes();
+            std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, bytes.len() + 1);
+            *names.add(i) = buf;
+        }
+
+        // Set globals needed by fixed_musclesupg_double_treeout
+        std::ptr::addr_of_mut!(mafft_sys::njob).write(nseq as c_int);
+
+        mafft_sys::fixed_musclesupg_double_treeout(nseq as c_int, eff, topol, len_mtx, names);
+
+        // Extract C's topology
+        let mut c_steps: Vec<(Vec<usize>, Vec<usize>, f64, f64)> = Vec::new();
+        for k in 0..(nseq - 1) {
+            let row = *topol.add(k);
+            let left_ptr = *row.add(0);
+            let right_ptr = *row.add(1);
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            let mut i = 0;
+            while *left_ptr.add(i) != -1 { left.push(*left_ptr.add(i) as usize); i += 1; }
+            let mut i = 0;
+            while *right_ptr.add(i) != -1 { right.push(*right_ptr.add(i) as usize); i += 1; }
+            let lens = *len_mtx.add(k);
+            c_steps.push((left, right, *lens.add(0), *lens.add(1)));
+        }
+
+        // Compare topologies
+        let mut step_mismatches = 0;
+        for k in 0..(nseq - 1) {
+            let rs = &topo_rust.steps[k];
+            let (cl, cr, cll, crl) = &c_steps[k];
+            let members_match = rs.left == *cl && rs.right == *cr;
+            let lens_close = (rs.left_length - cll).abs() < 1e-9 && (rs.right_length - crl).abs() < 1e-9;
+            if !members_match || !lens_close {
+                step_mismatches += 1;
+                if step_mismatches <= 3 {
+                    eprintln!("step {k} DIFF:");
+                    eprintln!("  rust: left={:?} right={:?} l_len={} r_len={}",
+                        rs.left, rs.right, rs.left_length, rs.right_length);
+                    eprintln!("  c:    left={:?} right={:?} l_len={} r_len={}",
+                        cl, cr, cll, crl);
+                }
+            }
+        }
+        eprintln!("Topology mismatches: {}/{} steps", step_mismatches, nseq - 1);
+
+        mafft_sys::freeconstants();
+    }
+}
+
+/// Directly run Rust's real `iterative_refine` for 1 iteration, capture the output,
+/// and run C's Falign pipeline branch-by-branch with the SAME weights to get C's
+/// iter=1 expected output. Compare and identify first divergent branch.
+#[test]
+fn real_rust_refine_vs_c_falign_iter0_bytediff() {
+    let _guard = C_MUTEX.lock().unwrap();
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let initial: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    // Build topology
+    let penalty_dist = scoring.gap.open;
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = scoring_matrix_distance(&initial[i], &initial[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            dm.set(i, j, d);
+        }
+    }
+    dm.quantize_hat2(); // mirror C dvtditr reading hat2 with %#6.3f precision
+    let topo = musclesupg(&dm, ClusterMethod::default());
+
+    // Run real Rust iterative_refine for 1 iter
+    let mut msa_rust = mafft_core::MultipleAlignment {
+        sequences: initial.clone(),
+        names: vec![String::new(); nseq],
+        score: 0.0,
+        step_trace: Vec::new(),
+    };
+    let params = mafft_core::RefinementParams { max_iterations: 1, use_fft: true, ..Default::default() };
+    mafft_core::iterative_refine(&mut msa_rust, &topo, &scoring, &params, None);
+    eprintln!("Rust iter=1 width = {}", msa_rust.sequences[0].len());
+
+    // Now simulate C's iter 0 branch-by-branch with Falign FFI
+    let bw = BranchWeights::new(&topo);
+    unsafe {
+        init_c_protein();
+        let nalpha = scoring.substitution_matrix.len() as c_int;
+        let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
+        for i in 0..scoring.substitution_matrix.len() {
+            for j in 0..scoring.substitution_matrix[i].len() {
+                *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
+            }
+        }
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::fftThreshold).write(50);
+
+        let nsteps = topo.steps.len();
+        let mut branches: Vec<(usize, usize)> = Vec::new();
+        for step in 0..nsteps {
+            if step == nsteps - 1 { branches.push((step, 1)); }
+            else { branches.push((step, 0)); branches.push((step, 1)); }
+        }
+
+        let mut sequences = initial.clone();
+        for (step, side) in &branches {
+            let group1: Vec<usize> = if *side == 0 { topo.steps[*step].left.clone() } else { topo.steps[*step].right.clone() };
+            let group2: Vec<usize> = (0..nseq).filter(|i| !group1.contains(i)).collect();
+            if group1.is_empty() || group2.is_empty() { continue; }
+
+            let weights = bw.weights_for_branch(&topo, *step, *side);
+            const MIN_W: f64 = 0.00001;
+            let rw1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MIN_W)).collect();
+            let rw2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MIN_W)).collect();
+            let rs1: f64 = rw1.iter().sum(); let rs2: f64 = rw2.iter().sum();
+            let rw1n: Vec<f64> = rw1.iter().map(|w| w / rs1).collect();
+            let rw2n: Vec<f64> = rw2.iter().map(|w| w / rs2).collect();
+
+            let width = sequences[0].len();
+            let mut fftlog: c_int = 0;
+            let alloclen = width * 9;  // match dvtditr.c:561 nlenmax*9
+            let c_s1_boxed: Vec<Box<[u8]>> = group1.iter().map(|&i| {
+                let mut v = sequences[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
+            }).collect();
+            let c_s2_boxed: Vec<Box<[u8]>> = group2.iter().map(|&i| {
+                let mut v = sequences[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
+            }).collect();
+            let mut c_s1_ptrs: Vec<*mut c_char> = c_s1_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+            let mut c_s2_ptrs: Vec<*mut c_char> = c_s2_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+            let e1: *mut c_double = alloc_zeroed(group1.len() * std::mem::size_of::<c_double>()) as _;
+            for (i, &w) in rw1n.iter().enumerate() { *e1.add(i) = w; }
+            let e2: *mut c_double = alloc_zeroed(group2.len() * std::mem::size_of::<c_double>()) as _;
+            for (i, &w) in rw2n.iter().enumerate() { *e2.add(i) = w; }
+            if *step == 32 && *side == 0 {
+                eprintln!("  DBG_IN step {}-{}: input_width={width} g1={:?} g2[0..3]={:?}",
+                    step, side, group1, &group2[..3.min(group2.len())]);
+                // Compute weights via C's weightFromABranch for comparison
+                let mut c_weights = vec![0.0f64; nseq];
+                // Rebuild C's stopol/topol for weightFromABranch
+                let c_topol = build_c_topol(&topo);
+                let c_len = build_c_len(&topo);
+                let c_bw_mtx: *mut *mut c_double = alloc_zeroed(topo.steps.len() * std::mem::size_of::<*mut c_double>()) as _;
+                for k in 0..topo.steps.len() {
+                    let row: *mut c_double = alloc_zeroed(2 * std::mem::size_of::<c_double>()) as _;
+                    *row.add(0) = 1.0; *row.add(1) = 1.0;
+                    *c_bw_mtx.add(k) = row;
+                }
+                let c_stopol: *mut mafft_sys::Node = alloc_zeroed(2 * nseq * std::mem::size_of::<mafft_sys::Node>()) as _;
+                mafft_sys::treeCnv(c_stopol, nseq as c_int, c_topol, c_len, c_bw_mtx);
+                mafft_sys::calcBranchWeight(c_bw_mtx, nseq as c_int, c_stopol, c_topol, c_len);
+                mafft_sys::weightFromABranch(nseq as c_int, c_weights.as_mut_ptr(), c_stopol, c_topol,
+                    32 as c_int, 0 as c_int);
+                eprintln!("    rust weights for g1 ({:?}): {:?}", group1, group1.iter().map(|&i| weights[i]).collect::<Vec<_>>());
+                eprintln!("    C    weights for g1 ({:?}): {:?}", group1, group1.iter().map(|&i| c_weights[i]).collect::<Vec<_>>());
+                eprintln!("    rw1n (Rust): {:?}", rw1n);
+                eprintln!("    g1[0][0..60]={}",
+                    String::from_utf8_lossy(&c_s1_boxed[0][..60.min(width)]));
+            }
+            let _ = mafft_sys::Falign(
+                std::ptr::null_mut(), std::ptr::null_mut(), n_dyn,
+                c_s1_ptrs.as_mut_ptr(), c_s2_ptrs.as_mut_ptr(),
+                e1, e2, std::ptr::null_mut(), std::ptr::null_mut(),
+                group1.len() as c_int, group2.len() as c_int,
+                alloclen as c_int, &mut fftlog as *mut c_int,
+                std::ptr::null_mut(), 0, std::ptr::null_mut(),
+            );
+            let c_aln_len = {
+                let s = c_s1_ptrs[0];
+                let mut n = 0; while *s.add(n) != 0 { n += 1; } n
+            };
+            if *step == 32 && *side == 0 {
+                eprintln!("  DBG_OUT step {}-{}: output_width={c_aln_len}",
+                    step, side);
+                // Print full sequence of group1[0]
+                let s = &c_s1_boxed[0][..c_aln_len];
+                for chunk_start in (0..s.len()).step_by(80) {
+                    let end = (chunk_start + 80).min(s.len());
+                    eprintln!("    [{chunk_start}..{end}]={}", String::from_utf8_lossy(&s[chunk_start..end]));
+                }
+            }
+
+            // Identity (2-rep) on representatives
+            let s1_idx = group1[0];
+            let s2_idx = group2[0];
+            let c_identity = c_aln_len == width
+                && c_s1_boxed[0][..c_aln_len] == sequences[s1_idx][..]
+                && c_s2_boxed[0][..c_aln_len] == sequences[s2_idx][..];
+
+            if !c_identity {
+                // Compute tscore via intergroup_score on C's output
+                let g1_seqs: Vec<CString> = (0..group1.len()).map(|k| {
+                    CString::new(&c_s1_boxed[k][..c_aln_len]).unwrap()
+                }).collect();
+                let g2_seqs: Vec<CString> = (0..group2.len()).map(|k| {
+                    CString::new(&c_s2_boxed[k][..c_aln_len]).unwrap()
+                }).collect();
+                let mut g1p: Vec<*mut c_char> = g1_seqs.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+                let mut g2p: Vec<*mut c_char> = g2_seqs.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+                let mut tscore: c_double = 0.0;
+                mafft_sys::intergroup_score(
+                    g1p.as_mut_ptr(), g2p.as_mut_ptr(), e1, e2,
+                    group1.len() as c_int, group2.len() as c_int, c_aln_len as c_int,
+                    &mut tscore as *mut c_double,
+                );
+
+                // Compute mscore on current state
+                let g1_cur: Vec<CString> = group1.iter().map(|&i| CString::new(sequences[i].clone()).unwrap()).collect();
+                let g2_cur: Vec<CString> = group2.iter().map(|&i| CString::new(sequences[i].clone()).unwrap()).collect();
+                let mut g1cp: Vec<*mut c_char> = g1_cur.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+                let mut g2cp: Vec<*mut c_char> = g2_cur.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+                let mut mscore: c_double = 0.0;
+                mafft_sys::intergroup_score(
+                    g1cp.as_mut_ptr(), g2cp.as_mut_ptr(), e1, e2,
+                    group1.len() as c_int, group2.len() as c_int, width as c_int,
+                    &mut mscore as *mut c_double,
+                );
+
+                if tscore > mscore {
+                    // Accept: apply C's output to state
+                    eprintln!("  C accept iter=0 step={} side={} w_in={} w_out={} tscore={:.3} mscore={:.3}",
+                        step, side, width, c_aln_len, tscore, mscore);
+                    let mut new_seqs: Vec<Vec<u8>> = sequences.clone();
+                    for (k, &idx) in group1.iter().enumerate() { new_seqs[idx] = c_s1_boxed[k][..c_aln_len].to_vec(); }
+                    for (k, &idx) in group2.iter().enumerate() { new_seqs[idx] = c_s2_boxed[k][..c_aln_len].to_vec(); }
+                    sequences = new_seqs;
+                }
+            }
+        }
+
+        eprintln!("C simulated iter=1 width = {}", sequences[0].len());
+
+        // Compare C simulated state to Rust real refinement output
+        let mut diff_count = 0;
+        for i in 0..nseq {
+            if sequences[i] != msa_rust.sequences[i] { diff_count += 1; }
+        }
+        eprintln!("C simulated vs Rust real: {} sequences differ (of {})", diff_count, nseq);
+
+        mafft_sys::Falign(
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, 0, 0, std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+        );
+        mafft_sys::alignableReagion(0, 0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        mafft_sys::freeconstants();
+    }
+}
+
+/// Run Rust's full segmented refinement trajectory and compare to C's Falign at
+/// every branch of every iteration. Stops and reports the first branch where
+/// Rust and C diverge (output bytes, identity decision, or scoring).
+///
+/// State evolves using Rust's own accept logic (matching `iterative_refine`) so
+/// this test faithfully reproduces the real refinement flow.
+#[test]
+fn trajectory_rust_vs_c_all_iters() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
+        .expect("load sample.fftns2");
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let nseq = input.sequences.len();
+    let mut sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    let penalty_dist = scoring.gap.open;
+    let mut dm = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = scoring_matrix_distance(&sequences[i], &sequences[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            dm.set(i, j, d);
+        }
+    }
+    dm.quantize_hat2(); // mirror C dvtditr reading hat2 with %#6.3f precision
+    let topo = musclesupg(&dm, ClusterMethod::default());
+    let bw = BranchWeights::new(&topo);
+
+    unsafe {
+        init_c_protein();
+        let nalpha = scoring.substitution_matrix.len() as c_int;
+        let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
+        for i in 0..scoring.substitution_matrix.len() {
+            for j in 0..scoring.substitution_matrix[i].len() {
+                *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
+            }
+        }
+        // dvtditr.c:76 sets alg='A' (A__align). mafft.tmpl doesn't override.
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+
+        let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+        let nsteps = topo.steps.len();
+        const MAX_ITERS: usize = 16;
+        let nbranches_per_iter = (nsteps - 1) * 2 + 1; // root has 1 side; others have 2
+
+        'outer: for iter in 0..MAX_ITERS {
+            // Match C's direction alternation (tditeration.c:1641-1648): even iters
+            // go forward 0..n-1; odd iters go backward n-2..0. Within each step,
+            // sides 0 then 1 (root step has only side 1).
+            let step_order: Vec<usize> = if iter % 2 == 0 {
+                (0..nsteps).collect()
+            } else {
+                (0..nsteps).rev().collect()
+            };
+            let mut branches: Vec<(usize, usize)> = Vec::new();
+            for step in &step_order {
+                if *step == nsteps - 1 {
+                    branches.push((*step, 1));
+                } else {
+                    branches.push((*step, 0));
+                    branches.push((*step, 1));
+                }
+            }
+
+            for (step, side) in &branches {
+                let group1: Vec<usize> = if *side == 0 {
+                    topo.steps[*step].left.clone()
+                } else {
+                    topo.steps[*step].right.clone()
+                };
+                let group2: Vec<usize> = (0..nseq).filter(|i| !group1.contains(i)).collect();
+                if group1.is_empty() || group2.is_empty() { continue; }
+
+                let weights = bw.weights_for_branch(&topo, *step, *side);
+                const MIN_W: f64 = 0.00001;
+                let rw1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MIN_W)).collect();
+                let rw2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MIN_W)).collect();
+                let rs1: f64 = rw1.iter().sum(); let rs2: f64 = rw2.iter().sum();
+                let rw1n: Vec<f64> = rw1.iter().map(|w| w / rs1).collect();
+                let rw2n: Vec<f64> = rw2.iter().map(|w| w / rs2).collect();
+
+                let width = sequences[0].len();
+
+                // ---- Rust segmented pipeline (mirrors realign_all) ----
+                let full1: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
+                let full2: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
+                let full_prof1 = Profile::from_aligned(&full1, &rw1n, &scoring.amino_map, scoring.nalphabets);
+                let full_prof2 = Profile::from_aligned(&full2, &rw2n, &scoring.amino_map, scoring.nalphabets);
+                let totaleff = rw1n.iter().sum::<f64>() * rw2n.iter().sum::<f64>();
+                let len = full_prof1.length.min(full_prof2.length);
+                let mut scores = vec![0.0f64; len];
+                for i in 0..len {
+                    scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.substitution_matrix) / totaleff;
+                }
+                let segs = mafft_fft::alignable_segments(&scores, &mafft_fft::SegmentParams::protein().with_threshold(50.0));
+                let mut cuts: Vec<usize> = Vec::with_capacity(segs.len() + 2);
+                cuts.push(0);
+                for s in &segs { cuts.push(s.center.min(width)); }
+                cuts.push(width);
+                cuts.sort(); cuts.dedup();
+
+                let mut rust_new: Vec<Vec<u8>> = vec![Vec::new(); nseq];
+                for w in cuts.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    if a >= b { continue; }
+                    let seg1: Vec<Vec<u8>> = group1.iter().map(|&i| sequences[i][a..b].to_vec()).collect();
+                    let seg2: Vec<Vec<u8>> = group2.iter().map(|&i| sequences[i][a..b].to_vec()).collect();
+                    let sw = b - a;
+                    let gap1: Vec<bool> = (0..sw).map(|c| seg1.iter().all(|s| s[c] == b'-')).collect();
+                    let gap2: Vec<bool> = (0..sw).map(|c| seg2.iter().all(|s| s[c] == b'-')).collect();
+                    let kept1: Vec<usize> = (0..sw).filter(|&c| !gap1[c]).collect();
+                    let kept2: Vec<usize> = (0..sw).filter(|&c| !gap2[c]).collect();
+                    let s1: Vec<Vec<u8>> = seg1.iter().map(|s| kept1.iter().map(|&c| s[c]).collect()).collect();
+                    let s2: Vec<Vec<u8>> = seg2.iter().map(|s| kept2.iter().map(|&c| s[c]).collect()).collect();
+                    if s1.is_empty() || s1[0].is_empty() || s2.is_empty() || s2[0].is_empty() {
+                        let l1 = if s1.is_empty() { 0 } else { s1[0].len() };
+                        let l2 = if s2.is_empty() { 0 } else { s2[0].len() };
+                        for (k, &idx) in group1.iter().enumerate() {
+                            rust_new[idx].extend_from_slice(&s1[k]);
+                            rust_new[idx].extend(std::iter::repeat(b'-').take(l2));
+                        }
+                        for (k, &idx) in group2.iter().enumerate() {
+                            rust_new[idx].extend(std::iter::repeat(b'-').take(l1));
+                            rust_new[idx].extend_from_slice(&s2[k]);
+                        }
+                        continue;
+                    }
+                    let r1: Vec<&[u8]> = s1.iter().map(|s| s.as_slice()).collect();
+                    let r2: Vec<&[u8]> = s2.iter().map(|s| s.as_slice()).collect();
+                    let mut p1 = Profile::from_aligned(&r1, &rw1n, &scoring.amino_map, scoring.nalphabets);
+                    let mut p2 = Profile::from_aligned(&r2, &rw2n, &scoring.amino_map, scoring.nalphabets);
+
+                    // Boundary gap corrections (match realign_all).
+                    let sgap_inside = a > 0;
+                    let egap_inside = b < width;
+                    if sgap_inside || egap_inside {
+                        if !p1.ogcp.is_empty() {
+                            for (k, &idx) in group1.iter().enumerate() {
+                                if sgap_inside && sequences[idx][a-1] == b'-' && !s1[k].is_empty() && s1[k][0] == b'-' {
+                                    p1.ogcp[0] -= rw1n[k];
+                                }
+                                let l1 = s1[k].len();
+                                if egap_inside && l1 > 0 && s1[k][l1-1] == b'-' && sequences[idx][b] == b'-' {
+                                    let last = p1.fgcp.len() - 1;
+                                    p1.fgcp[last] -= rw1n[k];
+                                }
+                            }
+                        }
+                        if !p2.ogcp.is_empty() {
+                            for (k, &idx) in group2.iter().enumerate() {
+                                if sgap_inside && sequences[idx][a-1] == b'-' && !s2[k].is_empty() && s2[k][0] == b'-' {
+                                    p2.ogcp[0] -= rw2n[k];
+                                }
+                                let l2 = s2[k].len();
+                                if egap_inside && l2 > 0 && s2[k][l2-1] == b'-' && sequences[idx][b] == b'-' {
+                                    let last = p2.fgcp.len() - 1;
+                                    p2.fgcp[last] -= rw2n[k];
+                                }
+                            }
+                        }
+                    }
+
+                    let aln = profile_align(&p1, &p2, &scoring.substitution_matrix, &gap, true, true);
+                    let mut i1 = 0usize; let mut i2 = 0usize;
+                    for op in &aln.operations {
+                        match op {
+                            mafft_align::AlignOp::Match => {
+                                for (k, &idx) in group1.iter().enumerate() { rust_new[idx].push(s1[k][i1]); }
+                                for (k, &idx) in group2.iter().enumerate() { rust_new[idx].push(s2[k][i2]); }
+                                i1 += 1; i2 += 1;
+                            }
+                            mafft_align::AlignOp::Delete => {
+                                for (k, &idx) in group1.iter().enumerate() { rust_new[idx].push(s1[k][i1]); }
+                                for &idx in &group2 { rust_new[idx].push(b'-'); }
+                                i1 += 1;
+                            }
+                            mafft_align::AlignOp::Insert => {
+                                for &idx in &group1 { rust_new[idx].push(b'-'); }
+                                for (k, &idx) in group2.iter().enumerate() { rust_new[idx].push(s2[k][i2]); }
+                                i2 += 1;
+                            }
+                        }
+                    }
+                }
+
+                // ---- C Falign on same inputs ----
+                let mut fftlog: c_int = 0;
+                let alloclen = width * 9;  // match dvtditr.c:561 nlenmax*9
+                let c_s1_boxed: Vec<Box<[u8]>> = group1.iter().map(|&i| {
+                    let mut v = sequences[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
+                }).collect();
+                let c_s2_boxed: Vec<Box<[u8]>> = group2.iter().map(|&i| {
+                    let mut v = sequences[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
+                }).collect();
+                let mut c_s1_ptrs: Vec<*mut c_char> = c_s1_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+                let mut c_s2_ptrs: Vec<*mut c_char> = c_s2_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+                let e1: *mut c_double = alloc_zeroed(group1.len() * std::mem::size_of::<c_double>()) as _;
+                for (i, &w) in rw1n.iter().enumerate() { *e1.add(i) = w; }
+                let e2: *mut c_double = alloc_zeroed(group2.len() * std::mem::size_of::<c_double>()) as _;
+                for (i, &w) in rw2n.iter().enumerate() { *e2.add(i) = w; }
+                let _ = mafft_sys::Falign(
+                    std::ptr::null_mut(), std::ptr::null_mut(), n_dyn,
+                    c_s1_ptrs.as_mut_ptr(), c_s2_ptrs.as_mut_ptr(),
+                    e1, e2, std::ptr::null_mut(), std::ptr::null_mut(),
+                    group1.len() as c_int, group2.len() as c_int,
+                    alloclen as c_int, &mut fftlog as *mut c_int,
+                    std::ptr::null_mut(), 0, std::ptr::null_mut(),
+                );
+                let c_aln_len = {
+                    let s = c_s1_ptrs[0];
+                    let mut n = 0; while *s.add(n) != 0 { n += 1; } n
+                };
+                let rust_len = rust_new[group1[0]].len();
+
+                // ---- DIVERGENCE CHECK: output bytes ----
+                let output_divergent;
+                if rust_len != c_aln_len {
+                    output_divergent = true;
+                } else {
+                    let mut any_diff = false;
+                    for (k, &idx) in group1.iter().enumerate() {
+                        if rust_new[idx].as_slice() != &c_s1_boxed[k][..c_aln_len] { any_diff = true; break; }
+                    }
+                    if !any_diff {
+                        for (k, &idx) in group2.iter().enumerate() {
+                            if rust_new[idx].as_slice() != &c_s2_boxed[k][..c_aln_len] { any_diff = true; break; }
+                        }
+                    }
+                    output_divergent = any_diff;
+                }
+
+                // ---- Compute scores via both Rust and C ----
+                let rust_old = compute_intergroup_score_rust(&group1, &group2, &sequences, &rw1n, &rw2n, &scoring);
+                let rust_tscore = compute_intergroup_score_rust(&group1, &group2, &rust_new, &rw1n, &rw2n, &scoring);
+
+                // C's intergroup_score wants char**/eff*/clus/len/*value*.
+                let g1_seqs: Vec<CString> = group1.iter().map(|&i| CString::new(sequences[i].clone()).unwrap()).collect();
+                let g2_seqs: Vec<CString> = group2.iter().map(|&i| CString::new(sequences[i].clone()).unwrap()).collect();
+                let mut g1_ptrs: Vec<*mut c_char> = g1_seqs.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+                let mut g2_ptrs: Vec<*mut c_char> = g2_seqs.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+                let mut c_old: c_double = 0.0;
+                mafft_sys::intergroup_score(
+                    g1_ptrs.as_mut_ptr(), g2_ptrs.as_mut_ptr(),
+                    e1, e2, group1.len() as c_int, group2.len() as c_int,
+                    width as c_int, &mut c_old as *mut c_double,
+                );
+                // And for C's output (c_s*_boxed after Falign):
+                let g1_seqs_new: Vec<CString> = group1.iter().enumerate().map(|(k, _)| {
+                    CString::new(&c_s1_boxed[k][..c_aln_len]).unwrap()
+                }).collect();
+                let g2_seqs_new: Vec<CString> = group2.iter().enumerate().map(|(k, _)| {
+                    CString::new(&c_s2_boxed[k][..c_aln_len]).unwrap()
+                }).collect();
+                let mut g1n_ptrs: Vec<*mut c_char> = g1_seqs_new.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+                let mut g2n_ptrs: Vec<*mut c_char> = g2_seqs_new.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+                let mut c_tscore: c_double = 0.0;
+                mafft_sys::intergroup_score(
+                    g1n_ptrs.as_mut_ptr(), g2n_ptrs.as_mut_ptr(),
+                    e1, e2, group1.len() as c_int, group2.len() as c_int,
+                    c_aln_len as c_int, &mut c_tscore as *mut c_double,
+                );
+
+                // ---- Identity (2-rep) — same check both sides on same input/output ----
+                let s1_idx = group1[0];
+                let s2_idx = group2[0];
+                let rust_identity = rust_new[s1_idx] == sequences[s1_idx]
+                    && rust_new[s2_idx] == sequences[s2_idx];
+                let c_identity = c_aln_len == width
+                    && c_s1_boxed[0][..c_aln_len] == sequences[s1_idx][..]
+                    && c_s2_boxed[0][..c_aln_len] == sequences[s2_idx][..];
+
+                // ---- DIVERGENCE CHECK: score ----
+                let score_div_old = (rust_old - c_old).abs();
+                let score_div_tscore = (rust_tscore - c_tscore).abs();
+
+                // ---- DIVERGENCE CHECK: accept decision ----
+                let rust_would_accept = !rust_identity && rust_tscore > rust_old;
+                let c_would_accept = !c_identity && c_tscore > c_old;
+
+                // Split divergences by severity:
+                //   - benign: output bytes differ but decision/score agree
+                //   - critical: decision differs, will cause state divergence
+                let critical_div = rust_identity != c_identity
+                    || score_div_old > 1e-6 || score_div_tscore > 1e-6
+                    || rust_would_accept != c_would_accept;
+
+                if output_divergent && !critical_div {
+                    eprintln!("[benign] iter={} step={} side={}: output bytes differ but decision agrees \
+                               (identity={} accept={} lens {}/{}, tscore diff={:.2e})",
+                        iter, step, side, rust_identity, rust_would_accept,
+                        rust_len, c_aln_len, score_div_tscore);
+                }
+
+                if critical_div {
+                    eprintln!("=== CRITICAL DIVERGENCE at iter={} step={} side={} ===", iter, step, side);
+                    eprintln!("  width_in = {}  g1.len={}  g2.len={}", width, group1.len(), group2.len());
+                    eprintln!("  output_divergent = {}   rust_len={}  c_len={}", output_divergent, rust_len, c_aln_len);
+                    eprintln!("  rust_identity    = {}   c_identity  = {}", rust_identity, c_identity);
+                    eprintln!("  rust_old         = {:.6}   c_old      = {:.6}   |diff| = {:.2e}", rust_old, c_old, score_div_old);
+                    eprintln!("  rust_tscore      = {:.6}   c_tscore   = {:.6}   |diff| = {:.2e}", rust_tscore, c_tscore, score_div_tscore);
+                    eprintln!("  rust_would_accept= {}   c_would_accept= {}", rust_would_accept, c_would_accept);
+                    if output_divergent && rust_len == c_aln_len {
+                        for (k, &idx) in group1.iter().enumerate() {
+                            let r = &rust_new[idx];
+                            let c = &c_s1_boxed[k][..c_aln_len];
+                            if r.as_slice() != c {
+                                for pos in 0..r.len() {
+                                    if r[pos] != c[pos] {
+                                        let s = pos.saturating_sub(5);
+                                        let e = (pos + 10).min(r.len());
+                                        eprintln!("  g1[{k}={idx}] col {pos}: rust='{}' c='{}'", r[pos] as char, c[pos] as char);
+                                        eprintln!("    r[{s}..{e}] = {}", String::from_utf8_lossy(&r[s..e]));
+                                        eprintln!("    c[{s}..{e}] = {}", String::from_utf8_lossy(&c[s..e]));
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    break 'outer;
+                }
+
+                // Apply Rust's accept decision to evolve state (matches real refinement).
+                if !rust_identity && rust_tscore > rust_old {
+                    // Verify rust_new == c_new byte-exact before accepting (sanity).
+                    let mut bytes_match = rust_len == c_aln_len;
+                    let mut first_mismatched_seq: Option<(usize, usize)> = None;
+                    if bytes_match {
+                        for (k, &idx) in group1.iter().enumerate() {
+                            if rust_new[idx].as_slice() != &c_s1_boxed[k][..c_aln_len] {
+                                bytes_match = false;
+                                // Find first diff position
+                                let r = &rust_new[idx];
+                                for pos in 0..r.len() {
+                                    if r[pos] != c_s1_boxed[k][pos] {
+                                        first_mismatched_seq = Some((idx, pos));
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if bytes_match {
+                        for (k, &idx) in group2.iter().enumerate() {
+                            if rust_new[idx].as_slice() != &c_s2_boxed[k][..c_aln_len] {
+                                bytes_match = false;
+                                let r = &rust_new[idx];
+                                for pos in 0..r.len() {
+                                    if r[pos] != c_s2_boxed[k][pos] {
+                                        first_mismatched_seq = Some((idx, pos));
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    eprintln!("  accept iter={} step={} side={} w_in={} w_out={} tscore-old={:.3} bytes_match_c={} first_diff={:?}",
+                        iter, step, side, width, rust_len, rust_tscore - rust_old, bytes_match, first_mismatched_seq);
+                    sequences = rust_new;
+                }
+            }
+
+            eprintln!("iter {} complete: width = {}", iter, sequences[0].len());
+            if iter == 0 {
+                // Also compare to real Rust (maxit=1) output to confirm test fidelity.
+                let rust_ref_path = std::path::Path::new("/tmp/rust_iter1.fa");
+                if rust_ref_path.exists() {
+                    let rust_ref = read_fasta(rust_ref_path).expect("load /tmp/rust_iter1.fa");
+                    let mut diffs = 0;
+                    let mut first_diff = None;
+                    for i in 0..nseq {
+                        let iname = &input.sequences[i].name;
+                        let rp = rust_ref.sequences.iter().position(|s| &s.name == iname);
+                        if let Some(p) = rp {
+                            if sequences[i] != rust_ref.sequences[p].data {
+                                diffs += 1;
+                                if first_diff.is_none() {
+                                    let min = sequences[i].len().min(rust_ref.sequences[p].data.len());
+                                    for pos in 0..min {
+                                        if sequences[i][pos] != rust_ref.sequences[p].data[pos] {
+                                            first_diff = Some((i, pos));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    eprintln!("  vs real Rust maxit=1: {} sequences differ (of {}) first={:?}",
+                        diffs, nseq, first_diff);
+                }
+                // Compare entire state to C's iter=1 reference output (by name).
+                let ref_path = std::path::Path::new("/tmp/c_iter1.fa");
+                if ref_path.exists() {
+                    let c_ref = read_fasta(ref_path).expect("load c_iter1.fa");
+                    let mut diff_count = 0usize;
+                    let mut first_diff: Option<(usize, String, usize)> = None;
+                    for i in 0..nseq {
+                        let iname = &input.sequences[i].name;
+                        let rust_seq = &sequences[i];
+                        let c_pos = c_ref.sequences.iter().position(|s| &s.name == iname);
+                        match c_pos {
+                            Some(cp) => {
+                                let c_seq = &c_ref.sequences[cp].data;
+                                if rust_seq != c_seq {
+                                    diff_count += 1;
+                                    if first_diff.is_none() {
+                                        let min = rust_seq.len().min(c_seq.len());
+                                        for pos in 0..min {
+                                            if rust_seq[pos] != c_seq[pos] {
+                                                first_diff = Some((i, iname.clone(), pos));
+                                                break;
+                                            }
+                                        }
+                                        if first_diff.is_none() && rust_seq.len() != c_seq.len() {
+                                            first_diff = Some((i, iname.clone(), min));
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                eprintln!("  warning: input seq '{iname}' not found in C ref");
+                            }
+                        }
+                    }
+                    eprintln!("  vs C iter=1 ref: {} sequences differ (of {})",
+                        diff_count, nseq);
+                    if let Some((seq_i, iname, col)) = first_diff {
+                        let rust_seq = &sequences[seq_i];
+                        let c_pos = c_ref.sequences.iter().position(|s| s.name == iname).unwrap();
+                        let c_seq = &c_ref.sequences[c_pos].data;
+                        let s = col.saturating_sub(8);
+                        let er = (col + 16).min(rust_seq.len());
+                        let ec = (col + 16).min(c_seq.len());
+                        eprintln!("  first diff: seq '{}' (idx {}) col {}  (r_w={}, c_w={})",
+                            iname, seq_i, col, rust_seq.len(), c_seq.len());
+                        eprintln!("    r[{s}..{er}] = {}", String::from_utf8_lossy(&rust_seq[s..er]));
+                        eprintln!("    c[{s}..{ec}] = {}", String::from_utf8_lossy(&c_seq[s..ec]));
+                    }
+                }
+            }
+        }
+
+        eprintln!("Final state width = {}", sequences[0].len());
+
+        // Final comparison: does my simulation match real Rust refinement maxit=1?
+        let rust_ref = read_fasta(std::path::Path::new("/tmp/rust_iter1.fa")).expect("load /tmp/rust_iter1.fa");
+        let mut rust_diff_count = 0usize;
+        for i in 0..nseq {
+            let iname = &input.sequences[i].name;
+            let rust_ref_pos = rust_ref.sequences.iter().position(|s| &s.name == iname);
+            if let Some(rp) = rust_ref_pos {
+                if sequences[i] != rust_ref.sequences[rp].data {
+                    rust_diff_count += 1;
+                }
+            }
+        }
+        eprintln!("Test simulation vs real Rust (maxit=1): {} sequences differ (of {})",
+            rust_diff_count, nseq);
+
+        mafft_sys::Falign(
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, 0, 0, std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+        );
+        mafft_sys::alignableReagion(0, 0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        mafft_sys::freeconstants();
+        let _ = nbranches_per_iter;
+    }
+}
+
 /// Run C's real refinement pipeline for 1 iteration via FFI — compare against
 /// our Rust refinement after 1 iteration to see if states diverge.
 #[test]
@@ -1080,7 +2069,7 @@ fn evolving_state_rust_vs_c_falign_iter0() {
 
             // ---- C Falign on same inputs ----
             let mut fftlog: c_int = 0;
-            let alloclen = width * 3;
+            let alloclen = width * 9;  // match dvtditr.c:561 nlenmax*9
             let c_s1_boxed: Vec<Box<[u8]>> = group1.iter().map(|&i| {
                 let mut v = sequences[i].clone(); v.resize(alloclen + 1, 0); v.into_boxed_slice()
             }).collect();
@@ -1290,7 +2279,7 @@ fn compare_segmented_falign_with_c_iter0() {
 
             // --- Run C's Falign on the same inputs ---
             let mut fftlog: c_int = 0;
-            let alloclen = width * 3;
+            let alloclen = width * 9;  // match dvtditr.c:561 nlenmax*9
             let c_s1_boxed: Vec<Box<[u8]>> = group1.iter().map(|&i| {
                 let mut v = sequences[i].clone();
                 v.resize(alloclen + 1, 0);
