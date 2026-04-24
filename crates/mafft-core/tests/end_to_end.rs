@@ -157,6 +157,136 @@ fn fftnsi_width_matches_c() {
     eprintln!("{}/{} sequences differ from C fftnsi", mismatches, msa.nseq());
 }
 
+/// Diagnostic: compare our mid-merge progressive distance matrix (via
+/// `progressive_align_with_distmtx`) against C's hat2 file. If this test
+/// reports near-zero diff, the refinement tree input matches C and we've
+/// closed the trajectory gap.
+#[test]
+fn midmerge_distmtx_matches_c_hat2() {
+    use mafft_scoring::build_context;
+    use mafft_tree::{DistanceMatrix, ClusterMethod, musclesupg, ktuple_distance};
+    use mafft_types::{ScoringModel, SeqType};
+    use mafft_core::progressive::progressive_align_with_distmtx;
+
+    let hat2_path = fixture_path("sample.fftnsi.hat2");
+    let text = std::fs::read_to_string(&hat2_path).expect("missing fixture");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let nseq = input.nseq();
+
+    // Parse hat2 into c_d
+    let mut lines = text.lines();
+    for _ in 0..(3 + nseq) { lines.next(); }
+    let mut c_flat: Vec<f64> = Vec::new();
+    for line in lines { for tok in line.split_whitespace() { if let Ok(v) = tok.parse::<f64>() { c_flat.push(v); } } }
+    let mut c_d = vec![vec![0.0f64; nseq]; nseq];
+    let mut k = 0usize;
+    for i in 0..nseq { for j in (i + 1)..nseq { c_d[i][j] = c_flat[k]; k += 1; } }
+
+    // Replicate the engine's progressive pipeline to hit progressive_align_with_distmtx:
+    // retree 2 passes for FftNsi, last pass tracks distances.
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+    let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
+
+    // Pass 0: tree from 6-tuple distances of raw sequences, mid-merge tracked.
+    let penalty_dist = scoring.gap.open;
+    let mut dm_init = DistanceMatrix::new(nseq);
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            dm_init.set(i, j, ktuple_distance(&sequences[i], &sequences[j], 6));
+        }
+    }
+    let topo0 = musclesupg(&dm_init, ClusterMethod::default());
+    let (_msa0, dm_from_pass0) = progressive_align_with_distmtx(
+        &sequences, &names, &topo0, &scoring, true, None, penalty_dist,
+    );
+
+    // Pass 1: tree from PASS-0 MID-MERGE distances (what disttbfast writes to hat2
+    // at the end of its first iteration — the one the second iteration reads).
+    let topo1 = musclesupg(&dm_from_pass0, ClusterMethod::default());
+    let (_msa1, mut mid_dm) = progressive_align_with_distmtx(
+        &sequences, &names, &topo1, &scoring, true, None, penalty_dist,
+    );
+    mid_dm.quantize_hat2();
+
+    let mut max_diff = 0.0f64;
+    let mut over_thr = 0usize;
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let d = (mid_dm.get(i, j) - c_d[i][j]).abs();
+            if d > max_diff { max_diff = d; }
+            if d >= 0.005 { over_thr += 1; }
+        }
+    }
+    eprintln!("mid-merge vs hat2: max |diff| = {:.3}, pairs with |diff|>=0.005: {}/{}",
+        max_diff, over_thr, nseq * (nseq - 1) / 2);
+    eprintln!("rust d(0,1) = {:.3}, c hat2 d(0,1) = {:.3}", mid_dm.get(0, 1), c_d[0][1]);
+    eprintln!("rust d(29,30) = {:.3}, c hat2 d(29,30) = {:.3}", mid_dm.get(29, 30), c_d[29][30]);
+}
+
+/// Diagnostic: compare Rust's computed refinement distances (from final
+/// progressive alignment) against C's hat2 file (distances computed during
+/// progressive merge). If these differ, the refinement tree differs, and
+/// `fftnsi_width_matches_c` can never match on trajectory — only on final.
+#[test]
+fn refinement_distance_vs_c_hat2() {
+    use mafft_scoring::build_context;
+    use mafft_tree::scoring_matrix_distance;
+    use mafft_types::{ScoringModel, SeqType};
+
+    let hat2_path = fixture_path("sample.fftnsi.hat2");
+    let text = std::fs::read_to_string(&hat2_path)
+        .expect("missing sample.fftnsi.hat2 fixture");
+    let input = read_fasta(test_data_path("sample.fftns2")).unwrap();
+    let nseq = input.nseq();
+
+    // Parse hat2: skip 3-line header + nseq name lines, then read upper-triangle.
+    let mut lines = text.lines();
+    for _ in 0..(3 + nseq) { lines.next(); }
+    let mut c_flat: Vec<f64> = Vec::with_capacity(nseq * (nseq - 1) / 2);
+    for line in lines {
+        for tok in line.split_whitespace() {
+            if let Ok(v) = tok.parse::<f64>() { c_flat.push(v); }
+        }
+    }
+    let expected = nseq * (nseq - 1) / 2;
+    assert_eq!(c_flat.len(), expected, "hat2 has {} values, expected {}", c_flat.len(), expected);
+
+    let mut c_d = vec![vec![0.0f64; nseq]; nseq];
+    let mut k = 0usize;
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            c_d[i][j] = c_flat[k];
+            k += 1;
+        }
+    }
+
+    // Rust distances computed from the final progressive alignment.
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let seqs: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+    let penalty_dist = scoring.gap.open;
+
+    let mut max_diff = 0.0f64;
+    let mut count_over_half = 0usize;
+    for i in 0..nseq {
+        for j in (i + 1)..nseq {
+            let rust_d = scoring_matrix_distance(&seqs[i], &seqs[j],
+                &scoring.substitution_matrix, &scoring.amino_map, penalty_dist);
+            let rust_q = format!("{:.3}", rust_d).parse::<f64>().unwrap();
+            let diff = (rust_q - c_d[i][j]).abs();
+            if diff > max_diff { max_diff = diff; }
+            if diff >= 0.05 { count_over_half += 1; }
+        }
+    }
+    eprintln!("max |rust_quantized - c_hat2| = {:.3}", max_diff);
+    eprintln!("pairs with diff >= 0.05: {}/{}", count_over_half, expected);
+    eprintln!("rust d(0,1) quantized = {:.3}, c hat2 d(0,1) = {:.3}",
+        format!("{:.3}", scoring_matrix_distance(&seqs[0], &seqs[1],
+            &scoring.substitution_matrix, &scoring.amino_map, penalty_dist))
+            .parse::<f64>().unwrap(),
+        c_d[0][1]);
+}
+
 /// Every NW-NS-2 merge step's `(clus1, clus2, width, score)` must match C's.
 ///
 /// This is a finer-grained regression guard than `nofft_byte_identical_to_c`:

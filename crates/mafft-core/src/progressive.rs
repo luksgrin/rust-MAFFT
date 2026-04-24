@@ -7,7 +7,10 @@
 
 use std::collections::HashMap;
 use mafft_align::{profile_align, pairwise_align11, fft_profile_align, Profile, GapModel, Alignment, AlignOp, FftAlignParams};
-use mafft_tree::{Topology, sequence_weights};
+use mafft_tree::{
+    Topology, sequence_weights, DistanceMatrix,
+    scoring_matrix_distance_with_selfscore, scoring_matrix_self_score,
+};
 use mafft_types::ScoringContext;
 
 #[derive(Debug, Clone)]
@@ -58,12 +61,60 @@ pub fn progressive_align(
     use_fft: bool,
     shift_penalty: Option<f64>,
 ) -> MultipleAlignment {
+    progressive_align_inner(
+        sequences, names, topology, scoring, use_fft, shift_penalty, None,
+    ).0
+}
+
+/// Progressive alignment that additionally tracks, at each merge step, the
+/// pairwise distance between every (i in group1) × (j in group2) sequence
+/// using their post-DP aligned forms — mirroring C's `disttbfast.c` line 2151
+/// (`newdistmtx[i][j] = (1 − naivepairscorefast(mseq1[i], mseq2[m], ...)/bunbo) * 2.0`).
+///
+/// The returned `DistanceMatrix` is the hat2-equivalent: every pair of raw
+/// input sequences has exactly one recorded distance, measured at the step
+/// that first joins their clusters. Feed this matrix (optionally
+/// `quantize_hat2`-ed) to `musclesupg` for the refinement guide tree to match
+/// C's `dvtditr` input.
+pub fn progressive_align_with_distmtx(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+    penalty_dist: i32,
+) -> (MultipleAlignment, DistanceMatrix) {
+    let (msa, dm) = progressive_align_inner(
+        sequences, names, topology, scoring, use_fft, shift_penalty,
+        Some(penalty_dist),
+    );
+    (msa, dm.expect("penalty_dist was Some so distance matrix must be returned"))
+}
+
+fn progressive_align_inner(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+    track_distances_penalty: Option<i32>,
+) -> (MultipleAlignment, Option<DistanceMatrix>) {
     let nseq = sequences.len();
     if nseq == 0 {
-        return MultipleAlignment { sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new() };
+        let dm = track_distances_penalty.map(|_| DistanceMatrix::new(0));
+        return (
+            MultipleAlignment { sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new() },
+            dm,
+        );
     }
     if nseq == 1 {
-        return MultipleAlignment { sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new() };
+        let dm = track_distances_penalty.map(|_| DistanceMatrix::new(1));
+        return (
+            MultipleAlignment { sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new() },
+            dm,
+        );
     }
 
     let weights = sequence_weights(topology);
@@ -79,12 +130,41 @@ pub fn progressive_align(
     // After each merge, the merged profile is stored so the next merge can reuse it.
     let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
 
+    // Distance-tracking state (only populated when track_distances_penalty is Some).
+    // Self-scores are computed once from the RAW (ungapped) input sequences, matching
+    // C's disttbfast.c:4454 (`selfscore[i] = naivepairscore11(seq[i], seq[i], penalty_dist)`).
+    let mut distmtx: Option<DistanceMatrix> = track_distances_penalty.map(|_| DistanceMatrix::new(nseq));
+    let selfscores: Option<Vec<f64>> = track_distances_penalty.map(|_| {
+        sequences.iter()
+            .map(|s| scoring_matrix_self_score(s, &scoring.substitution_matrix, &scoring.amino_map))
+            .collect()
+    });
+
     let mut step_trace: Vec<StepTrace> = Vec::with_capacity(topology.steps.len());
     for (step_idx, step) in topology.steps.iter().enumerate() {
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
             &mut profile_cache,
         );
+
+        // Record mid-merge distances: for every (i in group1) × (j in group2),
+        // compute d(i, j) from their CURRENT aligned forms. Matches disttbfast.c:2151.
+        if let (Some(dm), Some(ss), Some(penalty)) = (
+            distmtx.as_mut(), selfscores.as_ref(), track_distances_penalty,
+        ) {
+            for &i in &step.left {
+                for &j in &step.right {
+                    let d = scoring_matrix_distance_with_selfscore(
+                        &aligned[i], &aligned[j],
+                        ss[i], ss[j],
+                        &scoring.substitution_matrix, &scoring.amino_map,
+                        penalty,
+                    );
+                    dm.set(i, j, d);
+                }
+            }
+        }
+
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
         step_trace.push(StepTrace {
             clus1: step.left.len(),
@@ -92,7 +172,6 @@ pub fn progressive_align(
             width,
             score: last_score,
         });
-        // Debug trace: match C's "DBG step clus1 clus2 width score"
         if std::env::var("MAFFT_DEBUG_STEPS").is_ok() {
             eprintln!("RDBG {} {} {} {} {:.1}",
                 step_idx, step.left.len(), step.right.len(), width, last_score);
@@ -104,12 +183,15 @@ pub fn progressive_align(
         seq.resize(max_width, b'-');
     }
 
-    MultipleAlignment {
-        sequences: aligned,
-        names: names.to_vec(),
-        score: last_score,
-        step_trace,
-    }
+    (
+        MultipleAlignment {
+            sequences: aligned,
+            names: names.to_vec(),
+            score: last_score,
+            step_trace,
+        },
+        distmtx,
+    )
 }
 
 fn merge_step_cached(

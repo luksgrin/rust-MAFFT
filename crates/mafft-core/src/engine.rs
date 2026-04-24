@@ -8,7 +8,7 @@ use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, sco
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
-use crate::progressive::{progressive_align, MultipleAlignment};
+use crate::progressive::{progressive_align, progressive_align_with_distmtx, MultipleAlignment};
 use crate::refinement::{iterative_refine, RefinementParams};
 use crate::add::{add_sequences, add_sequences_keeplength};
 
@@ -239,6 +239,14 @@ impl MafftEngine {
         };
         let mut accumulated_trace = Vec::new();
 
+        // C's disttbfast runs `cycledisttbfast` progressive passes and at EVERY
+        // pass records each pair's distance at the step that first joins them
+        // (disttbfast.c:2151). That mid-merge matrix feeds the NEXT pass's
+        // guide tree (and the final one feeds `dvtditr`). Track distances on
+        // every retree pass so pass-K's tree sees the same matrix C did.
+        let penalty_dist = scoring.gap.open;
+        let mut refinement_dm: Option<DistanceMatrix> = None;
+
         for pass in 0..retree {
             // Build guide tree
             let topo = if pass == 0 && use_parttree {
@@ -247,16 +255,8 @@ impl MafftEngine {
                 musclesupg(&dm, ClusterMethod::default())
             };
 
-            // Progressive alignment
-            let input_seqs = if pass == 0 {
-                // First pass: use raw sequences
-                sequences.clone()
-            } else {
-                // Subsequent passes: strip gaps from previous alignment
-                // to get updated unaligned sequences (same content, different
-                // order may produce better tree-guided alignment)
-                sequences.clone()
-            };
+            // C always progresses from raw input on each retree pass.
+            let input_seqs = sequences.clone();
 
             // Shift penalty: penalty_shift = penalty_shift_factor * penalty
             // Default factor = 100 (disabled). With --allowshift, factor = 0.8.
@@ -265,24 +265,21 @@ impl MafftEngine {
             } else {
                 None
             };
-            msa = progressive_align(&input_seqs, &names, &topo, &scoring, use_fft, shift);
+
+            // Track mid-merge distances on every pass: feeds the next pass's
+            // tree (or the refinement tree, on the final pass).
+            let (pass_msa, pass_dm) = progressive_align_with_distmtx(
+                &input_seqs, &names, &topo, &scoring, use_fft, shift, penalty_dist,
+            );
+            msa = pass_msa;
             accumulated_trace.extend(msa.step_trace.iter().copied());
 
-            // If there's another pass, compute new distances from the alignment
-            // using scoring-matrix-based distance (C's naivepairscorefast),
-            // not simple identity distance.
             if pass + 1 < retree {
-                // C computes penalty_dist from the RAW command-line penalty (ppenalty=-1530
-                // for default --op 1.53), not from an already-scaled penalty.
-                // Formula (constants.c): penalty_dist = (int)(0.6 * ppenalty + 0.5)
-                //                      = (int)(0.6 * -1530 + 0.5) = -917 for protein.
-                // Our scoring.gap.open is already the result of that same formula applied
-                // once to ppenalty, so it equals C's penalty_dist. Use it directly.
-                let penalty_dist = scoring.gap.open;
-                dm = compute_distance_matrix_scoring(
-                    &msa.sequences, &scoring.substitution_matrix,
-                    &scoring.amino_map, penalty_dist,
-                );
+                // Next pass's tree comes from this pass's mid-merge distances.
+                dm = pass_dm;
+            } else {
+                // Final pass — distances become the refinement tree input.
+                refinement_dm = Some(pass_dm);
             }
         }
         msa.step_trace = accumulated_trace;
@@ -360,17 +357,20 @@ impl MafftEngine {
             | AlignmentMode::EInsi { iterations }
             | AlignmentMode::QInsi { iterations }
             | AlignmentMode::XInsi { iterations } => {
-                // Rebuild tree for refinement.
-                // C's dvtditr reads the hat2 file (scoring-matrix-based distances
-                // written by disttbfast during retree pass 2) and builds UPGMA.
-                // hat2 uses `%#6.3f` format — distances are 3-decimal quantized,
-                // so the refinement tree is built from quantized values. Emulate
-                // that precision loss or branch lengths diverge from C.
-                let penalty_dist = scoring.gap.open;
-                let mut dm = compute_distance_matrix_scoring(
-                    &msa.sequences, &scoring.substitution_matrix,
-                    &scoring.amino_map, penalty_dist,
-                );
+                // Rebuild tree for refinement using the mid-merge distance matrix
+                // collected during the final progressive pass. That matrix is the
+                // Rust equivalent of the hat2 file C's dvtditr reads (distances
+                // computed pairwise at the merge step that first joins each pair).
+                // Apply hat2's 3-decimal `%#6.3f` quantization before tree build.
+                let mut dm = refinement_dm.take().unwrap_or_else(|| {
+                    // Defensive fallback — should not happen because
+                    // needs_refinement_dm was true for this mode.
+                    let penalty_dist = scoring.gap.open;
+                    compute_distance_matrix_scoring(
+                        &msa.sequences, &scoring.substitution_matrix,
+                        &scoring.amino_map, penalty_dist,
+                    )
+                });
                 dm.quantize_hat2();
                 let topo = musclesupg(&dm, ClusterMethod::default());
                 // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)

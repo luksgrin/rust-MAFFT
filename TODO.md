@@ -122,12 +122,101 @@ likely a subtle state-management detail in `TreeDependentIteration` itself.
   to 3 decimals. We now apply the same quantization in `engine.rs` before building
   the refinement tree (matches C's behavior exactly). This did NOT change the
   final width (still 720 vs C's 721) — quantization was a consistency fix, not the
-  trajectory fix. Root cause is elsewhere.
+  trajectory fix.
 - **Weight computation pipeline.** Rebuilding weights via our own topology and via
   C's `weightFromABranch` FFI with our topology gives identical results to
-  machine epsilon; the tree topology itself matches C byte-for-byte.
+  machine epsilon; the tree topology itself matches C byte-for-byte *when fed the
+  same distance matrix on both sides*.
+- **athread BAATARI2 branch ordering.** With `-C 0 -p BAATARI2` (the flag
+  combination the mafft script actually passes for `--maxiterate 100`) C takes the
+  sequential non-threaded path in `TreeDependentIteration`, which alternates
+  l-direction per iteration (tditeration.c:1641-1648). This matches our Rust code
+  exactly. The multi-thread path (`nthread > 0`) does differ — `branchtable` walks
+  always forward — but that path isn't exercised under `-C 0`.
 
-### Concrete next task
+### Root cause (confirmed this session)
+
+C's refinement tree is built from distances computed DURING the progressive
+merge, not from the final progressive alignment. `disttbfast.c` line 2151:
+```
+newdistmtx[i][j] = (1.0 - naivepairscorefast(mseq1[i], mseq2[m], ..., penalty_dist) / bunbo) * 2.0
+```
+where `mseq1[i]` and `mseq2[m]` are the CURRENT progressively-aligned profile
+sequences at the step that first merges i and m. Every pair gets its distance
+recorded exactly once — at the moment the two sequences' clusters first meet.
+
+Our Rust computes distances from the FINAL alignment (after all merges), so we
+emit systematically different numbers. Diagnostic `refinement_distance_vs_c_hat2`
+in `tests/end_to_end.rs` (fixture: `sample.fftnsi.hat2` extracted from C's
+`--debug` run) shows:
+- Rust d(0,1) quantized = 0.277, C hat2 d(0,1) = 0.248
+- 595/630 pairs differ by ≥0.05
+- max |rust_q - c_hat2| = 0.174
+
+The refinement tree therefore differs in branch lengths, which perturbs per-branch
+weights (`weightFromABranch` is length-driven), which perturbs Falign's DP choices.
+Our tree is a *better* tree in a sense (uses full-precision final distances), but
+we're chasing byte parity, not optimality.
+
+### Status after mid-merge distance port (2026-04-24)
+
+Mid-merge distance tracking **is implemented** (`progressive_align_with_distmtx`
+in `crates/mafft-core/src/progressive.rs`, plumbed through `engine.rs` so every
+retree pass emits a `DistanceMatrix` for the next pass's tree, and the final
+pass's matrix is fed to `musclesupg` for the refinement tree after
+`quantize_hat2`). Supporting helpers
+`scoring_matrix_distance_with_selfscore` and `scoring_matrix_self_score` live in
+`mafft-tree::distance`. Diagnostic `midmerge_distmtx_matches_c_hat2` in
+`tests/end_to_end.rs` compares our mid-merge matrix to C's `sample.fftnsi.hat2`.
+
+**Result**: trajectory is unchanged — Rust fftnsi still 720, C 721. Our
+mid-merge matrix still diverges from C's hat2: 627/630 pairs with |diff| ≥
+0.005, max |diff| = 0.174, our d(0,1) = 0.277 vs C 0.248, d(29,30) = 0.011 vs
+C 0.010. So: infrastructure is correct, the formula matches C's 2151 line
+exactly — but the actual *sequences* we feed into that formula at the joining
+step differ from C's, even though our final progressive output is byte-identical
+to C's (`fftns2_byte_identical_to_c` still passes).
+
+Concretely: at the step that first joins sequences 0 and 1 (our step 13, both
+groups at width 353), the profile rows we have for seq 0 and seq 1 score
+differently from C's rows at the corresponding step, despite both implementations
+converging to the same final alignment. Either the merge order differs (same
+final alignment via a different tree), or the per-step DP choices differ in
+ways that cancel by the end.
+
+### New concrete next task
+
+**Find where our mid-merge state diverges from C's.** Candidates:
+1. Compare our pass-1 (initial) topology against C's via FFI — if trees differ
+   but both produce the same final alignment, that's the signal. Instrument
+   `dump_rust_topology`-style printouts side-by-side.
+2. If topologies match, instrument `merge_step_cached` to dump aligned\[group1[0]\]
+   after each step, and a matching `fprintf` in disttbfast.c's inner loop after
+   each Falign, then diff the first step where they diverge.
+3. A single pass of `RUST_MAFFT_TRACE_DM=1` (handle in `progressive.rs`) already
+   prints the mid-merge distances by step — extend to also print merge group
+   contents for rapid cross-check.
+
+### Previous concrete next task (now done, did NOT close the gap)
+
+**Port disttbfast's mid-merge distance tracking to our progressive aligner.** At
+every merge step, after DP produces the joined profile, compute
+`d(i,j) = (1 − naivepairscore11(mseq1[i], mseq2[j], penalty_dist) / min(self_i, self_j)) * 2.0`
+for each (i in group1) × (j in group2), and record it in a distance matrix indexed
+by the original sequence IDs. That matrix (quantized via `quantize_hat2`) becomes
+the refinement tree input, replacing the current `compute_distance_matrix_scoring`
+call in `engine.rs`. Hooks needed:
+1. `progressive.rs::merge_step` returns (or populates) `(i, j, d)` records for the
+   pair it just merged.
+2. `engine.rs` collects those records across all merges into a `DistanceMatrix`.
+3. That matrix, not `compute_distance_matrix_scoring(&msa.sequences, ...)`, feeds
+   `musclesupg` for the refinement tree.
+4. Keep `quantize_hat2()` applied after.
+
+Effort: 3–6 hours. Validation: `refinement_distance_vs_c_hat2` drops to ~0 diff,
+`fftnsi_width_matches_c` matches at 721 and all 36 sequences identical.
+
+### Alternative concrete next task (smaller scope, different branch)
 
 **Read tditeration.c multi-thread path (athread) end-to-end** and understand
 what BAATARI2 actually does. The single-worker multi-thread path (`-C 1 -p BAATARI2`)

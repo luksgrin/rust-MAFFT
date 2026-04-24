@@ -9,13 +9,13 @@
 //! progressive alignment from `disttbfast.c`/`tbfast.c`, and
 //! `addonetip()` from `addfunctions.c`.
 
-mod progressive;
+pub mod progressive;
 mod refinement;
 mod engine;
 mod add;
 pub mod external;
 
-pub use progressive::{progressive_align, MultipleAlignment, StepTrace};
+pub use progressive::{progressive_align, progressive_align_with_distmtx, MultipleAlignment, StepTrace};
 pub use refinement::{iterative_refine, RefinementParams};
 pub use engine::{MafftEngine, AlignmentMode};
 pub use add::{add_sequences, add_sequences_keeplength};
