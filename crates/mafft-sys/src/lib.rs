@@ -192,6 +192,14 @@ unsafe extern "C" {
     pub fn substitution_hosei(seq1: *mut c_char, seq2: *mut c_char) -> c_double;
     pub fn substitution_nid(seq1: *mut c_char, seq2: *mut c_char) -> c_double;
     pub fn naivepairscore11(seq1: *mut c_char, seq2: *mut c_char, penal: c_int) -> c_double;
+    pub fn naivepairscorefast(
+        seq1: *mut c_char,
+        seq2: *mut c_char,
+        skip1: *mut c_int,
+        skip2: *mut c_int,
+        penal: c_int,
+    ) -> c_double;
+    pub fn makeskiptable(n: c_int, skip: *mut *mut c_int, seq: *mut *mut c_char);
 
     // -- FFT --
     pub fn fft(n: c_int, x: *mut Fukusosuu, dum: c_int) -> c_int;

@@ -357,20 +357,39 @@ impl MafftEngine {
             | AlignmentMode::EInsi { iterations }
             | AlignmentMode::QInsi { iterations }
             | AlignmentMode::XInsi { iterations } => {
-                // Rebuild tree for refinement using the mid-merge distance matrix
-                // collected during the final progressive pass. That matrix is the
-                // Rust equivalent of the hat2 file C's dvtditr reads (distances
-                // computed pairwise at the merge step that first joins each pair).
-                // Apply hat2's 3-decimal `%#6.3f` quantization before tree build.
-                let mut dm = refinement_dm.take().unwrap_or_else(|| {
-                    // Defensive fallback — should not happen because
-                    // needs_refinement_dm was true for this mode.
-                    let penalty_dist = scoring.gap.open;
-                    compute_distance_matrix_scoring(
-                        &msa.sequences, &scoring.substitution_matrix,
-                        &scoring.amino_map, penalty_dist,
-                    )
-                });
+                // C's mafft script does NOT pass `-h` to dndpre (the second
+                // invocation that writes hat2 for dvtditr). dndpre therefore
+                // uses the BLOSUM62 default `poffset = -123` → offset = -73,
+                // shifting every cell of the scoring matrix by +73 relative
+                // to the offset=0 matrix disttbfast and dvtditr use for DP.
+                // The refinement tree dvtditr builds reads this hat2, so the
+                // distance matrix we feed `musclesupg` here must use the same
+                // shifted matrix and operate on the FINAL progressive
+                // alignment (`msa.sequences`) — not mid-merge profile rows.
+                let _ = refinement_dm.take(); // mid-merge dm not used here
+                let dndpre_offset_shift: i32 = 73; // = -(-73) = -default_protein_poffset/(scaling)
+                let mut shifted_matrix: Vec<Vec<i32>> = scoring.substitution_matrix
+                    .iter()
+                    .map(|row| row.iter().map(|&v| v + dndpre_offset_shift).collect())
+                    .collect();
+                // The scoring matrix is 26x26 with non-zero entries only in the
+                // 20x20 amino-acid core. Cells outside that core (B, Z, X, '.', '-')
+                // start at 0 and would become 73 after the shift, which would add
+                // bogus contributions when scoring '-' or unknown characters.
+                // Restore those out-of-core cells to 0.
+                let nscored = scoring.nscoredalphabets;
+                for i in 0..shifted_matrix.len() {
+                    for j in 0..shifted_matrix[i].len() {
+                        if i >= nscored || j >= nscored {
+                            shifted_matrix[i][j] = 0;
+                        }
+                    }
+                }
+                let penalty_dist = scoring.gap.open;
+                let mut dm = compute_distance_matrix_scoring(
+                    &msa.sequences, &shifted_matrix,
+                    &scoring.amino_map, penalty_dist,
+                );
                 dm.quantize_hat2();
                 let topo = musclesupg(&dm, ClusterMethod::default());
                 // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)

@@ -176,6 +176,19 @@ fn progressive_align_inner(
             eprintln!("RDBG {} {} {} {} {:.1}",
                 step_idx, step.left.len(), step.right.len(), width, last_score);
         }
+        if std::env::var("RUST_MAFFT_DUMP_MIDMERGE").is_ok() {
+            let g1_rep = step.left[0];
+            let g2_rep = step.right[0];
+            eprintln!(
+                "MID step={} g1[0]={} g2[0]={} w={} g1_rep_seq={}",
+                step_idx, g1_rep, g2_rep, aligned[g1_rep].len(),
+                String::from_utf8_lossy(&aligned[g1_rep]),
+            );
+            eprintln!(
+                "MID step={} g2_rep_seq={}",
+                step_idx, String::from_utf8_lossy(&aligned[g2_rep]),
+            );
+        }
     }
 
     let max_width = aligned.iter().map(|s| s.len()).max().unwrap_or(0);

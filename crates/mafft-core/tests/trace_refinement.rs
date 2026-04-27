@@ -1781,20 +1781,22 @@ fn trajectory_rust_vs_c_all_iters() {
 
         eprintln!("Final state width = {}", sequences[0].len());
 
-        // Final comparison: does my simulation match real Rust refinement maxit=1?
-        let rust_ref = read_fasta(std::path::Path::new("/tmp/rust_iter1.fa")).expect("load /tmp/rust_iter1.fa");
-        let mut rust_diff_count = 0usize;
-        for i in 0..nseq {
-            let iname = &input.sequences[i].name;
-            let rust_ref_pos = rust_ref.sequences.iter().position(|s| &s.name == iname);
-            if let Some(rp) = rust_ref_pos {
-                if sequences[i] != rust_ref.sequences[rp].data {
-                    rust_diff_count += 1;
+        // Optional: compare against /tmp/rust_iter1.fa if present (manually
+        // produced by a debugging Rust run). Skip silently if missing.
+        if let Ok(rust_ref) = read_fasta(std::path::Path::new("/tmp/rust_iter1.fa")) {
+            let mut rust_diff_count = 0usize;
+            for i in 0..nseq {
+                let iname = &input.sequences[i].name;
+                let rust_ref_pos = rust_ref.sequences.iter().position(|s| &s.name == iname);
+                if let Some(rp) = rust_ref_pos {
+                    if sequences[i] != rust_ref.sequences[rp].data {
+                        rust_diff_count += 1;
+                    }
                 }
             }
+            eprintln!("Test simulation vs real Rust (maxit=1): {} sequences differ (of {})",
+                rust_diff_count, nseq);
         }
-        eprintln!("Test simulation vs real Rust (maxit=1): {} sequences differ (of {})",
-            rust_diff_count, nseq);
 
         mafft_sys::Falign(
             std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),

@@ -9,7 +9,7 @@ This project provides:
 
 ## Status
 
-**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, **both FFT-NS-2 (default) and NW-NS-2 (`--nofft`) produce byte-identical output to C MAFFT 7.526** — all 70 progressive merge steps across both retree passes produce exactly matching scores and widths, and `diff rust_output.fa c_output.fa` returns 0 lines (SP=0.3260, width=717). See [Known limitations](#known-limitations) for remaining gaps.
+**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, **FFT-NS-2 (default), NW-NS-2 (`--nofft`), and FFT-NS-i (`--maxiterate 100`) all produce byte-identical output to C MAFFT 7.526** — every progressive merge step matches in score and width, every refinement iteration converges to C's exact alignment, and `diff rust_output.fa c_output.fa` returns 0 lines for all three modes. See [Known limitations](#known-limitations) for remaining gaps.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -229,38 +229,32 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests | 111 | All crates, all modules |
-| Rust integration tests | 31 | End-to-end on real data, byte-level parity with C (FFT-NS-2 + NW-NS-2), DP diagnostics |
+| Rust integration tests | 32 | End-to-end on real data, byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i), DP diagnostics |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total** | **182** | |
+| **Total** | **183** | |
 
 Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
 
 - `nofft_byte_identical_to_c` — final alignment matches C MAFFT 7.526's `--nofft` output byte-for-byte (fixture: `tests/fixtures/sample.nwns2`).
 - `nofft_per_step_matches_c` — every per-merge `(clus1, clus2, width, score)` tuple matches C's across both retree passes (fixture: `tests/fixtures/sample.nwns2.steps`, 70 merges).
 - `fftns2_byte_identical_to_c` — FFT-NS-2 (default strategy) output matches C's `mafft-upstream/test/sample.fftns2` reference byte-for-byte, guarding the full pipeline: FFT anchoring, segment gap handling, inter-anchor DP, retree distance, and UPGMA.
+- `fftnsi_byte_identical_to_c` — FFT-NS-i (`--maxiterate 100`) output matches C's `mafft-upstream/test/sample.fftnsi` reference byte-for-byte (asserts both width equality and per-sequence equality), guarding the iterative-refinement pipeline end-to-end including the dndpre offset-shift step the mafft script applies before dvtditr.
 - `nofft_op_override_byte_identical_to_c` — NW-NS-2 with `--op 2.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.op25`), guarding the gap-opening override path.
 - `nofft_ep_override_byte_identical_to_c` — NW-NS-2 with `--ep 0.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.ep05`), guarding the scoring-matrix offset override path.
 - `rna_nofft_case_insensitive_identical_to_c` — RNA NW-NS-2 output matches C byte-for-byte after case normalization (fixture: `tests/fixtures/samplerna.nwns2`), guarding the nucleotide alignment path.
 - `diagnostic_simple_offset` — the minimal `ACDE` vs `WWWWACDEWWWW` reproducer must produce the optimal `----ACDE----` alignment with 4 matches.
 - `diagnostic_align11_vs_profile` — `pairwise_align11` and `profile_align` must agree on 1×1 inputs (same operations, same score).
 
-Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, or pairwise/profile consistency will fail at least one of these.
+Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 
 ## Known limitations
 
 ### Iterative refinement (FFT-NS-i, G-INS-i, L-INS-i, E-INS-i)
 
-The progressive alignment phase (FFT-NS-2, NW-NS-2) is byte-identical to C. The iterative refinement phase (`--maxiterate > 0`) produces valid alignments. The following match C's `TreeDependentIteration()`:
+FFT-NS-i (`--maxiterate 100`) is now byte-identical to C — see `fftnsi_byte_identical_to_c`. The fix that closed the last 1-column gap was discovering that the mafft script's second `dndpre` invocation (which writes the hat2 file dvtditr reads) is called WITHOUT `-h 0`, so it uses `poffset = -123` → matrix shifted by `+73` versus the matrix DP uses. Our refinement branch in `engine.rs` builds a `+73`-shifted copy of the substitution matrix for the refinement-tree distance computation only.
 
-- **Branch enumeration order** — root-skip, alternating direction, `(nseq-1)*2-1` branches per iteration.
-- **Refinement tree** — built from scoring-matrix distances (matching C's `hat2` file).
-- **FFT-accelerated realignment** — uses `fft_profile_align` (Falign) for all modes, matching C's mafft script which always passes `-F` to dvtditr.
-- **Acceptance threshold** — `cut = 0.0` (accept only strict improvements).
-- **Oscillation detection** — per-branch score history with even-iteration lookback.
-- **Iteration cap** — 16 iterations (matching C's mafft script).
-
-Remaining divergence (**720** vs C's 721, **0.1%**): every individually testable component is FFI-validated byte-identical to C — per-branch weights (`weightFromABranch`, exact to 2.22e-16), per-group normalization (`fastconjuction_noname`), profile construction (`cpmx_calc_new` + gap counts), intergroup scoring (`intergroup_score`), and the full segmented Falign pipeline (`alignableReagion` at lag=0 + per-segment `commongappick` + `MSalignmm` byte-identical across all iter-0 branches, clean and evolving state). The ported flow matches `dvtditr`'s `kobetsubunkatsu=1` path exactly (no FFT; lag=0 segment detection; per-segment strip; boundary-aware `new_OpeningGapCount`/`new_FinalGapCount`), and the identity check uses only the two representative sequences `s1, s2 = memlist[0]` matching C's `strcmp`. The residual 1-column gap over 16 iterations × 69 branches is almost certainly cumulative floating-point drift in the accept threshold. See `TODO.md`. Progressive alignment (single pass) remains byte-identical to C.
+`G-INS-i`, `L-INS-i`, and `E-INS-i` share the same refinement core but have not yet been cross-validated per-iteration against C. They likely benefit from the same fix; first canonical example to check is in TODO §5.
 
 ### Non-default BLOSUM matrices (`--bl N`)
 
