@@ -202,6 +202,57 @@ fn cross_validate_blosum62_n_dis_cell_by_cell() {
     }
 }
 
+/// `--bl 80` regression guard: every cell of the final 26×26 `n_dis` matrix
+/// (post-normalization, post-offset) must match C MAFFT's exactly.
+///
+/// This protects against:
+///   1. any of the four MAFFT-variant BLOSUM80 cells (H/R, F/M, P/R, V/I)
+///      drifting away from `tmpmtx80`,
+///   2. a regression in the average-subtract / 600-scale / offset-subtract
+///      pipeline that would otherwise affect every cell uniformly.
+#[test]
+fn cross_validate_blosum80_n_dis_cell_by_cell() {
+    let _lock = C_MUTEX.lock().unwrap();
+    let rust_ctx = build_context(ScoringModel::Blosum(80), SeqType::Protein);
+
+    let c_matrix = unsafe {
+        init_c_globals();
+        call_c_constants(b'p', 1, 80);
+        let m = read_c_n_dis();
+        mafft_sys::freeconstants();
+        m
+    };
+
+    let nalpha = 26;
+    assert_eq!(c_matrix.len(), nalpha);
+    assert_eq!(rust_ctx.substitution_matrix.len(), nalpha);
+
+    let mut mismatches = Vec::new();
+    for i in 0..nalpha {
+        for j in 0..nalpha {
+            let c_val = c_matrix[i][j];
+            let r_val = rust_ctx.substitution_matrix[i][j];
+            if c_val != r_val {
+                mismatches.push((i, j, c_val, r_val));
+            }
+        }
+    }
+
+    if !mismatches.is_empty() {
+        let total_cells = nalpha * nalpha;
+        let n_mismatch = mismatches.len();
+        let max_diff = mismatches.iter().map(|(_, _, c, r)| (c - r).abs()).max().unwrap_or(0);
+        eprintln!("BLOSUM80 n_dis: {n_mismatch}/{total_cells} cells differ (max diff = {max_diff})");
+        for (i, j, c, r) in mismatches.iter().take(10) {
+            eprintln!("  n_dis[{i}][{j}]: C={c}, Rust={r} (diff={})", c - r);
+        }
+        assert!(
+            max_diff <= 2,
+            "BLOSUM80 n_dis has cells differing by more than 2 from C: max_diff={max_diff}, {n_mismatch} mismatches"
+        );
+    }
+}
+
 #[test]
 fn cross_validate_blosum62_n_dis_fft_cell_by_cell() {
     let _lock = C_MUTEX.lock().unwrap();

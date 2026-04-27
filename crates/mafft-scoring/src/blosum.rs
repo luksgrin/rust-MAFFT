@@ -170,3 +170,75 @@ static BLOSUM80: [f64; 210] = [
     -4.0, -4.0, -4.0, -6.0, -5.0, -3.0, -5.0, -6.0,  3.0, -3.0, -2.0, -4.0, -3.0,  4.0, -6.0, -3.0, -3.0,  3.0, 11.0,
     -1.0, -4.0, -5.0, -6.0, -2.0, -4.0, -4.0, -6.0, -5.0,  4.0,  1.0, -4.0,  1.0, -2.0, -4.0, -3.0,  0.0, -5.0, -3.0,  7.0,
 ];
+
+#[cfg(test)]
+mod blosum80_tests {
+    use super::*;
+
+    /// MAFFT-variant BLOSUM80 table must keep exactly 210 lower-triangle entries
+    /// and exactly the diagonals C uses (`tmpmtx80` in `mafft-upstream/core/blosum.c`).
+    /// Hardcoded so a copy-paste regression on the table is caught even without the
+    /// C submodule available.
+    #[test]
+    fn blosum80_table_layout_and_diagonals() {
+        assert_eq!(BLOSUM80.len(), 210, "BLOSUM80 must be a 20×20 lower triangle (210 cells)");
+
+        // Diagonals at positions i*(i+1)/2 + i for amino i (= i*(i+3)/2):
+        // A=7, R=9, N=9, D=10, C=13, Q=9, E=8, G=9, H=12, I=7,
+        // L=6, K=8, M=9, F=10, P=12, S=7, T=8, W=16, Y=11, V=7.
+        let expected_diag: [(usize, &str, f64); 20] = [
+            (0,  "A", 7.0), (1,  "R", 9.0), (2,  "N", 9.0), (3,  "D", 10.0),
+            (4,  "C", 13.0), (5, "Q", 9.0), (6,  "E", 8.0), (7,  "G", 9.0),
+            (8,  "H", 12.0), (9, "I", 7.0), (10, "L", 6.0), (11, "K", 8.0),
+            (12, "M", 9.0), (13, "F", 10.0), (14, "P", 12.0), (15, "S", 7.0),
+            (16, "T", 8.0), (17, "W", 16.0), (18, "Y", 11.0), (19, "V", 7.0),
+        ];
+        for (i, aa, expected) in expected_diag {
+            let idx = i * (i + 1) / 2 + i;
+            assert_eq!(
+                BLOSUM80[idx], expected,
+                "BLOSUM80 diagonal {aa}/{aa} (lower-triangle idx {idx}) must equal {expected}",
+            );
+        }
+    }
+
+    /// The four cells where MAFFT's BLOSUM80 (`tmpmtx80`) deviates from the
+    /// standard NCBI BLOSUM80. Pinning these explicitly catches any future
+    /// "fix" that resets the table to NCBI standard.
+    #[test]
+    fn blosum80_mafft_variant_cells() {
+        // (i, j, expected)  — i > j, lower-triangle index = i*(i+1)/2 + j.
+        let mafft_cells: &[(usize, usize, &str, f64)] = &[
+            (8,  1,  "H/R", 0.0),  // NCBI BLOSUM80 has -1
+            (13, 12, "F/M", 0.0),  // NCBI BLOSUM80 has -1
+            (14, 1,  "P/R", -3.0), // NCBI BLOSUM80 has -2
+            (19, 9,  "V/I", 4.0),  // NCBI BLOSUM80 has 5 in some references
+        ];
+        for &(i, j, label, expected) in mafft_cells {
+            let idx = i * (i + 1) / 2 + j;
+            assert_eq!(
+                BLOSUM80[idx], expected,
+                "BLOSUM80 cell {label} (i={i} j={j} idx={idx}) must equal MAFFT's tmpmtx80 value {expected}",
+            );
+        }
+    }
+
+    /// `blosum_matrix(80)` must unpack symmetrically with the MAFFT-variant
+    /// values reachable from BOTH triangles (the rest of the codebase indexes
+    /// with [i][j] regardless of order).
+    #[test]
+    fn blosum80_unpack_symmetric_with_mafft_variant_cells() {
+        let m = blosum_matrix(80);
+
+        // Diagonals
+        assert_eq!(m[0][0], 7.0);    // A/A
+        assert_eq!(m[8][8], 12.0);   // H/H
+        assert_eq!(m[19][19], 7.0);  // V/V
+
+        // Variant cells, both triangles
+        assert_eq!(m[8][1], 0.0);   assert_eq!(m[1][8], 0.0);    // H/R
+        assert_eq!(m[13][12], 0.0); assert_eq!(m[12][13], 0.0);  // F/M
+        assert_eq!(m[14][1], -3.0); assert_eq!(m[1][14], -3.0);  // P/R
+        assert_eq!(m[19][9], 4.0);  assert_eq!(m[9][19], 4.0);   // V/I
+    }
+}
