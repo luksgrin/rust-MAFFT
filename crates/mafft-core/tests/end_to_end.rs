@@ -314,6 +314,71 @@ fn nofft_op_override_byte_identical_to_c() {
     }
 }
 
+/// `--bl 80 --nofft` must match C byte-for-byte.
+///
+/// Guards the BLOSUM80 substitution-matrix table. MAFFT's `tmpmtx80` in
+/// `mafft-upstream/core/blosum.c` differs from the standard NCBI BLOSUM80
+/// at four cells (H/R = 0, F/M = 0, P/R = -3, V/I = 4); using the standard
+/// table here would diverge from C by ~12 columns on this fixture.
+///
+/// Reference: `tests/fixtures/sample.bl80.nwns2` (`mafft --nofft --bl 80`).
+#[test]
+fn nofft_bl80_byte_identical_to_c() {
+    use mafft_types::ScoringModel;
+    let c_ref = read_fasta(fixture_path("sample.bl80.nwns2"))
+        .expect("missing tests/fixtures/sample.bl80.nwns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_nofft(true)
+        .with_scoring_model(ScoringModel::Blosum(80))
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --bl 80 --nofft: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --bl 80 --nofft output"
+        );
+    }
+}
+
+/// `--bl 80` (FFT-NS-2 with BLOSUM80) must match C byte-for-byte.
+///
+/// Same matrix-table guard as `nofft_bl80_byte_identical_to_c` but exercises
+/// the FFT pipeline as well.
+///
+/// Reference: `tests/fixtures/sample.bl80.fftns2` (`mafft --bl 80`).
+#[test]
+fn fftns2_bl80_byte_identical_to_c() {
+    use mafft_types::ScoringModel;
+    let c_ref = read_fasta(fixture_path("sample.bl80.fftns2"))
+        .expect("missing tests/fixtures/sample.bl80.fftns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_scoring_model(ScoringModel::Blosum(80))
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --bl 80: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --bl 80 output"
+        );
+    }
+}
+
 /// NW-NS-2 with a non-default `--ep` override must match C byte-for-byte.
 ///
 /// Guards the scoring-matrix offset application. C's `--ep` flag maps to

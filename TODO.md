@@ -44,21 +44,29 @@ matrix.
 
 ---
 
-## 2. BLOSUM80 (`--bl 80`)
+## 2. BLOSUM80 (`--bl 80`) — RESOLVED 2026-04-27
 
-**Status**: diverges from C under `--nofft` (width 700 vs C's 712). Raw BLOSUM80
-data and normalization are correct (shared code path with BLOSUM62, which matches
-C exactly).
-**Priority**: Medium.
-**Location**: `crates/mafft-scoring/src/blosum.rs`, `crates/mafft-core/src/progressive.rs`.
+**Status**: byte-identical to C in both FFT-NS-2 (`--bl 80`) and NW-NS-2
+(`--bl 80 --nofft`) modes. Regression guards: `fftns2_bl80_byte_identical_to_c`
+and `nofft_bl80_byte_identical_to_c` in
+`crates/mafft-core/tests/end_to_end.rs`, fixtures
+`tests/fixtures/sample.bl80.{fftns2,nwns2}`.
 
-Divergence starts at retree 1 step 19. Likely cause: an ambiguity-code (B/Z/X)
-cell that differs between BLOSUM80 and BLOSUM62 expansions, hitting at a sequence
-position where BLOSUM62 sequences happen to have a residue.
+**Root cause**: our `BLOSUM80` table in `crates/mafft-scoring/src/blosum.rs`
+diverged from `tmpmtx80` in `mafft-upstream/core/blosum.c` at four cells.
+MAFFT's variant is not the standard NCBI BLOSUM80 — it has its own values
+at H/R, F/M, P/R, V/I.
 
-**Concrete next task**: add a per-retree-step RDBG comparison for `--bl 80 --nofft`
-that diffs profile/gap-counts/alignment output at each step. The first divergent
-step will pinpoint the matrix or scoring cell responsible. Effort: 2–3 hours.
+| (i, j) | Pair | C MAFFT (`tmpmtx80`) | Was in Rust | NCBI standard |
+|--------|------|----------------------|-------------|---------------|
+| (8, 1)  | H, R | 0  | -1 | 0  |
+| (13,12) | F, M | 0  | -1 | 0  |
+| (14, 1) | P, R | -3 | -4 | -2 |
+| (19, 9) | V, I | 4  |  5 | 4  |
+
+**Fix** (`crates/mafft-scoring/src/blosum.rs`): updated the four cells in the
+210-element lower-triangle BLOSUM80 array to match `tmpmtx80` exactly, and
+added a comment flagging that this is MAFFT's variant (not standard NCBI).
 
 ---
 

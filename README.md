@@ -9,7 +9,7 @@ This project provides:
 
 ## Status
 
-**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, **FFT-NS-2 (default), NW-NS-2 (`--nofft`), and FFT-NS-i (`--maxiterate 100`) all produce byte-identical output to C MAFFT 7.526** — every progressive merge step matches in score and width, every refinement iteration converges to C's exact alignment, and `diff rust_output.fa c_output.fa` returns 0 lines for all three modes. See [Known limitations](#known-limitations) for remaining gaps.
+**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, **FFT-NS-2 (default), NW-NS-2 (`--nofft`), FFT-NS-i (`--maxiterate 100`), and `--bl 80` (with and without `--nofft`) all produce byte-identical output to C MAFFT 7.526** — every progressive merge step matches in score and width, every refinement iteration converges to C's exact alignment, and `diff rust_output.fa c_output.fa` returns 0 lines for all five mode/scoring combinations. See [Known limitations](#known-limitations) for remaining gaps.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -229,10 +229,10 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests | 111 | All crates, all modules |
-| Rust integration tests | 32 | End-to-end on real data, byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i), DP diagnostics |
+| Rust integration tests | 34 | End-to-end on real data, byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, `--bl 80` with/without FFT), DP diagnostics |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total** | **183** | |
+| **Total** | **185** | |
 
 Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
 
@@ -240,6 +240,8 @@ Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
 - `nofft_per_step_matches_c` — every per-merge `(clus1, clus2, width, score)` tuple matches C's across both retree passes (fixture: `tests/fixtures/sample.nwns2.steps`, 70 merges).
 - `fftns2_byte_identical_to_c` — FFT-NS-2 (default strategy) output matches C's `mafft-upstream/test/sample.fftns2` reference byte-for-byte, guarding the full pipeline: FFT anchoring, segment gap handling, inter-anchor DP, retree distance, and UPGMA.
 - `fftnsi_byte_identical_to_c` — FFT-NS-i (`--maxiterate 100`) output matches C's `mafft-upstream/test/sample.fftnsi` reference byte-for-byte (asserts both width equality and per-sequence equality), guarding the iterative-refinement pipeline end-to-end including the dndpre offset-shift step the mafft script applies before dvtditr.
+- `fftns2_bl80_byte_identical_to_c` — FFT-NS-2 with `--bl 80` matches C byte-for-byte (fixture: `tests/fixtures/sample.bl80.fftns2`), guarding MAFFT's variant of the BLOSUM80 substitution-matrix table.
+- `nofft_bl80_byte_identical_to_c` — NW-NS-2 with `--bl 80 --nofft` matches C byte-for-byte (fixture: `tests/fixtures/sample.bl80.nwns2`), same matrix-table guard via the non-FFT path.
 - `nofft_op_override_byte_identical_to_c` — NW-NS-2 with `--op 2.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.op25`), guarding the gap-opening override path.
 - `nofft_ep_override_byte_identical_to_c` — NW-NS-2 with `--ep 0.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.ep05`), guarding the scoring-matrix offset override path.
 - `rna_nofft_case_insensitive_identical_to_c` — RNA NW-NS-2 output matches C byte-for-byte after case normalization (fixture: `tests/fixtures/samplerna.nwns2`), guarding the nucleotide alignment path.
@@ -258,7 +260,7 @@ FFT-NS-i (`--maxiterate 100`) is now byte-identical to C — see `fftnsi_byte_id
 
 ### Non-default BLOSUM matrices (`--bl N`)
 
-`--bl 80` under `--nofft` diverges from C (width 700 vs 712). The raw BLOSUM80 data and normalization are correct (shared code path with BLOSUM62 which matches C exactly). Divergence starts at retree 1 step 19 — needs per-step RDBG comparison to isolate the cause.
+`--bl 80` (with and without `--nofft`) is byte-identical to C — see `fftns2_bl80_byte_identical_to_c` and `nofft_bl80_byte_identical_to_c`. `--bl 30/45/50` share the same code path but don't yet have C-reference fixtures; trajectories are not formally validated.
 
 ### PartTree (`--parttree`, `--dpparttree`)
 
