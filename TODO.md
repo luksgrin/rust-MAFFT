@@ -150,11 +150,42 @@ the SAME port as §4 — solving §4 unlocks this.
 
 - RNA (`--xinsi`, `--qinsi`): unimplemented paths (qalign, ribosum-aware alignment).
 - `--allowshift`: gap-shift/warp DP path, partial.
-- JTT, TM (`--jtt`, `--tm`): matrix construction FFI-validated cell-by-cell; alignment trajectory unvalidated.
-- Non-default BLOSUM variants (`--bl 30/45/50/62/80`): share codepath with BLOSUM62; `--bl 80` diverges (§2); others unverified.
+- **JTT, TM (`--jtt`, `--tm`)**: PARTIALLY RESOLVED 2026-04-27.
+  - CLI flags `--jtt N` and `--tm N` now wired through to the engine
+    (`ScoringModel::Jtt(pam)`, `ScoringModel::Tm(pam)`).
+  - Cell-by-cell matrix equality vs C verified for JTT 200, JTT 100, TM 200,
+    plus the FFT scoring matrix `n_disFFT` for TM 200.
+  - **Bug fixed**: `tm_rsr_matrix` was missing — our Rust port previously fed
+    JTT lower-triangle counts to the TM pipeline (only the JTT lower triangle
+    was populated; C's `JTTmtx(... isTM=1)` reads the upper triangle which is
+    a separate transmembrane APM table at lines 145-217 of `JTT.c`). `--tm`
+    silently produced JTT-like output before this fix.
+  - **End-to-end byte parity (with regression guards in
+    `crates/mafft-core/tests/end_to_end.rs`):**
+    - `--jtt 200` (FFT-NS-2) ✓
+    - `--tm 200 --nofft` ✓
+    - `--tm 100 --nofft` ✓
+  - **Residual divergences** (matrices match C cell-by-cell, alignment scores
+    match, but gap placement differs in a few positions — DP tie-breaking):
+    - `--jtt 100` (FFT-NS-2): 4 lines differ at column 7-9 of seq 0 (`MAA-W` vs
+      `MA-AW`).
+    - `--tm 100/200` with FFT: ~144-line diff against C.
+    Likely a float-precision tie-breaker in the FFT score or anchor selection
+    that's amplified when the matrix has a different overall scale (PAM 100
+    has smaller log-odds than PAM 200; TM has different distribution than
+    JTT). Not believed to be a substantive scoring bug — same alignment score
+    on the canonical 36-seq input.
+  - **Cleanup follow-up**: nail down the FFT tie-breaker so `--tm 200` (FFT)
+    and `--jtt 100` (FFT) reach byte parity. Effort: 2–4 h once a small input
+    is found that triggers the divergence within a single FFT segment so the
+    tie-break point is locatable.
+- Non-default BLOSUM variants (`--bl 30/45/50/62/80`): `--bl 62` (default),
+  `--bl 80` byte-identical (§2). `--bl 30/45/50` share the same code path
+  but don't yet have C-reference fixtures.
 
-**Concrete next task**: for each, start with an FFI per-iteration diagnostic
-matching §1's recipe. Effort scales with how many paths each mode activates.
+**Concrete next task**: for the remaining items (RNA, `--allowshift`),
+start with an FFI per-iteration diagnostic matching §1's recipe. Effort
+scales with how many paths each mode activates.
 
 ---
 

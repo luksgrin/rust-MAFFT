@@ -106,6 +106,14 @@ struct Args {
     #[arg(long)]
     bl: Option<i32>,
 
+    /// JTT PAM number for substitution scoring (e.g. 100, 200). Mirrors `mafft --jtt N` (default PAM 200).
+    #[arg(long, conflicts_with_all = ["bl", "tm"])]
+    jtt: Option<i32>,
+
+    /// Transmembrane (TM) PAM number for substitution scoring (e.g. 100, 200). Mirrors `mafft --tm N` (default PAM 200).
+    #[arg(long, conflicts_with_all = ["bl", "jtt"])]
+    tm: Option<i32>,
+
     /// Kimura R parameter for DNA distance model [default: 2]
     #[arg(long)]
     kimura: Option<i32>,
@@ -190,6 +198,12 @@ fn main() {
     }
     if let Some(bl) = args.bl {
         engine = engine.with_scoring_model(ScoringModel::Blosum(bl));
+    }
+    if let Some(pam) = args.jtt {
+        engine = engine.with_scoring_model(ScoringModel::Jtt(pam));
+    }
+    if let Some(pam) = args.tm {
+        engine = engine.with_scoring_model(ScoringModel::Tm(pam));
     }
     if let Some(kr) = args.kimura {
         engine = engine.with_kimura(kr);

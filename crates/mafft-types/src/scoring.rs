@@ -22,11 +22,15 @@ impl Default for GapPenalties {
 }
 
 /// Which substitution matrix model to use.
+///
+/// `Jtt(pam)` and `Tm(pam)` carry the PAM value (C MAFFT default = 200,
+/// `DEFAULTPAMN` in `JTT.c`). Pass non-200 values to mirror `mafft --jtt N`
+/// or `mafft --tm N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoringModel {
     Blosum(i32), // 30, 45, 50, 62, 80
-    Jtt,
-    Tm,
+    Jtt(i32),    // PAM value
+    Tm(i32),     // PAM value
     Dna,
     UserDefined,
 }

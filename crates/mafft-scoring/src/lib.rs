@@ -147,13 +147,13 @@ fn build_protein_context(model: ScoringModel) -> ScoringContext {
             let freq = blosum::blosum_frequencies();
             (mat, freq)
         }
-        ScoringModel::Jtt => {
-            let mat = jtt::build_jtt_pam_matrix(false, 200);
+        ScoringModel::Jtt(pam) => {
+            let mat = jtt::build_jtt_pam_matrix(false, pam.max(1) as usize);
             let freq = jtt_frequencies();
             (mat, freq)
         }
-        ScoringModel::Tm => {
-            let mat = jtt::build_jtt_pam_matrix(true, 200);
+        ScoringModel::Tm(pam) => {
+            let mat = jtt::build_jtt_pam_matrix(true, pam.max(1) as usize);
             let freq = tm_frequencies();
             (mat, freq)
         }

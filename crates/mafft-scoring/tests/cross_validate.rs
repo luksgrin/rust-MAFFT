@@ -48,6 +48,23 @@ unsafe fn call_c_constants(dorp: u8, scoremtx: i32, nblosum: i32) {
     mafft_sys::constants(1, seq_arr);
 }
 
+/// Call C constants() in JTT/TM mode (scoremtx=0). `is_tm` flips
+/// `TMorJTT` so the constants pipeline picks the TM frequency table.
+/// `pam_n` mirrors `--jtt N`/`--tm N`.
+unsafe fn call_c_constants_jtt(is_tm: bool, pam_n: i32) {
+    std::ptr::addr_of_mut!(mafft_sys::dorp).write(b'p' as i32);
+    std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(0);
+    std::ptr::addr_of_mut!(mafft_sys::pamN).write(pam_n);
+    // JTT = 201, TM = 202 (mafft-upstream/core/mltaln.h)
+    std::ptr::addr_of_mut!(mafft_sys::TMorJTT).write(if is_tm { 202 } else { 201 });
+    std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
+
+    let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
+    let mut seq_ptr = seq_data.as_ptr() as *mut i8;
+    let seq_arr: *mut *mut i8 = &mut seq_ptr;
+    mafft_sys::constants(1, seq_arr);
+}
+
 /// Read the C n_dis matrix into a Vec<Vec<i32>>.
 unsafe fn read_c_n_dis() -> Vec<Vec<i32>> {
     let nalpha = addr_of!(mafft_sys::nalphabets).read() as usize;
@@ -102,7 +119,7 @@ fn build_context_blosum62_produces_valid_matrix() {
 
 #[test]
 fn build_context_jtt_produces_valid_matrix() {
-    let ctx = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let ctx = build_context(ScoringModel::Jtt(200), SeqType::Protein);
     assert_eq!(ctx.nalphabets, 26);
     assert_eq!(ctx.nscoredalphabets, 20);
     for i in 0..20 { assert!(ctx.substitution_matrix[i][i] > 0); }
@@ -110,7 +127,7 @@ fn build_context_jtt_produces_valid_matrix() {
 
 #[test]
 fn build_context_tm_produces_valid_matrix() {
-    let ctx = build_context(ScoringModel::Tm, SeqType::Protein);
+    let ctx = build_context(ScoringModel::Tm(200), SeqType::Protein);
     for i in 0..20 { assert!(ctx.substitution_matrix[i][i] > 0); }
 }
 
@@ -291,10 +308,114 @@ fn cross_validate_blosum62_n_dis_fft_cell_by_cell() {
     }
 }
 
+/// JTT cell-by-cell at non-default PAM (100) — guards the PAM-iteration loop.
+#[test]
+fn cross_validate_jtt100_n_dis_cell_by_cell() {
+    let _lock = C_MUTEX.lock().unwrap();
+    let rust_ctx = build_context(ScoringModel::Jtt(100), SeqType::Protein);
+    let c_matrix = unsafe {
+        init_c_globals();
+        call_c_constants_jtt(false, 100);
+        let m = read_c_n_dis();
+        mafft_sys::freeconstants();
+        m
+    };
+    let nalpha = 26;
+    let mut mismatches = Vec::new();
+    for i in 0..nalpha {
+        for j in 0..nalpha {
+            if c_matrix[i][j] != rust_ctx.substitution_matrix[i][j] {
+                mismatches.push((i, j, c_matrix[i][j], rust_ctx.substitution_matrix[i][j]));
+            }
+        }
+    }
+    if !mismatches.is_empty() {
+        let n = mismatches.len();
+        let max_diff = mismatches.iter().map(|(_, _, c, r)| (c - r).abs()).max().unwrap_or(0);
+        eprintln!("JTT 100 n_dis: {n}/{} cells differ (max diff = {max_diff})", nalpha * nalpha);
+        for (i, j, c, r) in mismatches.iter().take(10) {
+            eprintln!("  n_dis[{i}][{j}]: C={c}, Rust={r} (diff={})", c - r);
+        }
+        assert!(max_diff <= 2, "JTT 100 n_dis max_diff={max_diff}");
+    }
+}
+
+/// Cell-by-cell TM `n_disFFT` (FFT scoring matrix) vs C with PAM = 200.
+#[test]
+fn cross_validate_tm_n_dis_fft_cell_by_cell() {
+    let _lock = C_MUTEX.lock().unwrap();
+    let rust_ctx = build_context(ScoringModel::Tm(200), SeqType::Protein);
+    let c_matrix = unsafe {
+        init_c_globals();
+        call_c_constants_jtt(true, 200);
+        let m = read_c_n_dis_fft();
+        mafft_sys::freeconstants();
+        m
+    };
+    let nalpha = 26;
+    let mut mismatches = Vec::new();
+    for i in 0..nalpha {
+        for j in 0..nalpha {
+            if c_matrix[i][j] != rust_ctx.fft_matrix[i][j] {
+                mismatches.push((i, j, c_matrix[i][j], rust_ctx.fft_matrix[i][j]));
+            }
+        }
+    }
+    if !mismatches.is_empty() {
+        let n = mismatches.len();
+        let max_diff = mismatches.iter().map(|(_, _, c, r)| (c - r).abs()).max().unwrap_or(0);
+        eprintln!("TM n_disFFT: {n}/{} cells differ (max diff = {max_diff})", nalpha * nalpha);
+        for (i, j, c, r) in mismatches.iter().take(10) {
+            eprintln!("  n_disFFT[{i}][{j}]: C={c}, Rust={r} (diff={})", c - r);
+        }
+        assert!(max_diff <= 2, "TM n_disFFT max_diff={max_diff}");
+    }
+}
+
+/// Cell-by-cell TM (transmembrane) matrix vs C with PAM = 200.
+///
+/// `--tm` uses the JTT pipeline (`scoremtx=0`) with `TMorJTT=TM`, swapping
+/// the JTT amino-frequency vector for the TM-specific one (`freq0_TM` in
+/// `JTT.c`) and reading the UPPER triangle of the rsr count matrix instead
+/// of the lower one. This test catches drift in either of those two pieces.
+#[test]
+fn cross_validate_tm_n_dis_cell_by_cell() {
+    let _lock = C_MUTEX.lock().unwrap();
+    let rust_ctx = build_context(ScoringModel::Tm(200), SeqType::Protein);
+
+    let c_matrix = unsafe {
+        init_c_globals();
+        call_c_constants_jtt(true, 200);
+        let m = read_c_n_dis();
+        mafft_sys::freeconstants();
+        m
+    };
+
+    let nalpha = 26;
+    let mut mismatches = Vec::new();
+    for i in 0..nalpha {
+        for j in 0..nalpha {
+            let c_val = c_matrix[i][j];
+            let r_val = rust_ctx.substitution_matrix[i][j];
+            if c_val != r_val { mismatches.push((i, j, c_val, r_val)); }
+        }
+    }
+
+    if !mismatches.is_empty() {
+        let n_mismatch = mismatches.len();
+        let max_diff = mismatches.iter().map(|(_, _, c, r)| (c - r).abs()).max().unwrap_or(0);
+        eprintln!("TM n_dis: {n_mismatch}/{} cells differ (max diff = {max_diff})", nalpha * nalpha);
+        for (i, j, c, r) in mismatches.iter().take(15) {
+            eprintln!("  n_dis[{i}][{j}]: C={c}, Rust={r} (diff={})", c - r);
+        }
+        assert!(max_diff <= 2, "TM n_dis max_diff={max_diff}");
+    }
+}
+
 #[test]
 fn cross_validate_jtt_n_dis_cell_by_cell() {
     let _lock = C_MUTEX.lock().unwrap();
-    let rust_ctx = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let rust_ctx = build_context(ScoringModel::Jtt(200), SeqType::Protein);
 
     let c_matrix = unsafe {
         init_c_globals();

@@ -348,6 +348,100 @@ fn nofft_bl80_byte_identical_to_c() {
     }
 }
 
+/// `--jtt 200` (FFT-NS-2 with JTT PAM 200) must match C byte-for-byte.
+///
+/// Guards (1) the JTT lower-triangle accepted-point-mutation table in
+/// `mafft-scoring/src/jtt.rs::jtt_rsr_matrix`, (2) the PAM exponentiation
+/// loop in `build_jtt_pam_matrix`, and (3) the normalize/600-scale/offset
+/// pipeline shared with BLOSUM.
+///
+/// Reference: `tests/fixtures/sample.jtt200.fftns2` (`mafft --jtt 200`).
+#[test]
+fn fftns2_jtt200_byte_identical_to_c() {
+    use mafft_types::ScoringModel;
+    let c_ref = read_fasta(fixture_path("sample.jtt200.fftns2"))
+        .expect("missing tests/fixtures/sample.jtt200.fftns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_scoring_model(ScoringModel::Jtt(200))
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --jtt 200: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --jtt 200 output"
+        );
+    }
+}
+
+/// `--tm 200 --nofft` (NW-NS-2 with TM PAM 200) must match C byte-for-byte.
+///
+/// Guards the TM upper-triangle accepted-point-mutation table in
+/// `mafft-scoring/src/jtt.rs::tm_rsr_matrix` together with the TM frequency
+/// vector. C's `JTTmtx(... isTM=1)` reads the *upper* triangle of the rsr
+/// counts array (lines 145-217 of `mafft-upstream/core/JTT.c`); the lower
+/// triangle holds JTT data and is irrelevant for TM. Before this test,
+/// `--tm` silently produced JTT-like output because the upper triangle was
+/// never populated in our Rust port.
+///
+/// Reference: `tests/fixtures/sample.tm200.nwns2` (`mafft --tm 200 --nofft`).
+#[test]
+fn nofft_tm200_byte_identical_to_c() {
+    use mafft_types::ScoringModel;
+    let c_ref = read_fasta(fixture_path("sample.tm200.nwns2"))
+        .expect("missing tests/fixtures/sample.tm200.nwns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_nofft(true)
+        .with_scoring_model(ScoringModel::Tm(200))
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --tm 200 --nofft: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --tm 200 --nofft output"
+        );
+    }
+}
+
+/// `--tm 100 --nofft` exercises the same TM data at a non-default PAM —
+/// catches drift in the matrix-power path in `build_jtt_pam_matrix`.
+///
+/// Reference: `tests/fixtures/sample.tm100.nwns2`.
+#[test]
+fn nofft_tm100_byte_identical_to_c() {
+    use mafft_types::ScoringModel;
+    let c_ref = read_fasta(fixture_path("sample.tm100.nwns2"))
+        .expect("missing tests/fixtures/sample.tm100.nwns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_nofft(true)
+        .with_scoring_model(ScoringModel::Tm(100))
+        .align(&input);
+
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --tm 100 --nofft output"
+        );
+    }
+}
+
 /// `--bl 80` (FFT-NS-2 with BLOSUM80) must match C byte-for-byte.
 ///
 /// Same matrix-table guard as `nofft_bl80_byte_identical_to_c` but exercises
@@ -628,7 +722,7 @@ fn diagnostic_merge_widths() {
     use mafft_align::{Profile, profile_align, GapModel};
 
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let scoring = build_context(ScoringModel::Jtt(200), SeqType::Protein);
     let nseq = input.nseq();
 
     // Build distance matrix and tree
@@ -672,7 +766,7 @@ fn diagnostic_first_merge() {
     use mafft_align::{Profile, profile_align, GapModel};
 
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let scoring = build_context(ScoringModel::Jtt(200), SeqType::Protein);
     let nseq = input.nseq();
 
     let mut dm = DistanceMatrix::new(nseq);
@@ -735,7 +829,7 @@ fn diagnostic_merge_trace() {
     use mafft_align::{Profile, profile_align, GapModel, AlignOp};
 
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let scoring = build_context(ScoringModel::Jtt(200), SeqType::Protein);
     let nseq = input.nseq();
 
     // Build distance matrix and tree (retree pass 1)
@@ -912,7 +1006,7 @@ fn diagnostic_align11_vs_profile() {
     use mafft_align::{Profile, profile_align, pairwise_align11, GapModel, AlignOp};
 
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let scoring = build_context(ScoringModel::Jtt, SeqType::Protein);
+    let scoring = build_context(ScoringModel::Jtt(200), SeqType::Protein);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
 
     // Compare align11 vs profile_align for seqs 19 and 20 (merged at step 1)

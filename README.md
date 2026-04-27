@@ -9,7 +9,7 @@ This project provides:
 
 ## Status
 
-**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, **FFT-NS-2 (default), NW-NS-2 (`--nofft`), FFT-NS-i (`--maxiterate 100`), and `--bl 80` (with and without `--nofft`) all produce byte-identical output to C MAFFT 7.526** — every progressive merge step matches in score and width, every refinement iteration converges to C's exact alignment, and `diff rust_output.fa c_output.fa` returns 0 lines for all five mode/scoring combinations. See [Known limitations](#known-limitations) for remaining gaps.
+**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, **FFT-NS-2 (default), NW-NS-2 (`--nofft`), FFT-NS-i (`--maxiterate 100`), `--bl 80` (with and without `--nofft`), `--jtt 200`, and `--tm 100/200 --nofft` all produce byte-identical output to C MAFFT 7.526** — every progressive merge step matches in score and width, every refinement iteration converges to C's exact alignment, and `diff rust_output.fa c_output.fa` returns 0 lines for all of these mode/scoring combinations. See [Known limitations](#known-limitations) for remaining gaps.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -170,6 +170,8 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `mafft --op 1.53 input.fa` | `mafft-rs --op 1.53 input.fa` | Gap opening penalty |
 | `mafft --ep 0.123 input.fa` | `mafft-rs --ep 0.123 input.fa` | Offset penalty |
 | `mafft --bl 80 input.fa` | `mafft-rs --bl 80 input.fa` | BLOSUM matrix number |
+| `mafft --jtt 200 input.fa` | `mafft-rs --jtt 200 input.fa` | JTT scoring matrix at PAM N |
+| `mafft --tm 200 input.fa` | `mafft-rs --tm 200 input.fa` | Transmembrane scoring matrix at PAM N |
 | `mafft --kimura 2 input.fa` | `mafft-rs --kimura 2 input.fa` | Kimura distance parameter |
 | `mafft --allowshift --globalpair --maxiterate 1000 input.fa` | `mafft-rs --allowshift --globalpair --maxiterate 1000 input.fa` | G-INS-i with shift |
 | `mafft --add new.fa existing.fa` | `mafft-rs existing.fa --add new.fa` | Add sequences to alignment |
@@ -229,8 +231,8 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests | 111 | All crates, all modules |
-| Rust integration tests | 34 | End-to-end on real data, byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, `--bl 80` with/without FFT), DP diagnostics |
-| Rust FFI cross-validation tests | 5 | Cell-by-cell matrix equality vs C via FFI (BLOSUM62, BLOSUM80, JTT, TM, DNA) |
+| Rust integration tests | 37 | End-to-end on real data, byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, `--bl 80` with/without FFT, `--jtt 200`, `--tm 100/200 --nofft`), DP diagnostics |
+| Rust FFI cross-validation tests | 8 | Cell-by-cell matrix equality vs C via FFI (BLOSUM62, BLOSUM80, JTT 200, JTT 100, TM 200 n_dis + n_disFFT, DNA) |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
 | **Total** | **190** | |
@@ -243,6 +245,9 @@ Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
 - `fftnsi_byte_identical_to_c` — FFT-NS-i (`--maxiterate 100`) output matches C's `mafft-upstream/test/sample.fftnsi` reference byte-for-byte (asserts both width equality and per-sequence equality), guarding the iterative-refinement pipeline end-to-end including the dndpre offset-shift step the mafft script applies before dvtditr.
 - `fftns2_bl80_byte_identical_to_c` — FFT-NS-2 with `--bl 80` matches C byte-for-byte (fixture: `tests/fixtures/sample.bl80.fftns2`), guarding MAFFT's variant of the BLOSUM80 substitution-matrix table.
 - `nofft_bl80_byte_identical_to_c` — NW-NS-2 with `--bl 80 --nofft` matches C byte-for-byte (fixture: `tests/fixtures/sample.bl80.nwns2`), same matrix-table guard via the non-FFT path.
+- `fftns2_jtt200_byte_identical_to_c` — FFT-NS-2 with `--jtt 200` matches C byte-for-byte (fixture: `tests/fixtures/sample.jtt200.fftns2`), guarding the JTT lower-triangle accepted-point-mutation table, the PAM matrix exponentiation loop, and the shared normalize/600-scale/offset pipeline.
+- `nofft_tm200_byte_identical_to_c` — NW-NS-2 with `--tm 200 --nofft` matches C byte-for-byte (fixture: `tests/fixtures/sample.tm200.nwns2`), guarding the TM upper-triangle table in `tm_rsr_matrix` and the TM frequency vector. Before this guard, `--tm` silently produced JTT-like output because the upper triangle was never populated.
+- `nofft_tm100_byte_identical_to_c` — `--tm 100 --nofft` exercises the same TM data at a non-default PAM, catching drift in the matrix-power path.
 
 Plus three layers of unit-level guards in `crates/mafft-scoring/`:
 
@@ -268,6 +273,14 @@ FFT-NS-i (`--maxiterate 100`) is now byte-identical to C — see `fftnsi_byte_id
 ### Non-default BLOSUM matrices (`--bl N`)
 
 `--bl 80` (with and without `--nofft`) is byte-identical to C — see `fftns2_bl80_byte_identical_to_c` and `nofft_bl80_byte_identical_to_c`. `--bl 30/45/50` share the same code path but don't yet have C-reference fixtures; trajectories are not formally validated.
+
+### Substitution-model flags (`--jtt`, `--tm`)
+
+`--jtt N` and `--tm N` are now wired through the CLI (matching `mafft --jtt N` / `mafft --tm N`). The PAM number selects how many iterations of the JTT one-step transition matrix are multiplied together before the log-odds transform.
+
+- `--jtt 200` is byte-identical to C in FFT-NS-2 (`fftns2_jtt200_byte_identical_to_c`).
+- `--tm 100 --nofft` and `--tm 200 --nofft` are byte-identical to C (`nofft_tm100_byte_identical_to_c`, `nofft_tm200_byte_identical_to_c`).
+- `--tm` with FFT and `--jtt 100` produce alignments that score identically but place gaps differently in a few positions (DP tie-breaking). Cell-by-cell matrix matches C exactly in all four cases (FFI cross-validation tests `cross_validate_jtt_n_dis`, `cross_validate_jtt100_n_dis`, `cross_validate_tm_n_dis`, `cross_validate_tm_n_dis_fft`).
 
 ### PartTree (`--parttree`, `--dpparttree`)
 
