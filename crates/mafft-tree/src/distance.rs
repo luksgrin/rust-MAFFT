@@ -50,24 +50,6 @@ impl DistanceMatrix {
         }
     }
 
-    /// Apply the precision loss of C's hat2 file round-trip.
-    ///
-    /// C writes distances with `DFORMAT = "%#6.3f"` and reads them back with
-    /// `atof`, which quantizes every distance to 3 decimal digits. The
-    /// refinement tree in `dvtditr` is built from these rounded values, so
-    /// the Rust pipeline must apply the same precision loss before handing
-    /// the matrix to `musclesupg`, otherwise the branch lengths (and hence
-    /// the weights that drive Falign) diverge from C at later tree steps.
-    pub fn quantize_hat2(&mut self) {
-        for row in self.data.iter_mut() {
-            for v in row.iter_mut() {
-                let s = format!("{:.3}", *v);
-                if let Ok(parsed) = s.parse::<f64>() {
-                    *v = parsed;
-                }
-            }
-        }
-    }
 }
 
 /// Compute identity-based distance between two aligned sequences.
@@ -199,40 +181,6 @@ pub fn scoring_matrix_distance(
     d
 }
 
-
-/// C's disttbfast mid-merge distance formula. Takes pre-computed self-scores
-/// of sequence i and j (from the raw, ungapped sequences). Given two aligned
-/// sequences (typically mid-merge profile rows), returns
-/// `(1 − naivepairscore11(s1, s2, penalty) / min(self_i, self_j)) * 2.0`
-/// clamped to `[0, 10]`. Mirrors `disttbfast.c` line 2151.
-pub fn scoring_matrix_distance_with_selfscore(
-    seq1: &[u8],
-    seq2: &[u8],
-    self1: f64,
-    self2: f64,
-    matrix: &[Vec<i32>],
-    amino_map: &[u8; 256],
-    penalty: i32,
-) -> f64 {
-    let bunbo = if self1 < self2 { self1 } else { self2 };
-    if bunbo == 0.0 { return 2.0; }
-    let score = naive_pair_score(seq1, seq2, matrix, amino_map, penalty);
-    let mut d = (1.0 - score / bunbo) * 2.0;
-    if d > 10.0 { d = 10.0; }
-    if d < 0.0 { d = 0.0; }
-    d
-}
-
-/// Self-score for a raw (typically ungapped) sequence using the substitution
-/// matrix diagonal. Matches `naivepairscore11(seq, seq, penalty)` — the penalty
-/// is irrelevant because a sequence against itself has no gap blocks.
-pub fn scoring_matrix_self_score(
-    seq: &[u8],
-    matrix: &[Vec<i32>],
-    amino_map: &[u8; 256],
-) -> f64 {
-    self_score(seq, matrix, amino_map, 0)
-}
 
 /// C's naivepairscore11: score two aligned sequences.
 fn naive_pair_score(

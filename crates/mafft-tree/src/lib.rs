@@ -12,10 +12,7 @@ mod parttree;
 mod topology;
 mod weighting;
 
-pub use distance::{
-    DistanceMatrix, pairwise_identity_distance, ktuple_distance, scoring_matrix_distance,
-    scoring_matrix_distance_with_selfscore, scoring_matrix_self_score,
-};
+pub use distance::{DistanceMatrix, pairwise_identity_distance, ktuple_distance, scoring_matrix_distance};
 pub use nj::neighbor_joining;
 pub use upgma::{upgma, upgma_int};
 pub use musclesupg::{musclesupg, ClusterMethod};

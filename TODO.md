@@ -27,20 +27,23 @@ the 20-AA core), feed it into `compute_distance_matrix_scoring` against
 `msa.sequences` for the refinement tree only. DP still uses the unshifted
 matrix.
 
-### Cleanup follow-ups (low priority, none affect parity)
+### Cleanup follow-ups — DONE 2026-04-28
+
+All four dead artifacts from the failed mid-merge investigation are removed.
+Net -162 lines. Verified by running the full suite (215 tests passing) before
+and after each removal:
 
 - `progressive_align_with_distmtx` and the supporting
-  `scoring_matrix_distance_with_selfscore` /
-  `scoring_matrix_self_score` helpers were added to track mid-merge distances
-  before the real cause was found. They're still wired through `engine.rs`'s
-  retree loop but their result is now discarded (`refinement_dm.take()` is a
-  no-op). The whole mid-merge tracking path can be removed.
-- The `quantize_hat2` call on the refinement DM is harmless but unnecessary
-  with the offset-shift fix in place — dndpre writes hat2 with `%5.3f`, but
-  dvtditr's tree builder (`fixed_musclesupg_double_treeout`) reads them back
-  with full atof precision; the 3-decimal round-trip is encoded in the file
-  format, not in the in-memory pipeline we're emulating. Worth verifying with
-  a one-line ablation that removing `dm.quantize_hat2()` keeps the test green.
+  `scoring_matrix_distance_with_selfscore` / `scoring_matrix_self_score`
+  helpers — gone.
+- The mid-merge tracking branch inside `progressive_align_inner` and the
+  `track_distances_penalty` plumbing — gone (function inlined back into
+  `progressive_align`).
+- `DistanceMatrix::quantize_hat2` and its call site in `engine.rs` — gone.
+- The `refinement_dm: Option<DistanceMatrix>` dance in `engine.rs` — gone.
+  Between retree passes the engine now recomputes distances directly from
+  `msa.sequences` via `compute_distance_matrix_scoring`, matching the same
+  pre-investigation behavior that was already byte-identical to C.
 
 ---
 

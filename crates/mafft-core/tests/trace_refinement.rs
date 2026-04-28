@@ -1141,7 +1141,6 @@ fn real_rust_refine_vs_c_falign_iter0_bytediff() {
             dm.set(i, j, d);
         }
     }
-    dm.quantize_hat2(); // mirror C dvtditr reading hat2 with %#6.3f precision
     let topo = musclesupg(&dm, ClusterMethod::default());
 
     // Run real Rust iterative_refine for 1 iter
@@ -1353,7 +1352,6 @@ fn trajectory_rust_vs_c_all_iters() {
             dm.set(i, j, d);
         }
     }
-    dm.quantize_hat2(); // mirror C dvtditr reading hat2 with %#6.3f precision
     let topo = musclesupg(&dm, ClusterMethod::default());
     let bw = BranchWeights::new(&topo);
 

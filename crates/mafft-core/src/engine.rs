@@ -8,7 +8,7 @@ use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, sco
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
-use crate::progressive::{progressive_align, progressive_align_with_distmtx, MultipleAlignment};
+use crate::progressive::{progressive_align, MultipleAlignment};
 use crate::refinement::{iterative_refine, RefinementParams};
 use crate::add::{add_sequences, add_sequences_keeplength};
 
@@ -238,17 +238,9 @@ impl MafftEngine {
             step_trace: Vec::new(),
         };
         let mut accumulated_trace = Vec::new();
-
-        // C's disttbfast runs `cycledisttbfast` progressive passes and at EVERY
-        // pass records each pair's distance at the step that first joins them
-        // (disttbfast.c:2151). That mid-merge matrix feeds the NEXT pass's
-        // guide tree (and the final one feeds `dvtditr`). Track distances on
-        // every retree pass so pass-K's tree sees the same matrix C did.
         let penalty_dist = scoring.gap.open;
-        let mut refinement_dm: Option<DistanceMatrix> = None;
 
         for pass in 0..retree {
-            // Build guide tree
             let topo = if pass == 0 && use_parttree {
                 parttree_topo.clone().unwrap()
             } else {
@@ -266,20 +258,19 @@ impl MafftEngine {
                 None
             };
 
-            // Track mid-merge distances on every pass: feeds the next pass's
-            // tree (or the refinement tree, on the final pass).
-            let (pass_msa, pass_dm) = progressive_align_with_distmtx(
-                &input_seqs, &names, &topo, &scoring, use_fft, shift, penalty_dist,
-            );
-            msa = pass_msa;
+            msa = progressive_align(&input_seqs, &names, &topo, &scoring, use_fft, shift);
             accumulated_trace.extend(msa.step_trace.iter().copied());
 
+            // For the next retree pass, recompute distances from the now-aligned
+            // sequences (matching C's disttbfast behavior in the second iteration
+            // of `iguidetree`). The refinement-tree distance matrix is built
+            // separately further down with a different (offset-shifted) matrix
+            // mirroring dndpre's invocation.
             if pass + 1 < retree {
-                // Next pass's tree comes from this pass's mid-merge distances.
-                dm = pass_dm;
-            } else {
-                // Final pass — distances become the refinement tree input.
-                refinement_dm = Some(pass_dm);
+                dm = compute_distance_matrix_scoring(
+                    &msa.sequences, &scoring.substitution_matrix,
+                    &scoring.amino_map, penalty_dist,
+                );
             }
         }
         msa.step_trace = accumulated_trace;
@@ -365,8 +356,7 @@ impl MafftEngine {
                 // The refinement tree dvtditr builds reads this hat2, so the
                 // distance matrix we feed `musclesupg` here must use the same
                 // shifted matrix and operate on the FINAL progressive
-                // alignment (`msa.sequences`) — not mid-merge profile rows.
-                let _ = refinement_dm.take(); // mid-merge dm not used here
+                // alignment (`msa.sequences`).
                 let dndpre_offset_shift: i32 = 73; // = -(-73) = -default_protein_poffset/(scaling)
                 let mut shifted_matrix: Vec<Vec<i32>> = scoring.substitution_matrix
                     .iter()
@@ -386,11 +376,10 @@ impl MafftEngine {
                     }
                 }
                 let penalty_dist = scoring.gap.open;
-                let mut dm = compute_distance_matrix_scoring(
+                let dm = compute_distance_matrix_scoring(
                     &msa.sequences, &shifted_matrix,
                     &scoring.amino_map, penalty_dist,
                 );
-                dm.quantize_hat2();
                 let topo = musclesupg(&dm, ClusterMethod::default());
                 // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)
                 // parallelization strategy (scripts/mafft line ~1515). This matters
