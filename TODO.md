@@ -113,21 +113,54 @@ combined run. For BL50 / `--jtt 100` (FFT) / `--tm * (FFT)`, multiple
 lags carry comparable per-segment scores and C's combined block_align
 selects a different optimal subset.
 
-**Concrete next task**: rewrite `find_fft_anchors` to mirror C's
-all-candidates pipeline. Steps:
+**Diagnosis validated 2026-04-28** (rewrite attempted twice, reverted):
 
-1. Run `alignable_segments` for each of `NKOUHO=20` lags, tagging each
-   segment with its lag.
-2. Build `segment1[]`/`segment2[]` arrays where `segment2[i]` has the
-   lag-shifted center, and the two are paired (mutual `pair`).
-3. Sort each independently by `center`. Assign `number = sort-rank` to
-   each.
-4. Allocate `crossscore[count+2][count+2]` with corner cells = 1e7.
-5. Set `crossscore[seg1.number+1][seg1.pair.number+1] = seg1.score`.
-6. Run `blockAlign2` and read back the selected anchor pairs.
+Implemented the rewrite — flat anchor-pair list from all
+`NKOUHO=20` candidates, dual independent sorts (by `c1` and `c2`),
+sparse cross-score matrix with corner 1e7 sentinels, fed to
+`block_align`. Result:
 
-Effort: 4-8 h. Validation: BL50 byte-identical, plus also closes
-TODO §7 residuals (`--jtt 100` FFT, `--tm * (FFT)`).
+| Mode | Width before | Width after rewrite | C reference |
+|------|--------------|---------------------|-------------|
+| BL50 | 738          | **711**             | 712         |
+| BL62 (default) | 717 | **broken (144-line diff)** | 717 |
+
+Off by 1 column from C — confirms the structural diagnosis.
+
+**Surprise finding** while looking at `permit()`:
+`fftFunctions.c:378-384` defines
+
+```c
+static int permit( Segment *seg1, Segment *seg2 ) {
+    return( 0 );  // unconditional return — every line below is dead
+    if( seg1->end >= seg2->start ) return( 0 );
+    ...
+}
+```
+
+so the `if( k && k<ncut-1 && j<ncut-1 && !permit(...) ) continue;` guard
+in `blockAlign2` **always** skips when `k != 0 && k < ncut-1 && j < ncut-1`.
+For interior cells only `k = 0` is reachable; for boundary cells (last
+row or column) all `k` are scanned. Our previous `block_align` did full
+DP with all-`k` skips for every cell — diverged from C's gated behavior.
+
+**Fix landed**: `block_align.rs` now mirrors C's permit-zero gating —
+inner skip-loop ignores `k != 0` when both endpoints are interior. All
+215 tests still pass with this fix in place (the gating is a no-op for
+the current single-best-lag diagonal-only inputs the engine actually
+emits).
+
+**Why the rewrite still breaks BL62**: even with the gating, the
+sparse cross-score path produces different anchors. The remaining
+deltas are likely in the post-DP traceback filtering at
+`fftFunctions.c:547-560`, which dedupes consecutive selected cells
+that share a row or column — keeping the higher-scoring one. Our
+traceback emits raw cells without that filter.
+
+**Concrete next task** (revised): port the dedupe pass from
+`fftFunctions.c:547-560` and re-attempt the all-candidates rewrite.
+Effort: another 2 h. Validation target: BL50 + JTT 100 (FFT) + TM
+(FFT) all reach 0-line diff vs C without breaking BL62/BL30/BL45/BL80/JTT200.
 
 ---
 

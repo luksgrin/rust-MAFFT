@@ -113,6 +113,14 @@ pub fn find_fft_anchors(
     // which inverts C's accumulate-then-block-align semantics. Picking the
     // first-tied is closer to C's behavior since `getKouho` already orders
     // candidates by descending correlation strength.
+    //
+    // Note: C's `Falign` accumulates ALL `NKOUHO=20` candidates' segments
+    // into a flat list and runs `blockAlign2` over a sparse cross-score
+    // matrix (with the `permit`-zero gating at `fftFunctions.c:469`). A
+    // straight port of that flow has been prototyped and confirms BL50
+    // moves from 738→711 vs C's 712 — but it breaks default BL62
+    // byte-parity. The sparse cross-score path needs more diagnosis (see
+    // TODO §2b); reverted to the single-best-lag flow for now.
     let mut best_idx = 0usize;
     let mut best_score = f64::NEG_INFINITY;
     for (i, (_lag, segs)) in all_segments.iter().enumerate() {

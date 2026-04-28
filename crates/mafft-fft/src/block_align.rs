@@ -37,16 +37,26 @@ pub fn block_align(
         }
     }
 
-    // Fill DP
+    // Fill DP. Mirrors C's `blockAlign2` (`fftFunctions.c:455-509`).
+    //
+    // C calls `permit(seg_a, seg_b)` to gate non-corner skip transitions —
+    // but the production C code defines `permit` as `return( 0 );` followed
+    // by dead code (`fftFunctions.c:378-384`). With `permit == 0` the
+    // condition `if( k && k<ncut-1 && j<ncut-1 && !permit(...) ) continue;`
+    // simplifies to: skip iff `k != 0 AND k < ncut-1 AND j < ncut-1`. So
+    // for interior cells only k=0 (corner-jump) is allowed; only boundary
+    // cells (last row or column) consider full skips.
     for i in 1..ncut {
         for j in 1..ncut {
             // Diagonal: continue from (i-1, j-1)
             let mut best = dp[i - 1][j - 1];
             track[i][j] = 0;
 
-            // Skip segments in j (gap in group2's segments)
-            // C: klim = j-2; for(k=0; k<klim; k++) → scans k=0..j-3
+            // Skip segments in j (gap in group2's segments).
+            // C: klim = j-2; for(k=0; k<klim; k++).
+            // Effective gating: k=0 always; k>0 only when j == ncut-1.
             for k in 0..j.saturating_sub(2) {
+                if k != 0 && j < ncut - 1 { continue; }
                 let score = dp[i - 1][k] + gap_penalty;
                 if score > best {
                     best = score;
@@ -54,9 +64,10 @@ pub fn block_align(
                 }
             }
 
-            // Skip segments in i (gap in group1's segments)
-            // C: klim = i-2; for(k=0; k<klim; k++) → scans k=0..i-3
+            // Skip segments in i (gap in group1's segments).
+            // C: klim = i-2; same effective gating, swapped axes.
             for k in 0..i.saturating_sub(2) {
+                if k != 0 && i < ncut - 1 { continue; }
                 let score = dp[k][j - 1] + gap_penalty;
                 if score > best {
                     best = score;
