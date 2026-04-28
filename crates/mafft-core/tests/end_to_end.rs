@@ -348,6 +348,66 @@ fn nofft_bl80_byte_identical_to_c() {
     }
 }
 
+/// `--bl 45` (FFT-NS-2 with BLOSUM45) must match C byte-for-byte.
+///
+/// MAFFT's `tmpmtx45` differs from standard NCBI BLOSUM45 at one cell —
+/// (P, H) = -2 in MAFFT, -1 in NCBI. Reverting that cell to the NCBI value
+/// re-introduces a 144-line diff against C's `--bl 45` output.
+///
+/// Reference: `tests/fixtures/sample.bl45.fftns2`.
+#[test]
+fn fftns2_bl45_byte_identical_to_c() {
+    use mafft_types::ScoringModel;
+    let c_ref = read_fasta(fixture_path("sample.bl45.fftns2"))
+        .expect("missing tests/fixtures/sample.bl45.fftns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_scoring_model(ScoringModel::Blosum(45))
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --bl 45: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --bl 45 output"
+        );
+    }
+}
+
+/// `--bl 30` (FFT-NS-2 with BLOSUM30) must match C byte-for-byte.
+///
+/// Reference: `tests/fixtures/sample.bl30.fftns2`.
+#[test]
+fn fftns2_bl30_byte_identical_to_c() {
+    use mafft_types::ScoringModel;
+    let c_ref = read_fasta(fixture_path("sample.bl30.fftns2"))
+        .expect("missing tests/fixtures/sample.bl30.fftns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_scoring_model(ScoringModel::Blosum(30))
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --bl 30: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --bl 30 output"
+        );
+    }
+}
+
 /// `--jtt 200` (FFT-NS-2 with JTT PAM 200) must match C byte-for-byte.
 ///
 /// Guards (1) the JTT lower-triangle accepted-point-mutation table in

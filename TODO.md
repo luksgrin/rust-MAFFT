@@ -44,6 +44,32 @@ matrix.
 
 ---
 
+## 2b. BLOSUM50 (`--bl 50`) — OPEN MYSTERY 2026-04-28
+
+`--bl 50` end-to-end alignment diverges from C (Rust width 738 vs C 712 on
+the 36-seq test) **despite the substitution matrix matching C cell-by-cell**:
+
+- `cross_validate_blosum50_n_dis_cell_by_cell` (passes 0 mismatches)
+- `cross_validate_blosum50_n_dis_fft_cell_by_cell` (passes 0 mismatches)
+- BL50 raw 210-cell lower-triangle table also matches `tmpmtx50` exactly
+- Both Rust and C use the same gap penalty (`-1.53`), same `-h 0`, same
+  disttbfast invocation flags (only `-b 50` vs `-b 62` differs)
+
+Yet the alignment DP picks different equivalent paths. The scoring inputs
+are provably identical, so the divergence has to be either (a) a different
+hidden global that varies with `nblosum` (unidentified), or (b) the C DP
+makes a different tie-breaking decision under BL50's specific number
+distribution.
+
+**Note**: same code path produces byte-identical output for `--bl 30`,
+`--bl 45`, `--bl 62` and `--bl 80`. Only BL50 diverges.
+
+**Concrete next task**: instrument C's `MSalignmm` (or whichever DP path
+handles BL50 here) with per-cell logging at the first divergent merge step,
+compare to Rust's per-cell DP scoring. Effort: 4-6 h.
+
+---
+
 ## 2. BLOSUM80 (`--bl 80`) — RESOLVED 2026-04-27
 
 **Status**: byte-identical to C in both FFT-NS-2 (`--bl 80`) and NW-NS-2

@@ -231,8 +231,8 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests | 111 | All crates, all modules |
-| Rust integration tests | 37 | End-to-end on real data, byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, `--bl 80` with/without FFT, `--jtt 200`, `--tm 100/200 --nofft`), DP diagnostics |
-| Rust FFI cross-validation tests | 8 | Cell-by-cell matrix equality vs C via FFI (BLOSUM62, BLOSUM80, JTT 200, JTT 100, TM 200 n_dis + n_disFFT, DNA) |
+| Rust integration tests | 39 | End-to-end on real data, byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, `--bl 30/45/80` with/without FFT, `--jtt 200`, `--tm 100/200 --nofft`), DP diagnostics |
+| Rust FFI cross-validation tests | 11 | Cell-by-cell matrix equality vs C via FFI (BLOSUM45/50/62/80, JTT 200, JTT 100, TM 200 n_dis + n_disFFT, BL50 n_disFFT, DNA) |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
 | **Total** | **190** | |
@@ -272,7 +272,7 @@ FFT-NS-i (`--maxiterate 100`) is now byte-identical to C — see `fftnsi_byte_id
 
 ### Non-default BLOSUM matrices (`--bl N`)
 
-`--bl 80` (with and without `--nofft`) is byte-identical to C — see `fftns2_bl80_byte_identical_to_c` and `nofft_bl80_byte_identical_to_c`. `--bl 30/45/50` share the same code path but don't yet have C-reference fixtures; trajectories are not formally validated.
+`--bl 30`, `--bl 45`, `--bl 62` (default), `--bl 80` are all byte-identical to C — see `fftns2_bl30_byte_identical_to_c`, `fftns2_bl45_byte_identical_to_c`, `fftns2_bl80_byte_identical_to_c`, `nofft_bl80_byte_identical_to_c`. MAFFT's BLOSUM45 and BLOSUM80 tables differ from standard NCBI at a handful of cells (BL45: P/H = -2; BL80: H/R = 0, F/M = 0, P/R = -3, V/I = 4) — matching upstream MAFFT byte-for-byte requires keeping those variant cells. `--bl 50`'s 26×26 substitution matrix matches C cell-by-cell (`cross_validate_blosum50_n_dis_cell_by_cell`, `cross_validate_blosum50_n_dis_fft_cell_by_cell`) but its end-to-end alignment diverges from C (Rust width 738 vs C 712 on the 36-seq test); the DP is selecting a different equivalent path despite identical scoring inputs. Open mystery — see TODO §2.
 
 ### Substitution-model flags (`--jtt`, `--tm`)
 

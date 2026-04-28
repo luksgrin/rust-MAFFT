@@ -308,6 +308,102 @@ fn cross_validate_blosum62_n_dis_fft_cell_by_cell() {
     }
 }
 
+/// BLOSUM45 / BLOSUM50 cell-by-cell n_dis vs C. Both share the BLOSUM62
+/// codepath; this catches drift in either raw table or the rescale pipeline.
+#[test]
+fn cross_validate_blosum45_n_dis_cell_by_cell() {
+    let _lock = C_MUTEX.lock().unwrap();
+    let rust_ctx = build_context(ScoringModel::Blosum(45), SeqType::Protein);
+    let c_matrix = unsafe {
+        init_c_globals();
+        call_c_constants(b'p', 1, 45);
+        let m = read_c_n_dis();
+        mafft_sys::freeconstants();
+        m
+    };
+    let nalpha = 26;
+    let mut mismatches = Vec::new();
+    for i in 0..nalpha {
+        for j in 0..nalpha {
+            if c_matrix[i][j] != rust_ctx.substitution_matrix[i][j] {
+                mismatches.push((i, j, c_matrix[i][j], rust_ctx.substitution_matrix[i][j]));
+            }
+        }
+    }
+    if !mismatches.is_empty() {
+        let n = mismatches.len();
+        let max_diff = mismatches.iter().map(|(_, _, c, r)| (c - r).abs()).max().unwrap_or(0);
+        eprintln!("BLOSUM45 n_dis: {n}/{} cells differ (max diff = {max_diff})", nalpha * nalpha);
+        for (i, j, c, r) in mismatches.iter().take(10) {
+            eprintln!("  n_dis[{i}][{j}]: C={c}, Rust={r} (diff={})", c - r);
+        }
+        assert!(max_diff <= 2, "BLOSUM45 n_dis max_diff={max_diff}");
+    }
+}
+
+#[test]
+fn cross_validate_blosum50_n_dis_cell_by_cell() {
+    let _lock = C_MUTEX.lock().unwrap();
+    let rust_ctx = build_context(ScoringModel::Blosum(50), SeqType::Protein);
+    let c_matrix = unsafe {
+        init_c_globals();
+        call_c_constants(b'p', 1, 50);
+        let m = read_c_n_dis();
+        mafft_sys::freeconstants();
+        m
+    };
+    let nalpha = 26;
+    let mut mismatches = Vec::new();
+    for i in 0..nalpha {
+        for j in 0..nalpha {
+            if c_matrix[i][j] != rust_ctx.substitution_matrix[i][j] {
+                mismatches.push((i, j, c_matrix[i][j], rust_ctx.substitution_matrix[i][j]));
+            }
+        }
+    }
+    if !mismatches.is_empty() {
+        let n = mismatches.len();
+        let max_diff = mismatches.iter().map(|(_, _, c, r)| (c - r).abs()).max().unwrap_or(0);
+        eprintln!("BLOSUM50 n_dis: {n}/{} cells differ (max diff = {max_diff})", nalpha * nalpha);
+        for (i, j, c, r) in mismatches.iter().take(10) {
+            eprintln!("  n_dis[{i}][{j}]: C={c}, Rust={r} (diff={})", c - r);
+        }
+        assert!(max_diff <= 2, "BLOSUM50 n_dis max_diff={max_diff}");
+    }
+}
+
+/// BLOSUM50 FFT scoring matrix vs C.
+#[test]
+fn cross_validate_blosum50_n_dis_fft_cell_by_cell() {
+    let _lock = C_MUTEX.lock().unwrap();
+    let rust_ctx = build_context(ScoringModel::Blosum(50), SeqType::Protein);
+    let c_matrix = unsafe {
+        init_c_globals();
+        call_c_constants(b'p', 1, 50);
+        let m = read_c_n_dis_fft();
+        mafft_sys::freeconstants();
+        m
+    };
+    let nalpha = 26;
+    let mut mismatches = Vec::new();
+    for i in 0..nalpha {
+        for j in 0..nalpha {
+            if c_matrix[i][j] != rust_ctx.fft_matrix[i][j] {
+                mismatches.push((i, j, c_matrix[i][j], rust_ctx.fft_matrix[i][j]));
+            }
+        }
+    }
+    if !mismatches.is_empty() {
+        let n = mismatches.len();
+        let max_diff = mismatches.iter().map(|(_, _, c, r)| (c - r).abs()).max().unwrap_or(0);
+        eprintln!("BLOSUM50 n_disFFT: {n}/{} cells differ (max diff = {max_diff})", nalpha * nalpha);
+        for (i, j, c, r) in mismatches.iter().take(10) {
+            eprintln!("  n_disFFT[{i}][{j}]: C={c}, Rust={r} (diff={})", c - r);
+        }
+        assert!(max_diff <= 2, "BLOSUM50 n_disFFT max_diff={max_diff}");
+    }
+}
+
 /// JTT cell-by-cell at non-default PAM (100) — guards the PAM-iteration loop.
 #[test]
 fn cross_validate_jtt100_n_dis_cell_by_cell() {
