@@ -47,7 +47,7 @@ and after each removal:
 
 ---
 
-## 2b. BLOSUM50 (`--bl 50`) — OPEN MYSTERY 2026-04-28
+## 2b. BLOSUM50 (`--bl 50`) — OPEN, divergence pinpointed to a single merge step
 
 `--bl 50` end-to-end alignment diverges from C (Rust width 738 vs C 712 on
 the 36-seq test) **despite the substitution matrix matching C cell-by-cell**:
@@ -58,18 +58,76 @@ the 36-seq test) **despite the substitution matrix matching C cell-by-cell**:
 - Both Rust and C use the same gap penalty (`-1.53`), same `-h 0`, same
   disttbfast invocation flags (only `-b 50` vs `-b 62` differs)
 
-Yet the alignment DP picks different equivalent paths. The scoring inputs
-are provably identical, so the divergence has to be either (a) a different
-hidden global that varies with `nblosum` (unidentified), or (b) the C DP
-makes a different tie-breaking decision under BL50's specific number
-distribution.
+**Pinpointed divergence (2026-04-28)**: instrumented C `disttbfast` to dump
+per-step `(clus1, clus2, width, score)` and compared to our `RDBG` output.
+
+| Step | Clusters | C width / score | Rust width / score |
+|------|----------|------------------|---------------------|
+| 0–32 | various  | identical        | identical           |
+| 33   | 13 × 8   | 624 / 47967.6    | 641 / 47954.6       |
+| 34   | 21 × 15  | 721 / 56627.1    | 738 / 56582.8       |
+
+The first 33 merges produce *identical* widths AND scores. Step 33 then
+diverges by 17 columns and ~13 score points (0.027% — strongly indicative
+of an FFT-anchor tie-break, not a scoring bug). Same input profiles, same
+matrix, same gap penalty: our `fft_profile_align` picks a slightly
+different anchor placement and the DP collapses into a wider alignment.
 
 **Note**: same code path produces byte-identical output for `--bl 30`,
-`--bl 45`, `--bl 62` and `--bl 80`. Only BL50 diverges.
+`--bl 45`, `--bl 62` and `--bl 80`. Only BL50 hits this tie. Likely the
+same class of issue as `--jtt 100 (FFT)` and `--tm * (FFT)` (TODO §7
+residuals): for matrices whose normalized score distribution happens to
+land FFT correlation peaks within FP rounding distance of each other, the
+choice between near-tied peaks differs.
 
-**Concrete next task**: instrument C's `MSalignmm` (or whichever DP path
-handles BL50 here) with per-cell logging at the first divergent merge step,
-compare to Rust's per-cell DP scoring. Effort: 4-6 h.
+**Diagnosed deeper (2026-04-28)**: the actual divergence is structural,
+not a tie-break.
+
+Two FFT semantic differences confirmed and patched (matched C exactly,
+verified against `Falign.c`):
+
+- `get_top_candidates` (`mafft-fft::candidates`) used `Iterator::max_by`
+  which returns the LAST among tied peaks; C's `getKouho`
+  (`fftFunctions.c:104-114`) uses strict `>` so the FIRST tied index wins.
+  Fixed.
+- `find_fft_anchors` (`mafft-align::fft_align`) used `Iterator::max_by`
+  with the same last-wins behavior on ties for best-lag selection.
+  Switched to first-wins. Fixed.
+
+Neither closed BL50 (still 738 vs 712, still 144-line diff).
+
+**The actual divergence is structural**: our `find_fft_anchors` selects
+the *single best lag* by total segment score, then runs `block_align`
+over a diagonal cross-score matrix from THAT lag's segments. C's `Falign`
+(`Falign.c:1307-1372`) instead **accumulates segments from ALL `NKOUHO=20`
+candidate lags** into `segment1[]`/`segment2[]` arrays (each segment
+tagged with its lag), sorts those flat lists by start position
+independently in seq1 and seq2, builds a sparse `crossscore[i][j]`
+matrix where each segment writes its score at its `(rank-in-sort1+1,
+rank-in-sort2+1)` cell, then runs `blockAlign2` over that combined
+matrix.
+
+For BL62 (and 7 other modes that hit byte parity) the best lag's
+segments dominate, so picking just them ends up byte-equivalent to C's
+combined run. For BL50 / `--jtt 100` (FFT) / `--tm * (FFT)`, multiple
+lags carry comparable per-segment scores and C's combined block_align
+selects a different optimal subset.
+
+**Concrete next task**: rewrite `find_fft_anchors` to mirror C's
+all-candidates pipeline. Steps:
+
+1. Run `alignable_segments` for each of `NKOUHO=20` lags, tagging each
+   segment with its lag.
+2. Build `segment1[]`/`segment2[]` arrays where `segment2[i]` has the
+   lag-shifted center, and the two are paired (mutual `pair`).
+3. Sort each independently by `center`. Assign `number = sort-rank` to
+   each.
+4. Allocate `crossscore[count+2][count+2]` with corner cells = 1e7.
+5. Set `crossscore[seg1.number+1][seg1.pair.number+1] = seg1.score`.
+6. Run `blockAlign2` and read back the selected anchor pairs.
+
+Effort: 4-8 h. Validation: BL50 byte-identical, plus also closes
+TODO §7 residuals (`--jtt 100` FFT, `--tm * (FFT)`).
 
 ---
 

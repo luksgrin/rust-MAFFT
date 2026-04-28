@@ -108,14 +108,21 @@ pub fn find_fft_anchors(
         return None;
     }
 
-    let (best_lag, best_segments) = all_segments
-        .into_iter()
-        .max_by(|a, b| {
-            let sa: f64 = a.1.iter().map(|s| s.score).sum();
-            let sb: f64 = b.1.iter().map(|s| s.score).sum();
-            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .unwrap();
+    // Among lags with tied total segment scores, pick the FIRST (highest FFT
+    // correlation peak) — `Iterator::max_by` returns the LAST among equals
+    // which inverts C's accumulate-then-block-align semantics. Picking the
+    // first-tied is closer to C's behavior since `getKouho` already orders
+    // candidates by descending correlation strength.
+    let mut best_idx = 0usize;
+    let mut best_score = f64::NEG_INFINITY;
+    for (i, (_lag, segs)) in all_segments.iter().enumerate() {
+        let s: f64 = segs.iter().map(|seg| seg.score).sum();
+        if s > best_score {
+            best_score = s;
+            best_idx = i;
+        }
+    }
+    let (best_lag, best_segments) = all_segments.swap_remove(best_idx);
 
     let nseg = best_segments.len();
     if nseg == 0 {

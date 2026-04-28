@@ -30,12 +30,21 @@ pub fn get_top_candidates(correlation: &[f64], n: usize) -> Vec<Candidate> {
     let mut candidates = Vec::with_capacity(n);
 
     for _ in 0..n {
-        // Find maximum
-        let (best_idx, &best_score) = scores
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap();
+        // C's `getKouho` (fftFunctions.c:104-114) uses a strict `>` comparison
+        // when scanning the correlation array — so among tied peaks, the
+        // FIRST (smallest-index) wins. `Iterator::max_by` returns the LAST
+        // among equals, which inverts the tie-break and shifts FFT anchors
+        // by one column on inputs whose normalized matrix lands two
+        // correlation peaks within FP rounding distance (e.g. `--bl 50` step
+        // 33, `--jtt 100` FFT, `--tm * (FFT)`).
+        let mut best_idx = 0usize;
+        let mut best_score = f64::NEG_INFINITY;
+        for (i, &s) in scores.iter().enumerate() {
+            if s > best_score {
+                best_idx = i;
+                best_score = s;
+            }
+        }
 
         // Suppress this peak
         scores[best_idx] = f64::NEG_INFINITY;
