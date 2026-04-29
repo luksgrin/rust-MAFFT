@@ -144,23 +144,52 @@ For interior cells only `k = 0` is reachable; for boundary cells (last
 row or column) all `k` are scanned. Our previous `block_align` did full
 DP with all-`k` skips for every cell — diverged from C's gated behavior.
 
-**Fix landed**: `block_align.rs` now mirrors C's permit-zero gating —
-inner skip-loop ignores `k != 0` when both endpoints are interior. All
-215 tests still pass with this fix in place (the gating is a no-op for
-the current single-best-lag diagonal-only inputs the engine actually
-emits).
+**Fixes landed in `block_align.rs`** (correctness improvements; do not
+regress any byte-identical mode):
 
-**Why the rewrite still breaks BL62**: even with the gating, the
-sparse cross-score path produces different anchors. The remaining
-deltas are likely in the post-DP traceback filtering at
-`fftFunctions.c:547-560`, which dedupes consecutive selected cells
-that share a row or column — keeping the higher-scoring one. Our
-traceback emits raw cells without that filter.
+- Permit-zero gating: inner skip-loop in DP fill now skips iff
+  `k != 0 && k < ncut - 1 && j < ncut - 1` (and symmetrically for the
+  i-loop), exactly matching `Falign.c:469-470`. Prior gating was missing
+  the `k < ncut - 1` clause.
+- Traceback + dedupe: walk back via `track` building a full `(path_i,
+  path_j)` list, then forward-filter mirroring `fftFunctions.c:547-560`
+  — drop cells whose `cross_scores` is zero, and when consecutive kept
+  cells share a row OR column, retain only the higher-scoring one.
 
-**Concrete next task** (revised): port the dedupe pass from
-`fftFunctions.c:547-560` and re-attempt the all-candidates rewrite.
-Effort: another 2 h. Validation target: BL50 + JTT 100 (FFT) + TM
-(FFT) all reach 0-line diff vs C without breaking BL62/BL30/BL45/BL80/JTT200.
+**Rewrite re-attempted with all three fixes in place — STILL BROKE BL62**
+(2026-04-29). Default BL62 went from 0-line diff → 144-line diff while
+BL50 reached 711 (vs 712) — so the structural direction is right, but
+some piece of `Falign.c:1307-1460` is still wrong in our port. Reverted
+`fft_align.rs` only; kept the `block_align.rs` improvements.
+
+Working hypotheses for the remaining gap (in priority order):
+
+1. **Sort tie-break**: when multiple anchor pairs share the same `c1`,
+   our secondary sort is `c2` ascending. C's `Falign.c:1429-1450` may
+   sort by `score` descending, or use a stable sort that preserves
+   insertion order. Verify by reading `qsort` cmp functions.
+2. **Corner sentinel value**: we put `1e7` at `[0][0]` and `[N+1][N+1]`.
+   C uses a specific value — check `Falign.c:1455-1460`.
+3. **Reverse-mapping ambiguity**: when two anchor pairs map to the same
+   `(rank1+1, rank2+1)` cell (after dedup-by-c1+c2 collapse), we pick
+   the first via `find()`. C's mapping is via the index stored in the
+   sort permutation — likely deterministic, may differ from `find()`.
+4. **Lag exclusion bounds**: we skip lags with `cand.lag <= -(n as i32)
+   || cand.lag >= m as i32`. C's bounds may include equality differently.
+5. **`alignable_segments` per-lag input**: we pass `shift_and_score`
+   results (per-position match scores). C may pass the FFT correlation
+   profile or some other signal — re-verify against `Falign.c`.
+
+**Concrete next task** (revised again): instrument C `Falign` to dump
+the flat `(c1, c2, score, lag)` anchor-pair list pre-`blockAlign2` and
+the `crossscore[][]` matrix pre-DP for the BL62 step-0 and BL50 step-33
+merges. Diff against our equivalent dumps. The first divergence
+identifies which hypothesis above is correct. Effort: 3-4 h.
+
+**Stretch validation target**: BL50 + JTT 100 (FFT) + TM 200 (FFT) all
+reach 0-line diff vs C. JTT 100 currently has 4-line diff (one residue
+shifted by one column in seq 12 — `MAA-W` vs `MA-AW`); TM 200 has 144-
+line diff with same column-shift pattern as BL50.
 
 ---
 
