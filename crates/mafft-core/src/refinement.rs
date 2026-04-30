@@ -21,8 +21,8 @@
 use rayon::prelude::*;
 
 use mafft_align::{
-    profile_align,
-    constrained_profile_align, ConstrainedAlignParams,
+    profile_align, profile_align_imp,
+    build_imp_matrix, FASTATHRESHOLD_DEFAULT,
     Profile, GapModel, AlignOp,
 };
 use mafft_fft::{alignable_segments, SegmentParams};
@@ -313,20 +313,31 @@ fn realign_all(
     }
 
     if let Some(lh_table) = constraints {
-        // Constrained alignment (L-INS-i, E-INS-i): operates on stripped profiles.
-        let cparams = ConstrainedAlignParams {
-            gap: gap.clone(),
-            segment_params: if scoring.seq_type.is_nucleotide() {
-                SegmentParams::dna()
-            } else {
-                SegmentParams::protein()
-            },
-            constraint_weight: 1.0,
-        };
-        let aln = constrained_profile_align(
+        // Constrained alignment (L-INS-i, E-INS-i). Mirrors C's
+        // `A__align(..., constraint=1, ...)` (Salignmm.c:1086): build the
+        // per-cell importance matrix `impmtx` from the localhom table once,
+        // then do the standard profile DP with `currentw[j] += impmtx[i][j]`
+        // applied row-by-row inside the DP (Salignmm.c:1700-1849).
+        //
+        // Anchored-segment optimizations from `Falign_localhom` are not
+        // ported yet; this single full DP path is the smallest correct
+        // unit and matches what `partA__align` does within each segment.
+        let g1_seq_refs: Vec<&[u8]> = stripped1.iter().map(|s| s.as_slice()).collect();
+        let g2_seq_refs: Vec<&[u8]> = stripped2.iter().map(|s| s.as_slice()).collect();
+        let imp = build_imp_matrix(
+            lh_table,
+            group1, group2,
+            &g1_seq_refs, &g2_seq_refs,
+            &w1n, &w2n,
+            stripped_prof1.length, stripped_prof2.length,
+            FASTATHRESHOLD_DEFAULT,
+        );
+        let aln = profile_align_imp(
             &stripped_prof1, &stripped_prof2,
             &scoring.substitution_matrix,
-            lh_table, group1, group2, &cparams,
+            gap,
+            true, true,
+            Some(&imp),
         );
         return build_result_from_stripped(
             &aln, group1, group2, sequences, &kept1, &kept2,

@@ -258,14 +258,60 @@ Effort: 2–3 days.
 
 ## 5. Iterative refinement flavors: G-INS-i / L-INS-i / E-INS-i
 
-**Status**: implemented but not cross-validated against C per-iteration.
-**Priority**: Medium. Likely in a similar state to FFT-NS-i (close but not iteration-exact).
-**Location**: `crates/mafft-core/src/engine.rs` (mode selection), `crates/mafft-core/src/refinement.rs` (shared pipeline).
+**Status (2026-04-30)**: ALL THREE MODES PRODUCE FFT-NS-i OUTPUT. Diagnosed
+on the 36-seq sample:
 
-**Concrete next task**: run one canonical example per mode against C and diff
-per-iteration widths, as in §1. The fixes may be shared with §1 (same refinement
-core) or may surface mode-specific paths (e.g., constrained DP for L-INS-i).
-Effort: 0.5–1 day per mode.
+| Mode                            | Rust width | C width |
+|---------------------------------|------------|---------|
+| `--maxiterate 16`        (FFT-NS-i) | 721    | 721     |
+| `--globalpair --maxiterate 16` (G-INS-i) | **721** | 737 |
+| `--localpair  --maxiterate 16` (L-INS-i) | **721** | 735 |
+| `--globalpair --maxiterate 1`  (G-INS-1) | **721** | 736 |
+| `--localpair  --maxiterate 1`  (L-INS-1) | **721** | 740 |
+
+`RUST_MAFFT_TRACE=1` shows L-INS-i and FFT-NS-i produce **identical accept
+trajectories** at every iteration — the local homology constraints are
+computed but have no effect on the alignment output.
+
+**Why** (engine.rs flow vs C):
+
+| Stage          | C (L-INS-i)                    | Rust (current)                        |
+|----------------|--------------------------------|---------------------------------------|
+| Distance       | `pairlocalalign` all-pairs     | 6-mer (`compute_distance_matrix_from_seqs`) |
+| Progressive    | `tbfast` with constraints      | unconstrained `progressive_align`     |
+| Refinement DP  | `Salignmm_localhom` adds importance to **every cell** of the DP score | `constrained_profile_align` only adjusts **anchor selection** scores; inner DP is unchanged (`align_with_anchors`) |
+
+The Rust constrained-align path applies importance bonuses only at segment
+centers via `block_align`, so when those cells aren't on the optimal path
+the constraints contribute nothing. The DP cells themselves are scored
+identically to FFT-NS-i.
+
+`G-INS-i` is even further off: the only path that distinguishes it from
+FFT-NS-i in `engine.rs:344-403` is `local_hom = None`, so it is **literally
+identical to FFT-NS-i** on every input.
+
+**Concrete next task** — three independent ports, in size order:
+
+1. **Constraint-aware refinement DP** (~1 day): port C's
+   `Salignmm_localhom` so per-cell match scores in the inner DP add the
+   homology importance. Test target: L-INS-i diverges from FFT-NS-i.
+2. **Distance from pairwise alignments** (~0.5 day): port the
+   `pairlocalalign` distance loop (or reuse `local_align` results from
+   `build_local_homology_table` to derive per-pair distance =
+   `1 - identity`). Test target: L-INS-i guide tree differs from
+   FFT-NS-i's. Already partially in `build_local_homology_table` —
+   rewire `engine.rs` to use it as the initial DM for INS-i modes.
+3. **G-INS-i / E-INS-i variants** (~1 day each): pairwise GLOBAL
+   alignment for G-INS-i (use existing `profile_align`/`global_align`),
+   pairwise GENAFF for E-INS-i (needs a generalized-affine DP variant
+   not currently in `mafft-align`).
+
+Steps 1-2 close L-INS-i; step 3 adds G/E variants. Total effort ~3-4
+days for byte-parity.
+
+Mid-step validation: even before byte parity, after step 1 the Rust
+L-INS-i width should *change* relative to FFT-NS-i — that's the first
+visible signal that constraints are flowing through the DP.
 
 ---
 

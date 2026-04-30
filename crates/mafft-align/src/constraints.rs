@@ -11,6 +11,128 @@ use mafft_types::{HomologyRegion, LocalHomologyTable};
 use crate::dp::GapModel;
 use crate::local::local_align;
 
+/// MAFFT's default `fastathreshold` for protein alignments (`scripts/mafft:97`).
+/// Multiplies each `region.importance * eff1[gi] * eff2[gj]` contribution
+/// before it lands in the per-cell importance matrix.
+pub const FASTATHRESHOLD_DEFAULT: f64 = 2.7;
+
+/// Build the per-cell importance matrix `impmtx[i][j]`, mirroring C's
+/// `fillimp` (`mltaln9.c:15560-15675`).
+///
+/// For each pair of group members `(s1, s2)`, walk every homology region
+/// stored in `localhom.get(s1, s2)`. The region's `start1`/`end1` are in
+/// the original raw-sequence position space; `move_to_seq_pos` translates
+/// them to positions in the (gapped) sequences passed in `g1_seqs[gi]` /
+/// `g2_seqs[gj]`. Within `[start, end]` we step both sequences in lockstep:
+/// at every column where neither has a gap, add
+/// `region.importance * eff1[gi] * eff2[gj] * fastathreshold` to
+/// `impmtx[k1][k2]`.
+///
+/// `g1_seqs[gi].len()` must equal `lgth1` (same for group 2). Position
+/// translation handles within-group gaps by counting non-gap residues.
+pub fn build_imp_matrix(
+    localhom: &LocalHomologyTable,
+    group1: &[usize],
+    group2: &[usize],
+    g1_seqs: &[&[u8]],
+    g2_seqs: &[&[u8]],
+    eff1: &[f64],
+    eff2: &[f64],
+    lgth1: usize,
+    lgth2: usize,
+    fastathreshold: f64,
+) -> Vec<Vec<f64>> {
+    let mut imp = vec![vec![0.0f64; lgth2]; lgth1];
+    let effijx = fastathreshold;
+
+    for (gi, &s1) in group1.iter().enumerate() {
+        for (gj, &s2) in group2.iter().enumerate() {
+            let regions = localhom.get(s1, s2);
+            if regions.is_empty() { continue; }
+            let effij = eff1[gi] * eff2[gj] * effijx;
+            let seq1 = g1_seqs[gi];
+            let seq2 = g2_seqs[gj];
+
+            for region in regions {
+                let start1 = match move_to_seq_pos(seq1, region.start1 as usize) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let end1 = if region.start1 == region.end1 {
+                    start1
+                } else {
+                    match move_to_seq_pos(seq1, region.end1 as usize) {
+                        Some(p) => p,
+                        None => continue,
+                    }
+                };
+                let start2 = match move_to_seq_pos(seq2, region.start2 as usize) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let end2 = if region.start2 == region.end2 {
+                    start2
+                } else {
+                    match move_to_seq_pos(seq2, region.end2 as usize) {
+                        Some(p) => p,
+                        None => continue,
+                    }
+                };
+
+                let mut k1 = start1;
+                let mut k2 = start2;
+                while k1 < seq1.len() && k2 < seq2.len() {
+                    let c1 = seq1[k1];
+                    let c2 = seq2[k2];
+                    if c1 != b'-' && c2 != b'-' {
+                        if k1 < lgth1 && k2 < lgth2 {
+                            imp[k1][k2] += region.importance * effij;
+                        }
+                        k1 += 1;
+                        k2 += 1;
+                    } else if c1 != b'-' && c2 == b'-' {
+                        k2 += 1;
+                    } else if c1 == b'-' && c2 != b'-' {
+                        k1 += 1;
+                    } else {
+                        k1 += 1;
+                        k2 += 1;
+                    }
+                    if k1 > end1 || k2 > end2 { break; }
+                }
+            }
+        }
+    }
+    imp
+}
+
+/// Translate a raw-sequence residue index (`raw_pos`) into a position in a
+/// (possibly gapped) sequence. Mirrors C's `movereg` (`mltaln9.c:15467`):
+/// walk forward, count non-gap characters, return the index of the
+/// `raw_pos`-th residue. If `raw_pos` exceeds the sequence's residue count
+/// (e.g. an exclusive end-marker past the last residue), returns the index
+/// just after the last residue, so callers using `<=` end checks still
+/// terminate cleanly.
+fn move_to_seq_pos(seq: &[u8], raw_pos: usize) -> Option<usize> {
+    let target = raw_pos as i64;
+    let mut count: i64 = -1;
+    let mut last_residue_idx = 0usize;
+    let mut found_any = false;
+    for (idx, &c) in seq.iter().enumerate() {
+        if c != b'-' {
+            count += 1;
+            last_residue_idx = idx;
+            found_any = true;
+        }
+        if count == target { return Some(idx); }
+    }
+    if found_any && raw_pos > count as usize {
+        Some(last_residue_idx + 1)
+    } else {
+        None
+    }
+}
+
 /// Result of one pairwise alignment for parallel collection.
 struct PairResult {
     i: usize,

@@ -18,9 +18,9 @@ pub use dp::{Alignment, AlignOp, GapModel};
 pub use global::global_align;
 pub use local::{local_align, LocalAlignment};
 pub use genaffine::{genaffine_local_align, GenAffineGapModel};
-pub use profile::{Profile, profile_align, pairwise_align11, align_with_anchors};
+pub use profile::{Profile, profile_align, profile_align_imp, pairwise_align11, align_with_anchors};
 pub use fft_align::{fft_profile_align, find_fft_anchors, FftAlignParams, Anchor};
-pub use constraints::build_local_homology_table;
+pub use constraints::{build_local_homology_table, build_imp_matrix, FASTATHRESHOLD_DEFAULT};
 pub use constrained_align::{
     constrained_profile_align, partial_profile_align, ConstrainedAlignParams,
 };

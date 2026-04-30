@@ -273,6 +273,25 @@ pub fn profile_align(
     head_gap: bool,
     tail_gap: bool,
 ) -> Alignment {
+    profile_align_imp(prof1, prof2, matrix, gap, head_gap, tail_gap, None)
+}
+
+/// Profile alignment with optional per-cell importance bonuses.
+///
+/// `impmtx[i][j]` is added to the match score at DP cell `(i, j)`. Mirrors
+/// C's `imp_match_out_vead` calls in `Salignmm.c::A__align` (lines 1700-1849)
+/// where `currentw[j] += impmtx[i][j]` is applied before each row's cell
+/// updates. Used by L-INS-i / E-INS-i to weight DP cells by local-homology
+/// importance.
+pub fn profile_align_imp(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<i32>],
+    gap: &GapModel,
+    head_gap: bool,
+    tail_gap: bool,
+    impmtx: Option<&[Vec<f64>]>,
+) -> Alignment {
     let n = prof1.length;
     let m = prof2.length;
 
@@ -402,6 +421,12 @@ pub fn profile_align(
             }
         }
     }
+    // C: imp_match_out_vead_tate(initverticalw, 0, lgth1) — add impmtx[i][0] to initverticalw[i].
+    if let Some(imp) = impmtx {
+        for i in 0..n {
+            initverticalw[i] += imp[i][0];
+        }
+    }
     if head_gap {
         for i in 1..=n {
             initverticalw[i] += ogcp1[0] * hgf2 + fgcp1[i - 1] * gf2_0;
@@ -425,6 +450,12 @@ pub fn profile_align(
             for &(k, v) in &cpmx2_sparse[j] {
                 currentw[j] += scarr[k] * v;
             }
+        }
+    }
+    // C: imp_match_out_vead(currentw, 0, lgth2) — add impmtx[0][j] to currentw[j].
+    if let Some(imp) = impmtx {
+        for j in 0..m {
+            currentw[j] += imp[0][j];
         }
     }
     if head_gap {
@@ -462,6 +493,15 @@ pub fn profile_align(
         // Batch match_calc for row i (C line 816: ist+i)
         // Fills currentw[0..m-1]. Position m doesn't exist in prof2.
         match_calc_row(i, &mut currentw);
+        // C: imp_match_out_vead(currentw, i, lgth2) — add impmtx[i][:] (Salignmm.c:1848).
+        if let Some(imp) = impmtx {
+            if i < imp.len() {
+                let row = &imp[i];
+                for j in 0..m.min(row.len()) {
+                    currentw[j] += row[j];
+                }
+            }
+        }
         currentw[m] = 0.0; // padding: no substitution score beyond prof2
         currentw[0] = initverticalw[i];
 
