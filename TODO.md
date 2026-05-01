@@ -321,21 +321,37 @@ identical to FFT-NS-i** on every input.
 
 **Concrete next tasks** (remaining):
 
-4. **Magnitude tuning toward byte parity** (highest priority, ~1 day).
-   Width is 763 vs C's 735 — overshooting by 28 columns. Closing this
-   gap is a pure magnitude problem now. Likely candidates:
-   - `fastathreshold = 2.7`: verify from `dvtditr.c` argument flow that
-     C's L-INS-i invocation actually passes `-l 2.7` (not some other
-     value from the script's `weighti` machinery).
-   - `region.importance = score / aln_len`: matches `dontcalcimportance`,
-     but C also has `calcimportance_target` and `calcimportance`
-     variants in `mltaln9.c:11523` and elsewhere. Verify which path
-     L-INS-i uses — and whether `wopt` weighting is applied
-     (`pairash.c`).
-   - Self-pair entries: C populates `localhom[i][i]` with a
-     self-region; ours doesn't. May affect impmtx for splits where the
-     same sequence appears in both groups — though that doesn't happen
-     in standard refinement / progressive steps (groups are disjoint).
+4. **Compare `opt` magnitudes Rust vs C** (~0.5 day). C and Rust now
+   share the same algorithm for L-INS-i:
+   - Same `fastathreshold = 2.7` (script:97 + tbfast.c:307-309)
+   - Same per-group sum-1 normalized eff weights (`fastconjuction_noname`
+     tddis.c:552-556)
+   - Same FFT setting: `defaultfft=0` for both `linsi` and `einsi`
+     (script:142-156). C's tbfast progressive uses FULL DP with
+     constraints, NOT `Falign_localhom`. (Earlier "structural gap"
+     hypothesis was wrong.)
+   - Same `calcimportance_half` algorithm (mltaln9.c:11756). Our port
+     `mafft-align::recompute_importance` is functionally equivalent
+     but currently gated off in `engine.rs` — enabling it pushed
+     width 763 → 565 (over-compact).
+   - Suspect: our `opt` (= `local_align` score) is on a different scale
+     than C's `pairlocalalign` opt. With identical importance formula,
+     different opt → different impmtx magnitudes → different DP outcome.
+
+   Concrete diagnostic: instrument C `pairlocalalign` to dump
+   `(i, j, start1, end1, opt)` for the 36-seq sample's localhomtable
+   right before tbfast's `calcimportance_half`. Run the equivalent in
+   Rust (we already have `build_local_homology_table`'s output). Diff.
+   Effort: ~3-4 hours.
+
+5. **Re-enable `recompute_importance`** once opt magnitudes are
+   reconciled. Currently lives behind `if false {}` in `engine.rs`.
+
+6. **G-INS-i** (~1 day): pairwise GLOBAL distances + constraints (uses
+   `defaultfft=1` so progressive does use FFT). Add
+   `build_global_homology_table` using `global_align`.
+
+7. **E-INS-i tightening** (~1 day): genaff pairwise instead of local.
 
 5. **G-INS-i** (~1 day). Currently identical to FFT-NS-i because the
    engine sets `local_hom = None` for it. C's G-INS-i uses pairwise

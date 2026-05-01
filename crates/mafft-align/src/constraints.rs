@@ -106,6 +106,103 @@ pub fn build_imp_matrix(
     imp
 }
 
+/// Recompute homology-region `importance` values using C's
+/// position-vote algorithm in `calcimportance` (`mltaln9.c:11984`).
+///
+/// Replaces each region's provisional importance (typically `opt /
+/// overlapaa` from `build_local_homology_table`) with a value that
+/// rewards regions backed by many "voting" sequences:
+///
+/// 1. Normalize `ieff[j] = eff[j] / sum(eff[non-empty])`.
+/// 2. For each sequence `i`, build a per-position support array
+///    `support[pos] = sum_j ieff[j]` over every region in
+///    `localhom.get(i, j)` that covers position `pos` (raw residue
+///    index in `sequences[i]`).
+/// 3. For each region in `localhom.get(i, j)`, set
+///    `region.importance = mean(support[start1..=end1]) * region.opt`.
+/// 4. Symmetrize: for each pair `(i, j)`, average the importance of
+///    the matching regions in `localhom.get(i, j)` and `localhom.get(j, i)`.
+///
+/// `eff` is the global tree-weight vector (typically from
+/// `mafft-tree::sequence_weights`) — match the value C's `tbfast` passes
+/// to `calcimportance` after building the tree.
+pub fn recompute_importance(
+    localhom: &mut LocalHomologyTable,
+    sequences: &[&[u8]],
+    eff: &[f64],
+) {
+    let nseq = sequences.len();
+    if nseq < 2 || localhom.nseq != nseq { return; }
+
+    let nogaplen: Vec<usize> = sequences.iter()
+        .map(|s| s.iter().filter(|&&c| c != b'-').count()).collect();
+    let totaleff: f64 = (0..nseq)
+        .filter(|&i| nogaplen[i] > 0).map(|i| eff[i]).sum();
+    if totaleff <= 0.0 { return; }
+    let ieff: Vec<f64> = (0..nseq).map(|i| {
+        if nogaplen[i] > 0 { eff[i] / totaleff } else { 0.0 }
+    }).collect();
+    let nlenmax = nogaplen.iter().copied().max().unwrap_or(0);
+    if nlenmax == 0 { return; }
+
+    // Pass 1: per-i position-vote → set importance = mean(support over region) * opt
+    let mut support = vec![0.0f64; nlenmax];
+    for i in 0..nseq {
+        for v in support.iter_mut() { *v = 0.0; }
+        for j in 0..nseq {
+            if i == j { continue; }
+            for region in localhom.get(i, j) {
+                let s = (region.start1 as usize).min(nlenmax);
+                let e = (region.end1 as usize).min(nlenmax.saturating_sub(1));
+                for pos in s..=e {
+                    if pos < nlenmax { support[pos] += ieff[j]; }
+                }
+            }
+        }
+        for j in 0..nseq {
+            if i == j { continue; }
+            // Note: C iterates `for tmpptr = localhom[i]+j; tmpptr; tmpptr=tmpptr->next`
+            // — a linked list. We have a Vec; iterate by index so we can mutate.
+            let regions_count = localhom.get(i, j).len();
+            for r in 0..regions_count {
+                let (s, e) = {
+                    let region = &localhom.get(i, j)[r];
+                    (
+                        (region.start1 as usize).min(nlenmax.saturating_sub(1)),
+                        (region.end1 as usize).min(nlenmax.saturating_sub(1)),
+                    )
+                };
+                let mut sum = 0.0f64;
+                let mut count = 0usize;
+                for pos in s..=e {
+                    sum += support[pos];
+                    count += 1;
+                }
+                let mean = if count > 0 { sum / count as f64 } else { 0.0 };
+                let region = &mut localhom.get_mut(i, j)[r];
+                region.importance = mean * region.opt;
+            }
+        }
+    }
+
+    // Pass 2: symmetrize importance between (i,j) and (j,i)
+    for i in 0..nseq.saturating_sub(1) {
+        for j in (i + 1)..nseq {
+            let n_ij = localhom.get(i, j).len();
+            let n_ji = localhom.get(j, i).len();
+            let n = n_ij.min(n_ji);
+            for r in 0..n {
+                let avg = 0.5 * (
+                    localhom.get(i, j)[r].importance
+                  + localhom.get(j, i)[r].importance
+                );
+                localhom.get_mut(i, j)[r].importance = avg;
+                localhom.get_mut(j, i)[r].importance = avg;
+            }
+        }
+    }
+}
+
 /// Translate a raw-sequence residue index (`raw_pos`) into a position in a
 /// (possibly gapped) sequence. Mirrors C's `movereg` (`mltaln9.c:15467`):
 /// walk forward, count non-gap characters, return the index of the
@@ -182,10 +279,10 @@ pub fn build_local_homology_table(
 
             let aln_len = result.alignment.len();
             // C's `dontcalcimportance` (mltaln9.c:11472) sets
-            // `importance = opt / overlapaa`. Without this divide our raw
-            // score is ~aln_len times larger than C's, which over-amplifies
-            // the per-cell constraint pull and yields a more compact
-            // alignment than C produces.
+            // `importance = opt / overlapaa`. This is the *provisional*
+            // value before `calcimportance` runs the position-vote
+            // re-weighting and symmetrization (mltaln9.c:11984). Until we
+            // port that pass we use this provisional form.
             let importance = if aln_len > 0 { score / aln_len as f64 } else { score };
             let region = if aln_len > 0 {
                 Some(HomologyRegion {

@@ -225,7 +225,7 @@ impl MafftEngine {
         // pairwise local alignments. We piggyback on `build_local_homology_table`,
         // which already runs the same pairwise alignments to populate the
         // homology constraint table — we keep both outputs (distance + table).
-        let pairwise_for_constraints = if matches!(
+        let mut pairwise_for_constraints = if matches!(
             self.mode,
             AlignmentMode::LInsi { .. } | AlignmentMode::EInsi { .. }
         ) {
@@ -254,6 +254,35 @@ impl MafftEngine {
         } else {
             compute_distance_matrix_from_seqs(&sequences)
         };
+
+        // C's `tbfast` calls `calcimportance` (mltaln9.c:11984) AFTER the
+        // initial tree, replacing each region's provisional importance
+        // with `mean(position-vote support over region) * region.opt`,
+        // then symmetrizing across (i,j)/(j,i).
+        //
+        // Calling `recompute_importance` here computes the value C uses,
+        // but the resulting alignment over-compacts (width 565) — because
+        // C's progressive uses `Falign_localhom` (anchor-segmented DP),
+        // which localizes the constraint effect within each segment,
+        // while our `progressive_align_with_constraints` applies the
+        // constraint over the full profile DP. Stronger importance plus
+        // unsegmented DP yields excessive pull toward matches.
+        //
+        // Disabled until we port `Falign_localhom`; the provisional
+        // `score / overlapaa` importance from `build_local_homology_table`
+        // still produces a divergent-from-FFT-NS-i alignment (visible
+        // signal that constraints flow through the DP).
+        if false {
+            if pairwise_for_constraints.is_some() && !use_parttree {
+                let initial_topo = musclesupg(&dm, ClusterMethod::default());
+                let weights = mafft_tree::sequence_weights(&initial_topo);
+                let seq_refs: Vec<&[u8]> = input.sequences.iter()
+                    .map(|s| s.data.as_slice()).collect();
+                if let Some((ref mut table, _)) = pairwise_for_constraints {
+                    mafft_align::recompute_importance(table, &seq_refs, &weights);
+                }
+            }
+        }
 
         // Step 2: Build guide tree and progressive align, repeating `retree` times.
         // Each iteration after the first computes distances from the ALIGNMENT
