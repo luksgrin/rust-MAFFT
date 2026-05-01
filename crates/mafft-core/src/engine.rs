@@ -231,14 +231,43 @@ impl MafftEngine {
         ) {
             let seq_refs: Vec<&[u8]> = input.sequences.iter()
                 .map(|s| s.data.as_slice()).collect();
-            let gap = GapModel::new(
-                scoring.gap.open as f64, scoring.gap.extend as f64,
+            // C's `pairlocalalign` for L-INS-i uses pairwise-specific gap
+            // penalties, NOT the progressive ones (`scripts/mafft:91-92,201-203`):
+            //   lgop = -2.00  → ppenalty * 600/1000 = 1200 (penalty in DP)
+            //   lexp = -0.100 →                       60
+            //   laof =  0.100 →                       60 (positive, score offset)
+            // These are applied in `pairlocalalign` invocation
+            // (`scripts/mafft:2588`), distinct from tbfast's `-f -1.53` /
+            // `-h 0.0` for progressive. Using the wrong (progressive) values
+            // here makes our `opt` magnitudes diverge from C's.
+            let scale_protein: f64 = 600.0 / 1000.0;
+            let lgop: f64 = -2.00;
+            let lexp: f64 = -0.100;
+            let laof: f64 = 0.100;
+            let pair_gap = GapModel::new(
+                scale_protein * (lgop * 1000.0).round(),
+                scale_protein * (lexp * 1000.0).round(),
             );
+            // C's `pairlocalalign` applies the offset by subtracting it
+            // from every cell of the substitution matrix
+            // (`constants.c:797-798`: `n_distmp[i][j] -= offset`). The
+            // resulting `n_dis` shifted matrix is used for local alignment
+            // scoring. Our `local_align`'s `score_offset` only adjusts the
+            // local-stop threshold, so we shift the matrix here directly.
+            let pair_offset_int: i32 =
+                (scale_protein * laof * 1000.0).round() as i32;
+            let nscored = scoring.nscoredalphabets;
+            let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+            for i in 0..nscored {
+                for j in 0..nscored {
+                    shifted[i][j] -= pair_offset_int;
+                }
+            }
             let (table, dist) = build_local_homology_table(
                 &seq_refs,
-                &scoring.substitution_matrix,
+                &shifted,
                 &scoring.amino_map,
-                &gap,
+                &pair_gap,
                 0.0,
             );
             Some((table, DistanceMatrix::from_full(&dist)))
@@ -255,34 +284,31 @@ impl MafftEngine {
             compute_distance_matrix_from_seqs(&sequences)
         };
 
-        // C's `tbfast` calls `calcimportance` (mltaln9.c:11984) AFTER the
-        // initial tree, replacing each region's provisional importance
-        // with `mean(position-vote support over region) * region.opt`,
-        // then symmetrizing across (i,j)/(j,i).
+        // C's `tbfast` calls `calcimportance_half` (mltaln9.c:11756) AFTER
+        // the initial tree to replace provisional importance with
+        // `mean(position-vote support over region) * opt`. Our port
+        // (`mafft-align::recompute_importance`) is functionally equivalent
+        // but currently disabled: enabling it pushes width 704 → 601
+        // (over-compact) even with the corrected pairwise gap penalties
+        // and matrix offset above. Hypothesis: our `opt` magnitudes still
+        // differ from C's `pairlocalalign`, so `mean(support) * opt`
+        // amplifies the residual mismatch by ~300× vs the provisional
+        // `score / overlapaa` form.
         //
-        // Calling `recompute_importance` here computes the value C uses,
-        // but the resulting alignment over-compacts (width 565) — because
-        // C's progressive uses `Falign_localhom` (anchor-segmented DP),
-        // which localizes the constraint effect within each segment,
-        // while our `progressive_align_with_constraints` applies the
-        // constraint over the full profile DP. Stronger importance plus
-        // unsegmented DP yields excessive pull toward matches.
-        //
-        // Disabled until we port `Falign_localhom`; the provisional
-        // `score / overlapaa` importance from `build_local_homology_table`
-        // still produces a divergent-from-FFT-NS-i alignment (visible
-        // signal that constraints flow through the DP).
-        if false {
-            if pairwise_for_constraints.is_some() && !use_parttree {
-                let initial_topo = musclesupg(&dm, ClusterMethod::default());
-                let weights = mafft_tree::sequence_weights(&initial_topo);
-                let seq_refs: Vec<&[u8]> = input.sequences.iter()
-                    .map(|s| s.data.as_slice()).collect();
-                if let Some((ref mut table, _)) = pairwise_for_constraints {
-                    mafft_align::recompute_importance(table, &seq_refs, &weights);
-                }
-            }
-        }
+        // Concrete next diagnostic: instrument C `pairlocalalign` to dump
+        // `opt` values for the 36-seq sample, compare against the values
+        // our `local_align` produces with the corrected params. The first
+        // pair with a >2× discrepancy points to the remaining bug.
+        let _ = (&dm, &input);  // silence unused warnings
+        // if pairwise_for_constraints.is_some() && !use_parttree {
+        //     let initial_topo = musclesupg(&dm, ClusterMethod::default());
+        //     let weights = mafft_tree::sequence_weights(&initial_topo);
+        //     let seq_refs: Vec<&[u8]> = input.sequences.iter()
+        //         .map(|s| s.data.as_slice()).collect();
+        //     if let Some((ref mut table, _)) = pairwise_for_constraints {
+        //         mafft_align::recompute_importance(table, &seq_refs, &weights);
+        //     }
+        // }
 
         // Step 2: Build guide tree and progressive align, repeating `retree` times.
         // Each iteration after the first computes distances from the ALIGNMENT

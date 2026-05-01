@@ -258,19 +258,23 @@ Effort: 2–3 days.
 
 ## 5. Iterative refinement flavors: G-INS-i / L-INS-i / E-INS-i
 
-**Status (2026-05-01, after steps 1+2+3 of port)**:
+**Status (2026-05-01, after steps 1+2+3+pairwise-param-fix)**:
 
-| Mode | Before any fix | After step 1 (DP imp) | After step 2 (pairwise dist) | After importance/aln_len | After step 3 (constrained progressive) | C ref |
-|------|----------------|------------------------|-------------------------------|--------------------------|----------------------------------------|-------|
-| L-INS-i width | 721 | 717 | 717* | 714 | **763** | 735 |
-| E-INS-i width | 721 | 717 | 717* | 714 | **763** | 740 |
+| Step | L-INS-i width | C ref |
+|------|----------------|-------|
+| Before any fix | 721 (= FFT-NS-i) | 735 |
+| Step 1: per-cell DP imp | 717 | 735 |
+| Step 2: pairwise-derived initial distance | 717* | 735 |
+| Importance /= aln_len (`dontcalcimportance`) | 714 | 735 |
+| Step 3: constrained progressive | 763 | 735 |
+| Step 4a: L-INS-i-specific pairwise gap penalties | 680 | 735 |
+| Step 4b: Matrix offset shift (constants.c:798) | **704** | 735 |
+| Step 4c: + `recompute_importance` (calcimportance_half) | 601 (gated off) | 735 |
 
-(\*same width as step 1 by coincidence; 144-line content diff confirms different progressive build.)
+(\*same width as step 1 by coincidence; 144-line content diff confirmed different progressive build.)
 
-We've **crossed the target**: Rust was 21 below C's 735 (more compact than C);
-now sits 28 above. Adding constraint-aware progressive flipped the
-direction. Closing the gap is now a magnitude-tuning problem, not a
-structural one.
+**Current best width: 704 (off by 31 from C's 735, ~4.2%).**
+All 215 tests pass; every byte-identical mode stays byte-identical.
 
 **Pieces in place:**
 - Step 1 — `profile_align_imp` (`mafft-align/src/profile.rs`): adds
@@ -282,11 +286,21 @@ structural one.
 - Step 3 — `progressive_align_with_constraints`
   (`mafft-core/src/progressive.rs`): when `constraints` is `Some` and
   `use_fft = false`, every merge calls `build_imp_matrix` for the
-  group split and routes through `profile_align_imp`. C analog:
-  `tbfast` → `Falign_localhom`/`partA__align` per segment.
+  group split and routes through `profile_align_imp`.
 - Importance scaling — `build_local_homology_table` sets
   `importance = score / aln_len` matching C's
   `dontcalcimportance` (`mltaln9.c:11472`).
+- Step 4 — `engine.rs` now passes L-INS-i-specific pairwise alignment
+  parameters to `build_local_homology_table` (`scripts/mafft:91-92,201-203`):
+    - lgop = -2.00, lexp = -0.100, laof = 0.100
+  And applies the matrix offset shift (`constants.c:798`) before
+  pairwise alignment, since our `local_align`'s `score_offset` only
+  controls the local-stop threshold, not per-cell match scores.
+- `recompute_importance` (`mafft-align/src/constraints.rs`):
+  port of `calcimportance_half` (`mltaln9.c:11756`) — implementation
+  complete but currently disabled in `engine.rs` because enabling it
+  pushes width 704 → 601 (over-compact). Likely remaining cause:
+  residual `opt` magnitude mismatch vs C's `pairlocalalign`.
 
 **Earlier diagnosis** on the 36-seq sample (prior to fixes):
 
@@ -321,31 +335,27 @@ identical to FFT-NS-i** on every input.
 
 **Concrete next tasks** (remaining):
 
-4. **Compare `opt` magnitudes Rust vs C** (~0.5 day). C and Rust now
-   share the same algorithm for L-INS-i:
+4. **Compare `opt` magnitudes Rust vs C** (~0.5 day, highest priority).
+   C and Rust now share the same algorithm for L-INS-i:
    - Same `fastathreshold = 2.7` (script:97 + tbfast.c:307-309)
    - Same per-group sum-1 normalized eff weights (`fastconjuction_noname`
      tddis.c:552-556)
    - Same FFT setting: `defaultfft=0` for both `linsi` and `einsi`
      (script:142-156). C's tbfast progressive uses FULL DP with
-     constraints, NOT `Falign_localhom`. (Earlier "structural gap"
-     hypothesis was wrong.)
-   - Same `calcimportance_half` algorithm (mltaln9.c:11756). Our port
-     `mafft-align::recompute_importance` is functionally equivalent
-     but currently gated off in `engine.rs` — enabling it pushed
-     width 763 → 565 (over-compact).
-   - Suspect: our `opt` (= `local_align` score) is on a different scale
-     than C's `pairlocalalign` opt. With identical importance formula,
-     different opt → different impmtx magnitudes → different DP outcome.
+     constraints, NOT `Falign_localhom`.
+   - Same pairwise alignment params (lgop=-2.0, lexp=-0.10, laof=0.10).
+   - Same `calcimportance_half` algorithm (port present in
+     `mafft-align::recompute_importance`).
+   - Width gap remains 704 vs 735 (~4.2%). Constraint plumbing is right;
+     `opt` magnitude is the suspected residual delta.
 
-   Concrete diagnostic: instrument C `pairlocalalign` to dump
-   `(i, j, start1, end1, opt)` for the 36-seq sample's localhomtable
-   right before tbfast's `calcimportance_half`. Run the equivalent in
-   Rust (we already have `build_local_homology_table`'s output). Diff.
-   Effort: ~3-4 hours.
+   Concrete diagnostic: dump our `opt`/`overlapaa`/`start1`/`end1` for
+   each (i,j) pair, run C `pairlocalalign` standalone with `mktemp`-based
+   working dir to capture `hat3` (which contains the same), diff.
+   The first pair with >2× discrepancy points to the bug.
 
-5. **Re-enable `recompute_importance`** once opt magnitudes are
-   reconciled. Currently lives behind `if false {}` in `engine.rs`.
+5. **Re-enable `recompute_importance`** once opt magnitudes line up.
+   Currently commented out in `engine.rs`.
 
 6. **G-INS-i** (~1 day): pairwise GLOBAL distances + constraints (uses
    `defaultfft=1` so progressive does use FFT). Add
