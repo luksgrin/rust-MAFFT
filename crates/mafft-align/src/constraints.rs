@@ -181,6 +181,12 @@ pub fn build_local_homology_table(
             let d = (1.0 - identity).clamp(0.0, 2.0);
 
             let aln_len = result.alignment.len();
+            // C's `dontcalcimportance` (mltaln9.c:11472) sets
+            // `importance = opt / overlapaa`. Without this divide our raw
+            // score is ~aln_len times larger than C's, which over-amplifies
+            // the per-cell constraint pull and yields a more compact
+            // alignment than C produces.
+            let importance = if aln_len > 0 { score / aln_len as f64 } else { score };
             let region = if aln_len > 0 {
                 Some(HomologyRegion {
                     start1: result.offset1 as i32,
@@ -189,7 +195,7 @@ pub fn build_local_homology_table(
                     end2: (result.offset2 + aln_len) as i32,
                     opt: score,
                     overlapaa: aln_len as i32,
-                    importance: score,
+                    importance,
                     korh: b'h',
                     ..Default::default()
                 })

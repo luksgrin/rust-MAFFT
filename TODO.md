@@ -258,8 +258,37 @@ Effort: 2–3 days.
 
 ## 5. Iterative refinement flavors: G-INS-i / L-INS-i / E-INS-i
 
-**Status (2026-04-30)**: ALL THREE MODES PRODUCE FFT-NS-i OUTPUT. Diagnosed
-on the 36-seq sample:
+**Status (2026-05-01, after steps 1+2+3 of port)**:
+
+| Mode | Before any fix | After step 1 (DP imp) | After step 2 (pairwise dist) | After importance/aln_len | After step 3 (constrained progressive) | C ref |
+|------|----------------|------------------------|-------------------------------|--------------------------|----------------------------------------|-------|
+| L-INS-i width | 721 | 717 | 717* | 714 | **763** | 735 |
+| E-INS-i width | 721 | 717 | 717* | 714 | **763** | 740 |
+
+(\*same width as step 1 by coincidence; 144-line content diff confirms different progressive build.)
+
+We've **crossed the target**: Rust was 21 below C's 735 (more compact than C);
+now sits 28 above. Adding constraint-aware progressive flipped the
+direction. Closing the gap is now a magnitude-tuning problem, not a
+structural one.
+
+**Pieces in place:**
+- Step 1 — `profile_align_imp` (`mafft-align/src/profile.rs`): adds
+  `impmtx[i][j]` to match scores in three places mirroring C's
+  `imp_match_out_vead*` calls in `Salignmm.c::A__align`.
+- Step 2 — `engine.rs::align`: uses `build_local_homology_table`'s
+  returned distance matrix for the initial L/E-INS-i guide tree
+  instead of 6-mer (`compute_distance_matrix_from_seqs`).
+- Step 3 — `progressive_align_with_constraints`
+  (`mafft-core/src/progressive.rs`): when `constraints` is `Some` and
+  `use_fft = false`, every merge calls `build_imp_matrix` for the
+  group split and routes through `profile_align_imp`. C analog:
+  `tbfast` → `Falign_localhom`/`partA__align` per segment.
+- Importance scaling — `build_local_homology_table` sets
+  `importance = score / aln_len` matching C's
+  `dontcalcimportance` (`mltaln9.c:11472`).
+
+**Earlier diagnosis** on the 36-seq sample (prior to fixes):
 
 | Mode                            | Rust width | C width |
 |---------------------------------|------------|---------|
@@ -290,28 +319,40 @@ identically to FFT-NS-i.
 FFT-NS-i in `engine.rs:344-403` is `local_hom = None`, so it is **literally
 identical to FFT-NS-i** on every input.
 
-**Concrete next task** — three independent ports, in size order:
+**Concrete next tasks** (remaining):
 
-1. **Constraint-aware refinement DP** (~1 day): port C's
-   `Salignmm_localhom` so per-cell match scores in the inner DP add the
-   homology importance. Test target: L-INS-i diverges from FFT-NS-i.
-2. **Distance from pairwise alignments** (~0.5 day): port the
-   `pairlocalalign` distance loop (or reuse `local_align` results from
-   `build_local_homology_table` to derive per-pair distance =
-   `1 - identity`). Test target: L-INS-i guide tree differs from
-   FFT-NS-i's. Already partially in `build_local_homology_table` —
-   rewire `engine.rs` to use it as the initial DM for INS-i modes.
-3. **G-INS-i / E-INS-i variants** (~1 day each): pairwise GLOBAL
-   alignment for G-INS-i (use existing `profile_align`/`global_align`),
-   pairwise GENAFF for E-INS-i (needs a generalized-affine DP variant
-   not currently in `mafft-align`).
+4. **Magnitude tuning toward byte parity** (highest priority, ~1 day).
+   Width is 763 vs C's 735 — overshooting by 28 columns. Closing this
+   gap is a pure magnitude problem now. Likely candidates:
+   - `fastathreshold = 2.7`: verify from `dvtditr.c` argument flow that
+     C's L-INS-i invocation actually passes `-l 2.7` (not some other
+     value from the script's `weighti` machinery).
+   - `region.importance = score / aln_len`: matches `dontcalcimportance`,
+     but C also has `calcimportance_target` and `calcimportance`
+     variants in `mltaln9.c:11523` and elsewhere. Verify which path
+     L-INS-i uses — and whether `wopt` weighting is applied
+     (`pairash.c`).
+   - Self-pair entries: C populates `localhom[i][i]` with a
+     self-region; ours doesn't. May affect impmtx for splits where the
+     same sequence appears in both groups — though that doesn't happen
+     in standard refinement / progressive steps (groups are disjoint).
 
-Steps 1-2 close L-INS-i; step 3 adds G/E variants. Total effort ~3-4
-days for byte-parity.
+5. **G-INS-i** (~1 day). Currently identical to FFT-NS-i because the
+   engine sets `local_hom = None` for it. C's G-INS-i uses pairwise
+   GLOBAL alignment for both the distance matrix AND constraints
+   (different importance distribution than local). Add
+   `build_global_homology_table` (analog of `build_local_homology_table`
+   using `global_align`), wire G-INS-i through the same constraint path.
 
-Mid-step validation: even before byte parity, after step 1 the Rust
-L-INS-i width should *change* relative to FFT-NS-i — that's the first
-visible signal that constraints are flowing through the DP.
+6. **E-INS-i tightening** (~1 day). Currently shares the L-INS-i
+   constraint path. C's E-INS-i actually uses generalized-affine
+   pairwise alignment for distances/constraints. Add
+   `build_genaff_homology_table` using `genaffine_local_align`, route
+   E-INS-i through it.
+
+Tests guarding existing parity (`fftns2_byte_identical_to_c`,
+`fftnsi_byte_identical_to_c`, `nofft_byte_identical_to_c`, the BL
+matrix family, JTT 200, TM 100 / 200) all still pass after steps 1+2+3.
 
 ---
 

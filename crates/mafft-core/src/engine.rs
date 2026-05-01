@@ -8,7 +8,7 @@ use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, sco
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
-use crate::progressive::{progressive_align, MultipleAlignment};
+use crate::progressive::{progressive_align, progressive_align_with_constraints, MultipleAlignment};
 use crate::refinement::{iterative_refine, RefinementParams};
 use crate::add::{add_sequences, add_sequences_keeplength};
 
@@ -220,9 +220,37 @@ impl MafftEngine {
             None
         };
 
+        // For L-INS-i / E-INS-i, MAFFT's `pairlocalalign` (then `tbfast`) replaces
+        // the 6-mer initial distance with a distance derived from all-vs-all
+        // pairwise local alignments. We piggyback on `build_local_homology_table`,
+        // which already runs the same pairwise alignments to populate the
+        // homology constraint table — we keep both outputs (distance + table).
+        let pairwise_for_constraints = if matches!(
+            self.mode,
+            AlignmentMode::LInsi { .. } | AlignmentMode::EInsi { .. }
+        ) {
+            let seq_refs: Vec<&[u8]> = input.sequences.iter()
+                .map(|s| s.data.as_slice()).collect();
+            let gap = GapModel::new(
+                scoring.gap.open as f64, scoring.gap.extend as f64,
+            );
+            let (table, dist) = build_local_homology_table(
+                &seq_refs,
+                &scoring.substitution_matrix,
+                &scoring.amino_map,
+                &gap,
+                0.0,
+            );
+            Some((table, DistanceMatrix::from_full(&dist)))
+        } else {
+            None
+        };
+
         let mut dm = if use_parttree {
             // Skip full distance matrix — PartTree builds tree directly
             DistanceMatrix::new(nseq)
+        } else if let Some((_, ref pre_dm)) = pairwise_for_constraints {
+            pre_dm.clone()
         } else {
             compute_distance_matrix_from_seqs(&sequences)
         };
@@ -258,7 +286,20 @@ impl MafftEngine {
                 None
             };
 
-            msa = progressive_align(&input_seqs, &names, &topo, &scoring, use_fft, shift);
+            // For L-INS-i / E-INS-i, thread the local-homology table through
+            // the progressive merges so they pick up the same per-cell
+            // importance bonuses the refinement DP already uses. C's tbfast
+            // does this via Falign_localhom (FFT) or partA__align (per
+            // segment). We currently only handle the non-FFT branch in
+            // `progressive_align_with_constraints` — that's the path
+            // L-INS-i takes since the engine sets `use_fft = false` for
+            // any non-FftNs2/FftNsi mode.
+            let progress_constraints = pairwise_for_constraints
+                .as_ref().map(|(t, _)| t);
+            msa = progressive_align_with_constraints(
+                &input_seqs, &names, &topo, &scoring, use_fft, shift,
+                progress_constraints,
+            );
             accumulated_trace.extend(msa.step_trace.iter().copied());
 
             // For the next retree pass, recompute distances from the now-aligned
@@ -325,16 +366,8 @@ impl MafftEngine {
                 }
             }
         } else if uses_constraints {
-            let seq_refs: Vec<&[u8]> = input.sequences.iter().map(|s| s.data.as_slice()).collect();
-            let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
-            let (table, _dist) = build_local_homology_table(
-                &seq_refs,
-                &scoring.substitution_matrix,
-                &scoring.amino_map,
-                &gap,
-                0.0,
-            );
-            Some(table)
+            // Reuse the table built up-front for the initial distance matrix.
+            pairwise_for_constraints.map(|(t, _)| t)
         } else {
             None
         };

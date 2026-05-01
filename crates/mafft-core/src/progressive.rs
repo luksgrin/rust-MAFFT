@@ -58,6 +58,28 @@ pub fn progressive_align(
     use_fft: bool,
     shift_penalty: Option<f64>,
 ) -> MultipleAlignment {
+    progressive_align_with_constraints(
+        sequences, names, topology, scoring, use_fft, shift_penalty, None,
+    )
+}
+
+/// Progressive alignment with optional local-homology constraints.
+///
+/// When `constraints` is `Some`, every merge calls `profile_align_imp`
+/// with a per-merge impmtx built via `mafft-align::build_imp_matrix` —
+/// mirroring what `tbfast` does in C's L-INS-i pipeline (`Falign_localhom`,
+/// or the non-FFT `partA__align` per segment). Without this the initial
+/// progressive alignment is FFT-NS-i-like and only refinement sees the
+/// constraints, leaving L-INS-i/E-INS-i shapes systematically off vs C.
+pub fn progressive_align_with_constraints(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+    constraints: Option<&mafft_types::LocalHomologyTable>,
+) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
@@ -87,7 +109,7 @@ pub fn progressive_align(
     for (step_idx, step) in topology.steps.iter().enumerate() {
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
-            &mut profile_cache,
+            &mut profile_cache, constraints,
         );
 
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
@@ -122,6 +144,7 @@ fn merge_step_cached(
     gap: &GapModel,
     use_fft: bool,
     cache: &mut HashMap<Vec<usize>, CachedProfile>,
+    constraints: Option<&mafft_types::LocalHomologyTable>,
 ) -> f64 {
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
@@ -176,6 +199,35 @@ fn merge_step_cached(
             num_channels: scoring.nscoredalphabets,
         };
         fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params)
+    } else if let Some(table) = constraints {
+        // Constraint-aware progressive merge (L-INS-i / E-INS-i tbfast path).
+        // Build per-cell impmtx from the localhom table over the group split,
+        // then call the importance-aware DP. Mirrors C's `partA__align` /
+        // `Falign_localhom` per-segment DP with `imp_match_out_vead` adding
+        // the importance bonus row-by-row.
+        let g1_seq_refs: Vec<&[u8]> = group1.iter().map(|&i| aligned[i].as_slice()).collect();
+        let g2_seq_refs: Vec<&[u8]> = group2.iter().map(|&i| aligned[i].as_slice()).collect();
+        // Group-local sum-1 normalized weights (matches C's
+        // `fastconjuction_noname` `peff[m] /= total`, tddis.c:552-556).
+        const MINIMUM_WEIGHT: f64 = 0.00001;
+        let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
+        let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
+        let s1: f64 = w1.iter().sum();
+        let s2: f64 = w2.iter().sum();
+        let w1n: Vec<f64> = if s1 > 0.0 { w1.iter().map(|w| w / s1).collect() } else { vec![1.0; group1.len()] };
+        let w2n: Vec<f64> = if s2 > 0.0 { w2.iter().map(|w| w / s2).collect() } else { vec![1.0; group2.len()] };
+        let imp = mafft_align::build_imp_matrix(
+            table,
+            group1, group2,
+            &g1_seq_refs, &g2_seq_refs,
+            &w1n, &w2n,
+            prof1.length, prof2.length,
+            mafft_align::FASTATHRESHOLD_DEFAULT,
+        );
+        mafft_align::profile_align_imp(
+            &prof1, &prof2, &scoring.substitution_matrix, gap,
+            false, false, Some(&imp),
+        )
     } else {
         profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, false, false)
     };
