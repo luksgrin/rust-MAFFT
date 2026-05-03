@@ -358,39 +358,41 @@ identical to FFT-NS-i** on every input.
 
 **Concrete next tasks** (remaining):
 
-4. **Close the last 10 columns** (L-INS-i 725 vs C 735, ~1.4%). With
-   chaining + C-formula opt + calcimportance_half all in place, the
-   remaining gap is in `local_align` (Rust) vs `L__align11` (C) tiebreaking.
+4. **Pairwise constraint table is now BYTE-EXACT vs C**. Verified via
+   `mafft --debug` extraction of `hat3`: regions, `opt` values, and
+   distances all match.
 
-   Direct comparison (Rust regions vs C hat3 captured via
-   `mafft --debug`):
+   | Pair  | C hat3                   | Rust regions                       |
+   |-------|--------------------------|-------------------------------------|
+   | (0,1) | 0-347 / 0-347, opt=4.46653 | 0-347 / 0-347, opt=4.46653 ✓     |
+   | (0,2) | 0-331 + 332-352 / 0-331 + 334-354 | matches ✓                |
+   | (0,3) | 0-334 + 335-347 / 0-334 + 336-348 | matches ✓                |
+   | (0,4) | 0-334 + 335-347 / 0-334 + 336-348 | matches ✓                |
 
-   | Pair  | C regions               | Rust regions                      |
-   |-------|--------------------------|------------------------------------|
-   | (0,1) | 0-347 / 0-347, opt=4.467 | 0-347 / 0-347, opt=4.457           |
-   | (0,2) | 0-331 + 332-352 (2 reg)  | **3** reg: 0-329 + 330-331 + 332-352 |
-   | (0,3) | 0-334 + 335-347          | 0-334 + 335-347 ✓ matches          |
-   | (0,4) | 0-334 + 335-347          | 0-334 + 335-347 ✓ matches          |
+   Distances also byte-match C for first 4 pairs (0.313/0.380/0.398/0.412),
+   with ≤0.001 rounding diffs at later entries.
 
-   `opt` consistently ~0.01 below C across pairs (alignment-path tie
-   chooses slightly different cells). For (0,2), our DP places two
-   single-residue gaps where C places one 2-residue gap — same total
-   indels, different chunking. These are the small remaining residuals.
+   Final residual L-INS-i width: 748 vs C 735 (~1.8%). G-INS-i 747 vs
+   737 (~1.4%). E-INS-i 748 vs 740 (~1.1%). Width converges to 748 by
+   `--maxiterate 1` (progressive only) so the gap is in the constrained
+   tbfast progressive merge, not refinement.
 
-   Tiebreaking order corrected (2026-05-03): swapped check order in
-   `local_align` to put `ins` (gap in seq1, horizontal) before `d`
-   (gap in seq2, vertical), matching `Lalign11.c:541-563`. Width
-   unchanged on this dataset (725) but the swap is correct vs C; future
-   inputs with different tie patterns may diverge under the old order.
+   To close the last ~1.5%: byte-match C's `A__align(constraint=1)`
+   inside `progressive_align_with_constraints::merge_step`. Both Rust
+   and C use the same max-so-far DP formulation (mi/m[j]/mpi/mpjpt),
+   same impmtx contribution per row, same gap-penalty profile. The
+   residual is most likely either:
+   - sub-0.001 distance rounding cascading into different `musclesupg`
+     tree topology (would yield different merge order)
+   - a subtle gap-frequency or pos-specific penalty term in our
+     `profile_align_imp` vs `A__align`
 
-   The (0,2) split-gap-vs-merged-gap is not a tiebreaking issue — it's
-   a true DP-formulation difference. Both alignments score equally in
-   standard SW (same matches + same indels), but our two-matrix Gotoh
-   form produces a different traceback than C's max-so-far form on
-   exactly-tied paths. To close: rewrite `local_align` to mirror
-   `L__align11`'s single-state DP byte-for-byte, including the
-   `localthr2 = -offset` floor and the lazy `mi += fpenalty_ex`
-   pattern. Effort: ~0.5 day.
+   Concrete next step: write our topology to Newick (or instrument
+   accept-trace) and diff against C's `infile.tree` (extracted via
+   `mafft --treeout`). If tree differs, focus on `musclesupg`
+   tiebreaking. Otherwise, FFI test our `profile_align_imp` against
+   `A__align(constraint=1)` cell-by-cell on the first merge.
+   Effort: ~0.5 day.
 
 5. **G-INS-i wired** (2026-05-03). `engine.rs` now passes
    `PairAligner::Global` to a new unified `build_homology_table`,
