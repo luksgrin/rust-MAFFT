@@ -323,7 +323,26 @@ impl MafftEngine {
         // Step 2: Build guide tree and progressive align, repeating `retree` times.
         // Each iteration after the first computes distances from the ALIGNMENT
         // (not the raw sequences), producing a better tree.
-        let retree = self.retree.max(1);
+        //
+        // C's `scripts/mafft:142-156` sets `defaultcycle=1` for L-INS-i,
+        // G-INS-i, E-INS-i (vs `defaultcycle=2` for FFT-NS-2 and FFT-NS-i).
+        // Match that — INS-i modes do a single progressive pass with the
+        // pairwise-derived tree; only FFT-NS modes do the rebuild-tree
+        // second pass. Honour user-supplied `--retree N` first.
+        let retree = if self.retree != 2 {
+            self.retree.max(1)
+        } else if matches!(
+            self.mode,
+            AlignmentMode::LInsi { .. }
+                | AlignmentMode::GInsi { .. }
+                | AlignmentMode::EInsi { .. }
+                | AlignmentMode::QInsi { .. }
+                | AlignmentMode::XInsi { .. }
+        ) {
+            1
+        } else {
+            2
+        };
         let mut msa = MultipleAlignment {
             sequences: sequences.clone(),
             names: names.clone(),

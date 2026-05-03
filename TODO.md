@@ -275,14 +275,25 @@ Effort: 2–3 days.
 | Step 4f: + `putlocalhom2` chaining (multi-region per pair) | 725 | 735 |
 | Step 4g: + full `L__align11` port (max-so-far DP, ijp traceback) | 729 | 735 |
 | Step 4h: + C-style `(int)(x*1000-0.5)` parameter parsing → byte-exact opt | 729 | 735 |
-| Step 4i: + `score2dist` formula (matches C distances) | **748** | 735 |
+| Step 4i: + `score2dist` formula (matches C distances) | 748 | 735 |
+| Step 4j: + `cycle=1` for INS-i modes (was retree=2) | 748 (G→741) | 735 |
 
 (\*same width as step 1 by coincidence; 144-line content diff confirmed different progressive build.)
 
 **Current widths (2026-05-03)**:
 - L-INS-i: 748 (overshoots C 735 by 13, 1.8%)
-- G-INS-i: 747 (overshoots C 737 by 10, 1.4%)
+- G-INS-i: 741 (overshoots C 737 by 4, 0.5%)
 - E-INS-i: 748 (overshoots C 740 by 8, 1.1%)
+
+**Tree topology now matches C exactly** for the 36-seq sample
+(verified by dumping merge order via `RUST_MAFFT_TREE_DUMP=1` and
+diffing against C's `infile.tree` from `mafft --debug --treeout`).
+The first 11+ merge steps match step-for-step.
+
+**`defaultcycle=1` fix landed** (`scripts/mafft:144,149,154`): C's
+INS-i modes use one progressive pass; we previously did two. Engine
+now selects retree=1 for L/G/E/Q/X-INS-i. G-INS-i width improved
+from 747 → 741 (closer to C's 737).
 
 All 215 tests pass; every byte-identical mode stays byte-identical.
 

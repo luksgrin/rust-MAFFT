@@ -175,9 +175,14 @@ fn merge_step_cached(
     // C's disttbfast passes `outgap, outgap` for headgp/tailgp in G__align11
     // and A__align. With the -O flag (always set by mafft script), outgap=0,
     // which means no penalty is applied to terminal gaps (TERMGAPFAC=0).
-    let aln = if !use_fft && group1.len() == 1 && group2.len() == 1 {
+    let aln = if !use_fft && group1.len() == 1 && group2.len() == 1
+        && constraints.is_none()
+    {
         // G__align11 path: flat gap penalty, character-level scoring
-        // Only used when FFT is disabled (--nofft)
+        // Only used when FFT is disabled and no constraints. With constraints
+        // (L-INS-i / E-INS-i / G-INS-i), single-vs-single merges still need
+        // the impmtx contribution per cell — fall through to the constrained
+        // profile DP below.
         pairwise_align11(
             &aligned[group1[0]], &aligned[group2[0]],
             &scoring.substitution_matrix, &scoring.amino_map,
