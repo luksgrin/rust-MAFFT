@@ -235,7 +235,7 @@ struct PairResult {
     i: usize,
     j: usize,
     distance: f64,
-    region: Option<HomologyRegion>,
+    regions: Vec<HomologyRegion>,
 }
 
 /// Build a local homology table from all-vs-all pairwise local alignments.
@@ -271,61 +271,96 @@ pub fn build_local_homology_table(
 
             let score = result.alignment.score;
             if score <= 0.0 {
-                return PairResult { i, j, distance: 2.0, region: None };
+                return PairResult { i, j, distance: 2.0, regions: Vec::new() };
             }
 
             let identity = result.alignment.identity();
             let d = (1.0 - identity).clamp(0.0, 2.0);
 
-            let aln_len = result.alignment.len();
-
-            // C's `pairlocalalign` recomputes `opt` from the alignment
-            // by walking the matched residues and summing
-            // `n_dis[c1][c2]` cells, then rescales:
-            //   opt = iscore * 5.8 / (600 * sumoverlap)
-            // (`pairlocalalign.c:201` for divpairscore=1, line 222 for
-            // divpairscore=0.) The `score` we get from `local_align` is
-            // the full DP score (matches plus gap penalties), so we
-            // recompute `iscore` from the alignment to match C exactly.
-            let mut iscore: f64 = 0.0;
+            // Port of C's `putlocalhom2` (`io.c:723`): split the alignment
+            // into maximal gap-free regions. Whenever a gap appears in
+            // either aligned sequence we close the current region; a
+            // residue-residue column starts a new one. Each region
+            // records its (start1, end1, start2, end2) span and its
+            // contribution `iscore` to `sumoverlap` / `isumscore`.
+            // Since L-INS-i runs with `divpairscore = 0` (no `-y`),
+            // every region in the chain gets the same combined
+            // `opt = isumscore * 5.8 / (600 * sumoverlap)`.
             let n_alpha = matrix.len();
-            for k in 0..result.alignment.seq1.len() {
-                let c1 = result.alignment.seq1[k];
-                let c2 = result.alignment.seq2[k];
-                if c1 != b'-' && c2 != b'-' {
+            let a1 = &result.alignment.seq1;
+            let a2 = &result.alignment.seq2;
+            let mut regions: Vec<HomologyRegion> = Vec::new();
+            let mut isumscore: f64 = 0.0;
+            let mut sumoverlap: i32 = 0;
+            let mut pos1 = result.offset1 as i32;
+            let mut pos2 = result.offset2 as i32;
+            let mut st = false;
+            let mut start1 = 0i32;
+            let mut start2 = 0i32;
+            let mut iscore: f64 = 0.0;
+            for k in 0..a1.len() {
+                let c1 = a1[k];
+                let c2 = a2[k];
+                let g1 = c1 == b'-';
+                let g2 = c2 == b'-';
+                if st && (g1 || g2) {
+                    let end1 = pos1 - 1;
+                    let end2 = pos2 - 1;
+                    regions.push(HomologyRegion {
+                        start1, end1, start2, end2,
+                        opt: 0.0,                       // filled below
+                        overlapaa: end2 - start2 + 1,
+                        korh: b'h',
+                        ..Default::default()
+                    });
+                    isumscore += iscore;
+                    sumoverlap += end2 - start2 + 1;
+                    iscore = 0.0;
+                    st = false;
+                } else if !g1 && !g2 {
+                    if !st {
+                        start1 = pos1;
+                        start2 = pos2;
+                        st = true;
+                    }
                     let i1 = amino_map[c1 as usize] as usize;
                     let i2 = amino_map[c2 as usize] as usize;
                     if i1 < n_alpha && i2 < n_alpha {
                         iscore += matrix[i1][i2] as f64;
                     }
                 }
+                if !g1 { pos1 += 1; }
+                if !g2 { pos2 += 1; }
             }
-            let opt = if aln_len > 0 {
-                iscore * 5.8 / (600.0 * aln_len as f64)
-            } else { 0.0 };
-
-            // Provisional importance = opt / overlapaa (`dontcalcimportance`,
-            // mltaln9.c:11472). `calcimportance_half` (mltaln9.c:11756)
-            // overwrites this with `mean(support) * opt` after the tree is
-            // built — done in `recompute_importance` if enabled.
-            let importance = if aln_len > 0 { opt / aln_len as f64 } else { 0.0 };
-            let region = if aln_len > 0 {
-                Some(HomologyRegion {
-                    start1: result.offset1 as i32,
-                    end1: (result.offset1 + aln_len) as i32,
-                    start2: result.offset2 as i32,
-                    end2: (result.offset2 + aln_len) as i32,
-                    opt,
-                    overlapaa: aln_len as i32,
-                    importance,
+            // Close trailing region if alignment ends inside a match span.
+            if st {
+                let end1 = pos1 - 1;
+                let end2 = pos2 - 1;
+                regions.push(HomologyRegion {
+                    start1, end1, start2, end2,
+                    opt: 0.0,
+                    overlapaa: end2 - start2 + 1,
                     korh: b'h',
                     ..Default::default()
-                })
-            } else {
-                None
-            };
+                });
+                isumscore += iscore;
+                sumoverlap += end2 - start2 + 1;
+            }
 
-            PairResult { i, j, distance: d, region }
+            // !divpairscore branch (`io.c:855-866`): all regions share
+            // a single combined opt and overlapaa.
+            let opt = if sumoverlap > 0 {
+                isumscore * 5.8 / (600.0 * sumoverlap as f64)
+            } else { 0.0 };
+            let provisional_importance =
+                if sumoverlap > 0 { opt / sumoverlap as f64 } else { 0.0 };
+            for r in regions.iter_mut() {
+                r.opt = opt;
+                r.overlapaa = sumoverlap;
+                r.importance = provisional_importance;
+            }
+
+            PairResult { i, j, distance: d, regions }
         })
         .collect();
 
@@ -337,14 +372,14 @@ pub fn build_local_homology_table(
         dist[r.i][r.j] = r.distance;
         dist[r.j][r.i] = r.distance;
 
-        if let Some(region) = r.region {
+        for region in &r.regions {
             table.push(r.i, r.j, region.clone());
             table.push(r.j, r.i, HomologyRegion {
                 start1: region.start2,
                 end1: region.end2,
                 start2: region.start1,
                 end2: region.end1,
-                ..region
+                ..region.clone()
             });
         }
     }

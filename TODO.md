@@ -270,12 +270,13 @@ Effort: 2–3 days.
 | Step 4a: L-INS-i-specific pairwise gap penalties | 680 | 735 |
 | Step 4b: Matrix offset shift (constants.c:798) | 704 | 735 |
 | Step 4c: + provisional `recompute_importance` | 601 (over-amplified) | 735 |
-| Step 4d: opt = iscore × 5.8 / (600 × overlapaa), C formula | **714** | 735 |
+| Step 4d: opt = iscore × 5.8 / (600 × overlapaa), C formula | 714 | 735 |
 | Step 4e: 4d + `recompute_importance` (always on) | 714 | 735 |
+| Step 4f: + `putlocalhom2` chaining (multi-region per pair) | **725** | 735 |
 
 (\*same width as step 1 by coincidence; 144-line content diff confirmed different progressive build.)
 
-**Current best width: 714 (off by 21 from C's 735, ~2.9%).**
+**Current best width: 725 (off by 10 from C's 735, ~1.4%).**
 All 215 tests pass; every byte-identical mode stays byte-identical.
 
 **Key diagnostic finding (2026-05-01)**: extracted C's `hat3` file via
@@ -350,29 +351,35 @@ identical to FFT-NS-i** on every input.
 
 **Concrete next tasks** (remaining):
 
-4. **Port `pairlocalalign` chaining** (~1-2 days, highest priority for
-   L-INS-i parity). Width gap is now 714 vs 735 (~2.9%). The remaining
-   structural delta: C's pairlocalalign produces multiple chained local
-   alignment regions per (i, j) pair via FASTA-style chaining; our
-   single-region Smith-Waterman covers a wider span per pair, which
-   over-applies the constraint at peripheral cells.
+4. **Close the last 10 columns** (L-INS-i 725 vs C 735, ~1.4%). With
+   chaining + C-formula opt + calcimportance_half all in place, the
+   remaining gap is in `local_align` (Rust) vs `L__align11` (C) tiebreaking.
 
-   The chaining algorithm in C (pairlocalalign.c around line 180-227,
-   the `divpairscore` switch) walks chained hits, computes opt per
-   region, then writes them as separate hat3 entries. Diff signal
-   was visible in the captured hat3:
-     `0 2 353 4.32327 0 331 0 331 h`     (region 1)
-     `0 2 353 4.32327 332 352 334 354 h` (region 2 — chained)
+   Direct comparison (Rust regions vs C hat3 captured via
+   `mafft --debug`):
 
-5. **Re-enable / verify `recompute_importance`** is now always on (since
-   2026-05-01 commit). Operates on the C-formula `opt` so magnitudes
-   are right.
+   | Pair  | C regions               | Rust regions                      |
+   |-------|--------------------------|------------------------------------|
+   | (0,1) | 0-347 / 0-347, opt=4.467 | 0-347 / 0-347, opt=4.457           |
+   | (0,2) | 0-331 + 332-352 (2 reg)  | **3** reg: 0-329 + 330-331 + 332-352 |
+   | (0,3) | 0-334 + 335-347          | 0-334 + 335-347 ✓ matches          |
+   | (0,4) | 0-334 + 335-347          | 0-334 + 335-347 ✓ matches          |
 
-6. **G-INS-i** (~1 day): pairwise GLOBAL distances + constraints (uses
+   `opt` consistently ~0.01 below C across pairs (alignment-path tie
+   chooses slightly different cells). For (0,2), our DP places two
+   single-residue gaps where C places one 2-residue gap — same total
+   indels, different chunking. These are the small remaining residuals.
+
+   Concrete fix: align our `local_align` traceback tiebreaking to C's
+   `L__align11`. Likely C prefers to merge consecutive gap-step paths
+   into longer gaps (lower priority for diagonal-then-gap-then-diagonal
+   patterns). Effort: ~0.5 day.
+
+5. **G-INS-i** (~1 day): pairwise GLOBAL distances + constraints (uses
    `defaultfft=1` so progressive does use FFT). Add
    `build_global_homology_table` using `global_align`.
 
-7. **E-INS-i tightening** (~1 day): genaff pairwise instead of local.
+6. **E-INS-i tightening** (~1 day): genaff pairwise instead of local.
 
 5. **G-INS-i** (~1 day). Currently identical to FFT-NS-i because the
    engine sets `local_hom = None` for it. C's G-INS-i uses pairwise
