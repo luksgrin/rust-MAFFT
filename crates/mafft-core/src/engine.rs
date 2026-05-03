@@ -241,19 +241,40 @@ impl MafftEngine {
             // For G-INS-i (`-A`): pgop=$pggop, pgexp=$pggexp, pgaof=$pgaof.
             //   Defaults match L-INS-i values for protein
             //   (`scripts/mafft:91-92`). Same numbers below.
-            let scale_protein: f64 = 600.0 / 1000.0;
+            // C's argument parser (`pairlocalalign.c:1671-1675`) does
+            //   ppenalty = (int)( atof(arg) * 1000 - 0.5 )
+            // which is C-style truncation toward zero (`as i32` in Rust).
+            // For `-f -2.00` this gives -2000 (not -2001). Then
+            // `constants.c:1014-1016` does
+            //   penalty = (int)( 600/1000 * ppenalty + 0.5 )
+            // which is round-half-up for positive and round-half-up-toward-
+            // zero for negative — also `as i32` truncation in Rust because
+            // for negative numbers like -1199.5, `(int)` gives -1199 not
+            // -1200.
+            //
+            // For `-2.00 / -0.100 / 0.100`: C gets penalty = -1199,
+            // penalty_ex = -59, offset = 59. Round-naively in Rust we'd
+            // get -1200 / -60 / 60 — off by 1, which propagates through
+            // `iscore` and yields a 1-per-residue gap in `opt` (~0.01
+            // off vs C across all pairs).
+            let cc_int = |x: f64, mul: f64| -> i32 {
+                ((x * mul) - 0.5) as i32
+            };
+            let cc_scale = |ppen: i32, scale: f64| -> i32 {
+                ((scale * ppen as f64) + 0.5) as i32
+            };
             let lgop: f64 = -2.00;
             let lexp: f64 = -0.100;
             let laof: f64 = 0.100;
+            let scale_protein: f64 = 600.0 / 1000.0;
+            let p_open = cc_int(lgop, 1000.0);
+            let p_ext = cc_int(lexp, 1000.0);
+            let p_offset = cc_int(laof, 1000.0);
             let pair_gap = GapModel::new(
-                scale_protein * (lgop * 1000.0).round(),
-                scale_protein * (lexp * 1000.0).round(),
+                cc_scale(p_open, scale_protein) as f64,
+                cc_scale(p_ext, scale_protein) as f64,
             );
-            // C's `pairlocalalign` applies the offset by subtracting it
-            // from every cell of the substitution matrix
-            // (`constants.c:797-798`).
-            let pair_offset_int: i32 =
-                (scale_protein * laof * 1000.0).round() as i32;
+            let pair_offset_int: i32 = cc_scale(p_offset, scale_protein);
             let nscored = scoring.nscoredalphabets;
             let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
             for i in 0..nscored {

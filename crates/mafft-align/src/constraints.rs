@@ -280,6 +280,25 @@ pub fn build_homology_table(
 ) -> (LocalHomologyTable, Vec<Vec<f64>>) {
     let nseq = sequences.len();
 
+    // C's `pairlocalalign.c:2590-2596`: selfscore[i] = sum of diagonal
+    // substitution-matrix entries for each residue in the sequence,
+    // using the same offset-shifted matrix that pairwise alignment uses.
+    // Used by `score2dist(pscore, selfscore[i], selfscore[j])`
+    // (line 1931) to convert alignment scores to tree-input distances:
+    //   bunbo = min(selfscore[i], selfscore[j])
+    //   dist = (1 - pscore / bunbo) * 2  (clamped to [0, 2])
+    let n_alpha = matrix.len();
+    let selfscore: Vec<f64> = sequences.iter().map(|s| {
+        let mut sum = 0.0f64;
+        for &c in *s {
+            let i = amino_map[c as usize] as usize;
+            if i < n_alpha {
+                sum += matrix[i][i] as f64;
+            }
+        }
+        sum
+    }).collect();
+
     // Generate all (i, j) pairs with i < j
     let pairs: Vec<(usize, usize)> = (0..nseq)
         .flat_map(|i| ((i + 1)..nseq).map(move |j| (i, j)))
@@ -320,8 +339,19 @@ pub fn build_homology_table(
                 return PairResult { i, j, distance: 2.0, regions: Vec::new() };
             }
 
-            let identity = alignment.identity();
-            let d = (1.0 - identity).clamp(0.0, 2.0);
+            // C's `score2dist` (`pairlocalalign.c:1931-1944`):
+            //   bunbo = min(selfscore[i], selfscore[j])
+            //   dist = bunbo == 0           ? 2.0
+            //        : bunbo < pscore       ? 0.0
+            //        : (1 - pscore / bunbo) * 2
+            let bunbo = selfscore[i].min(selfscore[j]);
+            let d = if bunbo == 0.0 {
+                2.0
+            } else if bunbo < score {
+                0.0
+            } else {
+                (1.0 - score / bunbo) * 2.0
+            };
 
             // Port of C's `putlocalhom2` (`io.c:723`): split the alignment
             // into maximal gap-free regions. Whenever a gap appears in

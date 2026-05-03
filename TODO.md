@@ -272,25 +272,32 @@ Effort: 2–3 days.
 | Step 4c: + provisional `recompute_importance` | 601 (over-amplified) | 735 |
 | Step 4d: opt = iscore × 5.8 / (600 × overlapaa), C formula | 714 | 735 |
 | Step 4e: 4d + `recompute_importance` (always on) | 714 | 735 |
-| Step 4f: + `putlocalhom2` chaining (multi-region per pair) | **725** | 735 |
+| Step 4f: + `putlocalhom2` chaining (multi-region per pair) | 725 | 735 |
+| Step 4g: + full `L__align11` port (max-so-far DP, ijp traceback) | 729 | 735 |
+| Step 4h: + C-style `(int)(x*1000-0.5)` parameter parsing → byte-exact opt | 729 | 735 |
+| Step 4i: + `score2dist` formula (matches C distances) | **748** | 735 |
 
 (\*same width as step 1 by coincidence; 144-line content diff confirmed different progressive build.)
 
-**Current best width: 725 (off by 10 from C's 735, ~1.4%).**
+**Current widths (2026-05-03)**:
+- L-INS-i: 748 (overshoots C 735 by 13, 1.8%)
+- G-INS-i: 747 (overshoots C 737 by 10, 1.4%)
+- E-INS-i: 748 (overshoots C 740 by 8, 1.1%)
+
 All 215 tests pass; every byte-identical mode stays byte-identical.
 
-**Key diagnostic finding (2026-05-01)**: extracted C's `hat3` file via
-`mafft --debug` and observed:
-- C's `opt` values are tiny (~4.5), not the raw DP score (~50000).
-  Formula: `iscore * 5.8 / (600 * sumoverlap)` (`pairlocalalign.c:201,222`)
-  where `iscore` is the SUM of substitution scores at matched residues
-  only (no gap penalties). Now ported into `build_local_homology_table`.
-- C produces MULTIPLE chained regions per pair (linked list). For (0,2)
-  and (0,3) in the 36-seq sample, hat3 shows two regions each. We
-  produce ONE region per pair via single Smith-Waterman. The chaining
-  comes from `pairlocalalign`'s FASTA-style multi-hit extension. Our
-  single-region table covers a wider span than C's chained table per
-  pair, which over-applies the constraint pull at peripheral cells.
+**Pairwise constraint table is now BYTE-EXACT vs C's hat3** for the
+36-seq sample's first 4 pairs (verified via `mafft --debug` extraction):
+- region boundaries match exactly
+- `opt` values match to 5 decimal places (4.46653 / 4.32327 / 4.25253 / 4.21258)
+- distances match for the first 4 pairs (0.313 / 0.380 / 0.398 / 0.412)
+  with sub-0.001 rounding diffs on later entries
+
+**Remaining 8-13 column gap is downstream of the constraint table**:
+likely either (a) tree topology differences from sub-0.001 distance
+rounding, or (b) progressive_align_with_constraints DP details vs C's
+constrained-tbfast path. Width converges to 748 by `--maxiterate 1`
+(progressive only), so it's not a refinement issue.
 
 **Pieces in place:**
 - Step 1 — `profile_align_imp` (`mafft-align/src/profile.rs`): adds
