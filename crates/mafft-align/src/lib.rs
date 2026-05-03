@@ -21,8 +21,8 @@ pub use genaffine::{genaffine_local_align, GenAffineGapModel};
 pub use profile::{Profile, profile_align, profile_align_imp, pairwise_align11, align_with_anchors};
 pub use fft_align::{fft_profile_align, find_fft_anchors, FftAlignParams, Anchor};
 pub use constraints::{
-    build_local_homology_table, build_imp_matrix, recompute_importance,
-    FASTATHRESHOLD_DEFAULT,
+    build_local_homology_table, build_homology_table, build_imp_matrix,
+    recompute_importance, PairAligner, FASTATHRESHOLD_DEFAULT,
 };
 pub use constrained_align::{
     constrained_profile_align, partial_profile_align, ConstrainedAlignParams,

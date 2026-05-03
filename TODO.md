@@ -370,14 +370,28 @@ identical to FFT-NS-i** on every input.
    single-residue gaps where C places one 2-residue gap — same total
    indels, different chunking. These are the small remaining residuals.
 
-   Concrete fix: align our `local_align` traceback tiebreaking to C's
-   `L__align11`. Likely C prefers to merge consecutive gap-step paths
-   into longer gaps (lower priority for diagonal-then-gap-then-diagonal
-   patterns). Effort: ~0.5 day.
+   Tiebreaking order corrected (2026-05-03): swapped check order in
+   `local_align` to put `ins` (gap in seq1, horizontal) before `d`
+   (gap in seq2, vertical), matching `Lalign11.c:541-563`. Width
+   unchanged on this dataset (725) but the swap is correct vs C; future
+   inputs with different tie patterns may diverge under the old order.
 
-5. **G-INS-i** (~1 day): pairwise GLOBAL distances + constraints (uses
-   `defaultfft=1` so progressive does use FFT). Add
-   `build_global_homology_table` using `global_align`.
+   The (0,2) split-gap-vs-merged-gap is not a tiebreaking issue — it's
+   a true DP-formulation difference. Both alignments score equally in
+   standard SW (same matches + same indels), but our two-matrix Gotoh
+   form produces a different traceback than C's max-so-far form on
+   exactly-tied paths. To close: rewrite `local_align` to mirror
+   `L__align11`'s single-state DP byte-for-byte, including the
+   `localthr2 = -offset` floor and the lazy `mi += fpenalty_ex`
+   pattern. Effort: ~0.5 day.
+
+5. **G-INS-i wired** (2026-05-03). `engine.rs` now passes
+   `PairAligner::Global` to a new unified `build_homology_table`,
+   producing pairwise global alignments for the constraint table.
+   G-INS-i width 721 → 720 (was identical to FFT-NS-i; now structurally
+   different). Still ~17 columns from C's 737 — likely the same residual
+   `local_align`/`global_align` vs C `G__align11` tiebreaking gap as
+   step 4. Effort to close: same as L-INS-i tiebreaking work.
 
 6. **E-INS-i tightening** (~1 day): genaff pairwise instead of local.
 

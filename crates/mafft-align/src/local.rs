@@ -75,17 +75,23 @@ pub fn local_align(
             // Insertion
             ins[i][j] = (ins[i][j - 1] + gap.extend).max(h[i][j - 1] + gap.open);
 
-            // Best path (local: floor at local_thr)
+            // Best path (local: floor at local_thr).
+            // Order matches C's `L__align11` (`Lalign11.c:541-563`):
+            // diagonal > horizontal (gap in seq1, ins) > vertical (gap in
+            // seq2, del). On tied scores, the earlier-checked direction
+            // wins. This swap closes a 10-column residual on L-INS-i where
+            // our previous order gave gap-in-seq2 priority and produced
+            // alignments diverging from C at gap-equal cells.
             let mut wm = diag;
             let mut tb = 0u8;
 
-            if d[i][j] > wm {
-                wm = d[i][j];
-                tb = 1;
-            }
             if ins[i][j] > wm {
                 wm = ins[i][j];
                 tb = 2;
+            }
+            if d[i][j] > wm {
+                wm = d[i][j];
+                tb = 1;
             }
 
             if wm < local_thr {

@@ -238,16 +238,45 @@ struct PairResult {
     regions: Vec<HomologyRegion>,
 }
 
-/// Build a local homology table from all-vs-all pairwise local alignments.
+/// Which pairwise aligner to drive `build_homology_table` with.
 ///
-/// The pairwise alignments are computed in parallel using rayon.
-/// Results are collected and applied to the table sequentially.
+/// L-INS-i uses `Local` (Smith–Waterman, mirroring C's `pairlocalalign -L`
+/// → `L__align11`). G-INS-i uses `Global` (Needleman–Wunsch, mirroring
+/// `pairlocalalign -A` → `G__align11`). The chaining/`opt` computation
+/// downstream is identical — only the alignment differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairAligner {
+    Local,
+    Global,
+}
+
+/// Build a local homology table from all-vs-all pairwise alignments.
+///
+/// Defaults to local Smith-Waterman. See `build_homology_table` for the
+/// unified entry point that chooses between local and global.
 pub fn build_local_homology_table(
     sequences: &[&[u8]],
     matrix: &[Vec<i32>],
     amino_map: &[u8; 256],
     gap: &GapModel,
     score_offset: f64,
+) -> (LocalHomologyTable, Vec<Vec<f64>>) {
+    build_homology_table(
+        sequences, matrix, amino_map, gap, score_offset,
+        PairAligner::Local,
+    )
+}
+
+/// Build a homology table using all-vs-all pairwise alignment of the
+/// chosen kind. Used by L-INS-i (`PairAligner::Local`) and G-INS-i
+/// (`PairAligner::Global`).
+pub fn build_homology_table(
+    sequences: &[&[u8]],
+    matrix: &[Vec<i32>],
+    amino_map: &[u8; 256],
+    gap: &GapModel,
+    score_offset: f64,
+    aligner: PairAligner,
 ) -> (LocalHomologyTable, Vec<Vec<f64>>) {
     let nseq = sequences.len();
 
@@ -260,21 +289,38 @@ pub fn build_local_homology_table(
     let results: Vec<PairResult> = pairs
         .par_iter()
         .map(|&(i, j)| {
-            let result = local_align(
-                sequences[i],
-                sequences[j],
-                matrix,
-                amino_map,
-                gap,
-                score_offset,
-            );
+            // Branch at the alignment call to keep the rest of the
+            // chaining logic shared. For Local, we have a true offset
+            // into both sequences. For Global, both offsets are 0.
+            let (alignment, offset1, offset2) = match aligner {
+                PairAligner::Local => {
+                    let r = local_align(
+                        sequences[i], sequences[j],
+                        matrix, amino_map, gap, score_offset,
+                    );
+                    (r.alignment, r.offset1, r.offset2)
+                }
+                PairAligner::Global => {
+                    // Match C's `pairlocalalign -A` (`pairlocalalign.c:2196`)
+                    // which calls `G__align11` with `outgap` controlling
+                    // terminal-gap treatment. The script for G-INS-i
+                    // doesn't pass `-O`, so `outgap` defaults to 1 →
+                    // both head and tail gaps are penalized.
+                    let r = crate::global::global_align(
+                        sequences[i], sequences[j],
+                        matrix, amino_map, gap,
+                        true, true,
+                    );
+                    (r, 0, 0)
+                }
+            };
 
-            let score = result.alignment.score;
+            let score = alignment.score;
             if score <= 0.0 {
                 return PairResult { i, j, distance: 2.0, regions: Vec::new() };
             }
 
-            let identity = result.alignment.identity();
+            let identity = alignment.identity();
             let d = (1.0 - identity).clamp(0.0, 2.0);
 
             // Port of C's `putlocalhom2` (`io.c:723`): split the alignment
@@ -287,13 +333,13 @@ pub fn build_local_homology_table(
             // every region in the chain gets the same combined
             // `opt = isumscore * 5.8 / (600 * sumoverlap)`.
             let n_alpha = matrix.len();
-            let a1 = &result.alignment.seq1;
-            let a2 = &result.alignment.seq2;
+            let a1 = &alignment.seq1;
+            let a2 = &alignment.seq2;
             let mut regions: Vec<HomologyRegion> = Vec::new();
             let mut isumscore: f64 = 0.0;
             let mut sumoverlap: i32 = 0;
-            let mut pos1 = result.offset1 as i32;
-            let mut pos2 = result.offset2 as i32;
+            let mut pos1 = offset1 as i32;
+            let mut pos2 = offset2 as i32;
             let mut st = false;
             let mut start1 = 0i32;
             let mut start2 = 0i32;

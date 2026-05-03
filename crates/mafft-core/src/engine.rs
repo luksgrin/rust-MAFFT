@@ -225,21 +225,22 @@ impl MafftEngine {
         // pairwise local alignments. We piggyback on `build_local_homology_table`,
         // which already runs the same pairwise alignments to populate the
         // homology constraint table — we keep both outputs (distance + table).
-        let mut pairwise_for_constraints = if matches!(
-            self.mode,
-            AlignmentMode::LInsi { .. } | AlignmentMode::EInsi { .. }
-        ) {
+        let pair_kind = match self.mode {
+            AlignmentMode::LInsi { .. } | AlignmentMode::EInsi { .. } => {
+                Some(mafft_align::PairAligner::Local)
+            }
+            AlignmentMode::GInsi { .. } => Some(mafft_align::PairAligner::Global),
+            _ => None,
+        };
+        let mut pairwise_for_constraints = if let Some(aligner) = pair_kind {
             let seq_refs: Vec<&[u8]> = input.sequences.iter()
                 .map(|s| s.data.as_slice()).collect();
-            // C's `pairlocalalign` for L-INS-i uses pairwise-specific gap
-            // penalties, NOT the progressive ones (`scripts/mafft:91-92,201-203`):
-            //   lgop = -2.00  → ppenalty * 600/1000 = 1200 (penalty in DP)
-            //   lexp = -0.100 →                       60
-            //   laof =  0.100 →                       60 (positive, score offset)
-            // These are applied in `pairlocalalign` invocation
-            // (`scripts/mafft:2588`), distinct from tbfast's `-f -1.53` /
-            // `-h 0.0` for progressive. Using the wrong (progressive) values
-            // here makes our `opt` magnitudes diverge from C's.
+            // C's `pairlocalalign` uses pairwise-specific gap penalties,
+            // NOT the progressive ones (`scripts/mafft:91-92,201-203`).
+            // For L-INS-i (`-L`): lgop=-2.00, lexp=-0.100, laof=0.100.
+            // For G-INS-i (`-A`): pgop=$pggop, pgexp=$pggexp, pgaof=$pgaof.
+            //   Defaults match L-INS-i values for protein
+            //   (`scripts/mafft:91-92`). Same numbers below.
             let scale_protein: f64 = 600.0 / 1000.0;
             let lgop: f64 = -2.00;
             let lexp: f64 = -0.100;
@@ -250,10 +251,7 @@ impl MafftEngine {
             );
             // C's `pairlocalalign` applies the offset by subtracting it
             // from every cell of the substitution matrix
-            // (`constants.c:797-798`: `n_distmp[i][j] -= offset`). The
-            // resulting `n_dis` shifted matrix is used for local alignment
-            // scoring. Our `local_align`'s `score_offset` only adjusts the
-            // local-stop threshold, so we shift the matrix here directly.
+            // (`constants.c:797-798`).
             let pair_offset_int: i32 =
                 (scale_protein * laof * 1000.0).round() as i32;
             let nscored = scoring.nscoredalphabets;
@@ -263,12 +261,13 @@ impl MafftEngine {
                     shifted[i][j] -= pair_offset_int;
                 }
             }
-            let (table, dist) = build_local_homology_table(
+            let (table, dist) = mafft_align::build_homology_table(
                 &seq_refs,
                 &shifted,
                 &scoring.amino_map,
                 &pair_gap,
                 0.0,
+                aligner,
             );
             Some((table, DistanceMatrix::from_full(&dist)))
         } else {
@@ -364,7 +363,9 @@ impl MafftEngine {
         // Step 3: Build local homology table (for constrained modes)
         let uses_constraints = matches!(
             self.mode,
-            AlignmentMode::LInsi { .. } | AlignmentMode::EInsi { .. }
+            AlignmentMode::LInsi { .. }
+                | AlignmentMode::EInsi { .. }
+                | AlignmentMode::GInsi { .. }
         );
         let uses_rna_constraints = matches!(
             self.mode,
