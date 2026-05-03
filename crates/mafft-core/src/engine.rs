@@ -285,30 +285,20 @@ impl MafftEngine {
         };
 
         // C's `tbfast` calls `calcimportance_half` (mltaln9.c:11756) AFTER
-        // the initial tree to replace provisional importance with
-        // `mean(position-vote support over region) * opt`. Our port
-        // (`mafft-align::recompute_importance`) is functionally equivalent
-        // but currently disabled: enabling it pushes width 704 → 601
-        // (over-compact) even with the corrected pairwise gap penalties
-        // and matrix offset above. Hypothesis: our `opt` magnitudes still
-        // differ from C's `pairlocalalign`, so `mean(support) * opt`
-        // amplifies the residual mismatch by ~300× vs the provisional
-        // `score / overlapaa` form.
-        //
-        // Concrete next diagnostic: instrument C `pairlocalalign` to dump
-        // `opt` values for the 36-seq sample, compare against the values
-        // our `local_align` produces with the corrected params. The first
-        // pair with a >2× discrepancy points to the remaining bug.
-        let _ = (&dm, &input);  // silence unused warnings
-        // if pairwise_for_constraints.is_some() && !use_parttree {
-        //     let initial_topo = musclesupg(&dm, ClusterMethod::default());
-        //     let weights = mafft_tree::sequence_weights(&initial_topo);
-        //     let seq_refs: Vec<&[u8]> = input.sequences.iter()
-        //         .map(|s| s.data.as_slice()).collect();
-        //     if let Some((ref mut table, _)) = pairwise_for_constraints {
-        //         mafft_align::recompute_importance(table, &seq_refs, &weights);
-        //     }
-        // }
+        // the initial tree to replace each region's provisional importance
+        // with `mean(position-vote support over region) * region.opt`,
+        // then symmetrize across (i,j)/(j,i). With `opt` now using C's
+        // `iscore * 5.8 / (600 * overlapaa)` formula, the resulting impmtx
+        // contributions are in the same numeric scale as C's.
+        if pairwise_for_constraints.is_some() && !use_parttree {
+            let initial_topo = musclesupg(&dm, ClusterMethod::default());
+            let weights = mafft_tree::sequence_weights(&initial_topo);
+            let seq_refs: Vec<&[u8]> = input.sequences.iter()
+                .map(|s| s.data.as_slice()).collect();
+            if let Some((ref mut table, _)) = pairwise_for_constraints {
+                mafft_align::recompute_importance(table, &seq_refs, &weights);
+            }
+        }
 
         // Step 2: Build guide tree and progressive align, repeating `retree` times.
         // Each iteration after the first computes distances from the ALIGNMENT

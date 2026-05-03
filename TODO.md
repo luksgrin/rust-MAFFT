@@ -268,13 +268,28 @@ Effort: 2–3 days.
 | Importance /= aln_len (`dontcalcimportance`) | 714 | 735 |
 | Step 3: constrained progressive | 763 | 735 |
 | Step 4a: L-INS-i-specific pairwise gap penalties | 680 | 735 |
-| Step 4b: Matrix offset shift (constants.c:798) | **704** | 735 |
-| Step 4c: + `recompute_importance` (calcimportance_half) | 601 (gated off) | 735 |
+| Step 4b: Matrix offset shift (constants.c:798) | 704 | 735 |
+| Step 4c: + provisional `recompute_importance` | 601 (over-amplified) | 735 |
+| Step 4d: opt = iscore × 5.8 / (600 × overlapaa), C formula | **714** | 735 |
+| Step 4e: 4d + `recompute_importance` (always on) | 714 | 735 |
 
 (\*same width as step 1 by coincidence; 144-line content diff confirmed different progressive build.)
 
-**Current best width: 704 (off by 31 from C's 735, ~4.2%).**
+**Current best width: 714 (off by 21 from C's 735, ~2.9%).**
 All 215 tests pass; every byte-identical mode stays byte-identical.
+
+**Key diagnostic finding (2026-05-01)**: extracted C's `hat3` file via
+`mafft --debug` and observed:
+- C's `opt` values are tiny (~4.5), not the raw DP score (~50000).
+  Formula: `iscore * 5.8 / (600 * sumoverlap)` (`pairlocalalign.c:201,222`)
+  where `iscore` is the SUM of substitution scores at matched residues
+  only (no gap penalties). Now ported into `build_local_homology_table`.
+- C produces MULTIPLE chained regions per pair (linked list). For (0,2)
+  and (0,3) in the 36-seq sample, hat3 shows two regions each. We
+  produce ONE region per pair via single Smith-Waterman. The chaining
+  comes from `pairlocalalign`'s FASTA-style multi-hit extension. Our
+  single-region table covers a wider span than C's chained table per
+  pair, which over-applies the constraint pull at peripheral cells.
 
 **Pieces in place:**
 - Step 1 — `profile_align_imp` (`mafft-align/src/profile.rs`): adds
@@ -335,27 +350,23 @@ identical to FFT-NS-i** on every input.
 
 **Concrete next tasks** (remaining):
 
-4. **Compare `opt` magnitudes Rust vs C** (~0.5 day, highest priority).
-   C and Rust now share the same algorithm for L-INS-i:
-   - Same `fastathreshold = 2.7` (script:97 + tbfast.c:307-309)
-   - Same per-group sum-1 normalized eff weights (`fastconjuction_noname`
-     tddis.c:552-556)
-   - Same FFT setting: `defaultfft=0` for both `linsi` and `einsi`
-     (script:142-156). C's tbfast progressive uses FULL DP with
-     constraints, NOT `Falign_localhom`.
-   - Same pairwise alignment params (lgop=-2.0, lexp=-0.10, laof=0.10).
-   - Same `calcimportance_half` algorithm (port present in
-     `mafft-align::recompute_importance`).
-   - Width gap remains 704 vs 735 (~4.2%). Constraint plumbing is right;
-     `opt` magnitude is the suspected residual delta.
+4. **Port `pairlocalalign` chaining** (~1-2 days, highest priority for
+   L-INS-i parity). Width gap is now 714 vs 735 (~2.9%). The remaining
+   structural delta: C's pairlocalalign produces multiple chained local
+   alignment regions per (i, j) pair via FASTA-style chaining; our
+   single-region Smith-Waterman covers a wider span per pair, which
+   over-applies the constraint at peripheral cells.
 
-   Concrete diagnostic: dump our `opt`/`overlapaa`/`start1`/`end1` for
-   each (i,j) pair, run C `pairlocalalign` standalone with `mktemp`-based
-   working dir to capture `hat3` (which contains the same), diff.
-   The first pair with >2× discrepancy points to the bug.
+   The chaining algorithm in C (pairlocalalign.c around line 180-227,
+   the `divpairscore` switch) walks chained hits, computes opt per
+   region, then writes them as separate hat3 entries. Diff signal
+   was visible in the captured hat3:
+     `0 2 353 4.32327 0 331 0 331 h`     (region 1)
+     `0 2 353 4.32327 332 352 334 354 h` (region 2 — chained)
 
-5. **Re-enable `recompute_importance`** once opt magnitudes line up.
-   Currently commented out in `engine.rs`.
+5. **Re-enable / verify `recompute_importance`** is now always on (since
+   2026-05-01 commit). Operates on the C-formula `opt` so magnitudes
+   are right.
 
 6. **G-INS-i** (~1 day): pairwise GLOBAL distances + constraints (uses
    `defaultfft=1` so progressive does use FFT). Add

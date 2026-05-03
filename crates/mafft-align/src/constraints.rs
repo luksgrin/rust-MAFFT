@@ -278,19 +278,44 @@ pub fn build_local_homology_table(
             let d = (1.0 - identity).clamp(0.0, 2.0);
 
             let aln_len = result.alignment.len();
-            // C's `dontcalcimportance` (mltaln9.c:11472) sets
-            // `importance = opt / overlapaa`. This is the *provisional*
-            // value before `calcimportance` runs the position-vote
-            // re-weighting and symmetrization (mltaln9.c:11984). Until we
-            // port that pass we use this provisional form.
-            let importance = if aln_len > 0 { score / aln_len as f64 } else { score };
+
+            // C's `pairlocalalign` recomputes `opt` from the alignment
+            // by walking the matched residues and summing
+            // `n_dis[c1][c2]` cells, then rescales:
+            //   opt = iscore * 5.8 / (600 * sumoverlap)
+            // (`pairlocalalign.c:201` for divpairscore=1, line 222 for
+            // divpairscore=0.) The `score` we get from `local_align` is
+            // the full DP score (matches plus gap penalties), so we
+            // recompute `iscore` from the alignment to match C exactly.
+            let mut iscore: f64 = 0.0;
+            let n_alpha = matrix.len();
+            for k in 0..result.alignment.seq1.len() {
+                let c1 = result.alignment.seq1[k];
+                let c2 = result.alignment.seq2[k];
+                if c1 != b'-' && c2 != b'-' {
+                    let i1 = amino_map[c1 as usize] as usize;
+                    let i2 = amino_map[c2 as usize] as usize;
+                    if i1 < n_alpha && i2 < n_alpha {
+                        iscore += matrix[i1][i2] as f64;
+                    }
+                }
+            }
+            let opt = if aln_len > 0 {
+                iscore * 5.8 / (600.0 * aln_len as f64)
+            } else { 0.0 };
+
+            // Provisional importance = opt / overlapaa (`dontcalcimportance`,
+            // mltaln9.c:11472). `calcimportance_half` (mltaln9.c:11756)
+            // overwrites this with `mean(support) * opt` after the tree is
+            // built — done in `recompute_importance` if enabled.
+            let importance = if aln_len > 0 { opt / aln_len as f64 } else { 0.0 };
             let region = if aln_len > 0 {
                 Some(HomologyRegion {
                     start1: result.offset1 as i32,
                     end1: (result.offset1 + aln_len) as i32,
                     start2: result.offset2 as i32,
                     end2: (result.offset2 + aln_len) as i32,
-                    opt: score,
+                    opt,
                     overlapaa: aln_len as i32,
                     importance,
                     korh: b'h',
