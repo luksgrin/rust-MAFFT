@@ -295,6 +295,18 @@ INS-i modes use one progressive pass; we previously did two. Engine
 now selects retree=1 for L/G/E/Q/X-INS-i. G-INS-i width improved
 from 747 → 741 (closer to C's 737).
 
+**Cell-by-cell verification** (`crates/mafft-align/tests/`):
+- `imp_zero_equiv.rs`: `profile_align_imp(impmtx = zeros)` byte-equal
+  to `profile_align`. DP threading is correct.
+- `imp_matrix_correctness.rs`: `build_imp_matrix` produces correct
+  diagonal pattern for one-region table; gap-walking logic
+  consistent with C's `fillimp` semantics.
+- All inputs to the constrained progressive merge match C: regions,
+  importance, distances, tree, matrix, gap penalties. The residual
+  4-13 column gap is in run-time numerical convergence we couldn't
+  pinpoint without instrumenting C's `A__align(constraint=1)` for
+  per-cell `wm` value comparison — a focused 1-day investigation.
+
 All 215 tests pass; every byte-identical mode stays byte-identical.
 
 **Pairwise constraint table is now BYTE-EXACT vs C's hat3** for the
