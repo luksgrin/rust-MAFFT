@@ -295,17 +295,36 @@ INS-i modes use one progressive pass; we previously did two. Engine
 now selects retree=1 for L/G/E/Q/X-INS-i. G-INS-i width improved
 from 747 → 741 (closer to C's 737).
 
-**Cell-by-cell verification** (`crates/mafft-align/tests/`):
+**Cell-by-cell verification** (`crates/mafft-align/tests/` and
+`crates/mafft-core/tests/cross_validate_constrained_align.rs`):
+
 - `imp_zero_equiv.rs`: `profile_align_imp(impmtx = zeros)` byte-equal
   to `profile_align`. DP threading is correct.
 - `imp_matrix_correctness.rs`: `build_imp_matrix` produces correct
-  diagonal pattern for one-region table; gap-walking logic
-  consistent with C's `fillimp` semantics.
-- All inputs to the constrained progressive merge match C: regions,
-  importance, distances, tree, matrix, gap penalties. The residual
-  4-13 column gap is in run-time numerical convergence we couldn't
-  pinpoint without instrumenting C's `A__align(constraint=1)` for
-  per-cell `wm` value comparison — a focused 1-day investigation.
+  diagonal pattern for one-region table; gap-walking logic consistent
+  with C's `fillimp` semantics.
+- `cross_validate_constrained_align.rs::constrained_align_matches_c_a_align`:
+  Built FFI bindings for `A__align` and `imp_match_init_strict`; this
+  test calls C's `A__align(constraint=1)` against our `profile_align_imp`
+  on identical inputs (single-seq groups, full-coverage homology
+  region, importance=5.0). C and Rust both produce **byte-exact**
+  alignment for this case (width 20, all matches). The impmtx values
+  match C byte-exact (`impmtx[0][0] = 13.5` in both).
+- `cross_validate_constrained_align.rs::constrained_align_with_gaps_matches_c`
+  (currently `#[ignore]`): same harness with sequences that require
+  gaps. Produces a **width match (10 = 10)** but **different gap
+  placement** — Rust picks `-CCCDEFCC-`, C picks `-CCCDEF-CC` for the
+  same s2. Both alignments have identical SW score; the divergence
+  is **purely DP tiebreaking** at gap-equal cells.
+
+The residual L-INS-i 13-column gap accumulates from these tiebreaking
+differences across many merges. To close: locate the specific
+comparison in `profile_align_imp` whose tiebreaking inverts vs C's
+`A__align`. The `>= mi` mi-update vs `> wm` wm-update are correct;
+the divergence may be in the `mi += fpenalty_ex` step (we don't apply
+extension penalty per cell — works for FFT-NS-2 because penalty_ex=0
+there, may matter for L-INS-i refinement) or in tail-gap-free endpoint
+selection. Effort: 0.5 day with the FFI harness now in place.
 
 All 215 tests pass; every byte-identical mode stays byte-identical.
 

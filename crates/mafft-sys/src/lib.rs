@@ -314,6 +314,60 @@ unsafe extern "C" {
         orieff1: c_double,
         orieff2: c_double,
     ) -> c_double;
+    pub fn A__align(
+        n_dynamicmtx: *mut *mut c_double,
+        penalty: c_int,
+        penalty_ex: c_int,
+        seq1: *mut *mut c_char,
+        seq2: *mut *mut c_char,
+        eff1: *mut c_double,
+        eff2: *mut c_double,
+        icyc: c_int,
+        jcyc: c_int,
+        alloclen: c_int,
+        constraint: c_int,
+        impmatch: *mut c_double,
+        sgap1: *mut c_char,
+        sgap2: *mut c_char,
+        egap1: *mut c_char,
+        egap2: *mut c_char,
+        chudanpt: *mut c_int,
+        chudanref: c_int,
+        chudanres: *mut c_int,
+        headgp: c_int,
+        tailgp: c_int,
+        firstmem: c_int,
+        calledbyfulltreebase: c_int,
+        cpmxchild0: *mut *mut *mut c_double,
+        cpmxchild1: *mut *mut *mut c_double,
+        cpmxresult: *mut *mut *mut c_double,
+        orieff1: c_double,
+        orieff2: c_double,
+    ) -> c_double;
+    pub fn imp_match_init_strict(
+        imp: *mut c_double,
+        clus1: c_int,
+        clus2: c_int,
+        lgth1: c_int,
+        lgth2: c_int,
+        seq1: *mut *mut c_char,
+        seq2: *mut *mut c_char,
+        eff1: *mut c_double,
+        eff2: *mut c_double,
+        eff1_kozo: *mut c_double,
+        eff2_kozo: *mut c_double,
+        localhom: *mut *mut *mut LocalHom,
+        swaplist: *mut c_char,
+        forscore: c_int,
+        orinum1: *mut c_int,
+        orinum2: *mut c_int,
+        uselh: *mut c_int,
+        seedinlh1: *mut c_int,
+        seedinlh2: *mut c_int,
+        nodeid: c_int,
+        nfiles: c_int,
+    );
+    pub fn imp_match_out_sc(i1: c_int, j1: c_int) -> c_double;
     pub fn intergroup_score(
         seq1: *mut *mut c_char,
         seq2: *mut *mut c_char,
@@ -434,6 +488,7 @@ unsafe extern "C" {
     pub static mut divThreshold: c_int;
     pub static mut score_check: c_int;
     pub static mut bunkatsu: c_int;
+    pub static mut fastathreshold: c_double;
     pub static mut penalty_shift_factor: c_double;
     pub static mut cooling: c_int;
     pub static mut legacygapcost: c_int;
