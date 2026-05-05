@@ -326,9 +326,9 @@ impl MafftEngine {
         // C's `tbfast` calls `calcimportance_half` (mltaln9.c:11756) AFTER
         // the initial tree to replace each region's provisional importance
         // with `mean(position-vote support over region) * region.opt`,
-        // then symmetrize across (i,j)/(j,i). With `opt` now using C's
-        // `iscore * 5.8 / (600 * overlapaa)` formula, the resulting impmtx
-        // contributions are in the same numeric scale as C's.
+        // then symmetrize across (i,j)/(j,i). `region.opt` is stored in
+        // C's post-`tbfast.c:2202` scale (`isumscore / sumoverlap`), so
+        // the impmtx contributions match C's numerically.
         if pairwise_for_constraints.is_some() && !use_parttree {
             let initial_topo = musclesupg(&dm, ClusterMethod::default());
             let weights = mafft_tree::sequence_weights(&initial_topo);

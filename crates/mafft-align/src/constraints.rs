@@ -359,9 +359,16 @@ pub fn build_homology_table(
             // residue-residue column starts a new one. Each region
             // records its (start1, end1, start2, end2) span and its
             // contribution `iscore` to `sumoverlap` / `isumscore`.
-            // Since L-INS-i runs with `divpairscore = 0` (no `-y`),
-            // every region in the chain gets the same combined
-            // `opt = isumscore * 5.8 / (600 * sumoverlap)`.
+            //
+            // Since L-INS-i runs with `divpairscore = 0` (no `-y`), every
+            // region in the chain gets the same combined opt. C's
+            // `putlocalhom2` stores `isumscore * 5.8 / (600 * sumoverlap)`
+            // (normalized for hat3 file output), then `tbfast.c:2202`
+            // immediately rescales it back via `opt * 600 / 5.8` before
+            // calling `calcimportance_half`. We bypass that round-trip and
+            // store the post-scale value `isumscore / sumoverlap`
+            // directly, which matches the value C's calcimportance/fillimp
+            // actually consume.
             let n_alpha = matrix.len();
             let a1 = &alignment.seq1;
             let a2 = &alignment.seq2;
@@ -423,10 +430,10 @@ pub fn build_homology_table(
                 sumoverlap += end2 - start2 + 1;
             }
 
-            // !divpairscore branch (`io.c:855-866`): all regions share
-            // a single combined opt and overlapaa.
+            // !divpairscore branch (`io.c:855-866` + `tbfast.c:2202` rescale):
+            // all regions share a single combined opt and overlapaa.
             let opt = if sumoverlap > 0 {
-                isumscore * 5.8 / (600.0 * sumoverlap as f64)
+                isumscore / sumoverlap as f64
             } else { 0.0 };
             let provisional_importance =
                 if sumoverlap > 0 { opt / sumoverlap as f64 } else { 0.0 };
