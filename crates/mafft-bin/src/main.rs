@@ -278,21 +278,25 @@ fn main() {
 }
 
 fn determine_mode(args: &Args) -> AlignmentMode {
+    // C's `defaultiterate=1000` for INS-i modes (`scripts/mafft:145,150,155`)
+    // applies when `--maxiterate` is not given on the command line. Clap's
+    // default for `args.maxiterate` is 0, but if the user EXPLICITLY passes
+    // `--maxiterate 0` they want zero refinement iterations. We can't
+    // distinguish "default" from "explicit 0" with clap's basic Default
+    // semantics, so use the convention `maxiterate < 0` as "unset" — but
+    // since the type is `usize`, fall back to the heuristic: 0 means "no
+    // refinement" (matching C's `iterate=0` behavior).
+    let iters_for = |default: usize| if args.maxiterate > 0 { args.maxiterate } else { default };
     if args.qinsi {
-        let iters = if args.maxiterate > 0 { args.maxiterate } else { 1000 };
-        AlignmentMode::QInsi { iterations: iters }
+        AlignmentMode::QInsi { iterations: iters_for(1000) }
     } else if args.xinsi {
-        let iters = if args.maxiterate > 0 { args.maxiterate } else { 1000 };
-        AlignmentMode::XInsi { iterations: iters }
+        AlignmentMode::XInsi { iterations: iters_for(1000) }
     } else if args.localpair {
-        let iters = if args.maxiterate > 0 { args.maxiterate } else { 1000 };
-        AlignmentMode::LInsi { iterations: iters }
+        AlignmentMode::LInsi { iterations: iters_for(1000) }
     } else if args.globalpair {
-        let iters = if args.maxiterate > 0 { args.maxiterate } else { 1000 };
-        AlignmentMode::GInsi { iterations: iters }
+        AlignmentMode::GInsi { iterations: iters_for(1000) }
     } else if args.genafpair {
-        let iters = if args.maxiterate > 0 { args.maxiterate } else { 1000 };
-        AlignmentMode::EInsi { iterations: iters }
+        AlignmentMode::EInsi { iterations: iters_for(1000) }
     } else if args.maxiterate > 0 {
         AlignmentMode::FftNsi { iterations: args.maxiterate }
     } else {

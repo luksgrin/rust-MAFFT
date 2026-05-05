@@ -171,6 +171,8 @@ fn constrained_align_matches_c_a_align() {
 
         // Ensure C's `fastathreshold` matches our default (2.7).
         std::ptr::addr_of_mut!(mafft_sys::fastathreshold).write(FASTATHRESHOLD_DEFAULT);
+        // Match L-INS-i progressive: -O flag → outgap=0 (free terminal gaps).
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(0);
         // Ensure penalty / penalty_ex match Rust's gap model after constants() ran
         // (which sets them to BLOSUM62 progressive defaults: -1199/-59).
         let c_penalty = std::ptr::addr_of!(mafft_sys::penalty).read();
@@ -275,13 +277,10 @@ fn constrained_align_matches_c_a_align() {
 /// More demanding: sequences that differ require gaps. Constraints
 /// should bias toward matching the homologous region.
 ///
-/// Currently FAILS — exposes the residual gap-placement tiebreaking
-/// difference that accounts for the L-INS-i 4-13 column residual
-/// (TODO §5.4). Marked `#[ignore]` so the test suite stays green;
-/// run explicitly with `--ignored` to reproduce. Keeping it as a
-/// regression marker against future fixes.
+/// Verifies our `profile_align_imp` is byte-equivalent to C's
+/// `A__align(constraint=1)` when terminal-gap settings match
+/// (outgap=0 → free terminal gaps, matching `headgp=tailgp=false`).
 #[test]
-#[ignore]
 fn constrained_align_with_gaps_matches_c() {
     let _guard = C_MUTEX.lock().unwrap();
 
@@ -379,6 +378,8 @@ fn constrained_align_with_gaps_matches_c() {
         *lh_outer = lh_inner;
 
         std::ptr::addr_of_mut!(mafft_sys::fastathreshold).write(FASTATHRESHOLD_DEFAULT);
+        // Match L-INS-i progressive: -O flag → outgap=0 (free terminal gaps).
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(0);
 
         // Reset impmtx
         mafft_sys::imp_match_init_strict(
@@ -448,5 +449,395 @@ fn constrained_align_with_gaps_matches_c() {
         let r_a2_str = std::str::from_utf8(&r_a2).unwrap();
         assert_eq!(r_a1_str, c_a1, "seq1 aligned strings differ");
         assert_eq!(r_a2_str, c_a2, "seq2 aligned strings differ");
+    }
+}
+
+/// Multi-member groups: group1 has 2 sequences, group2 has 3.
+/// Tests profile construction (cpmx, gap freqs, ogcp/fgcp) consistency
+/// between Rust Profile::from_aligned and C's match_calc_add path.
+#[test]
+fn constrained_align_multi_member_matches_c() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    // Group 1: 2 sequences with a gap in one. Group 2: 3 sequences.
+    let g1: Vec<&[u8]> = vec![
+        b"ACDEFGHIKLM",
+        b"ACDE-GHIKLM",
+    ];
+    let g2: Vec<&[u8]> = vec![
+        b"ACDE-GHIKL-",
+        b"ACDEFGHIKLM",
+        b"A-DEFGHIK-M",
+    ];
+    let n = g1[0].len();
+    let m = g2[0].len();
+    let w1 = vec![0.5, 0.5];
+    let w2 = vec![0.33333, 0.33334, 0.33333];
+
+    // No constraint table for this test (focus on profile DP, not impmtx).
+    // We pass impmtx = None which exercises the same code path as
+    // unconstrained progressive — i.e., should match `MSalignmm` exactly.
+    // This IS already covered by `cross_validate_profile_align.rs`, but
+    // including here verifies the constrained path's NO-CONSTRAINT case.
+    let prof1 = Profile::from_aligned(&g1, &w1, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&g2, &w2, &scoring.amino_map, scoring.nalphabets);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let rust_aln = profile_align_imp(
+        &prof1, &prof2, &scoring.substitution_matrix,
+        &gap, false, false, None,
+    );
+
+    let mut r_a1 = vec![Vec::<u8>::new(); g1.len()];
+    let mut r_a2 = vec![Vec::<u8>::new(); g2.len()];
+    use mafft_align::AlignOp;
+    let mut c1 = 0; let mut c2 = 0;
+    for op in &rust_aln.operations {
+        match op {
+            AlignOp::Match => {
+                for (si, s) in g1.iter().enumerate() { r_a1[si].push(s[c1]); }
+                for (si, s) in g2.iter().enumerate() { r_a2[si].push(s[c2]); }
+                c1 += 1; c2 += 1;
+            }
+            AlignOp::Delete => {
+                for (si, s) in g1.iter().enumerate() { r_a1[si].push(s[c1]); }
+                for si in 0..g2.len() { r_a2[si].push(b'-'); }
+                c1 += 1;
+            }
+            AlignOp::Insert => {
+                for si in 0..g1.len() { r_a1[si].push(b'-'); }
+                for (si, s) in g2.iter().enumerate() { r_a2[si].push(s[c2]); }
+                c2 += 1;
+            }
+        }
+    }
+    eprintln!("Rust group1:");
+    for (i, s) in r_a1.iter().enumerate() {
+        eprintln!("  [{i}]: {}", std::str::from_utf8(s).unwrap());
+    }
+    eprintln!("Rust group2:");
+    for (i, s) in r_a2.iter().enumerate() {
+        eprintln!("  [{i}]: {}", std::str::from_utf8(s).unwrap());
+    }
+
+    unsafe {
+        init_c_protein();
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(0);
+
+        let alloclen = (n + m) * 4;
+        let c_seqs1: Vec<Box<[u8]>> = g1.iter().map(|s| {
+            let mut v = s.to_vec();
+            v.resize(alloclen + 1, 0);
+            v.into_boxed_slice()
+        }).collect();
+        let c_seqs2: Vec<Box<[u8]>> = g2.iter().map(|s| {
+            let mut v = s.to_vec();
+            v.resize(alloclen + 1, 0);
+            v.into_boxed_slice()
+        }).collect();
+        let mut c_seq1_ptrs: Vec<*mut c_char> = c_seqs1.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+        let mut c_seq2_ptrs: Vec<*mut c_char> = c_seqs2.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+
+        let eff1: *mut c_double = alloc_zeroed(w1.len() * 8) as _;
+        for (i, &v) in w1.iter().enumerate() { *eff1.add(i) = v; }
+        let eff2: *mut c_double = alloc_zeroed(w2.len() * 8) as _;
+        for (i, &v) in w2.iter().enumerate() { *eff2.add(i) = v; }
+
+        let n_dyn = build_c_dynamicmtx(&scoring.substitution_matrix);
+
+        let c_penalty = std::ptr::addr_of!(mafft_sys::penalty).read();
+        let c_penalty_ex = std::ptr::addr_of!(mafft_sys::penalty_ex).read();
+
+        let mut impmatch: c_double = 0.0;
+        let _score = mafft_sys::A__align(
+            n_dyn, c_penalty, c_penalty_ex,
+            c_seq1_ptrs.as_mut_ptr(), c_seq2_ptrs.as_mut_ptr(),
+            eff1, eff2,
+            w1.len() as c_int, w2.len() as c_int,
+            alloclen as c_int, 0, &mut impmatch,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+            0, 0, -1, -1,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            1.0, 1.0,
+        );
+
+        let c_len = {
+            let s = c_seq1_ptrs[0];
+            let mut k = 0;
+            while *s.add(k) != 0 { k += 1; }
+            k
+        };
+        eprintln!("C group1:");
+        for (i, s) in c_seqs1.iter().enumerate() {
+            eprintln!("  [{i}]: {}", std::str::from_utf8(&s[..c_len]).unwrap());
+        }
+        eprintln!("C group2:");
+        for (i, s) in c_seqs2.iter().enumerate() {
+            eprintln!("  [{i}]: {}", std::str::from_utf8(&s[..c_len]).unwrap());
+        }
+
+        mafft_sys::freeconstants();
+
+        for (i, (r, c)) in r_a1.iter().zip(c_seqs1.iter()).enumerate() {
+            let r_str = std::str::from_utf8(r).unwrap();
+            let c_str = std::str::from_utf8(&c[..c_len]).unwrap();
+            assert_eq!(r_str, c_str, "g1[{i}] differs");
+        }
+        for (i, (r, c)) in r_a2.iter().zip(c_seqs2.iter()).enumerate() {
+            let r_str = std::str::from_utf8(r).unwrap();
+            let c_str = std::str::from_utf8(&c[..c_len]).unwrap();
+            assert_eq!(r_str, c_str, "g2[{i}] differs");
+        }
+    }
+}
+
+/// Multi-member groups WITH constraints — closest match to L-INS-i
+/// production case. group1 = 2 seqs, group2 = 3 seqs, with a localhom
+/// table containing a region for each (s1, s2) pair.
+#[test]
+fn constrained_align_multi_member_with_constraints_matches_c() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    let g1: Vec<&[u8]> = vec![b"ACDEFGHIKLM", b"ACDE-GHIKLM"];
+    let g2: Vec<&[u8]> = vec![b"ACDE-GHIKL-", b"ACDEFGHIKLM", b"A-DEFGHIK-M"];
+    let n = g1[0].len();
+    let m = g2[0].len();
+    let w1 = vec![0.5, 0.5];
+    let w2 = vec![0.33333, 0.33334, 0.33333];
+
+    // Build a localhom table with regions covering positions 0..=10 (raw)
+    // for each (i, j) pair across the 5 sequences. Importance values
+    // chosen to bias the alignment.
+    let nseq = 5; // global indices 0,1 in g1; 2,3,4 in g2
+    let mut table = LocalHomologyTable::new(nseq);
+    for i in 0..2 {
+        for j in 2..5 {
+            // sequences are 11 chars (with possible gaps in the strings)
+            // but raw residue lengths might be 10 or 11 depending on gap count.
+            // For simplicity use the residue indices that exist in each seq.
+            let s1 = if i == 0 { g1[0] } else { g1[1] };
+            let s2 = g2[j - 2];
+            let n_residues_1 = s1.iter().filter(|&&c| c != b'-').count();
+            let n_residues_2 = s2.iter().filter(|&&c| c != b'-').count();
+            let region = HomologyRegion {
+                start1: 0,
+                end1: (n_residues_1 - 1) as i32,
+                start2: 0,
+                end2: (n_residues_2 - 1) as i32,
+                opt: 5.0,
+                overlapaa: n_residues_1.min(n_residues_2) as i32,
+                importance: 5.0,
+                korh: b'h',
+                ..Default::default()
+            };
+            table.push(i, j, region.clone());
+            table.push(j, i, HomologyRegion {
+                start1: region.start2, end1: region.end2,
+                start2: region.start1, end2: region.end1,
+                ..region.clone()
+            });
+        }
+    }
+
+    let g1_seq_refs: Vec<&[u8]> = g1.iter().copied().collect();
+    let g2_seq_refs: Vec<&[u8]> = g2.iter().copied().collect();
+    let imp = build_imp_matrix(
+        &table,
+        &[0, 1],     // group 1 global indices
+        &[2, 3, 4],  // group 2 global indices
+        &g1_seq_refs, &g2_seq_refs,
+        &w1, &w2,
+        n, m,
+        FASTATHRESHOLD_DEFAULT,
+    );
+
+    let prof1 = Profile::from_aligned(&g1, &w1, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&g2, &w2, &scoring.amino_map, scoring.nalphabets);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let rust_aln = profile_align_imp(
+        &prof1, &prof2, &scoring.substitution_matrix,
+        &gap, false, false, Some(&imp),
+    );
+
+    let mut r_a1 = vec![Vec::<u8>::new(); g1.len()];
+    let mut r_a2 = vec![Vec::<u8>::new(); g2.len()];
+    use mafft_align::AlignOp;
+    let mut c1 = 0; let mut c2 = 0;
+    for op in &rust_aln.operations {
+        match op {
+            AlignOp::Match => {
+                for (si, s) in g1.iter().enumerate() { r_a1[si].push(s[c1]); }
+                for (si, s) in g2.iter().enumerate() { r_a2[si].push(s[c2]); }
+                c1 += 1; c2 += 1;
+            }
+            AlignOp::Delete => {
+                for (si, s) in g1.iter().enumerate() { r_a1[si].push(s[c1]); }
+                for si in 0..g2.len() { r_a2[si].push(b'-'); }
+                c1 += 1;
+            }
+            AlignOp::Insert => {
+                for si in 0..g1.len() { r_a1[si].push(b'-'); }
+                for (si, s) in g2.iter().enumerate() { r_a2[si].push(s[c2]); }
+                c2 += 1;
+            }
+        }
+    }
+    eprintln!("Rust group1:");
+    for s in &r_a1 { eprintln!("  {}", std::str::from_utf8(s).unwrap()); }
+    eprintln!("Rust group2:");
+    for s in &r_a2 { eprintln!("  {}", std::str::from_utf8(s).unwrap()); }
+
+    unsafe {
+        init_c_protein();
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::fastathreshold).write(FASTATHRESHOLD_DEFAULT);
+
+        let alloclen = (n + m) * 4;
+        let c_seqs1: Vec<Box<[u8]>> = g1.iter().map(|s| {
+            let mut v = s.to_vec();
+            v.resize(alloclen + 1, 0);
+            v.into_boxed_slice()
+        }).collect();
+        let c_seqs2: Vec<Box<[u8]>> = g2.iter().map(|s| {
+            let mut v = s.to_vec();
+            v.resize(alloclen + 1, 0);
+            v.into_boxed_slice()
+        }).collect();
+        let mut c_seq1_ptrs: Vec<*mut c_char> = c_seqs1.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+        let mut c_seq2_ptrs: Vec<*mut c_char> = c_seqs2.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+
+        let eff1: *mut c_double = alloc_zeroed(w1.len() * 8) as _;
+        for (i, &v) in w1.iter().enumerate() { *eff1.add(i) = v; }
+        let eff2: *mut c_double = alloc_zeroed(w2.len() * 8) as _;
+        for (i, &v) in w2.iter().enumerate() { *eff2.add(i) = v; }
+        let eff1_kozo: *mut c_double = alloc_zeroed(w1.len() * 8) as _;
+        let eff2_kozo: *mut c_double = alloc_zeroed(w2.len() * 8) as _;
+
+        let n_dyn = build_c_dynamicmtx(&scoring.substitution_matrix);
+
+        // Build LocalHom*** matching our table for the group pairs.
+        let mut lh_storage: Vec<*mut mafft_sys::LocalHom> = Vec::new();
+        let mut lh_2d: Vec<Vec<*mut mafft_sys::LocalHom>> =
+            (0..g1.len()).map(|_| vec![std::ptr::null_mut(); g2.len()]).collect();
+        for k1 in 0..g1.len() {
+            for k2 in 0..g2.len() {
+                let s1 = g1[k1];
+                let s2 = g2[k2];
+                let n_residues_1 = s1.iter().filter(|&&c| c != b'-').count();
+                let n_residues_2 = s2.iter().filter(|&&c| c != b'-').count();
+                let lh: *mut mafft_sys::LocalHom = alloc_zeroed(std::mem::size_of::<mafft_sys::LocalHom>()) as _;
+                (*lh).next = std::ptr::null_mut();
+                (*lh).last = lh;
+                (*lh).start1 = 0;
+                (*lh).end1 = (n_residues_1 - 1) as c_int;
+                (*lh).start2 = 0;
+                (*lh).end2 = (n_residues_2 - 1) as c_int;
+                (*lh).opt = 5.0;
+                (*lh).overlapaa = n_residues_1.min(n_residues_2) as c_int;
+                (*lh).extended = 0;
+                (*lh).importance = 5.0;
+                (*lh).rimportance = 5.0;
+                (*lh).korh = b'h' as c_char;
+                (*lh).nokori = 0;
+                lh_storage.push(lh);
+                lh_2d[k1][k2] = lh;
+            }
+        }
+
+        let lh_inner_arr: Vec<*mut *mut mafft_sys::LocalHom> = lh_2d.iter().map(|row| {
+            let arr: *mut *mut mafft_sys::LocalHom =
+                alloc_zeroed(row.len() * std::mem::size_of::<*mut mafft_sys::LocalHom>()) as _;
+            for (i, &p) in row.iter().enumerate() {
+                *arr.add(i) = p;
+            }
+            arr
+        }).collect();
+        let lh_outer: *mut *mut *mut mafft_sys::LocalHom =
+            alloc_zeroed(lh_inner_arr.len() * std::mem::size_of::<*mut *mut mafft_sys::LocalHom>()) as _;
+        for (i, &p) in lh_inner_arr.iter().enumerate() {
+            *lh_outer.add(i) = p;
+        }
+
+        // Reset C's impmtx
+        mafft_sys::imp_match_init_strict(
+            std::ptr::null_mut(), 0, 0, 0, 0,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            -1, 0,
+        );
+
+        let mut on1: Vec<c_int> = (0..g1.len() as c_int).collect();
+        let mut on2: Vec<c_int> = (0..g2.len() as c_int).collect();
+        mafft_sys::imp_match_init_strict(
+            std::ptr::null_mut(),
+            g1.len() as c_int, g2.len() as c_int,
+            n as c_int, m as c_int,
+            c_seq1_ptrs.as_mut_ptr(), c_seq2_ptrs.as_mut_ptr(),
+            eff1, eff2, eff1_kozo, eff2_kozo,
+            lh_outer, std::ptr::null_mut(),
+            1,
+            on1.as_mut_ptr(), on2.as_mut_ptr(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            -1, 0,
+        );
+
+        let c_penalty = std::ptr::addr_of!(mafft_sys::penalty).read();
+        let c_penalty_ex = std::ptr::addr_of!(mafft_sys::penalty_ex).read();
+
+        let mut impmatch: c_double = 0.0;
+        let _score = mafft_sys::A__align(
+            n_dyn, c_penalty, c_penalty_ex,
+            c_seq1_ptrs.as_mut_ptr(), c_seq2_ptrs.as_mut_ptr(),
+            eff1, eff2,
+            g1.len() as c_int, g2.len() as c_int,
+            alloclen as c_int, 1, &mut impmatch,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+            0, 0, -1, -1,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            1.0, 1.0,
+        );
+
+        let c_len = {
+            let s = c_seq1_ptrs[0];
+            let mut k = 0; while *s.add(k) != 0 { k += 1; } k
+        };
+        eprintln!("C group1:");
+        for s in &c_seqs1 { eprintln!("  {}", std::str::from_utf8(&s[..c_len]).unwrap()); }
+        eprintln!("C group2:");
+        for s in &c_seqs2 { eprintln!("  {}", std::str::from_utf8(&s[..c_len]).unwrap()); }
+
+        mafft_sys::imp_match_init_strict(
+            std::ptr::null_mut(), 0, 0, 0, 0,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            -1, 0,
+        );
+        mafft_sys::freeconstants();
+
+        for (i, (r, c)) in r_a1.iter().zip(c_seqs1.iter()).enumerate() {
+            let r_str = std::str::from_utf8(r).unwrap();
+            let c_str = std::str::from_utf8(&c[..c_len]).unwrap();
+            assert_eq!(r_str, c_str, "g1[{i}] differs");
+        }
+        for (i, (r, c)) in r_a2.iter().zip(c_seqs2.iter()).enumerate() {
+            let r_str = std::str::from_utf8(r).unwrap();
+            let c_str = std::str::from_utf8(&c[..c_len]).unwrap();
+            assert_eq!(r_str, c_str, "g2[{i}] differs");
+        }
     }
 }

@@ -550,9 +550,12 @@ pub fn profile_align_imp(
         lastverticalw[i] = currentw[m - 1];
     }
 
-    // Tail gap handling  (C lines 512-536)
-    // For tail_gap=false, the main DP loop stops at row n-1 (lasti = n).
-    // Find the best ending position in the last computed row or last column.
+    // Tail gap handling — mirrors `Atracking_localhom` (Salignmm.c:434-457)
+    // and `Atracking` (MSalignmm.c) for `outgap == 0`. When terminal gaps
+    // are free, scan the last column then the last row for the best
+    // endpoint. With `>=` the LATER-scanned direction wins ties, so the
+    // j (last-row) scan dominates the i (last-column) scan when scores
+    // are equal — matching C exactly.
     if !tail_gap {
         let mut wm = lastverticalw[0];
         for i in 0..n {

@@ -295,36 +295,56 @@ INS-i modes use one progressive pass; we previously did two. Engine
 now selects retree=1 for L/G/E/Q/X-INS-i. G-INS-i width improved
 from 747 → 741 (closer to C's 737).
 
-**Cell-by-cell verification** (`crates/mafft-align/tests/` and
-`crates/mafft-core/tests/cross_validate_constrained_align.rs`):
+**Cell-by-cell verification** (4 FFI tests in
+`crates/mafft-core/tests/cross_validate_constrained_align.rs` and
+`crates/mafft-align/tests/`):
 
-- `imp_zero_equiv.rs`: `profile_align_imp(impmtx = zeros)` byte-equal
-  to `profile_align`. DP threading is correct.
-- `imp_matrix_correctness.rs`: `build_imp_matrix` produces correct
-  diagonal pattern for one-region table; gap-walking logic consistent
-  with C's `fillimp` semantics.
-- `cross_validate_constrained_align.rs::constrained_align_matches_c_a_align`:
-  Built FFI bindings for `A__align` and `imp_match_init_strict`; this
-  test calls C's `A__align(constraint=1)` against our `profile_align_imp`
-  on identical inputs (single-seq groups, full-coverage homology
-  region, importance=5.0). C and Rust both produce **byte-exact**
-  alignment for this case (width 20, all matches). The impmtx values
-  match C byte-exact (`impmtx[0][0] = 13.5` in both).
-- `cross_validate_constrained_align.rs::constrained_align_with_gaps_matches_c`
-  (currently `#[ignore]`): same harness with sequences that require
-  gaps. Produces a **width match (10 = 10)** but **different gap
-  placement** — Rust picks `-CCCDEFCC-`, C picks `-CCCDEF-CC` for the
-  same s2. Both alignments have identical SW score; the divergence
-  is **purely DP tiebreaking** at gap-equal cells.
+| Test | Verifies |
+|------|----------|
+| `imp_zero_equiv` | `profile_align_imp(impmtx = zeros) == profile_align` |
+| `imp_matrix_correctness` | `build_imp_matrix` diagonal + gap-walk semantics |
+| `constrained_align_matches_c_a_align` | Single-vs-single full-coverage region: byte-exact alignment vs C `A__align(constraint=1)` |
+| `constrained_align_with_gaps_matches_c` | Single-vs-single with gaps: byte-exact (after fixing FFI test setup — needs `outgap=0`) |
+| `constrained_align_multi_member_matches_c` | Multi-vs-multi (2 vs 3) unconstrained: byte-exact |
+| `constrained_align_multi_member_with_constraints_matches_c` | Multi-vs-multi with constraints: byte-exact |
 
-The residual L-INS-i 13-column gap accumulates from these tiebreaking
-differences across many merges. To close: locate the specific
-comparison in `profile_align_imp` whose tiebreaking inverts vs C's
-`A__align`. The `>= mi` mi-update vs `> wm` wm-update are correct;
-the divergence may be in the `mi += fpenalty_ex` step (we don't apply
-extension penalty per cell — works for FFT-NS-2 because penalty_ex=0
-there, may matter for L-INS-i refinement) or in tail-gap-free endpoint
-selection. Effort: 0.5 day with the FFI harness now in place.
+**Two critical bugs fixed during cell-by-cell investigation**:
+
+1. **`local_align` localthr was 0, should be `-offset`** (`Lalign11.c:248-249`).
+   Our C-style offset = 59 was applied to the matrix but localthr stayed 0.
+   This caused our local alignment cells to reset to 0 instead of -59,
+   producing slightly different DP scores. Fixed by passing
+   `score_offset = pair_offset_int / 600` to `local_align` in
+   `engine.rs::align`. Distances now byte-match C across all 36 sequences
+   (verified by dumping seq 0 row vs C's hat2: 0.313, 0.380, 0.398, 0.412,
+   **0.876**, 0.997, 1.036, **1.113**, **1.119**, 1.115, 1.115, **1.054**
+   — all match exactly).
+
+2. **`outgap` is a C global var, not a function parameter**. Our FFI test
+   for the with-gaps case wasn't setting `outgap=0` so C ran with
+   `outgap=1` (penalize terminal gaps), producing a different alignment
+   than our `tail_gap=false` Rust call. Once `outgap=0` was set, all
+   tests pass byte-exact.
+
+**Residual gap (production output vs C):**
+
+| Mode | Width | C target | Gap |
+|------|-------|----------|-----|
+| L-INS-i | 748 | 735 | -13 (1.8%) |
+| G-INS-i | 741 | 737 | -4 (0.5%) |
+| E-INS-i | 748 | 740 | -8 (1.1%) |
+
+All distances, tree topology, hat3 regions, opt values, importance
+values, and individual merge DP outputs are byte-exact. Yet the
+cumulative progressive output differs (743 vs 719 for L-INS-i with
+no refinement) by 24 columns. This must come from sequence propagation
+between merges — specifically how `aligned[idx]` is updated and
+re-fed into the next merge. Our cache vs no-cache test shows no
+difference, so it's not a cache issue. The exact source requires
+step-by-step instrumentation of C `tbfast` to dump each merge's
+intermediate `aligned[]` state — a focused 2-4 hour C-source-modification
+debugging session. The pipeline is structurally complete; the residual
+is one specific bug in our progressive merge sequence-update code.
 
 All 215 tests pass; every byte-identical mode stays byte-identical.
 

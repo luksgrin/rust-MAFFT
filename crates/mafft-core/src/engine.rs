@@ -282,15 +282,34 @@ impl MafftEngine {
                     shifted[i][j] -= pair_offset_int;
                 }
             }
+            // C's `L__align11` sets `localthr = -offset + scoreoffset * 600`
+            // (Lalign11.c:248-249). With `scoreoffset = 0` and the
+            // `offset = (int)(0.6 * poffset + 0.5)` computed above
+            // (= `pair_offset_int`), C uses `localthr = -pair_offset_int`.
+            // Our `local_align` computes `localthr = -score_offset * 600`,
+            // so to reach `localthr = -pair_offset_int` we pass
+            // `score_offset = pair_offset_int / 600`.
+            let score_offset_for_local = pair_offset_int as f64 / 600.0;
             let (table, dist) = mafft_align::build_homology_table(
                 &seq_refs,
                 &shifted,
                 &scoring.amino_map,
                 &pair_gap,
-                0.0,
+                score_offset_for_local,
                 aligner,
             );
-            Some((table, DistanceMatrix::from_full(&dist)))
+            // C's L-INS-i flow writes pairwise distances to `hat2` with
+            // `%#6.3f` precision (`io.c:2982,2989`) then `tbfast` reads
+            // them back via `readhat2_doublehalf_pointer` (`tbfast.c:2793`).
+            // The round-trip rounds to 3 decimals, which alters the tree
+            // when distances differ in the 4th decimal. Mimic by rounding.
+            let mut dist_rounded = dist.clone();
+            for row in dist_rounded.iter_mut() {
+                for v in row.iter_mut() {
+                    *v = (*v * 1000.0).round() / 1000.0;
+                }
+            }
+            Some((table, DistanceMatrix::from_full(&dist_rounded)))
         } else {
             None
         };
