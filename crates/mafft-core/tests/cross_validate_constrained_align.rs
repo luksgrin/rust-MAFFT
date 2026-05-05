@@ -594,6 +594,228 @@ fn constrained_align_multi_member_matches_c() {
     }
 }
 
+/// Real-protein 2-sequence test: take two actual opsins from
+/// `mafft-upstream/test/sample` (seqs 0 and 1, dist ~0.313) and
+/// compare our `profile_align_imp` to C's `A__align(constraint=1)`
+/// on the EXACT inputs the production progressive feeds them. Uses
+/// the real localhom region from `build_local_homology_table`.
+#[test]
+fn constrained_align_real_2seq_matches_c() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    let s1: &'static [u8] = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSIEGFFATLGGEVALWSLVVLAIERYIVICKPMGNFRFGNTHAIMGVAFTWIMALACAAPPLVGWSRYIPEGMQCSCGPDYYTLNPNFNNESYVVYMFVVHFLVPFVIIFFCYGRLLCTVKEAAAAQQESASTQKAEKEVTRMVVLMVIGFLVCWVPYASVAFYIFTHQGSDFGATFMTLPAFFAKSSALYNPVIYILMNKQFRNCMITTLCCGKNPLGDDESGASTSKTEVSSVSTSPVSPA";
+    let s2: &'static [u8] = b"MNGTEGPNFYVPFSNITGVVRSPFEQPQYYLAEPWQFSMLAAYMFLLIVLGFPINFLTLYVTVQHKKLRTPLNYILLNLAVADLFMVFGGFTTTLYTSLHGYFVFGPTGCNLEGFFATLGGEIGLWSLVVLAIERYVVVCKPMSNFRFGENHAIMGVAFTWVMALACAAPPLVGWSRYIPEGMQCSCGIDYYTLKPEVNNESFVIYMFVVHFTIPMIVIFFCYGQLVFTVKEAAAQQQESATTQKAEKEVTRMVIIMVIFFLICWLPYASVAMYIFTHQGSNFGPIFMTLPAFFAKTASIYNPIIYIMMNKQFRNCMLTSLCCGKNPLGDDEASATASKTETSQVAPA";
+
+    // Build localhom via real production path: same gap params, same
+    // matrix offset shift, then pass through `build_local_homology_table`.
+    use mafft_align::{build_local_homology_table, GapModel as G};
+    let scale_protein: f64 = 600.0 / 1000.0;
+    let cc_int = |x: f64, mul: f64| -> i32 { ((x * mul) - 0.5) as i32 };
+    let cc_scale = |ppen: i32, scale: f64| -> i32 { ((scale * ppen as f64) + 0.5) as i32 };
+    let p_open = cc_int(-2.00, 1000.0);
+    let p_ext  = cc_int(-0.100, 1000.0);
+    let p_offset = cc_int(0.100, 1000.0);
+    let pair_gap = G::new(
+        cc_scale(p_open, scale_protein) as f64,
+        cc_scale(p_ext,  scale_protein) as f64,
+    );
+    let pair_offset_int = cc_scale(p_offset, scale_protein);
+    let nscored = scoring.nscoredalphabets;
+    let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+    for i in 0..nscored {
+        for j in 0..nscored {
+            shifted[i][j] -= pair_offset_int;
+        }
+    }
+    let seq_refs: Vec<&[u8]> = vec![s1, s2];
+    let score_offset_for_local = pair_offset_int as f64 / 600.0;
+    let (mut table, _dist) = build_local_homology_table(
+        &seq_refs, &shifted, &scoring.amino_map,
+        &pair_gap, score_offset_for_local,
+    );
+    // Match production: run calcimportance_half via recompute_importance.
+    use mafft_align::recompute_importance;
+    let weights = vec![0.5_f64, 0.5_f64]; // 2-leaf UPGMA tree weights
+    recompute_importance(&mut table, &seq_refs, &weights);
+    eprintln!("After recompute, region (0,1) importance:");
+    for r in table.get(0, 1) {
+        eprintln!("  start1={} end1={} opt={:.5} importance={:.5}",
+            r.start1, r.end1, r.opt, r.importance);
+    }
+
+    let n = s1.len();
+    let m = s2.len();
+    let g1: Vec<&[u8]> = vec![s1];
+    let g2: Vec<&[u8]> = vec![s2];
+    let imp = build_imp_matrix(
+        &table, &[0], &[1], &g1, &g2, &[1.0], &[1.0],
+        n, m, FASTATHRESHOLD_DEFAULT,
+    );
+
+    let prof1 = Profile::from_aligned(&g1, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&g2, &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let rust_aln = profile_align_imp(
+        &prof1, &prof2, &scoring.substitution_matrix,
+        &gap, false, false, Some(&imp),
+    );
+
+    // Reconstruct Rust aligned strings.
+    let mut r_a1 = Vec::new();
+    let mut r_a2 = Vec::new();
+    let mut c1 = 0; let mut c2 = 0;
+    use mafft_align::AlignOp;
+    for op in &rust_aln.operations {
+        match op {
+            AlignOp::Match => { r_a1.push(s1[c1]); r_a2.push(s2[c2]); c1+=1; c2+=1; }
+            AlignOp::Delete => { r_a1.push(s1[c1]); r_a2.push(b'-'); c1+=1; }
+            AlignOp::Insert => { r_a1.push(b'-'); r_a2.push(s2[c2]); c2+=1; }
+        }
+    }
+    eprintln!("Rust width: {}", r_a1.len());
+    eprintln!("Rust seq1 last 30: {}",
+        std::str::from_utf8(&r_a1[r_a1.len()-30..]).unwrap());
+    eprintln!("Rust seq2 last 30: {}",
+        std::str::from_utf8(&r_a2[r_a2.len()-30..]).unwrap());
+
+    unsafe {
+        init_c_protein();
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::fastathreshold).write(FASTATHRESHOLD_DEFAULT);
+
+        let alloclen = (n + m) * 4;
+        let mut buf1 = s1.to_vec(); buf1.resize(alloclen + 1, 0);
+        let mut buf2 = s2.to_vec(); buf2.resize(alloclen + 1, 0);
+        let buf1_box = buf1.into_boxed_slice();
+        let buf2_box = buf2.into_boxed_slice();
+        let mut c_seq1_ptrs: Vec<*mut c_char> = vec![buf1_box.as_ptr() as *mut c_char];
+        let mut c_seq2_ptrs: Vec<*mut c_char> = vec![buf2_box.as_ptr() as *mut c_char];
+        let eff1: *mut c_double = alloc_zeroed(8) as _; *eff1 = 1.0;
+        let eff2: *mut c_double = alloc_zeroed(8) as _; *eff2 = 1.0;
+        let eff1_kozo: *mut c_double = alloc_zeroed(8) as _;
+        let eff2_kozo: *mut c_double = alloc_zeroed(8) as _;
+        let n_dyn = build_c_dynamicmtx(&scoring.substitution_matrix);
+
+        // Build C-side LocalHom from our table's regions.
+        let regions = table.get(0, 1);
+        let mut lhs: Vec<*mut mafft_sys::LocalHom> = Vec::with_capacity(regions.len());
+        for (idx, region) in regions.iter().enumerate() {
+            let lh: *mut mafft_sys::LocalHom = alloc_zeroed(std::mem::size_of::<mafft_sys::LocalHom>()) as _;
+            (*lh).next = std::ptr::null_mut();
+            (*lh).last = lh;
+            (*lh).start1 = region.start1;
+            (*lh).end1 = region.end1;
+            (*lh).start2 = region.start2;
+            (*lh).end2 = region.end2;
+            (*lh).opt = region.opt;
+            (*lh).overlapaa = region.overlapaa;
+            (*lh).extended = 0;
+            (*lh).importance = region.importance;
+            (*lh).rimportance = region.importance;
+            (*lh).korh = region.korh as c_char;
+            if idx > 0 {
+                let prev = lhs[idx - 1];
+                (*prev).next = lh;
+            }
+            lhs.push(lh);
+        }
+        let lh_inner: *mut *mut mafft_sys::LocalHom = alloc_zeroed(std::mem::size_of::<*mut mafft_sys::LocalHom>()) as _;
+        *lh_inner = if !lhs.is_empty() { lhs[0] } else { std::ptr::null_mut() };
+        let lh_outer: *mut *mut *mut mafft_sys::LocalHom = alloc_zeroed(std::mem::size_of::<*mut *mut mafft_sys::LocalHom>()) as _;
+        *lh_outer = lh_inner;
+
+        mafft_sys::imp_match_init_strict(
+            std::ptr::null_mut(), 0, 0, 0, 0,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            -1, 0,
+        );
+        let mut on1: c_int = 0;
+        let mut on2: c_int = 1;
+        mafft_sys::imp_match_init_strict(
+            std::ptr::null_mut(), 1, 1, n as c_int, m as c_int,
+            c_seq1_ptrs.as_mut_ptr(), c_seq2_ptrs.as_mut_ptr(),
+            eff1, eff2, eff1_kozo, eff2_kozo,
+            lh_outer, std::ptr::null_mut(),
+            1, &mut on1, &mut on2,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            -1, 0,
+        );
+
+        let c_penalty = std::ptr::addr_of!(mafft_sys::penalty).read();
+        let c_penalty_ex = std::ptr::addr_of!(mafft_sys::penalty_ex).read();
+        let mut impmatch: c_double = 0.0;
+        // Match tbfast call pattern: pass non-NULL cpmxresult to enable
+        // C's "cpmxresult" path inside A__align. cpmxchild0/1 stay NULL
+        // (this is the first merge). firstmem=0, calledbyfulltreebase=1
+        // matches tbfast's call (`tbfast.c:1608`).
+        let mut cpmx_storage: *mut *mut c_double = std::ptr::null_mut();
+        let cpmxresult: *mut *mut *mut c_double = &mut cpmx_storage;
+        let _score = mafft_sys::A__align(
+            n_dyn, c_penalty, c_penalty_ex,
+            c_seq1_ptrs.as_mut_ptr(), c_seq2_ptrs.as_mut_ptr(),
+            eff1, eff2, 1, 1,
+            alloclen as c_int, 1, &mut impmatch,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+            0, 0, 0, 1,    // firstmem=0, calledbyfulltreebase=1
+            std::ptr::null_mut(), std::ptr::null_mut(), cpmxresult,
+            1.0, 1.0,
+        );
+
+        let c_len = {
+            let s = c_seq1_ptrs[0];
+            let mut k = 0; while *s.add(k) != 0 { k += 1; } k
+        };
+        let c_a1 = std::str::from_utf8(&buf1_box[..c_len]).unwrap();
+        let c_a2 = std::str::from_utf8(&buf2_box[..c_len]).unwrap();
+        eprintln!("C width: {}", c_len);
+        eprintln!("C  seq1 last 30: {}", &c_a1[c_a1.len().saturating_sub(30)..]);
+        eprintln!("C  seq2 last 30: {}", &c_a2[c_a2.len().saturating_sub(30)..]);
+
+        mafft_sys::imp_match_init_strict(
+            std::ptr::null_mut(), 0, 0, 0, 0,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            0, std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            -1, 0,
+        );
+        mafft_sys::freeconstants();
+
+        let r_a1_str = std::str::from_utf8(&r_a1).unwrap();
+        let r_a2_str = std::str::from_utf8(&r_a2).unwrap();
+        if r_a1_str != c_a1 {
+            // Print only the trailing-tail diffs to keep output manageable.
+            let common = r_a1_str.chars().zip(c_a1.chars()).take_while(|(a, b)| a == b).count();
+            eprintln!("First divergence at column {}", common);
+            eprintln!("Rust tail (chars {}..): {}",
+                common.saturating_sub(20),
+                &r_a1_str[common.saturating_sub(20)..]);
+            eprintln!("C    tail (chars {}..): {}",
+                common.saturating_sub(20),
+                &c_a1[common.saturating_sub(20)..]);
+            eprintln!("Rust tail s2 (chars {}..): {}",
+                common.saturating_sub(20),
+                &r_a2_str[common.saturating_sub(20)..]);
+            eprintln!("C    tail s2 (chars {}..): {}",
+                common.saturating_sub(20),
+                &c_a2[common.saturating_sub(20)..]);
+        }
+        assert_eq!(r_a1_str, c_a1, "seq1 differs");
+        assert_eq!(r_a2_str, c_a2, "seq2 differs");
+    }
+}
+
 /// Multi-member groups WITH constraints — closest match to L-INS-i
 /// production case. group1 = 2 seqs, group2 = 3 seqs, with a localhom
 /// table containing a region for each (s1, s2) pair.

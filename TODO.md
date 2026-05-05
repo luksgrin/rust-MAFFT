@@ -308,7 +308,7 @@ from 747 → 741 (closer to C's 737).
 | `constrained_align_multi_member_matches_c` | Multi-vs-multi (2 vs 3) unconstrained: byte-exact |
 | `constrained_align_multi_member_with_constraints_matches_c` | Multi-vs-multi with constraints: byte-exact |
 
-**Two critical bugs fixed during cell-by-cell investigation**:
+**Three critical bugs fixed during cell-by-cell investigation**:
 
 1. **`local_align` localthr was 0, should be `-offset`** (`Lalign11.c:248-249`).
    Our C-style offset = 59 was applied to the matrix but localthr stayed 0.
@@ -326,6 +326,12 @@ from 747 → 741 (closer to C's 737).
    than our `tail_gap=false` Rust call. Once `outgap=0` was set, all
    tests pass byte-exact.
 
+3. **Distance round-trip via hat2's `%#6.3f`**: C's L-INS-i flow writes
+   distances to hat2 with 3-decimal precision, then reads them back
+   (`io.c:2982,2989` → `tbfast.c:2793`). Our distances are full f64.
+   Mimicked by rounding our distances to 3 decimals before tree
+   construction in `engine.rs`.
+
 **Residual gap (production output vs C):**
 
 | Mode | Width | C target | Gap |
@@ -336,15 +342,41 @@ from 747 → 741 (closer to C's 737).
 
 All distances, tree topology, hat3 regions, opt values, importance
 values, and individual merge DP outputs are byte-exact. Yet the
-cumulative progressive output differs (743 vs 719 for L-INS-i with
-no refinement) by 24 columns. This must come from sequence propagation
-between merges — specifically how `aligned[idx]` is updated and
-re-fed into the next merge. Our cache vs no-cache test shows no
-difference, so it's not a cache issue. The exact source requires
-step-by-step instrumentation of C `tbfast` to dump each merge's
-intermediate `aligned[]` state — a focused 2-4 hour C-source-modification
-debugging session. The pipeline is structurally complete; the residual
-is one specific bug in our progressive merge sequence-update code.
+cumulative progressive output differs (e.g., 2-seq case: our `mafft-rs`
+binary produces `EASATASKTE-----TSQVAPA` for seq 2's tail, while
+`mafft --localpair` produces `EASATASKTETSQVAPA-----` — same residues,
+gaps placed differently).
+
+**The mystery**: the FFI cell-by-cell test calling C's `A__align(constraint=1)`
+directly with the production-equivalent inputs produces the SAME OUTPUT
+as our `profile_align_imp` — both give `EASATASKTE-----TSQVAPA`.
+
+But C's `mafft --localpair --maxiterate 0` (which internally calls
+the same `A__align(constraint=1)` from `tbfast.c:1608`) produces
+`EASATASKTETSQVAPA-----`. Different output from the SAME function.
+
+This means C's `tbfast` calls A__align with some context that
+differs from our isolated FFI call, even though the explicit args
+appear equivalent. Candidates investigated and ruled out:
+- `cpmxchild0/1`: NULL in both contexts at first merge.
+- `cpmxresult`: NULL in our FFI test, non-NULL in tbfast — but
+  enabling cpmxresult in FFI test didn't change output.
+- Gap penalties, matrix, eff weights, impmtx values — all match.
+- `headgp`/`tailgp`/`outgap` — all 0 in both.
+
+Likely a thread-state, global var, or static-TLS interaction we
+haven't found. Could be `nthreadtb` (multi-thread tbfast might use
+different code path). Closing this requires modifying `tbfast.c` to
+dump intermediate `aligned[]` state at every merge — a focused C-
+source-modification debugging session out of scope for this work.
+
+**Final widths:**
+
+| Mode | Width | C target | Gap |
+|------|-------|----------|-----|
+| L-INS-i | 748 | 735 | -13 (1.8%) |
+| G-INS-i | 741 | 737 | -4 (0.5%) |
+| E-INS-i | 748 | 740 | -8 (1.1%) |
 
 All 215 tests pass; every byte-identical mode stays byte-identical.
 
