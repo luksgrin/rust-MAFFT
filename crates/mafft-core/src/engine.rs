@@ -298,18 +298,15 @@ impl MafftEngine {
                 score_offset_for_local,
                 aligner,
             );
-            // C's L-INS-i flow writes pairwise distances to `hat2` with
-            // `%#6.3f` precision (`io.c:2982,2989`) then `tbfast` reads
-            // them back via `readhat2_doublehalf_pointer` (`tbfast.c:2793`).
-            // The round-trip rounds to 3 decimals, which alters the tree
-            // when distances differ in the 4th decimal. Mimic by rounding.
-            let mut dist_rounded = dist.clone();
-            for row in dist_rounded.iter_mut() {
-                for v in row.iter_mut() {
-                    *v = (*v * 1000.0).round() / 1000.0;
-                }
-            }
-            Some((table, DistanceMatrix::from_full(&dist_rounded)))
+            // For L-INS-i, tbfast computes pairwise alignments in-memory
+            // via `callpairlocalalign=1`. The `iscore` distance matrix
+            // is passed straight to `fixed_musclesupg_double_realloc_…`
+            // without a hat2 file round-trip (the script does not invoke
+            // a separate pairlocalalign + hat2 read), so we keep full
+            // double precision here. The 3-decimal hat2 rounding only
+            // applies on paths that genuinely write/read `hat2` (e.g.
+            // FFT-NS-i + dndpre).
+            Some((table, DistanceMatrix::from_full(&dist)))
         } else {
             None
         };

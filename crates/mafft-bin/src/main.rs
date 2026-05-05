@@ -49,9 +49,10 @@ struct Args {
     #[arg(long)]
     allowshift: bool,
 
-    /// Maximum number of iterative refinement cycles [default: 0]
-    #[arg(long, default_value_t = 0)]
-    maxiterate: usize,
+    /// Maximum number of iterative refinement cycles. Unset → mode default
+    /// (1000 for INS-i modes, 0 for FFT-NS-2). Explicit 0 disables refinement.
+    #[arg(long)]
+    maxiterate: Option<usize>,
 
     /// Number of guide tree rebuilds [default: 2]
     #[arg(long, default_value_t = 2)]
@@ -279,14 +280,11 @@ fn main() {
 
 fn determine_mode(args: &Args) -> AlignmentMode {
     // C's `defaultiterate=1000` for INS-i modes (`scripts/mafft:145,150,155`)
-    // applies when `--maxiterate` is not given on the command line. Clap's
-    // default for `args.maxiterate` is 0, but if the user EXPLICITLY passes
-    // `--maxiterate 0` they want zero refinement iterations. We can't
-    // distinguish "default" from "explicit 0" with clap's basic Default
-    // semantics, so use the convention `maxiterate < 0` as "unset" — but
-    // since the type is `usize`, fall back to the heuristic: 0 means "no
-    // refinement" (matching C's `iterate=0` behavior).
-    let iters_for = |default: usize| if args.maxiterate > 0 { args.maxiterate } else { default };
+    // applies only when `--maxiterate` is not given on the command line.
+    // Explicit `--maxiterate 0` disables refinement; `args.maxiterate` is
+    // `Option<usize>`, so `None` means unset and `Some(n)` is the user's
+    // choice (including `Some(0)`).
+    let iters_for = |default: usize| args.maxiterate.unwrap_or(default);
     if args.qinsi {
         AlignmentMode::QInsi { iterations: iters_for(1000) }
     } else if args.xinsi {
@@ -297,8 +295,8 @@ fn determine_mode(args: &Args) -> AlignmentMode {
         AlignmentMode::GInsi { iterations: iters_for(1000) }
     } else if args.genafpair {
         AlignmentMode::EInsi { iterations: iters_for(1000) }
-    } else if args.maxiterate > 0 {
-        AlignmentMode::FftNsi { iterations: args.maxiterate }
+    } else if let Some(n) = args.maxiterate.filter(|&n| n > 0) {
+        AlignmentMode::FftNsi { iterations: n }
     } else {
         AlignmentMode::FftNs2
     }
