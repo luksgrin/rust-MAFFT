@@ -1063,3 +1063,97 @@ fn constrained_align_multi_member_with_constraints_matches_c() {
         }
     }
 }
+
+/// Direct comparison: our global_align vs C's G__align11 on the real
+/// 36-seq sample's first 2 sequences. If this fails, the bug is in our
+/// G__align11 port (global.rs).
+#[test]
+fn rust_global_align_matches_c_g__align11() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    let s1: &'static [u8] = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSIEGFFATLGGEVALWSLVVLAIERYIVICKPMGNFRFGNTHAIMGVAFTWIMALACAAPPLVGWSRYIPEGMQCSCGPDYYTLNPNFNNESYVVYMFVVHFLVPFVIIFFCYGRLLCTVKEAAAAQQESASTQKAEKEVTRMVVLMVIGFLVCWVPYASVAFYIFTHQGSDFGATFMTLPAFFAKSSALYNPVIYILMNKQFRNCMITTLCCGKNPLGDDESGASTSKTEVSSVSTSPVSPA";
+    // Pair (M63632, K03494): K03494 has a different N-terminal that
+    // exposes head-gap tie-break.
+    let s2: &'static [u8] = b"MAQQWSLQRLAGRHPQDSYEDSTQSSIFTYTNSNSTRGPFEGPNYHIAPRWVYHLTSVWMIFVVIASVFTNGLVLAATMKFKKLRHPLNWILVNLAVADLAETVIASTISVVNQVYGYFVLGHPMCVLEGYTVSLCGITGLWSLAIISWERWMVVCKPFGNVRFDAKLAIVGIAFSWIWAAVWTAPPIFGWSRYWPHGLKTSCGPDVFSGSSYPGVQSYMIVLMVTCCITPLSIIVLCYLQVWLAIRAVAKQQKESESTQKAEKEVTRMVVVMVLAFCFCWGPYAFFACFAAANPGYPFHPLMAALPAFFAKSATIYNPVIYVFMNRQFRNCILQLFGKKVDDGSELSSASKTEVSSVSSVSPA";
+
+    // Match C's G-INS-i pairlocalalign: -2.00 / -0.100 / 0.100 (script:204-206).
+    let scale_protein: f64 = 600.0 / 1000.0;
+    let cc_int = |x: f64, mul: f64| -> i32 { ((x * mul) - 0.5) as i32 };
+    let cc_scale = |ppen: i32, scale: f64| -> i32 { ((scale * ppen as f64) + 0.5) as i32 };
+    let p_open = cc_int(-2.00, 1000.0);
+    let p_ext  = cc_int(-0.100, 1000.0);
+    let p_offset = cc_int(0.100, 1000.0);
+    let pair_gap = GapModel::new(
+        cc_scale(p_open, scale_protein) as f64,
+        cc_scale(p_ext,  scale_protein) as f64,
+    );
+    let pair_offset_int = cc_scale(p_offset, scale_protein);
+    // Apply matrix offset shift as C does (constants.c:798).
+    let nscored = scoring.nscoredalphabets;
+    let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+    for i in 0..nscored {
+        for j in 0..nscored {
+            shifted[i][j] -= pair_offset_int;
+        }
+    }
+
+    let r_aln = mafft_align::global_align(
+        s1, s2,
+        &shifted,
+        &scoring.amino_map,
+        &pair_gap,
+        true, true,
+    );
+
+    eprintln!("Rust score: {}", r_aln.score);
+    eprintln!("Rust width: {}", r_aln.seq1.len());
+    eprintln!("Rust seq1[0..40]: {}", std::str::from_utf8(&r_aln.seq1[..40]).unwrap());
+    eprintln!("Rust seq2[0..40]: {}", std::str::from_utf8(&r_aln.seq2[..40]).unwrap());
+
+    unsafe {
+        init_c_protein();
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::penalty).write(pair_gap.open as c_int);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_ex).write(pair_gap.extend as c_int);
+
+        let alloclen = (s1.len() + s2.len()) * 4;
+        let mut buf1 = s1.to_vec(); buf1.resize(alloclen + 1, 0);
+        let mut buf2 = s2.to_vec(); buf2.resize(alloclen + 1, 0);
+        let buf1_box = buf1.into_boxed_slice();
+        let buf2_box = buf2.into_boxed_slice();
+        let mut p1: *mut c_char = buf1_box.as_ptr() as *mut c_char;
+        let mut p2: *mut c_char = buf2_box.as_ptr() as *mut c_char;
+
+        let n_dyn = build_c_dynamicmtx(&shifted);
+        let c_score = mafft_sys::G__align11(
+            n_dyn, &mut p1, &mut p2, alloclen as c_int, 1, 1,
+        );
+
+        let c_len = {
+            let s = p1;
+            let mut k = 0; while *s.add(k) != 0 { k += 1; } k
+        };
+        let c_a1 = std::str::from_utf8(&buf1_box[..c_len]).unwrap();
+        let c_a2 = std::str::from_utf8(&buf2_box[..c_len]).unwrap();
+        eprintln!("C    score: {}", c_score);
+        eprintln!("C    width: {}", c_len);
+
+        mafft_sys::freeconstants();
+
+        let r_a1_str = std::str::from_utf8(&r_aln.seq1).unwrap();
+        let r_a2_str = std::str::from_utf8(&r_aln.seq2).unwrap();
+        if r_a1_str != c_a1 {
+            let common = r_a1_str.chars().zip(c_a1.chars()).take_while(|(a,b)| a==b).count();
+            eprintln!("first diff col: {}", common);
+            eprintln!("R s1 [{}..]: {}", common.saturating_sub(10), &r_a1_str[common.saturating_sub(10)..r_a1_str.len().min(common+30)]);
+            eprintln!("C s1 [{}..]: {}", common.saturating_sub(10), &c_a1[common.saturating_sub(10)..c_a1.len().min(common+30)]);
+            eprintln!("R s2 [{}..]: {}", common.saturating_sub(10), &r_a2_str[common.saturating_sub(10)..r_a2_str.len().min(common+30)]);
+            eprintln!("C s2 [{}..]: {}", common.saturating_sub(10), &c_a2[common.saturating_sub(10)..c_a2.len().min(common+30)]);
+        }
+        assert_eq!(r_a1_str, c_a1, "seq1 mismatch");
+        assert_eq!(r_a2_str, c_a2, "seq2 mismatch");
+    }
+}
+

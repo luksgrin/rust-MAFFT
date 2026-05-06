@@ -18,7 +18,7 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | NW-NS-2 (`--nofft`)                        | 717     | 717        | 0          | byte-exact ✓ |
 | FFT-NS-i (`--maxiterate 100`)              | 721     | 721        | 0          | byte-exact ✓ |
 | L-INS-1 (`--localpair --maxiterate 0`)     | 719     | 719        | 0          | byte-exact ✓ (closed 2026-05-05) |
-| G-INS-1 (`--globalpair --maxiterate 0`)    | 746     | 747        | 974        | divergent — see §1 |
+| G-INS-1 (`--globalpair --maxiterate 0`)    | 746     | 746        | 0          | byte-exact ✓ (closed 2026-05-06) |
 | E-INS-1 (`--genafpair --maxiterate 0`)     | 729     | 719        | 948        | divergent — see §2 |
 | L-INS-i (`--localpair`)                    | 719     | 725        | 934        | divergent — see §3 |
 | G-INS-i (`--globalpair`)                   | 746     | 714        | 939        | divergent — see §3 |
@@ -41,33 +41,41 @@ Test suite: 223 Rust tests pass (`cargo test --workspace --exclude pymafft
 
 ---
 
-## §1. G-INS-1 — divergent without refinement
+## §1. G-INS-1 — RESOLVED 2026-05-06
 
-**Mode**: `--globalpair --maxiterate 0` (single progressive pass over
-pairwise global-align-derived tree).
+**Mode**: `--globalpair --maxiterate 0` now byte-identical to C.
 
-**Observed**: Rust width 747 vs C 746, diff 974 lines (massive content
-divergence despite near-equal width). The first sequence's gap pattern
-diverges at column 1 — this is not a refinement issue; it's a
-progressive-pass issue.
+**Two fixes** combined:
 
-**Suspected root**: our `PairAligner::Global` path through
-`build_homology_table` (engine.rs:232) uses `global_align`. The
-opt/importance computation may not match the L-INS-i analog after the
-2026-05-05 fixes (full-precision distance, `iscore / sumoverlap` opt
-scale, `recompute_importance` symmetrization). Verify each step by
-reusing the FFI cell-by-cell test pattern from
-`crates/mafft-core/tests/cross_validate_constrained_align.rs`.
+1. **`global_align` was a textbook 3-matrix Needleman-Wunsch**, while
+   C's `G__align11` is a max-so-far DP with `>=` tie-break (mirroring
+   `L__align11`'s structure but without the local-stop reset).
+   Re-ported `global_align` to follow `Galign11.c:913-1474` exactly,
+   including the running `mi` / `m_arr` trackers, `>=` for the
+   prept-vs-mi/mjpt update, `fpenalty_ex_i` boundary handling at
+   `i == lgth1`, and the `Atracking`-style traceback that emits the
+   diagonal cell at the SOURCE `(ifi, jfi)` rather than the current
+   cell.
 
-**Concrete next task**:
-1. Add an FFI test mirroring `constrained_align_real_2seq_matches_c` but
-   driving `G__align11` instead of `L__align11` for the pairwise build.
-2. Compare our `region.opt`, `region.importance`, and final impmtx
-   to C's by running `mafft --globalpair --maxiterate 0 --debug` on a
-   3-seq subset and extracting `hat3` + dumping intermediate state via
-   the same `IMP_DUMP` instrumentation pattern used for L-INS-i.
-3. The fix is likely small (importance/opt scaling, or a missing
-   `outgap` setting on the global path). Effort: 0.5-1 day.
+2. **`outgap` was hardcoded to 0** (head/tail gap free) for all
+   constraint-aware progressive merges. C's `scripts/mafft:2584` does
+   NOT pass `$termgapopt = -O` for `--globalpair` (whereas L-INS-i and
+   E-INS-i pass it via lines 2593/2601), so G-INS-i's `tbfast` runs
+   with `outgap = 1` (head/tail gap penalised). Routed a
+   `penalize_term_gaps: bool` flag through
+   `progressive_align_with_constraints` → `merge_step_cached` →
+   `profile_align_imp(head_gap, tail_gap, …)`. `engine.rs` sets it
+   `true` for `GInsi` and `false` for L-INS-i / E-INS-i.
+
+**Regression guard**: `ginsi_maxit0_byte_identical_to_c` in
+`crates/mafft-core/tests/end_to_end.rs` (fixture
+`tests/fixtures/sample.ginsi.maxit0`).
+
+**FFI guard**: `rust_global_align_matches_c_g__align11` in
+`crates/mafft-core/tests/cross_validate_constrained_align.rs` runs
+`global_align` and `mafft_sys::G__align11` on the (M63632, K03494)
+pair (which has a different N-terminal that triggers the head-gap
+tie-break) and asserts byte-exact equality.
 
 ---
 
@@ -323,16 +331,14 @@ with the number of paths each mode activates.
 
 1. **§3 (INS-i refinement loop)** — closing this completes the original
    user goal of "L/G/E-INS-i with refinement byte-exact". Most of the
-   pieces are in place after the 2026-05-05 fixes; the work is now
+   pieces are in place after the 2026-05-05/06 fixes; the work is now
    isolated to `iterative_refine` with constraints. Highest value per
    hour.
-2. **§1 (G-INS-1)** — small contained bug in the pairwise/progressive
-   pass. The L-INS-i fix from this session should largely apply; verify
-   and extend.
-3. **§2 (E-INS-1)** — adds a new pairwise variant. Independent of §1
-   and §3 but exercises the same constraint pipeline.
-4. **§4 (BL50 FFT)** — structural FFT change; once this lands, §5
+2. **§2 (E-INS-1)** — adds a new pairwise variant
+   (`PairAligner::GeneralizedAffine`). Independent of §3 but exercises
+   the same constraint pipeline.
+3. **§4 (BL50 FFT)** — structural FFT change; once this lands, §5
    likely closes for free.
-5. **§7 (--add)** — unblocks §8 (perf) and is a real feature gap.
-6. **§6 (parttree)** — algorithmic port, substantial work.
-7. **§9 (RNA / allowshift)** — as needed.
+4. **§7 (--add)** — unblocks §8 (perf) and is a real feature gap.
+5. **§6 (parttree)** — algorithmic port, substantial work.
+6. **§9 (RNA / allowshift)** — as needed.

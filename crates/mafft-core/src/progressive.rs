@@ -59,7 +59,7 @@ pub fn progressive_align(
     shift_penalty: Option<f64>,
 ) -> MultipleAlignment {
     progressive_align_with_constraints(
-        sequences, names, topology, scoring, use_fft, shift_penalty, None,
+        sequences, names, topology, scoring, use_fft, shift_penalty, None, false,
     )
 }
 
@@ -79,6 +79,7 @@ pub fn progressive_align_with_constraints(
     use_fft: bool,
     shift_penalty: Option<f64>,
     constraints: Option<&mafft_types::LocalHomologyTable>,
+    penalize_term_gaps: bool,
 ) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
@@ -109,7 +110,7 @@ pub fn progressive_align_with_constraints(
     for (step_idx, step) in topology.steps.iter().enumerate() {
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
-            &mut profile_cache, constraints,
+            &mut profile_cache, constraints, penalize_term_gaps,
         );
 
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
@@ -145,6 +146,7 @@ fn merge_step_cached(
     use_fft: bool,
     cache: &mut HashMap<Vec<usize>, CachedProfile>,
     constraints: Option<&mafft_types::LocalHomologyTable>,
+    penalize_term_gaps: bool,
 ) -> f64 {
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
@@ -229,9 +231,25 @@ fn merge_step_cached(
             prof1.length, prof2.length,
             mafft_align::FASTATHRESHOLD_DEFAULT,
         );
+        if std::env::var_os("RUST_IMP_DUMP").is_some() {
+            let s00 = imp.first().and_then(|r| r.first()).copied().unwrap_or(0.0);
+            let s100 = if imp.len()>100 && imp[100].len()>100 { imp[100][100] } else { 0.0 };
+            let s300 = if imp.len()>300 && imp[300].len()>300 { imp[300][300] } else { 0.0 };
+            eprintln!("[RUST_IMP] g1={:?} g2={:?} lgth1={} lgth2={} eff1={:?} eff2={:?} imp[0,0]={:.4} imp[100,100]={:.4} imp[300,300]={:.4}",
+                group1, group2, prof1.length, prof2.length, w1n, w2n, s00, s100, s300);
+            for &gi in group1 {
+                for &gj in group2 {
+                    let regs = table.get(gi, gj);
+                    for (idx, r) in regs.iter().enumerate().take(3) {
+                        eprintln!("[RUST_IMP] lh[{},{}] e{}: opt={:.6} imp={:.6} overlapaa={} s1={} e1={} s2={} e2={}",
+                            gi, gj, idx, r.opt, r.importance, r.overlapaa, r.start1, r.end1, r.start2, r.end2);
+                    }
+                }
+            }
+        }
         mafft_align::profile_align_imp(
             &prof1, &prof2, &scoring.substitution_matrix, gap,
-            false, false, Some(&imp),
+            penalize_term_gaps, penalize_term_gaps, Some(&imp),
         )
     } else {
         profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, false, false)

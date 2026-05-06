@@ -14,6 +14,7 @@ This project provides:
 - FFT-NS-2 (default), NW-NS-2 (`--nofft`)
 - FFT-NS-i (`--maxiterate 100`)
 - L-INS-1 (`--localpair --maxiterate 0`) — closed 2026-05-05
+- G-INS-1 (`--globalpair --maxiterate 0`) — closed 2026-05-06
 - BLOSUM 30 / 45 / 62 / 80 (FFT and NW)
 - JTT 200 (FFT)
 - TM 100 / 200 (NW)
@@ -30,8 +31,8 @@ Every progressive merge step matches in score and width and every refinement ite
 | FFT-NS-i (`--maxiterate 100`)               | 721     | 721        | 0    | ✓ byte-exact |
 | L-INS-1 (`--localpair --maxiterate 0`)      | 719     | 719        | 0    | ✓ byte-exact (closed 2026-05-05) |
 | L-INS-i (`--localpair`)                     | 719     | 725        | 934  | ✗ refinement loop diverges |
-| G-INS-1 (`--globalpair --maxiterate 0`)     | 746     | 747        | 974  | ✗ progressive diverges |
-| G-INS-i (`--globalpair`)                    | 746     | 714        | 939  | ✗ progressive + refinement |
+| G-INS-1 (`--globalpair --maxiterate 0`)     | 746     | 746        | 0    | ✓ byte-exact (closed 2026-05-06) |
+| G-INS-i (`--globalpair`)                    | 746     | 726        | 999  | ✗ refinement loop diverges |
 | E-INS-1 (`--genafpair --maxiterate 0`)      | 729     | 719        | 948  | ✗ uses local pairwise instead of generalized-affine |
 | E-INS-i (`--genafpair`)                     | 729     | 725        | 984  | ✗ same as above + refinement |
 | BLOSUM 30 / 45 / 62 / 80 (FFT)              | match   | match      | 0    | ✓ byte-exact |
@@ -268,16 +269,16 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-05 (`cargo test --workspace --exclude pymafft --release`: 223 passed, 0 failed, 0 ignored):
+Current counts as of 2026-05-06 (`cargo test --workspace --exclude pymafft --release`: 226 passed, 0 failed, 0 ignored):
 
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests | ~140 | All crates, all modules (per-crate `--lib` runs) |
-| Rust integration tests (`end_to_end`) | 39 | Byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, `--bl 30/45/80` with/without FFT, `--jtt 200`, `--tm 100/200 --nofft`, RNA `--nofft`), DP diagnostics |
-| Rust FFI cross-validation tests | 16 | Cell-by-cell matrix equality and constrained-DP equivalence vs C via FFI (BLOSUM45/50/62/80, JTT 200, JTT 100, TM 200 n_dis + n_disFFT, BL50 n_disFFT, DNA, plus 5 constrained-align tests in `cross_validate_constrained_align.rs`) |
+| Rust integration tests (`end_to_end`) | 41 | Byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, **L-INS-1, G-INS-1**, `--bl 30/45/80` with/without FFT, `--jtt 200`, `--tm 100/200 --nofft`, RNA `--nofft`), DP diagnostics |
+| Rust FFI cross-validation tests | 17 | Cell-by-cell matrix equality and constrained-DP equivalence vs C via FFI (BLOSUM45/50/62/80, JTT 200, JTT 100, TM 200 n_dis + n_disFFT, BL50 n_disFFT, DNA, plus 5 constrained-align tests + `rust_global_align_matches_c_g__align11` in `cross_validate_constrained_align.rs`) |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust** | **223** | |
+| **Total Rust** | **226** | |
 
 Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
 
@@ -315,7 +316,11 @@ FFT-NS-i (`--maxiterate 100`) is byte-identical to C — see `fftnsi_byte_identi
 2. The L-INS-i path was rounding distances to 3 decimals (mimicking the hat2 `%#6.3f` round-trip). That's correct for FFT-NS-i + dndpre but wrong for L-INS-i: `tbfast` with `callpairlocalalign=1` keeps full-precision `iscore[]` in memory. Removed the rounding for the constraint-aware path.
 3. The CLI was treating `--maxiterate 0` as "use the mode default 1000" because `args.maxiterate` was a `usize` defaulting to 0 and could not distinguish "unset" from "explicit 0". Switched to `Option<usize>`.
 
-**L-INS-i with refinement (`--localpair`, default 1000 iterations), G-INS-i, E-INS-i still diverge** — the refinement loop with constraints picks different rearrangements than C's. See `TODO.md` §3 for the diagnostic plan. G-INS-1 (`--globalpair --maxiterate 0`) and E-INS-1 (`--genafpair --maxiterate 0`) also diverge even without refinement: G-INS-1 likely needs the same opt/distance fixes applied to the global-pair path; E-INS-i still uses Smith-Waterman pairwise (it should use generalized-affine — see TODO §2).
+**G-INS-1 without refinement (`--globalpair --maxiterate 0`) is byte-identical to C as of 2026-05-06.** Two combined fixes:
+1. Re-ported `global_align` to mirror C's `G__align11` (max-so-far DP with `>=` tie-break, source-cell diagonal emission in traceback) — our previous textbook 3-matrix Needleman-Wunsch produced the same total score but different gap placement on ties.
+2. Routed `outgap = 1` (head/tail gap penalised) through `progressive_align_with_constraints` for `--globalpair` only. C's `scripts/mafft:2584` omits the `$termgapopt = -O` flag for G-INS-i (so `outgap = 1`), whereas L-INS-i and E-INS-i do pass it (so `outgap = 0`). Without this, the head-gap-region tie-break placed seq1's leading 'M' at col 19 instead of col 0 against another N-terminal-shifted opsin.
+
+**L-INS-i with refinement (`--localpair`, default 1000 iterations), G-INS-i, E-INS-i still diverge** — the refinement loop with constraints picks different rearrangements than C's. See `TODO.md` §3 for the diagnostic plan. E-INS-1 (`--genafpair --maxiterate 0`) also diverges without refinement: it still uses Smith-Waterman pairwise where it should use generalized-affine — see `TODO.md` §2.
 
 ### Non-default BLOSUM matrices (`--bl N`)
 

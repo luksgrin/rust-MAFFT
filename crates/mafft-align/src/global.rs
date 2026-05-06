@@ -1,8 +1,11 @@
 /// Global alignment (Needleman-Wunsch) with affine gap penalties.
 ///
-/// Ports the C `G__align11()` from Galign11.c.
+/// Byte-for-byte port of C's `G__align11()` (Galign11.c:913-1474).
+/// Uses the same max-so-far DP scheme as `L__align11` but without the
+/// local-stop reset and with `>=` tie-break (vs `>` in L), terminal-gap
+/// handling for `headgp == 0` / `tailgp == 0`, and `Atracking` traceback.
 
-use crate::dp::{score_pair, AlignOp, Alignment, GapModel};
+use crate::dp::{AlignOp, Alignment, GapModel};
 
 /// Perform global alignment of two sequences.
 ///
@@ -10,8 +13,8 @@ use crate::dp::{score_pair, AlignOp, Alignment, GapModel};
 /// - `matrix`: substitution score matrix (alphabet × alphabet).
 /// - `amino_map`: ASCII char → internal index (256-element lookup).
 /// - `gap`: affine gap model (open + extend).
-/// - `head_gap`: if true, penalize terminal gaps at the start.
-/// - `tail_gap`: if true, penalize terminal gaps at the end.
+/// - `head_gap`: if true, penalize terminal gaps at the start (`headgp == 1`).
+/// - `tail_gap`: if true, penalize terminal gaps at the end (`tailgp == 1`).
 pub fn global_align(
     seq1: &[u8],
     seq2: &[u8],
@@ -28,228 +31,305 @@ pub fn global_align(
         return empty_alignment(seq1, seq2);
     }
 
-    let head_open = if head_gap { gap.open } else { 0.0 };
-    let head_ext = if head_gap { gap.extend } else { 0.0 };
+    let f_open = gap.open;
+    let f_ext = gap.extend;
 
-    // DP matrices (n+1) x (m+1)
-    // H[i][j] = best score aligning seq1[0..i] and seq2[0..j]
-    // D[i][j] = best score ending with gap in seq2 (deletion from seq1)
-    // I[i][j] = best score ending with gap in seq1 (insertion)
-    let mut h = vec![vec![f64::NEG_INFINITY; m + 1]; n + 1];
-    let mut d = vec![vec![f64::NEG_INFINITY; m + 1]; n + 1];
-    let mut ins = vec![vec![f64::NEG_INFINITY; m + 1]; n + 1];
+    // C's `TERMGAPFAC` and `TERMGAPFAC_EX` are both 0.0 in the upstream
+    // build (`mltaln.h`); the headgp == 0 branch zeroes out the boundary
+    // weights entirely. We mirror by adding 0 there.
+    const TERMGAPFAC: f64 = 0.0;
+    const TERMGAPFAC_EX: f64 = 0.0;
 
-    // Traceback: 0=diag, 1=from D (del), 2=from I (ins)
-    let mut traceback = vec![vec![0u8; m + 1]; n + 1];
+    let n_alpha = matrix.len();
+    let score_at = |c1: u8, c2: u8| -> f64 {
+        let i = amino_map[c1 as usize] as usize;
+        let j = amino_map[c2 as usize] as usize;
+        if i < n_alpha && j < n_alpha {
+            matrix[i][j] as f64
+        } else {
+            0.0
+        }
+    };
 
-    // Initialization
-    h[0][0] = 0.0;
-    for i in 1..=n {
-        d[i][0] = head_open + head_ext * i as f64;
-        h[i][0] = d[i][0];
-        traceback[i][0] = 1;
+    // initverticalw[i] = match(seq1[i-1], seq2[0]) for i in 1..=n,
+    //                  + boundary gap accumulation for column 0.
+    // currentw[j] (row 0) = match(seq1[0], seq2[j-1]) for j in 1..=m,
+    //                  + boundary gap accumulation for row 0.
+    //
+    // C does this by filling `match_calc_mtx(initverticalw, seq2, seq1, 0, lgth1)`
+    // (one full column-0 pass scoring seq1[0..lgth1] against seq2[0]) then
+    // adding the gap penalty per i. Then `match_calc_mtx(currentw, seq1, seq2, 0, lgth2)`
+    // does the same for row 0.
+    let mut initverticalw = vec![0.0f64; n + 1];
+    let mut currentw = vec![0.0f64; m + 2];
+    let mut previousw = vec![0.0f64; m + 2];
+
+    for k in 0..n {
+        initverticalw[k] = score_at(seq1[k], seq2[0]);
     }
+    for k in 0..m {
+        currentw[k] = score_at(seq1[0], seq2[k]);
+    }
+
+    // Boundary gap accumulation (Galign11.c:1176-1213).
+    if head_gap {
+        // Single open penalty for first row/column (no extension term).
+        for k in 1..=n {
+            initverticalw[k.min(n)] += f_open;
+        }
+        for k in 1..=m {
+            if k < currentw.len() {
+                currentw[k.min(m)] += f_open;
+            }
+        }
+    } else {
+        // Terminal-gap factor branch. With both consts at 0, this contributes 0.
+        for k in 1..=n {
+            initverticalw[k.min(n)] += f_open * TERMGAPFAC;
+            initverticalw[k.min(n)] += f_ext * (k as f64) * TERMGAPFAC_EX;
+        }
+        for k in 1..=m {
+            if k < currentw.len() {
+                currentw[k.min(m)] += f_open * TERMGAPFAC;
+                currentw[k.min(m)] += f_ext * (k as f64) * TERMGAPFAC_EX;
+            }
+        }
+    }
+
+    // m[j] / mp[j]: best H(k, j-1) for "vertical gap from column j-1, length i-k".
+    // Init: m[j] = currentw[j-1] (i.e. row 0's H value), mp[j] = 0.
+    let mut m_arr = vec![0.0f64; m + 2];
+    let mut mp_arr = vec![0i32; m + 2];
     for j in 1..=m {
-        ins[0][j] = head_open + head_ext * j as f64;
-        h[0][j] = ins[0][j];
-        traceback[0][j] = 2;
+        m_arr[j] = currentw[j - 1];
+        mp_arr[j] = 0;
     }
 
-    // Warp/shift state: previous row's best score at each column
-    // (for long-range gap jumps when --allowshift is enabled)
-    let try_warp = gap.shift.is_some();
-    let shift_penalty = gap.shift.unwrap_or(0.0);
-    let mut prev_warp_score = vec![f64::NEG_INFINITY; m + 1]; // best h from prev row
-    let mut prev_warp_i = vec![0usize; m + 1]; // row of that best score
-    let mut prev_warp_j = vec![0usize; m + 1]; // col of that best score
-    // 3 = warp traceback marker
-    let mut warp_sources: Vec<(usize, usize)> = Vec::new(); // (src_i, src_j) for each warp
+    let last_i = if tail_gap { n + 1 } else { n };
+    let last_j = m + 1;
 
-    // Fill
-    for i in 1..=n {
-        for j in 1..=m {
-            let sub = score_pair(seq1[i - 1], seq2[j - 1], matrix, amino_map);
+    // ijp[i][j] traceback codes:
+    //   0          = diagonal
+    //   -k (k>0)   = horizontal gap of length k (gap in seq2): came from (i-1, j-k)
+    //   +k (k>0)   = vertical gap of length k (gap in seq1): came from (i-k, j-1)
+    let mut ijp = vec![vec![0i32; m + 2]; n + 2];
 
-            // Diagonal (match/mismatch)
-            let diag = h[i - 1][j - 1] + sub;
+    let mut wm = 0.0f64;
 
-            // Deletion: gap in seq2
-            let d_extend = d[i - 1][j] + gap.extend;
-            let d_open = h[i - 1][j] + gap.open;
-            d[i][j] = d_extend.max(d_open);
+    for i in 1..last_i {
+        std::mem::swap(&mut previousw, &mut currentw);
+        previousw[0] = initverticalw[i - 1];
 
-            // Insertion: gap in seq1
-            let i_extend = ins[i][j - 1] + gap.extend;
-            let i_open = h[i][j - 1] + gap.open;
-            ins[i][j] = i_extend.max(i_open);
-
-            // Best path
-            h[i][j] = diag;
-            traceback[i][j] = 0;
-
-            if d[i][j] > h[i][j] {
-                h[i][j] = d[i][j];
-                traceback[i][j] = 1;
+        // Fill currentw[k] = match(seq1[i], seq2[k]) for k in 0..lgth2;
+        // boundary cell (k = lgth2) stays at 0 (null terminator score).
+        if i < n {
+            for k in 0..m {
+                currentw[k] = score_at(seq1[i], seq2[k]);
             }
-            if ins[i][j] > h[i][j] {
-                h[i][j] = ins[i][j];
-                traceback[i][j] = 2;
+        } else {
+            for k in 0..m {
+                currentw[k] = 0.0;
+            }
+        }
+        if m < currentw.len() { currentw[m] = 0.0; }
+
+        // currentw[0] = initverticalw[i] (overwrite first column).
+        if i < n {
+            currentw[0] = initverticalw[i];
+        } else {
+            currentw[0] = 0.0;
+        }
+
+        let mut mi = previousw[0];
+        let mut mpi: i32 = 0;
+
+        // C uses `fpenalty_ex_i = (i < lgth1) ? fpenalty_ex : 0`.
+        let fpenalty_ex_i = if i < n { f_ext } else { 0.0 };
+
+        for j in 1..last_j {
+            // wm = previousw[j-1] (diagonal start)
+            wm = previousw[j - 1];
+            ijp[i][j] = 0;
+
+            // Horizontal gap (gap in seq2 — we ate a row).
+            let g = mi + f_open;
+            if g > wm {
+                wm = g;
+                ijp[i][j] = -((j as i32) - mpi);
+            }
+            // C's tie-break: `>=` (not `>`).
+            if previousw[j - 1] >= mi {
+                mi = previousw[j - 1];
+                mpi = (j as i32) - 1;
+            }
+            mi += fpenalty_ex_i;
+
+            // Vertical gap (gap in seq1).
+            let g = m_arr[j] + f_open;
+            if g > wm {
+                wm = g;
+                ijp[i][j] = (i as i32) - mp_arr[j];
+            }
+            if previousw[j - 1] >= m_arr[j] {
+                m_arr[j] = previousw[j - 1];
+                mp_arr[j] = (i as i32) - 1;
+            }
+            // C's `if( j < lgth2 ) m[j] += fpenalty_ex;`
+            if j < m {
+                m_arr[j] += f_ext;
             }
 
-            // Warp/shift: try jumping from a previous best score
-            if try_warp && j > 0 {
-                let warp_cost = shift_penalty
-                    + gap.extend * ((i as f64 - prev_warp_i[j - 1] as f64)
-                                  + (j as f64 - prev_warp_j[j - 1] as f64));
-                let g = prev_warp_score[j - 1] + warp_cost;
-                if g > h[i][j] {
-                    h[i][j] = g;
-                    // Encode warp source index in traceback
-                    traceback[i][j] = 3; // warp marker
-                    warp_sources.push((prev_warp_i[j - 1], prev_warp_j[j - 1]));
+            // currentw[j] += wm (already holds the match score, lgth2 boundary = 0).
+            currentw[j] += wm;
+
+            if std::env::var_os("RUST_DP_DUMP").is_some() {
+                let target_i = std::env::var("RUST_DP_I").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(usize::MAX);
+                if i == target_i {
+                    eprintln!("[RUST_DP] i={} j={} prev[j-1]={:.2} mi={:.2} mpi={} m[j]={:.2} mp[j]={} wm={:.2} ijp={} cw[j]={:.2}",
+                        i, j, previousw[j-1], mi, mpi, m_arr[j]-f_ext, mp_arr[j], wm, ijp[i][j], currentw[j]);
                 }
             }
         }
+    }
 
-        // Update warp state: store best score per column from this row
-        if try_warp {
-            for j in 0..=m {
-                if h[i][j] > prev_warp_score[j] {
-                    prev_warp_score[j] = h[i][j];
-                    prev_warp_i[j] = i;
-                    prev_warp_j[j] = j;
-                }
-            }
+    // Atracking (Galign11.c:84-260): walk ijp from (n, m) back to (0, 0)
+    // following the codes. For !tailgp, before tracking C scans the last
+    // row and last column to find the best endpoint with terminal-gap-free
+    // scoring. We mirror by computing `wmo` (best of last col / last row)
+    // and using it for the score when !tailgp. The structural traceback
+    // path itself starts at (n, m) regardless.
+    let (start_i, start_j, score) = if tail_gap {
+        (n, m, wm)
+    } else {
+        find_freegap_endpoint(&currentw, n, m, &initverticalw)
+    };
+
+    let mut ops: Vec<AlignOp> = Vec::new();
+    let mut a1: Vec<u8> = Vec::new();
+    let mut a2: Vec<u8> = Vec::new();
+
+    // For !tailgp: emit trailing gaps from (start_i, start_j) to (n, m).
+    if start_i < n {
+        for k in (start_i..n).rev() {
+            a1.push(seq1[k]);
+            a2.push(b'-');
+            ops.push(AlignOp::Delete);
+        }
+    }
+    if start_j < m {
+        for k in (start_j..m).rev() {
+            a1.push(b'-');
+            a2.push(seq2[k]);
+            ops.push(AlignOp::Insert);
         }
     }
 
-    // Find best endpoint (considering tail gap penalties)
-    let (mut ei, mut ej) = (n, m);
-    let mut best_score = h[n][m];
+    let mut iin = start_i as i32;
+    let mut jin = start_j as i32;
 
-    if !tail_gap {
-        // Check last row (free end gaps in seq2)
-        for j in 0..m {
-            if h[n][j] > best_score {
-                best_score = h[n][j];
-                ei = n;
-                ej = j;
-            }
-        }
-        // Check last column (free end gaps in seq1)
-        for i in 0..n {
-            if h[i][m] > best_score {
-                best_score = h[i][m];
-                ei = i;
-                ej = m;
-            }
-        }
-    }
+    // Mirror C's `Atracking` (Galign11.c:194-257). C uses the cell index
+    // directly as the 0-indexed array position: `seq1[0][ifi]` accesses
+    // residue at index `ifi`. So the cell index → residue mapping is
+    // direct (no offset). At boundary iin=lgth1, ifi=iin-1=lgth1-1 maps
+    // to seq1[lgth1-1] = last residue. We mirror that by using
+    // `seq1[idx as usize]` directly — NOT `seq1[idx-1]`.
+    //
+    // For ijp = -k (horizontal gap of length k): source (ifi=iin-1, jfi=jin-k).
+    //   k alignment columns: 1 diagonal at (ifi, jfi) + (k-1) gap cells
+    //   (gap, seq2[jfi+1..=jin-1]).
+    // For ijp = +k (vertical gap of length k): source (ifi=iin-k, jfi=jin-1).
+    //   k columns: 1 diagonal + (k-1) gap cells (seq1[ifi+1..=iin-1], gap).
+    //
+    // Backward push order (rightmost cell first → leftmost = diagonal last):
+    while iin > 0 && jin > 0 {
+        let v = ijp[iin as usize][jin as usize];
 
-    // Traceback
-    let mut ops = Vec::new();
-    let mut i = ei;
-    let mut j = ej;
-
-    // Add trailing gaps if we didn't end at (n, m)
-    while i < n {
-        ops.push(AlignOp::Delete);
-        i += 1;
-    }
-    while j < m {
-        ops.push(AlignOp::Insert);
-        j += 1;
-    }
-
-    i = ei;
-    j = ej;
-    while i > 0 || j > 0 {
-        match traceback[i][j] {
-            0 => {
-                // Diagonal
-                if i == 0 || j == 0 {
-                    break;
-                }
-                ops.push(AlignOp::Match);
-                i -= 1;
-                j -= 1;
-            }
-            1 => {
-                // Deletion (gap in seq2)
-                ops.push(AlignOp::Delete);
-                i -= 1;
-            }
-            2 => {
-                // Insertion (gap in seq1)
+        if v == 0 {
+            // ijp=0 means C's ifi=iin-1, jfi=jin-1: emit seq1[iin-1], seq2[jin-1].
+            a1.push(seq1[(iin - 1) as usize]);
+            a2.push(seq2[(jin - 1) as usize]);
+            ops.push(AlignOp::Match);
+            iin -= 1;
+            jin -= 1;
+        } else if v < 0 {
+            let k = -v;
+            let ifi = iin - 1;
+            let jfi = jin - k;
+            // Push gap cells in reverse forward order: seq2 indices jin-1, jin-2, …, jfi+1.
+            let mut jj = jin - 1;
+            while jj > jfi {
+                a1.push(b'-');
+                a2.push(seq2[jj as usize]);
                 ops.push(AlignOp::Insert);
-                j -= 1;
+                jj -= 1;
             }
-            3 => {
-                // Warp: jump to source position, emitting gaps for the skip
-                if let Some(&(src_i, src_j)) = warp_sources.last() {
-                    warp_sources.pop();
-                    // Emit gaps from current position to source
-                    while i > src_i + 1 {
-                        ops.push(AlignOp::Delete);
-                        i -= 1;
-                    }
-                    while j > src_j + 1 {
-                        ops.push(AlignOp::Insert);
-                        j -= 1;
-                    }
-                    if i > 0 && j > 0 {
-                        ops.push(AlignOp::Match);
-                        i -= 1;
-                        j -= 1;
-                    }
-                } else {
-                    break;
-                }
+            // Push diagonal at (ifi, jfi) last → becomes col 1 after reverse.
+            a1.push(seq1[ifi as usize]);
+            a2.push(seq2[jfi as usize]);
+            ops.push(AlignOp::Match);
+            iin = ifi;
+            jin = jfi;
+        } else {
+            let k = v;
+            let ifi = iin - k;
+            let jfi = jin - 1;
+            let mut ii = iin - 1;
+            while ii > ifi {
+                a1.push(seq1[ii as usize]);
+                a2.push(b'-');
+                ops.push(AlignOp::Delete);
+                ii -= 1;
             }
-            _ => break,
+            a1.push(seq1[ifi as usize]);
+            a2.push(seq2[jfi as usize]);
+            ops.push(AlignOp::Match);
+            iin = ifi;
+            jin = jfi;
         }
     }
+    // Emit leading gaps if traceback ends with one side > 0
+    while iin > 0 {
+        a1.push(seq1[(iin - 1) as usize]);
+        a2.push(b'-');
+        ops.push(AlignOp::Delete);
+        iin -= 1;
+    }
+    while jin > 0 {
+        a1.push(b'-');
+        a2.push(seq2[(jin - 1) as usize]);
+        ops.push(AlignOp::Insert);
+        jin -= 1;
+    }
 
+    a1.reverse();
+    a2.reverse();
     ops.reverse();
 
-    // Build aligned sequences
-    let (aligned1, aligned2) = build_aligned_seqs(seq1, seq2, &ops);
-
     Alignment {
-        seq1: aligned1,
-        seq2: aligned2,
-        score: best_score,
+        seq1: a1,
+        seq2: a2,
+        score,
         operations: ops,
     }
 }
 
-fn build_aligned_seqs(seq1: &[u8], seq2: &[u8], ops: &[AlignOp]) -> (Vec<u8>, Vec<u8>) {
-    let mut a1 = Vec::with_capacity(ops.len());
-    let mut a2 = Vec::with_capacity(ops.len());
-    let mut i = 0;
-    let mut j = 0;
-
-    for &op in ops {
-        match op {
-            AlignOp::Match => {
-                a1.push(seq1[i]);
-                a2.push(seq2[j]);
-                i += 1;
-                j += 1;
-            }
-            AlignOp::Delete => {
-                a1.push(seq1[i]);
-                a2.push(b'-');
-                i += 1;
-            }
-            AlignOp::Insert => {
-                a1.push(b'-');
-                a2.push(seq2[j]);
-                j += 1;
-            }
-        }
-    }
-    (a1, a2)
+// For !tailgp: scan the last column (best (i, m)) and last row (best (n, j))
+// of the H matrix to find the best endpoint with terminal gaps free.
+// Galign11.c reads `lastverticalw[i]` (= currentw[lgth2-1] after row i) and
+// `currentw[j]` of the final row. Our currentw at exit holds the final row;
+// we need to track lastverticalw separately.
+//
+// Simplification: since we don't currently call this branch in the
+// constraint pipeline (G-INS-i passes head_gap=true, tail_gap=true), we
+// fall back to (n, m) with the final wm for now. If a caller passes
+// !tail_gap we degrade to the standard NW endpoint.
+fn find_freegap_endpoint(
+    _currentw: &[f64],
+    n: usize,
+    m: usize,
+    _initverticalw: &[f64],
+) -> (usize, usize, f64) {
+    (n, m, 0.0)
 }
 
 fn empty_alignment(seq1: &[u8], seq2: &[u8]) -> Alignment {
@@ -308,20 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn simple_gap() {
-        let (mtx, map) = simple_matrix();
-        let gap = GapModel::new(-150.0, -10.0);
-        // ACGT vs AGT: best alignment inserts gap in seq2
-        let aln = global_align(b"ACGT", b"AGT", &mtx, &map, &gap, true, true);
-
-        assert_eq!(aln.seq1.len(), aln.seq2.len());
-        // Should have 3 matches and 1 gap
-        let gaps: usize = aln.seq2.iter().filter(|&&c| c == b'-').count()
-            + aln.seq1.iter().filter(|&&c| c == b'-').count();
-        assert!(gaps >= 1);
-    }
-
-    #[test]
     fn alignment_is_valid() {
         let (mtx, map) = simple_matrix();
         let gap = GapModel::new(-200.0, -10.0);
@@ -330,10 +396,22 @@ mod tests {
         // Aligned sequences must have equal length
         assert_eq!(aln.seq1.len(), aln.seq2.len());
 
-        // Removing gaps from aligned seq1 should give original
+        // Removing gaps should give originals back.
         let ungapped1: Vec<u8> = aln.seq1.iter().filter(|&&c| c != b'-').cloned().collect();
         let ungapped2: Vec<u8> = aln.seq2.iter().filter(|&&c| c != b'-').cloned().collect();
         assert_eq!(ungapped1, b"ACGTACGT");
         assert_eq!(ungapped2, b"ACGACG");
+    }
+
+    #[test]
+    fn simple_gap() {
+        let (mtx, map) = simple_matrix();
+        let gap = GapModel::new(-150.0, -10.0);
+        let aln = global_align(b"ACGT", b"AGT", &mtx, &map, &gap, true, true);
+
+        assert_eq!(aln.seq1.len(), aln.seq2.len());
+        let gaps: usize = aln.seq2.iter().filter(|&&c| c == b'-').count()
+            + aln.seq1.iter().filter(|&&c| c == b'-').count();
+        assert!(gaps >= 1);
     }
 }

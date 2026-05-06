@@ -396,9 +396,16 @@ impl MafftEngine {
             // any non-FftNs2/FftNsi mode.
             let progress_constraints = pairwise_for_constraints
                 .as_ref().map(|(t, _)| t);
+            // C's `tbfast` is invoked with different `outgap` settings per
+            // mode (`scripts/mafft:2584,2593,2601`): G-INS-i omits the
+            // `$termgapopt = -O` flag so `outgap = 1` (head/tail gap
+            // penalized). L-INS-i and E-INS-i pass `-O` so `outgap = 0`.
+            // The progressive A__align/profile_align_imp call propagates
+            // this as `headgp = tailgp = outgap`.
+            let penalize_term_gaps = matches!(self.mode, AlignmentMode::GInsi { .. });
             msa = progressive_align_with_constraints(
                 &input_seqs, &names, &topo, &scoring, use_fft, shift,
-                progress_constraints,
+                progress_constraints, penalize_term_gaps,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
 

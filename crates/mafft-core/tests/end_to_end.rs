@@ -1509,3 +1509,91 @@ fn diagnostic_dp_trace() {
     eprintln!("Expected optimal score (4 matches + 2 gaps of 4): ~{}", opt);
 }
 
+
+/// L-INS-1 (`mafft --localpair --maxiterate 0`) must produce byte-identical
+/// output to C. Closed 2026-05-05 by three combined fixes:
+///   1. `opt = isumscore / sumoverlap` post-rescale (constraints.rs:435).
+///   2. Removing the 3-decimal hat2 distance round on the L-INS-i path
+///      (engine.rs:301).
+///   3. CLI `--maxiterate 0` honoured as zero refinement iters (main.rs:54).
+///
+/// Reference: `tests/fixtures/sample.linsi.maxit0` (= `mafft --localpair
+/// --maxiterate 0 mafft-upstream/test/sample`).
+#[test]
+fn linsi_maxit0_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.linsi.maxit0"))
+        .expect("missing tests/fixtures/sample.linsi.maxit0");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 0 }).align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "L-INS-1 width differs: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+            if mismatches <= 3 {
+                let first_diff = msa.sequences[i]
+                    .iter()
+                    .zip(c_ref.sequences[i].data.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(usize::MAX);
+                eprintln!(
+                    "seq {i} ({:?}) first diff at col {first_diff}",
+                    c_ref.sequences[i].name
+                );
+            }
+        }
+    }
+    assert_eq!(mismatches, 0, "{mismatches} L-INS-1 sequences differ from C");
+}
+
+/// G-INS-1 (`mafft --globalpair --maxiterate 0`) must produce byte-identical
+/// output to C. Closed 2026-05-06 by:
+///   1. Porting `global_align` to mirror C's `G__align11` exactly
+///      (max-so-far DP with `>=` tie-break, Atracking-style traceback).
+///   2. Routing `outgap = 1` (head/tail gap penalised) through
+///      `progressive_align_with_constraints` since C's
+///      `scripts/mafft:2584` omits `$termgapopt = -O` for `--globalpair`
+///      (whereas L-INS-i and E-INS-i pass it → `outgap = 0`).
+///
+/// Reference: `tests/fixtures/sample.ginsi.maxit0` (= `mafft --globalpair
+/// --maxiterate 0 mafft-upstream/test/sample`).
+#[test]
+fn ginsi_maxit0_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.ginsi.maxit0"))
+        .expect("missing tests/fixtures/sample.ginsi.maxit0");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::GInsi { iterations: 0 }).align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "G-INS-1 width differs: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+            if mismatches <= 3 {
+                let first_diff = msa.sequences[i]
+                    .iter()
+                    .zip(c_ref.sequences[i].data.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(usize::MAX);
+                eprintln!(
+                    "seq {i} ({:?}) first diff at col {first_diff}",
+                    c_ref.sequences[i].name
+                );
+            }
+        }
+    }
+    assert_eq!(mismatches, 0, "{mismatches} G-INS-1 sequences differ from C");
+}
