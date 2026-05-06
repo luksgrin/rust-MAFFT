@@ -292,6 +292,28 @@ pub fn profile_align_imp(
     tail_gap: bool,
     impmtx: Option<&[Vec<f64>]>,
 ) -> Alignment {
+    profile_align_imp_with_tiebreak(prof1, prof2, matrix, gap, head_gap, tail_gap, impmtx, false)
+}
+
+/// Like `profile_align_imp` but with control over the prept-vs-mi/mjpt
+/// tie-break rule. When `strict_part_tiebreak == false`, uses C's
+/// `A__align` semantics (`>=`, ties update mi/mjpt — Salignmm.c:1926,1946).
+/// When `true`, uses C's `partA__align` semantics (`>`, ties keep older
+/// mi/mjpt — partSalignmm.c:1218,1235; commented "2018/Apr").
+///
+/// The refinement FFT-segmented constraint path (`Falign_localhom`) uses
+/// `partA__align` per segment; the progressive constraint path uses
+/// `A__align`. The DPs are otherwise identical.
+pub fn profile_align_imp_with_tiebreak(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<i32>],
+    gap: &GapModel,
+    head_gap: bool,
+    tail_gap: bool,
+    impmtx: Option<&[Vec<f64>]>,
+    strict_part_tiebreak: bool,
+) -> Alignment {
     let n = prof1.length;
     let m = prof2.length;
 
@@ -527,7 +549,8 @@ pub fn profile_align_imp(
             }
 
             let g = previousw[j - 1] + ogcp2[j] * gf1_im1;
-            if g >= mi {
+            let mi_update = if strict_part_tiebreak { g > mi } else { g >= mi };
+            if mi_update {
                 mi = g;
                 mpi = j - 1;
             }
@@ -539,7 +562,8 @@ pub fn profile_align_imp(
             }
 
             let g = previousw[j - 1] + ogcp1[i] * gf2_jm1;
-            if g >= mj[j] {
+            let mj_update = if strict_part_tiebreak { g > mj[j] } else { g >= mj[j] };
+            if mj_update {
                 mj[j] = g;
                 mpj[j] = i - 1;
             }

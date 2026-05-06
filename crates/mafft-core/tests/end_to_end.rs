@@ -1646,3 +1646,71 @@ fn einsi_maxit0_byte_identical_to_c() {
     }
     assert_eq!(mismatches, 0, "{mismatches} E-INS-1 sequences differ from C");
 }
+
+/// Small-input L-INS-i refinement: 9 sequences with `--maxiterate 2` must
+/// be byte-identical to C. Guards the partial 2026-05-06 refinement fix:
+/// adding `oimpmatchdouble` (sum of impmtx[i][i]) to the accept/reject
+/// score so the constraint contribution is part of the threshold check
+/// (mirrors C's `mscore = oimpmatchdouble + tmpdouble`,
+/// `tscore = impmatchdouble + tmpdouble` in `tditeration.c:953,1094`).
+///
+/// Reference: `tests/fixtures/sample.first9.linsi.iter2`.
+///
+/// Note: full L-INS-i / G-INS-i / E-INS-i refinement on the 36-seq sample
+/// still diverges from C (see TODO §3) because C uses FFT-segmented
+/// `Falign_localhom` for the constrained DP and we use a single
+/// non-FFT `profile_align_imp` call. This test captures the behaviour
+/// where they coincide (small inputs without segmentation pressure).
+#[test]
+fn linsi_first9_iter2_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.first9.linsi.iter2"))
+        .expect("missing tests/fixtures/sample.first9.linsi.iter2");
+    let input = read_fasta(fixture_path("sample.first9.fa")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 }).align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "L-INS-i (n=9, iter=2) width: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+        }
+    }
+    assert_eq!(mismatches, 0, "{mismatches} sequences differ from C");
+}
+
+/// L-INS-i refinement on 12 sequences with `--maxiterate 5` must be
+/// byte-identical to C. Guards the 2026-05-06 `Falign_localhom` port:
+/// FFT-segmented constraint-aware DP with per-segment impmtx slicing,
+/// using `partA__align`-style strict-`>` tie-break for the
+/// prept-vs-mi/mjpt update.
+///
+/// Reference: `tests/fixtures/sample.first12.linsi.iter5` (= `mafft
+/// --localpair --maxiterate 5 sample.first12.fa`).
+#[test]
+fn linsi_first12_iter5_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.first12.linsi.iter5"))
+        .expect("missing tests/fixtures/sample.first12.linsi.iter5");
+    let input = read_fasta(fixture_path("sample.first12.fa")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 5 }).align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "L-INS-i (n=12, iter=5) width: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+        }
+    }
+    assert_eq!(mismatches, 0, "{mismatches} sequences differ from C");
+}

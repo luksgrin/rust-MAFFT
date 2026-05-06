@@ -21,7 +21,7 @@
 use rayon::prelude::*;
 
 use mafft_align::{
-    profile_align, profile_align_imp,
+    profile_align, profile_align_imp, profile_align_imp_with_tiebreak,
     build_imp_matrix, FASTATHRESHOLD_DEFAULT,
     Profile, GapModel, AlignOp,
 };
@@ -161,9 +161,29 @@ pub fn iterative_refine(
                     branch_weights.weights_for_branch(topology, step_idx, *side)
                 };
 
-                let old_score = compute_split_score(
+                // Group-local sum-1 normalized weights (matches C's
+                // fastconjuction_noname). Used both for `compute_impmatch_diagonal`
+                // and any future per-cluster averaging.
+                const MIN_W: f64 = 0.00001;
+                let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MIN_W)).collect();
+                let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MIN_W)).collect();
+                let s1w: f64 = w1.iter().sum();
+                let s2w: f64 = w2.iter().sum();
+                let w1n: Vec<f64> = if s1w > 0.0 { w1.iter().map(|w| w / s1w).collect() } else { vec![1.0; group1.len()] };
+                let w2n: Vec<f64> = if s2w > 0.0 { w2.iter().map(|w| w / s2w).collect() } else { vec![1.0; group2.len()] };
+
+                // C's mscore = oimpmatchdouble + tmpdouble (tditeration.c:953):
+                // intergroup substitution score + impmatch (sum of impmtx[i][i]
+                // over the current alignment's columns). We compute the same.
+                let old_sub = compute_split_score(
                     group1, group2, &alignment.sequences, &weights, scoring,
                 );
+                let old_imp = if let Some(lh) = constraints {
+                    compute_impmatch_diagonal(
+                        group1, group2, &alignment.sequences, &w1n, &w2n, lh,
+                    )
+                } else { 0.0 };
+                let old_score = old_sub + old_imp;
 
                 let new_seqs = realign_all(
                     group1, group2, &alignment.sequences, &weights, scoring, &gap,
@@ -189,16 +209,24 @@ pub fn iterative_refine(
                         iter_scores.insert(branch_id, tscore);
                         converged_count += 1;
                     } else {
-                        // Compute score of the new alignment for this split
-                        let tscore = compute_split_score(
+                        // C's tscore = impmatchdouble + tmpdouble (tditeration.c:1094):
+                        // intergroup score + new alignment's impmatch.
+                        let new_sub = compute_split_score(
                             group1, group2, &new_seqs, &weights, scoring,
                         );
+                        let new_imp = if let Some(lh) = constraints {
+                            compute_impmatch_diagonal(
+                                group1, group2, &new_seqs, &w1n, &w2n, lh,
+                            )
+                        } else { 0.0 };
+                        let tscore = new_sub + new_imp;
 
                         let threshold = old_score - params.cut / 100.0 * old_score;
+                        if std::env::var("RUST_MAFFT_TRACE").is_ok() {
+                            eprintln!("ACCEPT iter={iter} step={step_idx} side={side} old={:.3} new={:.3} accept={}",
+                                old_score, tscore, tscore > threshold);
+                        }
                         if tscore > threshold {
-                            if std::env::var("RUST_MAFFT_TRACE").is_ok() {
-                                eprintln!("ACCEPT iter={iter} step={step_idx} side={side} w={}", new_seqs[0].len());
-                            }
                             alignment.sequences = new_seqs;
                             any_change = true;
                             converged_count = 0;
@@ -313,15 +341,24 @@ fn realign_all(
     }
 
     if let Some(lh_table) = constraints {
-        // Constrained alignment (L-INS-i, E-INS-i). Mirrors C's
-        // `A__align(..., constraint=1, ...)` (Salignmm.c:1086): build the
-        // per-cell importance matrix `impmtx` from the localhom table once,
-        // then do the standard profile DP with `currentw[j] += impmtx[i][j]`
-        // applied row-by-row inside the DP (Salignmm.c:1700-1849).
-        //
-        // Anchored-segment optimizations from `Falign_localhom` are not
-        // ported yet; this single full DP path is the smallest correct
-        // unit and matches what `partA__align` does within each segment.
+        if use_fft {
+            // C's `Falign_localhom` (kobetsubunkatsu=1 path): mirrors the
+            // FFT-segmented loop in the unconstrained `Falign` but calls
+            // `partA__align(constraint=1, ..., gapmap1, gapmap2, ...)` per
+            // segment. The global impmtx is built once for the full
+            // (non-stripped) alignment; each segment passes its sliced
+            // view via gapmap1/gapmap2 (which translate stripped column
+            // index to position within the segment).
+            return realign_all_constrained_fft(
+                group1, group2, sequences, &w1n, &w2n,
+                scoring, gap, lh_table,
+            );
+        }
+        // Non-FFT constraint path (L-INS-i without -F, single full DP).
+        // Mirrors C's `A__align(..., constraint=1, ...)` (Salignmm.c:1086):
+        // build the per-cell importance matrix `impmtx` once, then do the
+        // standard profile DP with `currentw[j] += impmtx[i][j]` applied
+        // row-by-row inside the DP (Salignmm.c:1700-1849).
         let g1_seq_refs: Vec<&[u8]> = stripped1.iter().map(|s| s.as_slice()).collect();
         let g2_seq_refs: Vec<&[u8]> = stripped2.iter().map(|s| s.as_slice()).collect();
         let imp = build_imp_matrix(
@@ -565,6 +602,276 @@ fn realign_all(
     )
 }
 
+/// Constraint-aware FFT-segmented refinement, port of C's
+/// `Falign_localhom` (Falign_localhom.c:163, kobetsubunkatsu=1 path).
+///
+/// Mirrors the unconstrained FFT-segmented refinement in
+/// `realign_all`'s `use_fft` branch but per-segment calls
+/// `profile_align_imp` with the local impmtx slice rather than the
+/// unconstrained `profile_align`. The impmtx is built once for the full
+/// alignment width using the localhom regions; each segment's local
+/// view is the rectangle covering the segment's parent column range,
+/// indexed by the per-group strip kept-column lists (= C's `gapmap1` /
+/// `gapmap2`).
+///
+/// The cut points are computed from `alignable_segments` at lag=0 just
+/// like the unconstrained path (C's `alignableReagion` with maxk=1 in
+/// kobetsubunkatsu mode).
+fn realign_all_constrained_fft(
+    group1: &[usize],
+    group2: &[usize],
+    sequences: &[Vec<u8>],
+    w1n: &[f64],
+    w2n: &[f64],
+    scoring: &ScoringContext,
+    gap: &GapModel,
+    lh_table: &LocalHomologyTable,
+) -> Option<(Vec<Vec<u8>>, f64)> {
+    let width = sequences[group1[0]].len();
+    if width == 0 { return None; }
+
+    // Build full-alignment profiles for site-score / segment detection
+    // (matches the unconstrained FFT path). For refinement,
+    // prof1.length == prof2.length == width.
+    let full_prof1 = Profile::from_aligned(
+        &group1.iter().map(|&i| sequences[i].as_slice()).collect::<Vec<_>>(),
+        w1n, &scoring.amino_map, scoring.nalphabets,
+    );
+    let full_prof2 = Profile::from_aligned(
+        &group2.iter().map(|&i| sequences[i].as_slice()).collect::<Vec<_>>(),
+        w2n, &scoring.amino_map, scoring.nalphabets,
+    );
+
+    let segment_params = if scoring.seq_type.is_nucleotide() {
+        SegmentParams::dna().with_threshold(50.0)
+    } else {
+        SegmentParams::protein().with_threshold(50.0)
+    };
+
+    // Per-position site scores at lag=0 (C's alignableReagion).
+    let totaleff: f64 = w1n.iter().sum::<f64>() * w2n.iter().sum::<f64>();
+    let len = full_prof1.length.min(full_prof2.length);
+    let mut site_scores = vec![0.0f64; len];
+    for i in 0..len {
+        site_scores[i] = full_prof1.match_score(
+            i, &full_prof2, i, &scoring.substitution_matrix,
+        ) / totaleff;
+    }
+    let segments = alignable_segments(&site_scores, &segment_params);
+
+    // Cut points (C's `cut1[i+1] = sortedseg1[i]->center` plus 0 and len).
+    let mut cuts: Vec<usize> = Vec::with_capacity(segments.len() + 2);
+    cuts.push(0);
+    for seg in &segments { cuts.push(seg.center.min(width)); }
+    cuts.push(width);
+    cuts.sort();
+    cuts.dedup();
+
+    // Build the GLOBAL impmtx for the full non-stripped alignment
+    // (width × width). C does this via `part_imp_match_init_strict(...,
+    // length, length, mseq1, mseq2, ...)` once per branch realign.
+    // Each per-segment partA__align then reads `impmtx[start1+gapmap1[i]][start2+gapmap2[j]]`.
+    let g1_full: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
+    let g2_full: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
+    let global_imp = build_imp_matrix(
+        lh_table,
+        group1, group2,
+        &g1_full, &g2_full,
+        w1n, w2n,
+        width, width,
+        FASTATHRESHOLD_DEFAULT,
+    );
+
+    let mut new_sequences: Vec<Vec<u8>> = vec![Vec::new(); sequences.len()];
+    let mut total_score = 0.0f64;
+    for win in cuts.windows(2) {
+        let a = win[0];
+        let b = win[1];
+        if a >= b { continue; }
+        let seg_width = b - a;
+
+        // Slice [a, b) from each member.
+        let seg1: Vec<Vec<u8>> = group1.iter()
+            .map(|&i| sequences[i][a..b].to_vec()).collect();
+        let seg2: Vec<Vec<u8>> = group2.iter()
+            .map(|&i| sequences[i][a..b].to_vec()).collect();
+
+        // commongappick within segment + record gapmap (= column index
+        // within segment for each kept stripped column).
+        let seg_gap1: Vec<bool> = (0..seg_width)
+            .map(|c| seg1.iter().all(|s| s[c] == b'-')).collect();
+        let seg_gap2: Vec<bool> = (0..seg_width)
+            .map(|c| seg2.iter().all(|s| s[c] == b'-')).collect();
+        let gapmap1: Vec<usize> = (0..seg_width).filter(|&c| !seg_gap1[c]).collect();
+        let gapmap2: Vec<usize> = (0..seg_width).filter(|&c| !seg_gap2[c]).collect();
+
+        let stripped_seg1: Vec<Vec<u8>> = seg1.iter()
+            .map(|s| gapmap1.iter().map(|&c| s[c]).collect()).collect();
+        let stripped_seg2: Vec<Vec<u8>> = seg2.iter()
+            .map(|s| gapmap2.iter().map(|&c| s[c]).collect()).collect();
+
+        // Edge case: one side completely empty after strip.
+        if stripped_seg1.is_empty() || stripped_seg1[0].is_empty()
+            || stripped_seg2.is_empty() || stripped_seg2[0].is_empty()
+        {
+            let len1 = if stripped_seg1.is_empty() { 0 } else { stripped_seg1[0].len() };
+            let len2 = if stripped_seg2.is_empty() { 0 } else { stripped_seg2[0].len() };
+            for (k, &i) in group1.iter().enumerate() {
+                new_sequences[i].extend_from_slice(&stripped_seg1[k]);
+                new_sequences[i].extend(std::iter::repeat(b'-').take(len2));
+            }
+            for (k, &i) in group2.iter().enumerate() {
+                new_sequences[i].extend(std::iter::repeat(b'-').take(len1));
+                new_sequences[i].extend_from_slice(&stripped_seg2[k]);
+            }
+            continue;
+        }
+
+        // Build the segment's local impmtx by indexing the global impmtx
+        // at (a + gapmap1[i], a + gapmap2[j]) — mirrors C's
+        // `imp_match_out_vead_gapmap(imp[j] = impmtx[i1][start2+gapmap2[j]])`
+        // (partSalignmm.c:71-83). For refinement, start1 = start2 = a.
+        let l1 = stripped_seg1[0].len();
+        let l2 = stripped_seg2[0].len();
+        let mut local_imp = vec![vec![0.0f64; l2]; l1];
+        for i in 0..l1 {
+            let row = a + gapmap1[i];
+            for j in 0..l2 {
+                let col = a + gapmap2[j];
+                if row < global_imp.len() && col < global_imp[row].len() {
+                    local_imp[i][j] = global_imp[row][col];
+                }
+            }
+        }
+
+        let s1_refs: Vec<&[u8]> = stripped_seg1.iter().map(|s| s.as_slice()).collect();
+        let s2_refs: Vec<&[u8]> = stripped_seg2.iter().map(|s| s.as_slice()).collect();
+        let mut prof_seg1 = Profile::from_aligned(&s1_refs, w1n, &scoring.amino_map, scoring.nalphabets);
+        let mut prof_seg2 = Profile::from_aligned(&s2_refs, w2n, &scoring.amino_map, scoring.nalphabets);
+
+        // Per-segment boundary gap correction (mirrors C's `getkyokaigap`
+        // → `new_OpeningGapCount` in `MSalignmm`/`partA__align`). Same as
+        // the unconstrained FFT path: a sequence already in a gap just
+        // before the segment's first column does NOT count as opening at
+        // position 0.
+        let sgap_inside = a > 0;
+        let egap_inside = b < width;
+        if sgap_inside || egap_inside {
+            if !prof_seg1.ogcp.is_empty() {
+                for (k, &idx) in group1.iter().enumerate() {
+                    if sgap_inside
+                        && sequences[idx][a - 1] == b'-'
+                        && !stripped_seg1[k].is_empty()
+                        && stripped_seg1[k][0] == b'-'
+                    {
+                        prof_seg1.ogcp[0] -= w1n[k];
+                    }
+                    let l1k = stripped_seg1[k].len();
+                    if egap_inside
+                        && l1k > 0
+                        && stripped_seg1[k][l1k - 1] == b'-'
+                        && sequences[idx][b] == b'-'
+                    {
+                        let last = prof_seg1.fgcp.len() - 1;
+                        prof_seg1.fgcp[last] -= w1n[k];
+                    }
+                }
+            }
+            if !prof_seg2.ogcp.is_empty() {
+                for (k, &idx) in group2.iter().enumerate() {
+                    if sgap_inside
+                        && sequences[idx][a - 1] == b'-'
+                        && !stripped_seg2[k].is_empty()
+                        && stripped_seg2[k][0] == b'-'
+                    {
+                        prof_seg2.ogcp[0] -= w2n[k];
+                    }
+                    let l2k = stripped_seg2[k].len();
+                    if egap_inside
+                        && l2k > 0
+                        && stripped_seg2[k][l2k - 1] == b'-'
+                        && sequences[idx][b] == b'-'
+                    {
+                        let last = prof_seg2.fgcp.len() - 1;
+                        prof_seg2.fgcp[last] -= w2n[k];
+                    }
+                }
+            }
+        }
+
+        // C's Falign_localhom segment loop passes `headgp = tailgp = 1`
+        // when a segment is interior (`(i==0)?outgap:1` etc.); for
+        // dvtditr, outgap=1 anyway so all segments use 1.
+        //
+        // C uses `partA__align` (partSalignmm.c:1218,1235) which uses STRICT
+        // `>` for the prept-vs-mi/mjpt tie-break (the "// 2018/Apr" change).
+        // The progressive `A__align` uses `>=`. We pass strict_part_tiebreak=true
+        // to match `partA__align` exactly.
+        let seg_aln = profile_align_imp_with_tiebreak(
+            &prof_seg1, &prof_seg2, &scoring.substitution_matrix, gap,
+            true, true, Some(&local_imp), true,
+        );
+        total_score += seg_aln.score;
+
+        // Reconstruct segment output by applying ops to stripped segments.
+        let mut i1 = 0usize;
+        let mut i2 = 0usize;
+        for op in &seg_aln.operations {
+            match op {
+                AlignOp::Match => {
+                    for (k, &idx) in group1.iter().enumerate() {
+                        new_sequences[idx].push(stripped_seg1[k][i1]);
+                    }
+                    for (k, &idx) in group2.iter().enumerate() {
+                        new_sequences[idx].push(stripped_seg2[k][i2]);
+                    }
+                    i1 += 1; i2 += 1;
+                }
+                AlignOp::Delete => {
+                    for (k, &idx) in group1.iter().enumerate() {
+                        new_sequences[idx].push(stripped_seg1[k][i1]);
+                    }
+                    for &idx in group2 {
+                        new_sequences[idx].push(b'-');
+                    }
+                    i1 += 1;
+                }
+                AlignOp::Insert => {
+                    for &idx in group1 {
+                        new_sequences[idx].push(b'-');
+                    }
+                    for (k, &idx) in group2.iter().enumerate() {
+                        new_sequences[idx].push(stripped_seg2[k][i2]);
+                    }
+                    i2 += 1;
+                }
+            }
+        }
+    }
+
+    // Pad sequences not in either group to the new width.
+    let new_width = if !group1.is_empty() {
+        new_sequences[group1[0]].len()
+    } else if !group2.is_empty() {
+        new_sequences[group2[0]].len()
+    } else {
+        width
+    };
+    for (i, s) in new_sequences.iter_mut().enumerate() {
+        if !group1.contains(&i) && !group2.contains(&i) {
+            // "Other" sequences — preserve from input. Our refinement only
+            // realigns groups that partition all sequences, so this should
+            // never trigger; keep original.
+            *s = sequences[i].clone();
+        }
+        if s.len() < new_width {
+            s.resize(new_width, b'-');
+        }
+    }
+
+    Some((new_sequences, total_score))
+}
+
 /// Build result sequences from an alignment on stripped profiles.
 /// Maps alignment operations back to original column positions via kept1/kept2.
 fn build_result_from_stripped(
@@ -668,6 +975,44 @@ fn group_all_gap_columns(group: &[usize], sequences: &[Vec<u8>], width: usize) -
         }
     }
     all_gap
+}
+
+/// Sum the impmatch (constraint-importance bonus) across the diagonal of
+/// the current alignment. Mirrors C's `oimpmatchdouble = sum imp_match_out_sc(i,i)`
+/// loop (tditeration.c:925) for the existing alignment's `impmtx`.
+///
+/// `eff1`, `eff2` are group-local sum-1-normalized weights matching
+/// what `imp_match_init_strict` is called with in C (= `effarr1`/`effarr2`
+/// after `fastconjuction_noname` per-cluster normalization).
+fn compute_impmatch_diagonal(
+    group1: &[usize],
+    group2: &[usize],
+    sequences: &[Vec<u8>],
+    eff1: &[f64],
+    eff2: &[f64],
+    lh_table: &LocalHomologyTable,
+) -> f64 {
+    let width = sequences[group1[0]].len();
+    if width == 0 { return 0.0; }
+    let g1_seqs: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
+    let g2_seqs: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
+    let imp = build_imp_matrix(
+        lh_table,
+        group1, group2,
+        &g1_seqs, &g2_seqs,
+        eff1, eff2,
+        width, width,
+        FASTATHRESHOLD_DEFAULT,
+    );
+    let mut total = 0.0f64;
+    for i in 0..width {
+        if let Some(row) = imp.get(i) {
+            if let Some(&v) = row.get(i) {
+                total += v;
+            }
+        }
+    }
+    total
 }
 
 fn compute_split_score(

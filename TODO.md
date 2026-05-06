@@ -119,66 +119,80 @@ offsets, and aligned strings.
 
 ---
 
-## §3. INS-i modes with iterative refinement (`--localpair`,
-   `--globalpair`, `--genafpair` defaults run 1000 iterations)
+## §3. INS-i modes with iterative refinement — PARTIALLY RESOLVED
 
-**Status as of 2026-05-05**:
+**Status as of 2026-05-06**:
 
-| Mode    | C width | Rust width | Notes |
-|---------|---------|------------|-------|
-| L-INS-i | 719     | 725        | Was caused by `--maxiterate 0` parsing bug AND distance rounding; both fixed for `--maxiterate 0` (now byte-exact). With refinement enabled, refinement loop drifts. |
-| G-INS-i | 746     | 714        | §1's progressive pass also diverges; refinement on top compounds. |
-| E-INS-i | 729     | 725        | §2's pairwise mismatch + refinement drift. |
+| Mode    | C width | Rust width | Diff lines |
+|---------|---------|------------|------------|
+| L-INS-i | 719     | 725        | 934        |
+| G-INS-i | 746     | 727        | 1000       |
+| E-INS-i | 729     | 730        | 984        |
 
-**What was fixed during 2026-05-05 session** (all in
-`crates/mafft-core/src/engine.rs` and one in `crates/mafft-bin/src/main.rs`):
+Small inputs match byte-exact:
+- L-INS-i n=9 iter=2 ✓
+- L-INS-i n=12 iter=5 ✓
+- L-INS-i n=30 iter=1 ✓
 
-1. **`opt` scaling bug** (closed ~10 columns of L-INS-i gap):
-   `crates/mafft-align/src/constraints.rs` was computing
-   `opt = isumscore * 5.8 / (600 * sumoverlap)` (the value C's
-   `putlocalhom2` writes to hat3), but C's `tbfast.c:2202` rescales by
-   `* 600 / 5.8` immediately before calcimportance_half so the value
-   actually consumed downstream is `isumscore / sumoverlap`. Our
-   `recompute_importance` was producing impmtx values 100× smaller
-   than C's. Now stores the post-rescale value directly.
-2. **Distance rounding on the L-INS-i path** (closed ~6 columns):
-   `engine.rs` was rounding distances to 3 decimals (mimicking the
-   hat2 file round-trip via `%#6.3f`). That's correct for FFT-NS-i +
-   dndpre but wrong for L-INS-i: `tbfast` with `callpairlocalalign=1`
-   computes pairwise alignments in-memory and feeds full-precision
-   `iscore[]` straight to `fixed_musclesupg_*`. Removed the rounding
-   for the constraint-aware path.
-3. **`--maxiterate 0` was treated as "use mode default 1000"**:
-   `args.maxiterate` was a `usize` defaulting to 0, and
-   `iters_for(1000)` returned 1000 whenever `args.maxiterate <= 0`.
-   Changed to `Option<usize>` so explicit `Some(0)` disables refinement.
-   This was the entire reason `--maxiterate 0` previously appeared to
-   diverge by 6 columns — refinement was secretly running.
+Cascade divergence at n ∈ {13, 14, 15, 20, 36}.
 
-**Remaining gap (refinement loop)**: full default `--localpair` (1000
-refinement iters) still produces width 725 vs C's 719. Without
-refinement (`--maxiterate 0`) we're byte-exact, so the divergence is
-purely in `iterative_refine` (`crates/mafft-core/src/refinement.rs`)
-when constraints are present.
+**Three fixes landed 2026-05-06**:
 
-**Concrete next task** (effort: 1-2 days):
-1. Capture C's per-iteration accept trajectory via
-   `mafft --localpair --maxiterate 100 --debug` and extract the
-   per-step DP score / width before/after each branch refinement
-   from the trace files left in `--debug`'s tmpdir.
-2. Compare against our `RUST_MAFFT_TRACE=1` output for the same input.
-   The first iteration where Rust accepts a different rearrangement
-   than C is the divergence point.
-3. Likely candidates (in order of likelihood):
-   - Constraint-aware refinement DP doesn't add the impmtx bonus per
-     cell the same way the constrained progressive merge does. Compare
-     `iterative_refine`'s DP call pattern to `progressive_align_with_
-     constraints::merge_step_cached`.
-   - Per-iteration tree weight recomputation: C may rebuild branch
-     weights between iterations using the current alignment, we may
-     not.
-   - Random-tie-break order: C iterates branches in a specific order
-     across iterations (alternating directions); verify ours matches.
+1. **Accept/reject score now mirrors C's `mscore = oimpmatchdouble +
+   tmpdouble`** (`tditeration.c:953,1094`). Added
+   `compute_impmatch_diagonal` in `crates/mafft-core/src/refinement.rs`.
+   For an existing alignment of width W, it builds the impmtx via
+   `build_imp_matrix(..., width, width, ...)` (matching C's
+   `part_imp_match_init_strict(..., length, length, ...)`) and sums
+   `impmtx[i][i]` across the diagonal. `iterative_refine` combines this
+   with the intergroup substitution score when computing both
+   `old_score` and `tscore` for the accept threshold check.
+
+2. **`Falign_localhom` port** (`Falign_localhom.c:163`,
+   kobetsubunkatsu=1 path) in `realign_all_constrained_fft`. Mirrors
+   the FFT-segmented loop of the unconstrained refinement but per-
+   segment calls `profile_align_imp` with a local impmtx slice
+   `local_imp[i][j] = global_imp[a + gapmap1[i]][a + gapmap2[j]]`
+   where `a` = segment's parent-column start and `gapmap1`/`gapmap2`
+   are the per-group `commongappick_record` mappings. This mirrors C's
+   `part_imp_match_out_vead_gapmap`
+   (`partSalignmm.c:71-83`).
+
+3. **`partA__align` strict-`>` tie-break** for prept-vs-mi/mjpt update
+   (partSalignmm.c:1218,1235; commented "// 2018/Apr"). C's progressive
+   `A__align` uses `>=` (Salignmm.c:1926,1946). Added
+   `profile_align_imp_with_tiebreak(..., strict_part_tiebreak: bool)`.
+   The Falign_localhom path passes `true` (matches partA__align); the
+   progressive constraint path keeps `false` (matches A__align).
+
+**Regression guards**:
+- `linsi_first9_iter2_byte_identical_to_c` — n=9, --maxiterate 2.
+- `linsi_first12_iter5_byte_identical_to_c` — n=12, --maxiterate 5
+  (exercises Falign_localhom's segment loop).
+
+**Remaining gap (n ≥ 13 cascading divergence)**:
+
+The Falign_localhom port and tie-break fix handle the structural
+differences between progressive and refinement DP, but the 36-seq
+output still differs from C by ~6-19 columns. Profiling shows:
+
+- The first divergence at n=13 is a single-residue gap-shift in the
+  tail (`EVS-T-S` vs `EVS--TS`) — a tie-break in either the DP or
+  the score computation.
+- For n=14+ the divergence cascades because each branch's accept/reject
+  decision depends on the previous branch's output.
+
+**Concrete next task** (effort: ~1 day): instrument C's
+`partA__align` to dump per-cell DP state for the n=13 divergent
+branch, compare against our `profile_align_imp_with_tiebreak` cell-by-
+cell. The first cell where our `wm` / `mi` / `m[j]` / `ijp[i][j]`
+differs from C's is the bug. Likely candidates:
+- The gap-frequency multiplier `gf1va` / `gf1vapre` derivation for
+  segment-stripped profiles (we may compute it from stripped seqs;
+  C may compute from full + adjust via headgapfreq).
+- The boundary `sgap[k]` / `egap[k]` per-sequence-status correction
+  (we apply ogcp/fgcp tweaks only when neighbour columns are gap;
+  C's `getkyokaigap` may behave subtly differently).
 
 ---
 
@@ -341,11 +355,10 @@ with the number of paths each mode activates.
 
 ## Recommended order of attack
 
-1. **§3 (INS-i refinement loop)** — closing this completes the original
-   user goal of "L/G/E-INS-i with refinement byte-exact". All three
-   maxit0 paths (L/G/E) are byte-exact as of 2026-05-06; the residual
-   work is isolated to `iterative_refine` with constraints. Highest
-   value per hour.
+1. **§3 (INS-i refinement loop)** — partial fix landed 2026-05-06 (added
+   impmatch to accept/reject score; small inputs n≤12 byte-exact for
+   L-INS-i). Closing fully needs a port of C's `Falign_localhom` (FFT-
+   segmented DP with constraints) which is its own substantial chunk.
 2. **§4 (BL50 FFT)** — structural FFT change; once this lands, §5
    likely closes for free.
 3. **§7 (--add)** — unblocks §8 (perf) and is a real feature gap.

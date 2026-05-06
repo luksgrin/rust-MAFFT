@@ -31,11 +31,11 @@ Every progressive merge step matches in score and width and every refinement ite
 | NW-NS-2 (`--nofft`)                         | 717     | 717        | 0    | ✓ byte-exact |
 | FFT-NS-i (`--maxiterate 100`)               | 721     | 721        | 0    | ✓ byte-exact |
 | L-INS-1 (`--localpair --maxiterate 0`)      | 719     | 719        | 0    | ✓ byte-exact (closed 2026-05-05) |
-| L-INS-i (`--localpair`)                     | 719     | 725        | 934  | ✗ refinement loop diverges |
+| L-INS-i (`--localpair`)                     | 719     | 725        | 934  | ✗ refinement loop (partial fix 2026-05-06) |
 | G-INS-1 (`--globalpair --maxiterate 0`)     | 746     | 746        | 0    | ✓ byte-exact (closed 2026-05-06) |
-| G-INS-i (`--globalpair`)                    | 746     | 726        | 999  | ✗ refinement loop diverges |
+| G-INS-i (`--globalpair`)                    | 746     | 727        | 1000 | ✗ refinement loop (partial fix 2026-05-06) |
 | E-INS-1 (`--genafpair --maxiterate 0`)      | 729     | 729        | 0    | ✓ byte-exact (closed 2026-05-06) |
-| E-INS-i (`--genafpair`)                     | 729     | 725        | 996  | ✗ refinement loop diverges |
+| E-INS-i (`--genafpair`)                     | 729     | 730        | 984  | ✗ refinement loop (partial fix 2026-05-06) |
 | BLOSUM 30 / 45 / 62 / 80 (FFT)              | match   | match      | 0    | ✓ byte-exact |
 | BLOSUM 80 NW (`--bl 80 --nofft`)            | 712     | 712        | 0    | ✓ byte-exact |
 | BLOSUM 50 FFT                               | 712     | 738        | 961  | ✗ FFT multi-lag tie-break |
@@ -270,16 +270,16 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-06 (`cargo test --workspace --exclude pymafft --release`: 228 passed, 0 failed, 0 ignored):
+Current counts as of 2026-05-06 (`cargo test --workspace --exclude pymafft --release`: 230 passed, 0 failed, 0 ignored):
 
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests | ~140 | All crates, all modules (per-crate `--lib` runs) |
-| Rust integration tests (`end_to_end`) | 42 | Byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, **L-INS-1, G-INS-1, E-INS-1**, `--bl 30/45/80` with/without FFT, `--jtt 200`, `--tm 100/200 --nofft`, RNA `--nofft`), DP diagnostics |
+| Rust integration tests (`end_to_end`) | 44 | Byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, **L-INS-1, G-INS-1, E-INS-1, L-INS-i n=9 iter=2, L-INS-i n=12 iter=5 (Falign_localhom guard)**, `--bl 30/45/80` with/without FFT, `--jtt 200`, `--tm 100/200 --nofft`, RNA `--nofft`), DP diagnostics |
 | Rust FFI cross-validation tests | 18 | Cell-by-cell matrix equality and constrained-DP equivalence vs C via FFI (BLOSUM45/50/62/80, JTT 200, JTT 100, TM 200 n_dis + n_disFFT, BL50 n_disFFT, DNA, plus 5 constrained-align tests + `rust_global_align_matches_c_g__align11` + `rust_genaffine_align_matches_c_gen_l__align11` in `cross_validate_constrained_align.rs`) |
 | C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust** | **228** | |
+| **Total Rust** | **230** | |
 
 Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
 
@@ -328,7 +328,7 @@ FFT-NS-i (`--maxiterate 100`) is byte-identical to C — see `fftnsi_byte_identi
 2. Added `PairAligner::GeneralizedAffine` and routed `EInsi` through it.
 3. Mirrored C's E-INS-i parameter overrides (`scripts/mafft:1940-1948`): for `distance="localgenaf"`, the script resets `lexp = laof = 0.0` so the regular gap-extend and matrix-offset are zeroed out, leaving only the skip-gap (LGOP=-6.00) as the long-range penalty. Previously we used the L-INS-i values for E-INS-i pairwise.
 
-**L-INS-i / G-INS-i / E-INS-i with refinement still diverge** — the refinement loop with constraints picks different rearrangements than C's. See `TODO.md` §3.
+**L-INS-i / G-INS-i / E-INS-i with refinement still diverge for n ≥ 13 sequences** (small inputs match byte-exact). Partial closure landed 2026-05-06 with three fixes: the accept/reject score in `iterative_refine` now sums `impmtx[i][i]` across the alignment diagonal (matches C's `oimpmatchdouble + tmpdouble`); `Falign_localhom`'s FFT-segmented constraint DP is ported in `realign_all_constrained_fft` (per-segment impmtx slicing via `gapmap1`/`gapmap2`); and `partA__align`'s strict-`>` tie-break for the prept-vs-mi/mjpt update is selectable via `profile_align_imp_with_tiebreak`. The remaining n≥13 cascade requires cell-by-cell DP comparison vs C's `partA__align` to pin the last difference (likely a gap-frequency multiplier or boundary-gap correction detail). See `TODO.md` §3.
 
 ### Non-default BLOSUM matrices (`--bl N`)
 
