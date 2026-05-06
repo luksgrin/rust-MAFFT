@@ -1714,3 +1714,90 @@ fn linsi_first12_iter5_byte_identical_to_c() {
     }
     assert_eq!(mismatches, 0, "{mismatches} sequences differ from C");
 }
+
+/// L-INS-i refinement on 13 sequences with `--maxiterate 2`. n=13 was
+/// the smallest input where the iterative refinement produced a 1-column
+/// gap-shift divergence vs C MAFFT before the 2026-05-06 boundary
+/// nongap-frequency fix (threading `headgapfreq{1,2}` and
+/// `gapfreq{1,2}[lgth]` from sgap/egap into the per-segment DP). Guards
+/// that fix.
+///
+/// Reference: `tests/fixtures/sample.first13.linsi.iter2`
+/// (= `mafft --localpair --maxiterate 2 sample.first13.fa`).
+#[test]
+fn linsi_first13_iter2_byte_identical_to_c() {
+    assert_linsi_byte_identical("sample.first13.fa", "sample.first13.linsi.iter2", 2);
+}
+
+/// L-INS-i refinement on 14 sequences with `--maxiterate 2`. Part of the
+/// remaining post-boundary-fix cascade — TODO §3. Width gap is 1 column
+/// (Rust 407 vs C 408) starting at iter=1.
+#[test]
+#[ignore = "TODO §3 — known cascade divergence at n=14 iter≥1; tracked, not yet root-caused"]
+fn linsi_first14_iter2_byte_identical_to_c() {
+    assert_linsi_byte_identical("sample.first14.fa", "sample.first14.linsi.iter2", 2);
+}
+
+/// L-INS-i refinement on 15 sequences with `--maxiterate 2`. Part of the
+/// remaining cascade — TODO §3. Width gap is 13 columns at iter=1+.
+#[test]
+#[ignore = "TODO §3 — known cascade divergence at n=15 iter≥1"]
+fn linsi_first15_iter2_byte_identical_to_c() {
+    assert_linsi_byte_identical("sample.first15.fa", "sample.first15.linsi.iter2", 2);
+}
+
+/// L-INS-i refinement on the full 36-sequence sample with
+/// `--maxiterate 2`. Largest case in the cascade — TODO §3. Width gap
+/// is 6 columns.
+#[test]
+#[ignore = "TODO §3 — known cascade divergence at n=36 iter≥1"]
+fn linsi_first36_iter2_byte_identical_to_c() {
+    assert_linsi_byte_identical("sample.first36.fa", "sample.first36.linsi.iter2", 2);
+}
+
+/// L-INS-i (no refinement) on n=14/15/36 isolates progressive build
+/// from refinement. These all pass byte-identical to C, proving the
+/// remaining iter≥1 cascade is purely in `realign_all_constrained_fft`
+/// (the `partA__align` per-segment DP) and not in the progressive build.
+#[test]
+fn linsi_first14_maxit0_byte_identical_to_c() {
+    assert_linsi_byte_identical("sample.first14.fa", "sample.first14.linsi.maxit0", 0);
+}
+
+#[test]
+#[ignore = "TODO §3 — known cascade divergence at n=14 iter≥1 (1-col gap from iter=1)"]
+fn linsi_first14_iter1_byte_identical_to_c() {
+    assert_linsi_byte_identical("sample.first14.fa", "sample.first14.linsi.iter1", 1);
+}
+
+#[test]
+fn linsi_first15_maxit0_byte_identical_to_c() {
+    assert_linsi_byte_identical("sample.first15.fa", "sample.first15.linsi.maxit0", 0);
+}
+
+#[test]
+fn linsi_first36_maxit0_byte_identical_to_c() {
+    assert_linsi_byte_identical("sample.first36.fa", "sample.first36.linsi.maxit0", 0);
+}
+
+fn assert_linsi_byte_identical(input_fixture: &str, c_ref_fixture: &str, iterations: usize) {
+    let c_ref = read_fasta(fixture_path(c_ref_fixture))
+        .unwrap_or_else(|_| panic!("missing tests/fixtures/{c_ref_fixture}"));
+    let input = read_fasta(fixture_path(input_fixture)).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations }).align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "L-INS-i ({input_fixture}, iter={iterations}) width: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+        }
+    }
+    assert_eq!(mismatches, 0, "{mismatches} sequences differ from C ({input_fixture})");
+}

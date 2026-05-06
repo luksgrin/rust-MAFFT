@@ -121,7 +121,7 @@ offsets, and aligned strings.
 
 ## §3. INS-i modes with iterative refinement — PARTIALLY RESOLVED
 
-**Status as of 2026-05-06**:
+**Status as of 2026-05-06 (boundary-freq fix landed)**:
 
 | Mode    | C width | Rust width | Diff lines |
 |---------|---------|------------|------------|
@@ -132,11 +132,17 @@ offsets, and aligned strings.
 Small inputs match byte-exact:
 - L-INS-i n=9 iter=2 ✓
 - L-INS-i n=12 iter=5 ✓
+- L-INS-i n=13 iter=2 ✓ *(new — closed by boundary-freq fix)*
+- L-INS-i n=14 maxit0 ✓ *(progressive build matches)*
+- L-INS-i n=15 maxit0 ✓ *(progressive build matches)*
 - L-INS-i n=30 iter=1 ✓
+- L-INS-i n=36 maxit0 ✓ *(progressive build matches)*
 
-Cascade divergence at n ∈ {13, 14, 15, 20, 36}.
+Remaining cascade divergence at n ∈ {14, 15, 20, 36} for iter ≥ 1
+(refinement only — progressive build is byte-exact for all sizes).
+Width gaps shrunk significantly (n=14: 1 col, n=36: 6 cols).
 
-**Three fixes landed 2026-05-06**:
+**Four fixes landed 2026-05-06**:
 
 1. **Accept/reject score now mirrors C's `mscore = oimpmatchdouble +
    tmpdouble`** (`tditeration.c:953,1094`). Added
@@ -165,34 +171,65 @@ Cascade divergence at n ∈ {13, 14, 15, 20, 36}.
    The Falign_localhom path passes `true` (matches partA__align); the
    progressive constraint path keeps `false` (matches A__align).
 
+4. **Boundary nongap-freq threading** (partSalignmm.c:1058-1075). C's
+   `partA__align` multiplies the row-0 / column-0 boundary corrections
+   by `headgapfreq{1,2}` (sgap-derived nongap fractions of the column
+   *just before* the segment in the full alignment) and uses
+   `gapfreq{1,2}[lgth]` (egap-derived nongap fractions of the column
+   *just after* the segment) at the inner DP's `i==lgth1` / `j==lgth2`
+   boundary cells. Rust previously hardcoded 1.0 for these. Added
+   `BoundaryFreqs { head1, head2, tail1, tail2 }` and
+   `profile_align_imp_with_boundary`; `realign_all_constrained_fft`
+   computes the four values from `sequences[idx][a-1]` / `[b]` weighted
+   by `w1n` / `w2n`. Closes the n=13 divergence.
+
 **Regression guards**:
 - `linsi_first9_iter2_byte_identical_to_c` — n=9, --maxiterate 2.
 - `linsi_first12_iter5_byte_identical_to_c` — n=12, --maxiterate 5
   (exercises Falign_localhom's segment loop).
+- `linsi_first13_iter2_byte_identical_to_c` — n=13, --maxiterate 2
+  (guards the boundary-freq fix).
+- `linsi_first14_maxit0_byte_identical_to_c`,
+  `linsi_first15_maxit0_byte_identical_to_c`,
+  `linsi_first36_maxit0_byte_identical_to_c` — pin progressive build
+  byte-identity at sizes whose iter≥1 still cascade-diverges.
 
-**Remaining gap (n ≥ 13 cascading divergence)**:
+**Remaining gap (n ≥ 14 cascading divergence after boundary fix)**:
 
-The Falign_localhom port and tie-break fix handle the structural
-differences between progressive and refinement DP, but the 36-seq
-output still differs from C by ~6-19 columns. Profiling shows:
+The four fixes above (impmatch in score, Falign_localhom port,
+strict-`>` partA__align tie-break, headgapfreq/tailgapfreq threading)
+collectively close n=13 byte-exact, but n=14/15/36 iter≥1 still
+diverges. Width gaps:
 
-- The first divergence at n=13 is a single-residue gap-shift in the
-  tail (`EVS-T-S` vs `EVS--TS`) — a tie-break in either the DP or
-  the score computation.
-- For n=14+ the divergence cascades because each branch's accept/reject
-  decision depends on the previous branch's output.
+| n   | C iter1/2 | Rust iter1/2 | Δ cols |
+|-----|-----------|--------------|--------|
+| 14  | 408 / 408 | 407 / 407    | 1      |
+| 15  | 420 / 420 | 407 / 407    | 13     |
+| 36  | 731 / 731 | 725 / 725    | 6      |
 
-**Concrete next task** (effort: ~1 day): instrument C's
-`partA__align` to dump per-cell DP state for the n=13 divergent
-branch, compare against our `profile_align_imp_with_tiebreak` cell-by-
-cell. The first cell where our `wm` / `mi` / `m[j]` / `ijp[i][j]`
-differs from C's is the bug. Likely candidates:
-- The gap-frequency multiplier `gf1va` / `gf1vapre` derivation for
-  segment-stripped profiles (we may compute it from stripped seqs;
-  C may compute from full + adjust via headgapfreq).
-- The boundary `sgap[k]` / `egap[k]` per-sequence-status correction
-  (we apply ogcp/fgcp tweaks only when neighbour columns are gap;
-  C's `getkyokaigap` may behave subtly differently).
+For all three, the maxit0 (progressive) output is byte-identical to C,
+so the bug is purely in the iterative refinement DP / accept-reject.
+The first iteration already diverges, so it's a *single-step* bug,
+not an oscillation effect.
+
+**Concrete next task** (effort: ~1 day): the n=14 case has the
+cleanest signal (1-column delta from iter=1). Reduce further:
+- Reproduce iter1 step-by-step in both Rust and C with `RUST_DUMP_BRANCHES`
+  and equivalent C instrumentation. Find the *first* branch where
+  Rust's accept/reject decision (or post-realign sequences) diverges
+  from C.
+- Once the divergent branch is identified, instrument `partA__align`
+  per-cell (`i, j, wm, mi, m[j], mpi, mp[j], ijp[i][j]`) and our
+  `profile_align_imp_with_boundary` to find the first cell that
+  differs. Likely candidates after the boundary-freq fix:
+  - Per-cell `gf1va * gf2_j` cross-multiplications when both are
+    boundary positions (i.e. simultaneously at `i==lgth1` and
+    `j==lgth2`).
+  - Stale `ogcp1[lgth1]` / `fgcp1[lgth1]` from C's static buffer reuse
+    across calls (we always reset to 0; C may have stale residue from
+    a prior larger segment).
+  - Match-calc index alignment when one group has all-gap columns at
+    the segment boundary that get stripped before DP.
 
 ---
 

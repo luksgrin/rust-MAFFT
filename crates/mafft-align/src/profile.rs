@@ -295,6 +295,28 @@ pub fn profile_align_imp(
     profile_align_imp_with_tiebreak(prof1, prof2, matrix, gap, head_gap, tail_gap, impmtx, false)
 }
 
+/// Boundary nongap-frequencies for partA__align-style segment alignment.
+///
+/// Mirrors C's `headgapfreq{1,2}` (sgap-derived; column [start-1] of full
+/// alignment) and `gapfreq{1,2}[lgth]` (egap-derived; column [end] of full
+/// alignment) used in `partSalignmm.c::partA__align` and `Salignmm.c::A__align`
+/// when `sgap1/egap1` parameters are provided. All values are *nongap* fractions
+/// in [0.0, 1.0] (after C's `1.0 - outgapcount` flip), defaulting to 1.0 when
+/// the segment is at the global boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct BoundaryFreqs {
+    pub head1: f64,
+    pub head2: f64,
+    pub tail1: f64,
+    pub tail2: f64,
+}
+
+impl Default for BoundaryFreqs {
+    fn default() -> Self {
+        Self { head1: 1.0, head2: 1.0, tail1: 1.0, tail2: 1.0 }
+    }
+}
+
 /// Like `profile_align_imp` but with control over the prept-vs-mi/mjpt
 /// tie-break rule. When `strict_part_tiebreak == false`, uses C's
 /// `A__align` semantics (`>=`, ties update mi/mjpt — Salignmm.c:1926,1946).
@@ -313,6 +335,29 @@ pub fn profile_align_imp_with_tiebreak(
     tail_gap: bool,
     impmtx: Option<&[Vec<f64>]>,
     strict_part_tiebreak: bool,
+) -> Alignment {
+    profile_align_imp_with_boundary(
+        prof1, prof2, matrix, gap, head_gap, tail_gap, impmtx,
+        strict_part_tiebreak, BoundaryFreqs::default(),
+    )
+}
+
+/// Profile DP with strict tie-break and explicit boundary nongap-frequencies.
+///
+/// Used by the refinement FFT-segmented constraint path so that interior
+/// segments propagate the sgap/egap-derived nongap fractions of the column
+/// just before/after the segment in the *full* alignment. Mirrors C's
+/// `partA__align` (partSalignmm.c:678) when `sgap1/egap1/...` are non-NULL.
+pub fn profile_align_imp_with_boundary(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<i32>],
+    gap: &GapModel,
+    head_gap: bool,
+    tail_gap: bool,
+    impmtx: Option<&[Vec<f64>]>,
+    strict_part_tiebreak: bool,
+    boundary: BoundaryFreqs,
 ) -> Alignment {
     let n = prof1.length;
     let m = prof2.length;
@@ -357,8 +402,8 @@ pub fn profile_align_imp_with_tiebreak(
     // Uses C's exact rolling-row scheme, batch match_calc with sparse
     // dot product, and pointer-order-matching float accumulation.
 
-    let hgf1: f64 = 1.0;
-    let hgf2: f64 = 1.0;
+    let hgf1: f64 = boundary.head1;
+    let hgf2: f64 = boundary.head2;
     let gf1_0 = prof1.nongap_freq.first().copied().unwrap_or(1.0);
     let gf2_0 = prof2.nongap_freq.first().copied().unwrap_or(1.0);
     let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
@@ -532,11 +577,14 @@ pub fn profile_align_imp_with_tiebreak(
         let mut mpi: usize = 0;
 
         for j in 1..=m {
-            // Out-of-bounds positions in nongap_freq correspond to C's padded
-            // gapfreq1pt[lgth1] / gapfreq2pt[lgth2] = 1.0.
-            let gf1_i = if i < n { prof1.nongap_freq[i] } else { 1.0 };
+            // Out-of-bounds positions in nongap_freq correspond to C's
+            // gapfreq1[lgth1] / gapfreq2[lgth2] which take on egap-derived
+            // values when partA__align is given sgap/egap (boundary.tail{1,2})
+            // and 1.0 otherwise (when egap is NULL → C's `gapfreq[lgth]=0.0`
+            // pre-flip → 1.0 post-flip).
+            let gf1_i = if i < n { prof1.nongap_freq[i] } else { boundary.tail1 };
             let gf1_im1 = prof1.nongap_freq[i - 1];
-            let gf2_j = if j < m { prof2.nongap_freq[j] } else { 1.0 };
+            let gf2_j = if j < m { prof2.nongap_freq[j] } else { boundary.tail2 };
             let gf2_jm1 = prof2.nongap_freq[j - 1];
 
             let mut wm = previousw[j - 1];

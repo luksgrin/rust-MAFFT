@@ -21,7 +21,8 @@
 use rayon::prelude::*;
 
 use mafft_align::{
-    profile_align, profile_align_imp, profile_align_imp_with_tiebreak,
+    profile_align, profile_align_imp,
+    profile_align_imp_with_boundary, BoundaryFreqs,
     build_imp_matrix, FASTATHRESHOLD_DEFAULT,
     Profile, GapModel, AlignOp,
 };
@@ -225,6 +226,16 @@ pub fn iterative_refine(
                         if std::env::var("RUST_MAFFT_TRACE").is_ok() {
                             eprintln!("ACCEPT iter={iter} step={step_idx} side={side} old={:.3} new={:.3} accept={}",
                                 old_score, tscore, tscore > threshold);
+                            if std::env::var("RUST_DUMP_BRANCHES").is_ok() {
+                                eprintln!("[BRANCH_BEFORE] iter={iter} step={step_idx} side={side}");
+                                for (idx, s) in alignment.sequences.iter().enumerate() {
+                                    eprintln!("  seq{idx}: {}", std::str::from_utf8(s).unwrap_or(""));
+                                }
+                                eprintln!("[BRANCH_AFTER] iter={iter} step={step_idx} side={side}");
+                                for (idx, s) in new_seqs.iter().enumerate() {
+                                    eprintln!("  seq{idx}: {}", std::str::from_utf8(s).unwrap_or(""));
+                                }
+                            }
                         }
                         if tscore > threshold {
                             alignment.sequences = new_seqs;
@@ -807,9 +818,41 @@ fn realign_all_constrained_fft(
         // `>` for the prept-vs-mi/mjpt tie-break (the "// 2018/Apr" change).
         // The progressive `A__align` uses `>=`. We pass strict_part_tiebreak=true
         // to match `partA__align` exactly.
-        let seg_aln = profile_align_imp_with_tiebreak(
+        //
+        // Boundary nongap-frequencies (C's headgapfreq{1,2} and
+        // gapfreq{1,2}[lgth] computed via outgapcount on sgap/egap):
+        //   head{1,2} = nongap fraction at full-alignment column [a-1]
+        //               (1.0 when a == 0 → C's `sgap[j]='o'` branch)
+        //   tail{1,2} = nongap fraction at full-alignment column [b]
+        //               (1.0 when b == width → C's `egap[j]='o'` branch)
+        let head1 = if a > 0 {
+            let s: f64 = group1.iter().enumerate()
+                .filter(|&(_, &idx)| sequences[idx][a - 1] == b'-')
+                .map(|(k, _)| w1n[k]).sum();
+            1.0 - s
+        } else { 1.0 };
+        let head2 = if a > 0 {
+            let s: f64 = group2.iter().enumerate()
+                .filter(|&(_, &idx)| sequences[idx][a - 1] == b'-')
+                .map(|(k, _)| w2n[k]).sum();
+            1.0 - s
+        } else { 1.0 };
+        let tail1 = if b < width {
+            let s: f64 = group1.iter().enumerate()
+                .filter(|&(_, &idx)| sequences[idx][b] == b'-')
+                .map(|(k, _)| w1n[k]).sum();
+            1.0 - s
+        } else { 1.0 };
+        let tail2 = if b < width {
+            let s: f64 = group2.iter().enumerate()
+                .filter(|&(_, &idx)| sequences[idx][b] == b'-')
+                .map(|(k, _)| w2n[k]).sum();
+            1.0 - s
+        } else { 1.0 };
+        let boundary = BoundaryFreqs { head1, head2, tail1, tail2 };
+        let seg_aln = profile_align_imp_with_boundary(
             &prof_seg1, &prof_seg2, &scoring.substitution_matrix, gap,
-            true, true, Some(&local_imp), true,
+            true, true, Some(&local_imp), true, boundary,
         );
         total_score += seg_aln.score;
 
