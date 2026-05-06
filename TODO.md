@@ -19,7 +19,7 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | FFT-NS-i (`--maxiterate 100`)              | 721     | 721        | 0          | byte-exact ✓ |
 | L-INS-1 (`--localpair --maxiterate 0`)     | 719     | 719        | 0          | byte-exact ✓ (closed 2026-05-05) |
 | G-INS-1 (`--globalpair --maxiterate 0`)    | 746     | 746        | 0          | byte-exact ✓ (closed 2026-05-06) |
-| E-INS-1 (`--genafpair --maxiterate 0`)     | 729     | 719        | 948        | divergent — see §2 |
+| E-INS-1 (`--genafpair --maxiterate 0`)     | 729     | 729        | 0          | byte-exact ✓ (closed 2026-05-06) |
 | L-INS-i (`--localpair`)                    | 719     | 725        | 934        | divergent — see §3 |
 | G-INS-i (`--globalpair`)                   | 746     | 714        | 939        | divergent — see §3 |
 | E-INS-i (`--genafpair`)                    | 729     | 725        | 984        | divergent — see §3 |
@@ -79,31 +79,43 @@ tie-break) and asserts byte-exact equality.
 
 ---
 
-## §2. E-INS-1 — uses local pairwise instead of generalized-affine
+## §2. E-INS-1 — RESOLVED 2026-05-06
 
-**Mode**: `--genafpair --maxiterate 0` (E-INS-i without refinement).
+**Mode**: `--genafpair --maxiterate 0` now byte-identical to C.
 
-**Observed**: Rust width 719 (10 narrower than C's 729), diff 948 lines.
+**Three combined fixes**:
 
-**Root cause**: `engine.rs:229-230` selects `PairAligner::Local` for both
-`LInsi` and `EInsi`. C's E-INS-i uses **generalized-affine** pairwise
-(`genL__align11` / `pairlocalalign -E` / `pairlocalalign -K`), which has
-distinct gap-extension and skip costs that produce a wider local window
-than plain Smith-Waterman.
+1. **Re-ported `genaffine_local_align`** (`crates/mafft-align/src/genaffine.rs`)
+   to mirror C's `genL__align11` exactly (`genalign11.c:113-660`). The
+   previous Rust implementation was a textbook 3-matrix DP; C uses the
+   same max-so-far DP scheme as `L__align11` plus a separate "skip" gap
+   state (running max `Mi` / per-column `largeM[j]`, fed to row-local
+   `tbk`) with `penalty_OP` open and zero extension. Traceback uses two
+   absolute-coordinate arrays `ijpi[i][j]` / `ijpj[i][j]` so a single
+   step can change both i and j arbitrarily.
 
-**Concrete next task**:
-1. Add `PairAligner::GeneralizedAffine` variant in
-   `crates/mafft-align/src/constraints.rs`.
-2. Implement `genaff_local_align` (port of C's `genL__align11` from
-   `genalign11.c`) and route it through `build_homology_table`.
-3. Wire `EInsi { .. }` to `PairAligner::GeneralizedAffine` in
-   `engine.rs::align`.
-4. Mirror the same opt/importance pipeline (the 2026-05-05 fix should
-   apply unchanged: opt = `iscore / sumoverlap`, full-precision
-   distance, calcimportance_half symmetrization).
+2. **Added `PairAligner::GeneralizedAffine`** in
+   `crates/mafft-align/src/constraints.rs`. `build_homology_table` now
+   takes an `op_penalty: f64` arg used only for this variant.
+   `engine.rs` routes `AlignmentMode::EInsi` through it.
 
-Effort: 1-2 days (the DP itself is ~150 lines; the integration mirrors
-L-INS-i exactly).
+3. **Mirrored C's E-INS-i parameter overrides** (`scripts/mafft:1940-1948`):
+   when `distance == "localgenaf"` the script resets `lexp = "0.0"` and
+   `laof = "0.0"` so the regular gap-extension and matrix-offset are
+   zeroed out, leaving only the skip-gap (`LGOP = -6.00`) as the
+   long-range penalty. Without this our `genL__align11` was being driven
+   with non-zero `penalty_ex` / `offset` and produced a different
+   (wider) alignment than C.
+
+**Regression guard**: `einsi_maxit0_byte_identical_to_c` in
+`crates/mafft-core/tests/end_to_end.rs` (fixture
+`tests/fixtures/sample.einsi.maxit0`).
+
+**FFI guard**: `rust_genaffine_align_matches_c_gen_l__align11` in
+`crates/mafft-core/tests/cross_validate_constrained_align.rs` runs
+`genaffine_local_align` and `mafft_sys::genL__align11` on the
+(M63632, U22180) pair and asserts byte-exact equality of score, width,
+offsets, and aligned strings.
 
 ---
 
@@ -330,15 +342,12 @@ with the number of paths each mode activates.
 ## Recommended order of attack
 
 1. **§3 (INS-i refinement loop)** — closing this completes the original
-   user goal of "L/G/E-INS-i with refinement byte-exact". Most of the
-   pieces are in place after the 2026-05-05/06 fixes; the work is now
-   isolated to `iterative_refine` with constraints. Highest value per
-   hour.
-2. **§2 (E-INS-1)** — adds a new pairwise variant
-   (`PairAligner::GeneralizedAffine`). Independent of §3 but exercises
-   the same constraint pipeline.
-3. **§4 (BL50 FFT)** — structural FFT change; once this lands, §5
+   user goal of "L/G/E-INS-i with refinement byte-exact". All three
+   maxit0 paths (L/G/E) are byte-exact as of 2026-05-06; the residual
+   work is isolated to `iterative_refine` with constraints. Highest
+   value per hour.
+2. **§4 (BL50 FFT)** — structural FFT change; once this lands, §5
    likely closes for free.
-4. **§7 (--add)** — unblocks §8 (perf) and is a real feature gap.
-5. **§6 (parttree)** — algorithmic port, substantial work.
-6. **§9 (RNA / allowshift)** — as needed.
+3. **§7 (--add)** — unblocks §8 (perf) and is a real feature gap.
+4. **§6 (parttree)** — algorithmic port, substantial work.
+5. **§9 (RNA / allowshift)** — as needed.

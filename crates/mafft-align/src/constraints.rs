@@ -242,13 +242,17 @@ struct PairResult {
 ///
 /// L-INS-i uses `Local` (Smith–Waterman, mirroring C's `pairlocalalign -L`
 /// → `L__align11`). G-INS-i uses `Global` (Needleman–Wunsch, mirroring
-/// `pairlocalalign -A` → `G__align11`). The chaining/`opt` computation
-/// downstream is identical — only the alignment differs.
+/// `pairlocalalign -A` → `G__align11`). E-INS-i uses
+/// `GeneralizedAffine` (Smith-Waterman with an extra "skip" gap state,
+/// mirroring `pairlocalalign -N` → `genL__align11`). The chaining/`opt`
+/// computation downstream is identical — only the alignment differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairAligner {
     Local,
     Global,
+    GeneralizedAffine,
 }
+
 
 /// Build a local homology table from all-vs-all pairwise alignments.
 ///
@@ -263,13 +267,16 @@ pub fn build_local_homology_table(
 ) -> (LocalHomologyTable, Vec<Vec<f64>>) {
     build_homology_table(
         sequences, matrix, amino_map, gap, score_offset,
-        PairAligner::Local,
+        PairAligner::Local, 0.0,
     )
 }
 
 /// Build a homology table using all-vs-all pairwise alignment of the
-/// chosen kind. Used by L-INS-i (`PairAligner::Local`) and G-INS-i
-/// (`PairAligner::Global`).
+/// chosen kind. Used by L-INS-i (`PairAligner::Local`), G-INS-i
+/// (`PairAligner::Global`), and E-INS-i (`PairAligner::GeneralizedAffine`).
+///
+/// `op_penalty` is the generalized-affine "skip" open penalty (C's
+/// `penalty_OP`), used only when `aligner == GeneralizedAffine`.
 pub fn build_homology_table(
     sequences: &[&[u8]],
     matrix: &[Vec<i32>],
@@ -277,6 +284,7 @@ pub fn build_homology_table(
     gap: &GapModel,
     score_offset: f64,
     aligner: PairAligner,
+    op_penalty: f64,
 ) -> (LocalHomologyTable, Vec<Vec<f64>>) {
     let nseq = sequences.len();
 
@@ -331,6 +339,21 @@ pub fn build_homology_table(
                         true, true,
                     );
                     (r, 0, 0)
+                }
+                PairAligner::GeneralizedAffine => {
+                    // C's `pairlocalalign -N` (`pairlocalalign.c:2233`) →
+                    // `genL__align11`: max-so-far Smith-Waterman with an
+                    // extra "skip" gap state (penalty_OP, no extension).
+                    use crate::genaffine::{genaffine_local_align, GenAffineGapModel};
+                    let gen_gap = GenAffineGapModel {
+                        affine: gap.clone(),
+                        open_generalized: op_penalty,
+                    };
+                    let r = genaffine_local_align(
+                        sequences[i], sequences[j],
+                        matrix, amino_map, &gen_gap, score_offset,
+                    );
+                    (r.alignment, r.offset1, r.offset2)
                 }
             };
 

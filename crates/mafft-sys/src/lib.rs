@@ -228,6 +228,14 @@ unsafe extern "C" {
         off1pt: *mut c_int,
         off2pt: *mut c_int,
     ) -> c_double;
+    pub fn genL__align11(
+        scoringmtx: *mut *mut c_double,
+        seq1: *mut *mut c_char,
+        seq2: *mut *mut c_char,
+        alloclen: c_int,
+        off1pt: *mut c_int,
+        off2pt: *mut c_int,
+    ) -> c_double;
 
     // -- Tree weighting --
     pub fn treeCnv(

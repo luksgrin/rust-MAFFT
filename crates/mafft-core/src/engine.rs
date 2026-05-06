@@ -226,10 +226,11 @@ impl MafftEngine {
         // which already runs the same pairwise alignments to populate the
         // homology constraint table — we keep both outputs (distance + table).
         let pair_kind = match self.mode {
-            AlignmentMode::LInsi { .. } | AlignmentMode::EInsi { .. } => {
-                Some(mafft_align::PairAligner::Local)
-            }
+            AlignmentMode::LInsi { .. } => Some(mafft_align::PairAligner::Local),
             AlignmentMode::GInsi { .. } => Some(mafft_align::PairAligner::Global),
+            AlignmentMode::EInsi { .. } => {
+                Some(mafft_align::PairAligner::GeneralizedAffine)
+            }
             _ => None,
         };
         let mut pairwise_for_constraints = if let Some(aligner) = pair_kind {
@@ -263,17 +264,31 @@ impl MafftEngine {
             let cc_scale = |ppen: i32, scale: f64| -> i32 {
                 ((scale * ppen as f64) + 0.5) as i32
             };
+            // L-INS-i / G-INS-i defaults (script:91-92,201-203).
+            // E-INS-i overrides (`scripts/mafft:1940-1948`): when
+            // distance="localgenaf" (and `oldgenafparam != 1`), the script
+            // resets `lexp="0.0"` and `laof="0.0"` so the regular gap-extend
+            // and matrix-offset are zeroed out, leaving only the gen-affine
+            // skip-gap (LGOP) as the long-range penalty.
+            let is_einsi = matches!(self.mode, AlignmentMode::EInsi { .. });
             let lgop: f64 = -2.00;
-            let lexp: f64 = -0.100;
-            let laof: f64 = 0.100;
+            let lexp: f64 = if is_einsi { 0.0 } else { -0.100 };
+            let laof: f64 = if is_einsi { 0.0 } else { 0.100 };
+            // E-INS-i extras (`scripts/mafft:198-199`):
+            //   LGOP=-6.00 → ppenalty_OP (skip-gap open).
+            //   LEXP= 0.0 → ppenalty_EX (skip-gap extend, unused; C
+            //               comments out the extension increments).
+            let lgop_op: f64 = -6.00;
             let scale_protein: f64 = 600.0 / 1000.0;
             let p_open = cc_int(lgop, 1000.0);
             let p_ext = cc_int(lexp, 1000.0);
             let p_offset = cc_int(laof, 1000.0);
+            let p_op = cc_int(lgop_op, 1000.0);
             let pair_gap = GapModel::new(
                 cc_scale(p_open, scale_protein) as f64,
                 cc_scale(p_ext, scale_protein) as f64,
             );
+            let pair_op = cc_scale(p_op, scale_protein) as f64;
             let pair_offset_int: i32 = cc_scale(p_offset, scale_protein);
             let nscored = scoring.nscoredalphabets;
             let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
@@ -297,6 +312,7 @@ impl MafftEngine {
                 &pair_gap,
                 score_offset_for_local,
                 aligner,
+                pair_op,
             );
             // For L-INS-i, tbfast computes pairwise alignments in-memory
             // via `callpairlocalalign=1`. The `iscore` distance matrix

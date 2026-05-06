@@ -1597,3 +1597,52 @@ fn ginsi_maxit0_byte_identical_to_c() {
     }
     assert_eq!(mismatches, 0, "{mismatches} G-INS-1 sequences differ from C");
 }
+
+/// E-INS-1 (`mafft --genafpair --maxiterate 0`) must produce byte-identical
+/// output to C. Closed 2026-05-06 by:
+///   1. Porting `genaffine_local_align` (`crates/mafft-align/src/genaffine.rs`)
+///      to mirror C's `genL__align11` exactly — max-so-far DP with separate
+///      `Mi` / `largeM` running-max trackers and a "skip" gap state with
+///      `penalty_OP` open / no extension.
+///   2. Adding `PairAligner::GeneralizedAffine` and routing E-INS-i through
+///      it via `engine.rs::align`.
+///   3. Mirroring the script's `localgenaf` overrides (`mafft:1940-1948`):
+///      `lexp = laof = 0.0` for E-INS-i pairwise (NOT the L-INS-i values).
+///      Without this, `genL__align11` was being driven with non-zero gap
+///      extension and offset, which suppressed the skip-gap state.
+///
+/// Reference: `tests/fixtures/sample.einsi.maxit0` (= `mafft --genafpair
+/// --maxiterate 0 mafft-upstream/test/sample`).
+#[test]
+fn einsi_maxit0_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.einsi.maxit0"))
+        .expect("missing tests/fixtures/sample.einsi.maxit0");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::EInsi { iterations: 0 }).align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "E-INS-1 width differs: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+            if mismatches <= 3 {
+                let first_diff = msa.sequences[i]
+                    .iter()
+                    .zip(c_ref.sequences[i].data.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(usize::MAX);
+                eprintln!(
+                    "seq {i} ({:?}) first diff at col {first_diff}",
+                    c_ref.sequences[i].name
+                );
+            }
+        }
+    }
+    assert_eq!(mismatches, 0, "{mismatches} E-INS-1 sequences differ from C");
+}
