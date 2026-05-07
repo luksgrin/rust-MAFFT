@@ -259,56 +259,63 @@ recomputing distances from the progressive alignment.
 
 ## §4. BLOSUM50 (`--bl 50`) — FFT path divergent despite cell-equal matrix
 
-**Observed**: Rust width 738 vs C 712, diff 961 lines.
+**Status as of 2026-05-07**: Rust width 738 vs C 712, diff ~74 lines after
+structural rewrite (down from 961 lines pre-rewrite).
 
 **Verified equal**:
-- `cross_validate_blosum50_n_dis_cell_by_cell` (passes 0 mismatches)
-- `cross_validate_blosum50_n_dis_fft_cell_by_cell` (passes 0 mismatches)
+- `cross_validate_blosum50_n_dis_cell_by_cell` (0 mismatches)
+- `cross_validate_blosum50_n_dis_fft_cell_by_cell` (0 mismatches)
 - BL50 raw 210-cell lower-triangle table matches `tmpmtx50` exactly
-- Both Rust and C use the same gap penalty (`-1.53`), same `-h 0`, same
-  `disttbfast` invocation flags (only `-b 50` vs `-b 62` differs)
 
-**Pinpointed divergence (2026-04-28 instrumentation)**:
+**Structural rewrite landed 2026-05-07**: `find_fft_anchors`
+(`crates/mafft-align/src/fft_align.rs`) now mirrors C's `Falign` flow —
+accumulates segments from ALL `NKOUHO=20` candidate lags into a flat
+list, sorts independently in seq1 and seq2 dimensions, builds a sparse
+`crossscore[rank1+1][rank2+1] = score` matrix with `1e7` corner
+sentinels, runs `block_align`. Mirrors `Falign.c:1307-1465` including
+the `if (tmpint == 0) break;` early termination on first-empty
+candidate.
 
-| Step | Clusters | C width / score | Rust width / score |
-|------|----------|------------------|---------------------|
-| 0–32 | various  | identical        | identical           |
-| 33   | 13 × 8   | 624 / 47967.6    | 641 / 47954.6       |
-| 34   | 21 × 15  | 721 / 56627.1    | 738 / 56582.8       |
+The rewrite preserves all FFT-NS-2 byte tests (BL62 / BL30 / BL45 /
+BL80 / JTT200 still byte-identical) but does NOT change BL50 width
+because at step 33 the first candidate (lag=39) returns 0 segments,
+the `break` fires, and the function falls back to direct DP — same as
+the pre-rewrite single-best-lag approach.
 
-The first 33 merges are identical in width AND score. Step 33 then
-diverges by 17 columns and ~13 score points (0.027% — strongly
-indicative of an FFT-anchor tie-break, not a scoring bug). Same input
-profiles, same matrix, same gap penalty: our `fft_profile_align` picks
-a slightly different anchor placement and the DP collapses into a wider
-alignment.
+**Pinpointed divergence (2026-05-07 diagnostic dumps)**:
 
-**Diagnosis** (from prior investigation): C's `Falign`
-(`Falign.c:1307-1372`) accumulates segments from all `NKOUHO=20`
-candidate lags into a single flat list, sorts by start position
-independently in seq1 and seq2, builds a sparse `crossscore[i][j]`
-matrix where each segment writes its score at its `(rank-in-sort1+1,
-rank-in-sort2+1)` cell, then runs `blockAlign2` over that combined
-matrix. Our `find_fft_anchors` instead selects the single best lag and
-runs `block_align` on its segments only.
+At step 33 BL50 (n=385, m=604, clusters 13×8):
+- Top FFT candidate: lag=39, correlation score=29.14
+- Our `shift_and_score` at lag=39: max single-position score = 854,
+  max sliding-window-20 sum = 2204.6
+- Segment threshold (per `alignableReagion`): 9600 (= 80% × 600 × 20)
+- Window-max 2204 << threshold 9600 → 0 segments → break.
 
-For BL62 and 7 other modes the best lag dominates so the two
-behaviours coincide; for BL50, JTT 100 (FFT), and TM 200 (FFT) multiple
-lags carry comparable per-segment scores and C picks a different
-optimal subset.
+C must produce segments at the same step (since C's BL50 width 712 is
+narrower than the no-anchor fallback width). Hypothesis: C's
+`alignableReagion` computes higher per-position scores at this step
+than ours. Possibilities:
+- `n_disFFT[k][j] = n_dis[k][j] + offset - offsetFFT` may have
+  different value for BL50 than what our `fft_matrix` produces (both
+  should be `n_dis` when `offset=offsetFFT=0`, but worth verifying via
+  a per-cell dump).
+- C's `eff` weights for clusters at step 33 may not sum to 1 (the
+  `stra[i] /= totaleff` on line 287 implies un-normalized
+  accumulation), and the absolute scale of `prf1[k] * prf2[j]`
+  products may differ from our normalized profile freqs.
 
-**Two prior structural rewrite attempts** (flat anchor list across all
-candidates, fed to combined block_align) reached width 711 (vs 712) for
-BL50 but broke BL62 (144-line diff). Reverted; partial improvements
-landed in `block_align.rs` (permit-zero gating, traceback dedupe).
+**Concrete next task** (effort: 3-4 h): instrument C's `alignableReagion`
+to dump `prf1`, `prf2`, `totaleff`, and the per-position `stra[i]`
+array at step 33 BL50 lag=39. Diff against our `shift_and_score`
+output for the same step. The first cell where the values differ
+identifies the score-scaling bug.
 
-**Concrete next task** (effort: 3-4 h): instrument C's `Falign` to dump
-the flat `(c1, c2, score, lag)` anchor-pair list pre-`blockAlign2` and
-the `crossscore[][]` matrix pre-DP for the BL62 step-0 and BL50 step-33
-merges. Diff against our equivalent dumps. The first divergence
-identifies whether the issue is (a) sort tie-break, (b) corner
-sentinel value, (c) reverse-mapping ambiguity, or (d) lag exclusion
-bounds.
+If C's per-position scores actually exceed threshold while ours do
+not, the fix is in either `match_score` (profile dot product),
+`Profile::from_aligned` (freq accumulation), or in how we hand off
+weights from `progressive::build_profile_from_seqs` (we normalize to
+sum=1; C does not, but divides by `totaleff` at the end — these should
+be mathematically equivalent unless there's an asymmetry).
 
 ---
 

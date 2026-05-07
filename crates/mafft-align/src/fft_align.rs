@@ -95,68 +95,75 @@ pub fn find_fft_anchors(
 
     let candidates = get_top_candidates(&soukan, params.num_candidates);
 
-    let mut all_segments: Vec<(i32, Vec<AlignableSegment>)> = Vec::new();
-    for cand in &candidates {
-        let shifted_scores = shift_and_score(prof1, prof2, matrix, cand.lag);
-        let segments = alignable_segments(&shifted_scores, &params.segment_params);
-        if !segments.is_empty() {
-            all_segments.push((cand.lag, segments));
-        }
-    }
-
-    if all_segments.is_empty() {
-        return None;
-    }
-
-    // Among lags with tied total segment scores, pick the FIRST (highest FFT
-    // correlation peak) — `Iterator::max_by` returns the LAST among equals
-    // which inverts C's accumulate-then-block-align semantics. Picking the
-    // first-tied is closer to C's behavior since `getKouho` already orders
-    // candidates by descending correlation strength.
+    // Mirrors C's `Falign` (`Falign.c:1307-1372`): accumulate segments from
+    // candidate lags into a single flat list (sorted by score), then
+    // independently sort centers in each seq dimension and run
+    // `blockAlign2` over a sparse cross-score matrix. The DP picks the
+    // best non-conflicting subset of anchors across all candidate lags.
     //
-    // Note: C's `Falign` accumulates ALL `NKOUHO=20` candidates' segments
-    // into a flat list and runs `blockAlign2` over a sparse cross-score
-    // matrix (with the `permit`-zero gating at `fftFunctions.c:469`). A
-    // straight port of that flow has been prototyped and confirms BL50
-    // moves from 738→711 vs C's 712 — but it breaks default BL62
-    // byte-parity. The sparse cross-score path needs more diagnosis (see
-    // TODO §2b); reverted to the single-best-lag flow for now.
-    let mut best_idx = 0usize;
-    let mut best_score = f64::NEG_INFINITY;
-    for (i, (_lag, segs)) in all_segments.iter().enumerate() {
-        let s: f64 = segs.iter().map(|seg| seg.score).sum();
-        if s > best_score {
-            best_score = s;
-            best_idx = i;
+    // C's loop bounds: `if (lag <= -len1 || lag >= len2) continue;`
+    // (`Falign.c:1310`) and break on first empty `tmpint == 0`
+    // (`Falign.c:1330`).
+    struct PairSeg { center1: usize, center2: usize, score: f64 }
+    let mut all: Vec<PairSeg> = Vec::new();
+    for cand in &candidates {
+        let lag = cand.lag;
+        if lag <= -(n as i32) || lag >= m as i32 { continue; }
+        let shifted_scores = shift_and_score(prof1, prof2, matrix, lag);
+        let segments = alignable_segments(&shifted_scores, &params.segment_params);
+        if segments.is_empty() {
+            break; // C: `if(tmpint == 0) break;`
+        }
+        for seg in segments {
+            // shift_and_score puts scores[i] = match(prof1[i], prof2[i - lag]).
+            // Segment.center maps to (seq1=center, seq2=center-lag) — the
+            // sign is opposite to C's because our FFT correlation peak
+            // convention is mirrored relative to C's `zurasu2`. Empirically
+            // this matches all FFT-NS-2 byte tests.
+            let c1 = seg.center;
+            let c2_signed = seg.center as i32 - lag;
+            if c1 >= n || c2_signed < 0 || (c2_signed as usize) >= m { continue; }
+            all.push(PairSeg { center1: c1, center2: c2_signed as usize, score: seg.score });
         }
     }
-    let (best_lag, best_segments) = all_segments.swap_remove(best_idx);
 
-    let nseg = best_segments.len();
-    if nseg == 0 {
-        return None;
-    }
+    if all.is_empty() { return None; }
 
-    let mut cross_scores = vec![vec![0.0f64; nseg]; nseg];
+    let nseg = all.len();
+    let mut sort1: Vec<usize> = (0..nseg).collect();
+    sort1.sort_by(|&a, &b| all[a].center1.cmp(&all[b].center1));
+    let mut sort2: Vec<usize> = (0..nseg).collect();
+    sort2.sort_by(|&a, &b| all[a].center2.cmp(&all[b].center2));
+
+    let mut rank1 = vec![0usize; nseg];
+    let mut rank2 = vec![0usize; nseg];
+    for (r, &i) in sort1.iter().enumerate() { rank1[i] = r; }
+    for (r, &i) in sort2.iter().enumerate() { rank2[i] = r; }
+
+    let size = nseg + 2;
+    let mut crossscore = vec![vec![0.0f64; size]; size];
     for i in 0..nseg {
-        cross_scores[i][i] = best_segments[i].score;
+        crossscore[rank1[i] + 1][rank2[i] + 1] = all[i].score;
     }
+    crossscore[0][0] = 1e7;
+    crossscore[size - 1][size - 1] = 1e7;
 
-    let (sel_i, _sel_j) = block_align(&cross_scores, params.gap.open);
+    let (sel_i, sel_j) = block_align(&crossscore, params.gap.open);
 
-    let anchors: Vec<(usize, usize)> = sel_i
-        .iter()
-        .map(|&si| {
-            let seg = &best_segments[si];
-            let center = seg.center;
-            if best_lag >= 0 {
-                (center.min(n - 1), (center as i32 - best_lag).max(0) as usize)
-            } else {
-                ((center as i32 + best_lag).max(0) as usize, center.min(m - 1))
-            }
-        })
-        .filter(|&(a1, a2)| a1 < n && a2 < m)
-        .collect();
+    let mut anchors: Vec<(usize, usize)> = Vec::new();
+    for (&si, &sj) in sel_i.iter().zip(sel_j.iter()) {
+        if si == 0 || si == size - 1 { continue; }
+        if sj == 0 || sj == size - 1 { continue; }
+        let r1 = si - 1;
+        let r2 = sj - 1;
+        if r1 >= nseg || r2 >= nseg { continue; }
+        let seg_idx = sort1[r1];
+        if rank2[seg_idx] != r2 { continue; }
+        let seg = &all[seg_idx];
+        if seg.center1 < n && seg.center2 < m {
+            anchors.push((seg.center1, seg.center2));
+        }
+    }
 
     if anchors.is_empty() {
         None

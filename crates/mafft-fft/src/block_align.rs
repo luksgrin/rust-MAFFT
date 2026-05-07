@@ -53,9 +53,6 @@ pub fn block_align(
             track[i][j] = 0;
 
             // Skip segments in j (gap in group2's segments).
-            // C: klim = j-2; for(k=0; k<klim; k++).
-            // Gating: skip iff `k != 0 && k < ncut-1 && j < ncut-1`.
-            // i.e. allowed when k=0, or k=ncut-1, or j=ncut-1.
             for k in 0..j.saturating_sub(2) {
                 if k != 0 && k < ncut - 1 && j < ncut - 1 { continue; }
                 let score = dp[i - 1][k] + gap_penalty;
@@ -66,7 +63,6 @@ pub fn block_align(
             }
 
             // Skip segments in i (gap in group1's segments).
-            // C: klim = i-2; same gating with i in place of j.
             for k in 0..i.saturating_sub(2) {
                 if k != 0 && k < ncut - 1 && i < ncut - 1 { continue; }
                 let score = dp[k][j - 1] + gap_penalty;
