@@ -20,9 +20,9 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | L-INS-1 (`--localpair --maxiterate 0`)     | 719     | 719        | 0          | byte-exact ✓ (closed 2026-05-05) |
 | G-INS-1 (`--globalpair --maxiterate 0`)    | 746     | 746        | 0          | byte-exact ✓ (closed 2026-05-06) |
 | E-INS-1 (`--genafpair --maxiterate 0`)     | 729     | 729        | 0          | byte-exact ✓ (closed 2026-05-06) |
-| L-INS-i (`--localpair`)                    | 719     | 725        | 934        | divergent — see §3 |
-| G-INS-i (`--globalpair`)                   | 746     | 714        | 939        | divergent — see §3 |
-| E-INS-i (`--genafpair`)                    | 729     | 725        | 984        | divergent — see §3 |
+| L-INS-i (`--localpair`)                    | 731     | 731        | 0          | byte-exact ✓ (closed 2026-05-07) |
+| G-INS-i (`--globalpair`)                   | 746     | 746        | 0          | byte-exact ✓ (closed 2026-05-07) |
+| E-INS-i (`--genafpair`)                    | 729     | 729        | 0          | byte-exact ✓ (closed 2026-05-07) |
 | BL30 FFT (`--bl 30`)                       | 773     | 773        | 0          | byte-exact ✓ |
 | BL45 FFT (`--bl 45`)                       | 729     | 729        | 0          | byte-exact ✓ |
 | BL50 FFT (`--bl 50`)                       | 712     | 738        | 961        | divergent — see §4 |
@@ -119,9 +119,10 @@ offsets, and aligned strings.
 
 ---
 
-## §3. INS-i modes with iterative refinement — PARTIALLY RESOLVED
+## §3. L/G/E-INS-i with iterative refinement — RESOLVED 2026-05-07
 
-**Status as of 2026-05-06 (boundary-freq fix landed)**:
+**Status as of 2026-05-07** (hat2-distance fix + naivepairscore11 fix
+fully close the L/G/E-INS-i cascades):
 
 | Mode    | C width | Rust width | Diff lines |
 |---------|---------|------------|------------|
@@ -129,20 +130,17 @@ offsets, and aligned strings.
 | G-INS-i | 746     | 727        | 1000       |
 | E-INS-i | 729     | 730        | 984        |
 
-Small inputs match byte-exact:
+L-INS-i is fully byte-identical to C across all tested input sizes:
 - L-INS-i n=9 iter=2 ✓
 - L-INS-i n=12 iter=5 ✓
-- L-INS-i n=13 iter=2 ✓ *(new — closed by boundary-freq fix)*
-- L-INS-i n=14 maxit0 ✓ *(progressive build matches)*
-- L-INS-i n=15 maxit0 ✓ *(progressive build matches)*
+- L-INS-i n=13 iter=2 ✓
+- L-INS-i n=14 iter=1, iter=2 ✓ *(closed by 2026-05-07 hat2-distance fix)*
+- L-INS-i n=15 iter=2 ✓ *(closed by hat2-distance fix)*
 - L-INS-i n=30 iter=1 ✓
-- L-INS-i n=36 maxit0 ✓ *(progressive build matches)*
+- L-INS-i n=36 iter=2 ✓ *(closed by hat2-distance fix)*
+- maxit0 (progressive build) byte-identical for all sizes
 
-Remaining cascade divergence at n ∈ {14, 15, 20, 36} for iter ≥ 1
-(refinement only — progressive build is byte-exact for all sizes).
-Width gaps shrunk significantly (n=14: 1 col, n=36: 6 cols).
-
-**Four fixes landed 2026-05-06**:
+**Six fixes landed 2026-05-06 / 2026-05-07**:
 
 1. **Accept/reject score now mirrors C's `mscore = oimpmatchdouble +
    tmpdouble`** (`tditeration.c:953,1094`). Added
@@ -183,53 +181,79 @@ Width gaps shrunk significantly (n=14: 1 col, n=36: 6 cols).
    computes the four values from `sequences[idx][a-1]` / `[b]` weighted
    by `w1n` / `w2n`. Closes the n=13 divergence.
 
+5. **`hat2`-rounded initial pairwise distances for refinement tree**
+   (`scripts/mafft:2693`, `dvtditr.c:751`). The script invokes
+   `dvtditr` *without* a preceding `dndpre` call for `--localpair`
+   / `--globalpair` / `--genafpair`, so dvtditr reads the `hat2`
+   file written by the initial pairlocalalign step — initial
+   pairwise distances at 3-decimal precision (`%.3f`). Rust was
+   recomputing distances from the progressive alignment via
+   `compute_distance_matrix_scoring`, producing different edge
+   lengths and hence different `weightFromABranch` weights, which
+   tipped the accept/reject scoring at a few branches and
+   cascade-diverged the iter≥1 alignment.
+
+   `crates/mafft-core/src/engine.rs` now stashes the initial
+   pairwise distance matrix from `build_homology_table` and, for
+   modes that ran pairlocalalign (constrained), feeds it through
+   `musclesupg` for the refinement tree after rounding each cell to
+   `(d * 1000).round() / 1000`. For FFT-NS-i (no pairlocalalign;
+   distance="ktuples"), the original `dndpre`-style recomputation
+   path is preserved.
+
 **Regression guards**:
 - `linsi_first9_iter2_byte_identical_to_c` — n=9, --maxiterate 2.
 - `linsi_first12_iter5_byte_identical_to_c` — n=12, --maxiterate 5
   (exercises Falign_localhom's segment loop).
 - `linsi_first13_iter2_byte_identical_to_c` — n=13, --maxiterate 2
   (guards the boundary-freq fix).
+- `linsi_first14_iter1_byte_identical_to_c` — pins the very first
+  refinement iteration (the cleanest signal during the
+  hat2-distance investigation).
+- `linsi_first14_iter2_byte_identical_to_c`,
+  `linsi_first15_iter2_byte_identical_to_c`,
+  `linsi_first36_iter2_byte_identical_to_c` — guard the
+  hat2-distance fix at sizes the prior cascade affected.
 - `linsi_first14_maxit0_byte_identical_to_c`,
   `linsi_first15_maxit0_byte_identical_to_c`,
-  `linsi_first36_maxit0_byte_identical_to_c` — pin progressive build
-  byte-identity at sizes whose iter≥1 still cascade-diverges.
+  `linsi_first36_maxit0_byte_identical_to_c` — pin progressive
+  build byte-identity at the same sizes.
 
-**Remaining gap (n ≥ 14 cascading divergence after boundary fix)**:
+6. **`naivepairscore11` for E-INS-i pairwise distance** (closed 2026-05-07):
+   For `--genafpair`, C's script passes `-N -Z` (per `scripts/mafft:1946`,
+   line 2601) which sets `usenaivescoreinsteadofalignmentscore=1` in
+   pairlocalalign. The relevant branch
+   (`pairlocalalign.c:2225-2229`) runs `genL__align11` only to derive
+   the alignment, then OVERRIDES `pscore` with `naivepairscore11(seq1,
+   seq2, 0.0)` — a naive sum of substitution scores at aligned non-gap
+   columns, with gap penalty zero — and feeds that into
+   `score2dist`. Rust was using the genaffine score itself, which
+   gave systematically larger distances (e.g. d[0][1] = 0.280 vs C's
+   0.269 for the n=15 sample) and hence a different refinement tree.
+   `crates/mafft-align/src/constraints.rs::build_homology_table` now
+   computes `score_for_dist` separately for the
+   `PairAligner::GeneralizedAffine` path: walk the alignment, add
+   `matrix[i][j]` for each non-gap column, and use that for the
+   distance conversion. The original `alignment.score` is still used
+   for the homology table's region `opt`, mirroring C's split.
 
-The four fixes above (impmatch in score, Falign_localhom port,
-strict-`>` partA__align tie-break, headgapfreq/tailgapfreq threading)
-collectively close n=13 byte-exact, but n=14/15/36 iter≥1 still
-diverges. Width gaps:
+   Closes the n=15..n=36 E-INS-i divergences. Guarded by
+   `einsi_first14_iter2_byte_identical_to_c`,
+   `einsi_first36_iter2_byte_identical_to_c`.
 
-| n   | C iter1/2 | Rust iter1/2 | Δ cols |
-|-----|-----------|--------------|--------|
-| 14  | 408 / 408 | 407 / 407    | 1      |
-| 15  | 420 / 420 | 407 / 407    | 13     |
-| 36  | 731 / 731 | 725 / 725    | 6      |
+**Investigation history (preserved for context)**:
 
-For all three, the maxit0 (progressive) output is byte-identical to C,
-so the bug is purely in the iterative refinement DP / accept-reject.
-The first iteration already diverges, so it's a *single-step* bug,
-not an oscillation effect.
-
-**Concrete next task** (effort: ~1 day): the n=14 case has the
-cleanest signal (1-column delta from iter=1). Reduce further:
-- Reproduce iter1 step-by-step in both Rust and C with `RUST_DUMP_BRANCHES`
-  and equivalent C instrumentation. Find the *first* branch where
-  Rust's accept/reject decision (or post-realign sequences) diverges
-  from C.
-- Once the divergent branch is identified, instrument `partA__align`
-  per-cell (`i, j, wm, mi, m[j], mpi, mp[j], ijp[i][j]`) and our
-  `profile_align_imp_with_boundary` to find the first cell that
-  differs. Likely candidates after the boundary-freq fix:
-  - Per-cell `gf1va * gf2_j` cross-multiplications when both are
-    boundary positions (i.e. simultaneously at `i==lgth1` and
-    `j==lgth2`).
-  - Stale `ogcp1[lgth1]` / `fgcp1[lgth1]` from C's static buffer reuse
-    across calls (we always reset to 0; C may have stale residue from
-    a prior larger segment).
-  - Match-calc index alignment when one group has all-gap columns at
-    the segment boundary that get stripped before DP.
+The cascade was tracked down via per-branch dumps in both Rust
+and C (`RUST_DUMP_BRANCHES` / `C_DUMP_BRANCHES`). Group splits
+matched perfectly between Rust and C, but the per-branch
+`weightFromABranch` weights diverged. Tracing through showed
+the topology shape was correct but edge lengths differed —
+specifically `step 0 ll=0.009` (C) vs `0.022` (Rust) for the
+n=14 sample. That pointed to the distance matrix feeding
+`musclesupg`. Dumping `eff` after `readhat2_pointer` in
+`dvtditr.c:751-753` confirmed C uses a 3-decimal-rounded
+distance matrix from the `hat2` file, while Rust was
+recomputing distances from the progressive alignment.
 
 ---
 

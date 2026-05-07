@@ -1276,3 +1276,155 @@ fn rust_genaffine_align_matches_c_gen_l__align11() {
         assert_eq!(r_a2_str, c_a2, "seq2 mismatch");
     }
 }
+
+/// Same comparison but using **E-INS-i** params (lexp=0.0, laof=0.0
+/// per `scripts/mafft:1940-1948`). The earlier
+/// `rust_genaffine_align_matches_c_gen_l__align11` test used L-INS-i-
+/// style params and missed an E-INS-i-specific divergence in
+/// `genaffine_local_align` whose score / distance feeds the refinement
+/// tree's edge lengths. n=14 byte-passes despite the divergence
+/// (topology coincidentally identical), but n=15+ tips at some pair.
+#[test]
+fn rust_genaffine_align_matches_c_gen_l__align11_einsi_params() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let s1: &'static [u8] = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSIEGFFATLGGEVALWSLVVLAIERYIVICKPMGNFRFGNTHAIMGVAFTWIMALACAAPPLVGWSRYIPEGMQCSCGPDYYTLNPNFNNESYVVYMFVVHFLVPFVIIFFCYGRLLCTVKEAAAAQQESASTQKAEKEVTRMVVLMVIGFLVCWVPYASVAFYIFTHQGSDFGATFMTLPAFFAKSSALYNPVIYILMNKQFRNCMITTLCCGKNPLGDDESGASTSKTEVSSVSTSPVSPA";
+    let s2: &'static [u8] = b"MNGTEGPNFYVPFSNITGVVRSPFEQPQYYLAEPWQFSMLAAYMFLLIVLGFPINFLTLYVTVQHKKLRTPLNYILLNLAVADLFMVFGGFTTTLYTSLHGYFVFGPTGCNLEGFFATLGGEIGLWSLVVLAIERYVVVCKPMSNFRFGENHAIMGVAFTWVMALACAAPPLVGWSRYIPEGMQCSCGIDYYTLKPEVNNESFVIYMFVVHFTIPMIVIFFCYGQLVFTVKEAAAQQQESATTQKAEKEVTRMVIIMVIFFLICWLPYASVAMYIFTHQGSNFGPIFMTLPAFFAKTASIYNPIIYIMMNKQFRNCMLTSLCCGKNPLGDDEASATASKTETSQVAPA";
+
+    let scale_protein: f64 = 600.0 / 1000.0;
+    let cc_int = |x: f64, mul: f64| -> i32 { ((x * mul) - 0.5) as i32 };
+    let cc_scale = |ppen: i32, scale: f64| -> i32 { ((scale * ppen as f64) + 0.5) as i32 };
+    // E-INS-i overrides: lexp = 0.0, laof = 0.0 (script:1940-1948).
+    let p_open = cc_int(-2.00, 1000.0);
+    let p_ext  = cc_int(0.0, 1000.0);
+    let p_offset = cc_int(0.0, 1000.0);
+    let p_op   = cc_int(-6.00, 1000.0);
+    let pair_open = cc_scale(p_open, scale_protein);
+    let pair_ext  = cc_scale(p_ext,  scale_protein);
+    let pair_offset_int = cc_scale(p_offset, scale_protein);
+    let pair_op = cc_scale(p_op, scale_protein);
+
+    use mafft_align::{genaffine_local_align, GenAffineGapModel};
+    let pair_gap = GenAffineGapModel {
+        affine: GapModel::new(pair_open as f64, pair_ext as f64),
+        open_generalized: pair_op as f64,
+    };
+
+    let nscored = scoring.nscoredalphabets;
+    let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+    for i in 0..nscored {
+        for j in 0..nscored {
+            shifted[i][j] -= pair_offset_int;
+        }
+    }
+    let score_offset_for_local = pair_offset_int as f64 / 600.0;
+
+    let r_aln = genaffine_local_align(
+        s1, s2, &shifted, &scoring.amino_map, &pair_gap, score_offset_for_local,
+    );
+
+    // Rust selfscore = sum of diag entries (matches build_homology_table).
+    let n_alpha = shifted.len();
+    let r_self1: f64 = s1.iter().map(|&c| {
+        let i = scoring.amino_map[c as usize] as usize;
+        if i < n_alpha { shifted[i][i] as f64 } else { 0.0 }
+    }).sum();
+    let r_self2: f64 = s2.iter().map(|&c| {
+        let i = scoring.amino_map[c as usize] as usize;
+        if i < n_alpha { shifted[i][i] as f64 } else { 0.0 }
+    }).sum();
+    let r_dist = (1.0 - r_aln.alignment.score / r_self1.min(r_self2)) * 2.0;
+
+    unsafe {
+        // Pre-set poffset to 0 (mirroring the actual E-INS-i pipeline,
+        // where the script passes `-h 0.0`) so constants() builds
+        // `amino_dis` with no offset shift. Without this override
+        // init_c_protein() leaves poffset at NOTSPECIFIED → constants()
+        // applies DEFAULTOFS_B=-123 → offset=-73 → +73 shift.
+        mafft_sys::initglobalvariables();
+        std::ptr::addr_of_mut!(mafft_sys::ppenalty).write(mafft_sys::NOTSPECIFIED);
+        std::ptr::addr_of_mut!(mafft_sys::ppenalty_ex).write(mafft_sys::NOTSPECIFIED);
+        std::ptr::addr_of_mut!(mafft_sys::ppenalty_EX).write(mafft_sys::NOTSPECIFIED);
+        std::ptr::addr_of_mut!(mafft_sys::ppenalty_OP).write(mafft_sys::NOTSPECIFIED);
+        std::ptr::addr_of_mut!(mafft_sys::ppenalty_dist).write(mafft_sys::NOTSPECIFIED);
+        std::ptr::addr_of_mut!(mafft_sys::poffset).write(0);  // E-INS-i: laof=0.0
+        std::ptr::addr_of_mut!(mafft_sys::kimuraR).write(mafft_sys::NOTSPECIFIED);
+        std::ptr::addr_of_mut!(mafft_sys::pamN).write(mafft_sys::NOTSPECIFIED);
+        std::ptr::addr_of_mut!(mafft_sys::dorp).write(b'p' as i32);
+        std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::nblosum).write(62);
+        std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
+
+        let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
+        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
+        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        mafft_sys::constants(1, seq_arr);
+
+        std::ptr::addr_of_mut!(mafft_sys::penalty).write(pair_open);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_ex).write(pair_ext);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_OP).write(pair_op);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_EX).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::offset).write(pair_offset_int);
+        std::ptr::addr_of_mut!(mafft_sys::njob).write(2);
+
+        // C selfscore reads amino_dis (the integer matrix populated by constants()
+        // with the offset shift applied).
+        let mut c_self1 = 0.0f64;
+        let mut c_self2 = 0.0f64;
+        for &c in s1 {
+            let row_ptr = *mafft_sys::amino_dis.add(c as usize);
+            let v = *row_ptr.add(c as usize);
+            c_self1 += v as f64;
+        }
+        for &c in s2 {
+            let row_ptr = *mafft_sys::amino_dis.add(c as usize);
+            let v = *row_ptr.add(c as usize);
+            c_self2 += v as f64;
+        }
+
+        let alloclen = (s1.len() + s2.len()) * 4;
+        let mut buf1 = s1.to_vec(); buf1.resize(alloclen + 1, 0);
+        let mut buf2 = s2.to_vec(); buf2.resize(alloclen + 1, 0);
+        let buf1_box = buf1.into_boxed_slice();
+        let buf2_box = buf2.into_boxed_slice();
+        let mut p1: *mut c_char = buf1_box.as_ptr() as *mut c_char;
+        let mut p2: *mut c_char = buf2_box.as_ptr() as *mut c_char;
+
+        let n_dyn = build_c_dynamicmtx(&shifted);
+        let mut off1: c_int = 0;
+        let mut off2: c_int = 0;
+        let c_score = mafft_sys::genL__align11(
+            n_dyn, &mut p1, &mut p2, alloclen as c_int,
+            &mut off1, &mut off2,
+        );
+
+        let c_dist = (1.0 - c_score / c_self1.min(c_self2)) * 2.0;
+        eprintln!("E-INS-i pair (M63632, U22180):");
+        eprintln!("  Rust score: {}",  r_aln.alignment.score);
+        eprintln!("  C    score: {}", c_score);
+        eprintln!("  Rust selfscore[0]={r_self1} selfscore[1]={r_self2}");
+        eprintln!("  C    selfscore[0]={c_self1} selfscore[1]={c_self2}");
+        eprintln!("  Rust distance={r_dist}");
+        eprintln!("  C    distance={c_dist}");
+        // Compare per-residue diagonal values.
+        eprintln!("  Diag entries (Rust shifted vs C amino_dis):");
+        for c in [b'A', b'L', b'V', b'M', b'C', b'W', b'Y', b'P'] {
+            let ri = scoring.amino_map[c as usize] as usize;
+            let r_v = if ri < n_alpha { shifted[ri][ri] } else { 0 };
+            let row_ptr = *mafft_sys::amino_dis.add(c as usize);
+            let c_v = *row_ptr.add(c as usize);
+            eprintln!("    {}: Rust={} C={}", c as char, r_v, c_v);
+        }
+        let c_len = { let s = p1; let mut k = 0; while *s.add(k) != 0 { k += 1; } k };
+        let c_a1 = std::str::from_utf8(&buf1_box[..c_len]).unwrap();
+        let r_a1_str = std::str::from_utf8(&r_aln.alignment.seq1).unwrap();
+
+        mafft_sys::freeconstants();
+
+        assert!(((r_aln.alignment.score - c_score).abs()) < 1.0,
+            "E-INS-i scores differ: R={} C={} Δ={}",
+            r_aln.alignment.score, c_score, r_aln.alignment.score - c_score);
+        assert_eq!(r_a1_str, c_a1, "E-INS-i seq1 mismatch");
+    }
+}

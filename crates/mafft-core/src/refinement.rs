@@ -226,16 +226,6 @@ pub fn iterative_refine(
                         if std::env::var("RUST_MAFFT_TRACE").is_ok() {
                             eprintln!("ACCEPT iter={iter} step={step_idx} side={side} old={:.3} new={:.3} accept={}",
                                 old_score, tscore, tscore > threshold);
-                            if std::env::var("RUST_DUMP_BRANCHES").is_ok() {
-                                eprintln!("[BRANCH_BEFORE] iter={iter} step={step_idx} side={side}");
-                                for (idx, s) in alignment.sequences.iter().enumerate() {
-                                    eprintln!("  seq{idx}: {}", std::str::from_utf8(s).unwrap_or(""));
-                                }
-                                eprintln!("[BRANCH_AFTER] iter={iter} step={step_idx} side={side}");
-                                for (idx, s) in new_seqs.iter().enumerate() {
-                                    eprintln!("  seq{idx}: {}", std::str::from_utf8(s).unwrap_or(""));
-                                }
-                            }
                         }
                         if tscore > threshold {
                             alignment.sequences = new_seqs;

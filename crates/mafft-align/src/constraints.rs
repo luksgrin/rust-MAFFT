@@ -357,8 +357,36 @@ pub fn build_homology_table(
                 }
             };
 
+            // For E-INS-i, C's `pairlocalalign -N -Z`
+            // (`scripts/mafft:1946`, `pairlocalalign.c:2225-2229`) overrides
+            // the alignment-derived `pscore` with `naivepairscore11`:
+            //   pscore = sum over aligned non-gap columns of amino_dis[c1][c2]
+            //   (gap columns get `penal = 0.0` from line 2228).
+            // The genL__align11 score is used only to derive the alignment;
+            // the distance uses the naive sum-of-pairs over that alignment.
+            //
+            // For L-INS-i / G-INS-i, the alignment score is used directly.
+            let score_for_dist: f64 = if matches!(aligner, PairAligner::GeneralizedAffine) {
+                // commongappick + sum amino_dis at matched columns; gaps free.
+                let mut s = 0.0f64;
+                let n_alpha = matrix.len();
+                for k in 0..alignment.seq1.len() {
+                    let c1 = alignment.seq1[k];
+                    let c2 = alignment.seq2[k];
+                    if c1 == b'-' || c2 == b'-' { continue; }
+                    let i1 = amino_map[c1 as usize] as usize;
+                    let i2 = amino_map[c2 as usize] as usize;
+                    if i1 < n_alpha && i2 < n_alpha {
+                        s += matrix[i1][i2] as f64;
+                    }
+                }
+                s
+            } else {
+                alignment.score
+            };
+
             let score = alignment.score;
-            if score <= 0.0 {
+            if score_for_dist <= 0.0 {
                 return PairResult { i, j, distance: 2.0, regions: Vec::new() };
             }
 
@@ -370,10 +398,10 @@ pub fn build_homology_table(
             let bunbo = selfscore[i].min(selfscore[j]);
             let d = if bunbo == 0.0 {
                 2.0
-            } else if bunbo < score {
+            } else if bunbo < score_for_dist {
                 0.0
             } else {
-                (1.0 - score / bunbo) * 2.0
+                (1.0 - score_for_dist / bunbo) * 2.0
             };
 
             // Port of C's `putlocalhom2` (`io.c:723`): split the alignment

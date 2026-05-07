@@ -492,10 +492,19 @@ impl MafftEngine {
             }
         } else if uses_constraints {
             // Reuse the table built up-front for the initial distance matrix.
-            pairwise_for_constraints.map(|(t, _)| t)
+            // Keep the initial pairwise distance matrix alongside for the
+            // refinement tree (mirrors C's `dvtditr` reading the `hat2` file
+            // written by initial pairlocalalign instead of recomputing from
+            // the progressive alignment).
+            pairwise_for_constraints.as_ref().map(|(t, _)| t.clone())
         } else {
             None
         };
+        // Stash the initial pairwise distance matrix for the refinement tree
+        // (modes that ran pairlocalalign, where C's dvtditr reads `hat2`).
+        let initial_pairwise_dm: Option<DistanceMatrix> = pairwise_for_constraints
+            .as_ref()
+            .map(|(_, dm)| dm.clone());
 
         // Step 4: Iterative refinement (if mode requires it)
         match &self.mode {
@@ -515,29 +524,47 @@ impl MafftEngine {
                 // distance matrix we feed `musclesupg` here must use the same
                 // shifted matrix and operate on the FINAL progressive
                 // alignment (`msa.sequences`).
-                let dndpre_offset_shift: i32 = 73; // = -(-73) = -default_protein_poffset/(scaling)
-                let mut shifted_matrix: Vec<Vec<i32>> = scoring.substitution_matrix
-                    .iter()
-                    .map(|row| row.iter().map(|&v| v + dndpre_offset_shift).collect())
-                    .collect();
-                // The scoring matrix is 26x26 with non-zero entries only in the
-                // 20x20 amino-acid core. Cells outside that core (B, Z, X, '.', '-')
-                // start at 0 and would become 73 after the shift, which would add
-                // bogus contributions when scoring '-' or unknown characters.
-                // Restore those out-of-core cells to 0.
-                let nscored = scoring.nscoredalphabets;
-                for i in 0..shifted_matrix.len() {
-                    for j in 0..shifted_matrix[i].len() {
-                        if i >= nscored || j >= nscored {
-                            shifted_matrix[i][j] = 0;
+                // For modes that ran an initial pairlocalalign step (L-INS-i,
+                // G-INS-i, E-INS-i, ...), C's `dvtditr` reads `hat2` written
+                // by tbfast's pairlocalalign — initial pairwise distances at
+                // 3-decimal precision. We mirror that exactly.
+                //
+                // For modes without pairlocalalign (FFT-NS-i, distance="ktuples"),
+                // C's script invokes `dndpre` between tbfast and dvtditr to
+                // recompute distances from the progressive alignment with the
+                // BLOSUM62 default poffset shift. We mirror that path here.
+                let dm = if let Some(ref initial_dm) = initial_pairwise_dm {
+                    // Mimic hat2 file's `%.3f` rounding so musclesupg sees the
+                    // same distances dvtditr sees.
+                    let n = initial_dm.nseq;
+                    let mut rounded = DistanceMatrix::new(n);
+                    for i in 0..n {
+                        for j in (i + 1)..n {
+                            let d = (initial_dm.get(i, j) * 1000.0).round() / 1000.0;
+                            rounded.set(i, j, d);
                         }
                     }
-                }
-                let penalty_dist = scoring.gap.open;
-                let dm = compute_distance_matrix_scoring(
-                    &msa.sequences, &shifted_matrix,
-                    &scoring.amino_map, penalty_dist,
-                );
+                    rounded
+                } else {
+                    let dndpre_offset_shift: i32 = 73;
+                    let mut shifted_matrix: Vec<Vec<i32>> = scoring.substitution_matrix
+                        .iter()
+                        .map(|row| row.iter().map(|&v| v + dndpre_offset_shift).collect())
+                        .collect();
+                    let nscored = scoring.nscoredalphabets;
+                    for i in 0..shifted_matrix.len() {
+                        for j in 0..shifted_matrix[i].len() {
+                            if i >= nscored || j >= nscored {
+                                shifted_matrix[i][j] = 0;
+                            }
+                        }
+                    }
+                    let penalty_dist = scoring.gap.open;
+                    compute_distance_matrix_scoring(
+                        &msa.sequences, &shifted_matrix,
+                        &scoring.amino_map, penalty_dist,
+                    )
+                };
                 let topo = musclesupg(&dm, ClusterMethod::default());
                 // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)
                 // parallelization strategy (scripts/mafft line ~1515). This matters

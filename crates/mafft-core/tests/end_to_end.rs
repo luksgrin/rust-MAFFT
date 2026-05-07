@@ -1729,28 +1729,26 @@ fn linsi_first13_iter2_byte_identical_to_c() {
     assert_linsi_byte_identical("sample.first13.fa", "sample.first13.linsi.iter2", 2);
 }
 
-/// L-INS-i refinement on 14 sequences with `--maxiterate 2`. Part of the
-/// remaining post-boundary-fix cascade — TODO §3. Width gap is 1 column
-/// (Rust 407 vs C 408) starting at iter=1.
+/// L-INS-i refinement on 14 sequences with `--maxiterate 2`. Closed
+/// 2026-05-07 by using initial pairwise distances (3-decimal-rounded
+/// to mimic hat2 file precision) for the refinement tree, instead of
+/// recomputing from the progressive alignment.
 #[test]
-#[ignore = "TODO §3 — known cascade divergence at n=14 iter≥1; tracked, not yet root-caused"]
 fn linsi_first14_iter2_byte_identical_to_c() {
     assert_linsi_byte_identical("sample.first14.fa", "sample.first14.linsi.iter2", 2);
 }
 
-/// L-INS-i refinement on 15 sequences with `--maxiterate 2`. Part of the
-/// remaining cascade — TODO §3. Width gap is 13 columns at iter=1+.
+/// L-INS-i refinement on 15 sequences with `--maxiterate 2`. Closed by
+/// the 2026-05-07 hat2-distance fix.
 #[test]
-#[ignore = "TODO §3 — known cascade divergence at n=15 iter≥1"]
 fn linsi_first15_iter2_byte_identical_to_c() {
     assert_linsi_byte_identical("sample.first15.fa", "sample.first15.linsi.iter2", 2);
 }
 
-/// L-INS-i refinement on the full 36-sequence sample with
-/// `--maxiterate 2`. Largest case in the cascade — TODO §3. Width gap
-/// is 6 columns.
+/// L-INS-i refinement on the full 36-sequence sample with `--maxiterate 2`.
+/// Closed by the 2026-05-07 hat2-distance fix — confirms the fix
+/// generalizes to non-trivial input sizes.
 #[test]
-#[ignore = "TODO §3 — known cascade divergence at n=36 iter≥1"]
 fn linsi_first36_iter2_byte_identical_to_c() {
     assert_linsi_byte_identical("sample.first36.fa", "sample.first36.linsi.iter2", 2);
 }
@@ -1764,8 +1762,10 @@ fn linsi_first14_maxit0_byte_identical_to_c() {
     assert_linsi_byte_identical("sample.first14.fa", "sample.first14.linsi.maxit0", 0);
 }
 
+/// L-INS-i refinement on 14 sequences with `--maxiterate 1`. Pins
+/// the very first refinement iteration since this was the cleanest
+/// signal during the 2026-05-07 hat2-distance investigation.
 #[test]
-#[ignore = "TODO §3 — known cascade divergence at n=14 iter≥1 (1-col gap from iter=1)"]
 fn linsi_first14_iter1_byte_identical_to_c() {
     assert_linsi_byte_identical("sample.first14.fa", "sample.first14.linsi.iter1", 1);
 }
@@ -1778,6 +1778,66 @@ fn linsi_first15_maxit0_byte_identical_to_c() {
 #[test]
 fn linsi_first36_maxit0_byte_identical_to_c() {
     assert_linsi_byte_identical("sample.first36.fa", "sample.first36.linsi.maxit0", 0);
+}
+
+/// G-INS-i refinement on n=14/36 with `--maxiterate 2`. Should be
+/// byte-identical to C after the 2026-05-07 hat2-distance fix, since
+/// G-INS-i shares the same `initial_pairwise_dm` engine code path.
+#[test]
+fn ginsi_first14_iter2_byte_identical_to_c() {
+    assert_insi_byte_identical(
+        "sample.first14.fa", "sample.first14.ginsi.iter2",
+        AlignmentMode::GInsi { iterations: 2 }, "G-INS-i n=14 iter=2",
+    );
+}
+
+#[test]
+fn ginsi_first36_iter2_byte_identical_to_c() {
+    assert_insi_byte_identical(
+        "sample.first36.fa", "sample.first36.ginsi.iter2",
+        AlignmentMode::GInsi { iterations: 2 }, "G-INS-i n=36 iter=2",
+    );
+}
+
+#[test]
+fn einsi_first14_iter2_byte_identical_to_c() {
+    assert_insi_byte_identical(
+        "sample.first14.fa", "sample.first14.einsi.iter2",
+        AlignmentMode::EInsi { iterations: 2 }, "E-INS-i n=14 iter=2",
+    );
+}
+
+/// E-INS-i refinement on the full 36-sequence sample. Closed
+/// 2026-05-07 by switching to `naivepairscore11`-style scoring for
+/// the genaffine pairwise distance (mirrors C's
+/// `pairlocalalign.c:2225-2229` `usenaivescoreinsteadofalignmentscore`
+/// branch when `-Z` is passed for `--genafpair`).
+#[test]
+fn einsi_first36_iter2_byte_identical_to_c() {
+    assert_insi_byte_identical(
+        "sample.first36.fa", "sample.first36.einsi.iter2",
+        AlignmentMode::EInsi { iterations: 2 }, "E-INS-i n=36 iter=2",
+    );
+}
+
+fn assert_insi_byte_identical(input_fixture: &str, c_ref_fixture: &str, mode: AlignmentMode, label: &str) {
+    let c_ref = read_fasta(fixture_path(c_ref_fixture))
+        .unwrap_or_else(|_| panic!("missing tests/fixtures/{c_ref_fixture}"));
+    let input = read_fasta(fixture_path(input_fixture)).unwrap();
+    let msa = MafftEngine::new(mode).align(&input);
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "{label} width: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    let mut mismatches = 0usize;
+    for i in 0..msa.nseq() {
+        if msa.sequences[i] != c_ref.sequences[i].data {
+            mismatches += 1;
+        }
+    }
+    assert_eq!(mismatches, 0, "{label}: {mismatches} sequences differ from C");
 }
 
 fn assert_linsi_byte_identical(input_fixture: &str, c_ref_fixture: &str, iterations: usize) {
