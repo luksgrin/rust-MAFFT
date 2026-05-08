@@ -146,16 +146,20 @@ fn bl50_alignable_reagion_matches_c() {
     }
 }
 
-/// Drive Rust progressive merge through step 32 with `MAFFT_STOP_AT_STEP=33`,
-/// then compare Rust's `profile_align` and C's `A__align` outputs on the
-/// step-33 13×8 cluster pair. Identifies the first divergent residue
-/// position to nail down the BL50 direct-DP bug.
+/// Drive Rust progressive merge through step 23 (so step 24 is next),
+/// then directly compare Rust's `profile_align` and C's `A__align`
+/// outputs on the BL50 step-24 (clus1=6, clus2=1) input. Step 24 was
+/// the first divergent step before the FMA fix landed (TODO §4) — it
+/// stays a sharper-than-end-to-end regression because it directly
+/// compares the inner DP against C and would re-fire if any future
+/// change reintroduces a 1-ULP FMA-vs-non-FMA accumulation
+/// difference.
 #[test]
-#[ignore = "TODO §4 — diagnostic, not a regression test (depends on dump file)"]
-fn bl50_step33_profile_dp_matches_c() {
+fn bl50_step24_profile_dp_matches_c_a_align() {
     let _guard = C_MUTEX.lock().unwrap();
 
-    // Build the same topology the engine uses.
+    // Build the same topology the engine uses for FFT-NS-2 (ktuple
+    // distance + UPGMA).
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load mafft-upstream/test/sample");
     let scoring = build_context(ScoringModel::Blosum(50), SeqType::Protein);
@@ -170,38 +174,22 @@ fn bl50_step33_profile_dp_matches_c() {
     }
     let topo = musclesupg(&dm, ClusterMethod::default());
 
-    // Read step-33 input from the dump file (run mafft-rs with
-    // MAFFT_STOP_AT_STEP=33 first to populate it).
-    let dump_path = "/tmp/bl50.step33.txt";
-    let dump = match std::fs::read_to_string(dump_path) {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("WARN: {dump_path} not found; run mafft-rs with MAFFT_STOP_AT_STEP=33 first");
-            return;
-        }
-    };
-    let mut sequences: Vec<Vec<u8>> = vec![Vec::new(); nseq];
-    for line in dump.lines() {
-        if let Some(rest) = line.strip_prefix("seq") {
-            if let Some((idx_s, seq)) = rest.split_once(' ') {
-                if let Ok(idx) = idx_s.parse::<usize>() {
-                    sequences[idx] = seq.as_bytes().to_vec();
-                }
-            }
-        }
-    }
-    eprintln!("Loaded step-33 dump: nseq={}, width={}", sequences.len(), sequences[0].len());
+    const TARGET_STEP: usize = 24;
 
-    let target_step: usize = std::env::var("BL50_TEST_STEP")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(33);
-    let step33 = &topo.steps[target_step];
-    let group1: Vec<usize> = step33.left.clone();
-    let group2: Vec<usize> = step33.right.clone();
-    eprintln!("Step 33: |g1|={} g1={:?}", group1.len(), group1);
-    eprintln!("Step 33: |g2|={} g2={:?}", group2.len(), group2);
-    eprintln!("Step 33: g1[0].len={} g2[0].len={}",
-        sequences[group1[0]].len(), sequences[group2[0]].len());
+    // Run progressive_align for the first TARGET_STEP merges, capturing
+    // the intermediate aligned[] state. Each sequence's length matches
+    // its current cluster width.
+    let aligned = mafft_core::progressive_align_partial(
+        &raw_seqs, &topo, &scoring, /* use_fft = */ true,
+        /* shift_penalty = */ None, TARGET_STEP,
+    );
 
+    let step = &topo.steps[TARGET_STEP];
+    let group1: Vec<usize> = step.left.clone();
+    let group2: Vec<usize> = step.right.clone();
+
+    // Sequence-weights computed once for the whole topology, normalized
+    // per group (mirrors merge_step_cached's wn).
     let weights = mafft_tree::sequence_weights(&topo);
     let w1: Vec<f64> = group1.iter().map(|&i| weights[i]).collect();
     let w2: Vec<f64> = group2.iter().map(|&i| weights[i]).collect();
@@ -209,81 +197,55 @@ fn bl50_step33_profile_dp_matches_c() {
     let s2w: f64 = w2.iter().sum();
     let w1n: Vec<f64> = w1.iter().map(|w| w / s1w).collect();
     let w2n: Vec<f64> = w2.iter().map(|w| w / s2w).collect();
-    eprintln!("Rust w1n: {:?}", w1n.iter().map(|x| format!("{:.10}", x)).collect::<Vec<_>>());
-    eprintln!("Rust w2n: {:?}", w2n.iter().map(|x| format!("{:.10}", x)).collect::<Vec<_>>());
 
-    let s1_refs: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
-    let s2_refs: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
-
+    let s1_refs: Vec<&[u8]> = group1.iter().map(|&i| aligned[i].as_slice()).collect();
+    let s2_refs: Vec<&[u8]> = group2.iter().map(|&i| aligned[i].as_slice()).collect();
     let prof1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
-    eprintln!("Profiles: prof1.length={} prof2.length={}", prof1.length, prof2.length);
-
-    // Dump test profiles for diff against engine dump.
-    if let Ok(path) = std::env::var("MAFFT_TEST_PROFILE_PATH") {
-        let mut out = String::new();
-        out.push_str("# test step 33\n");
-        out.push_str(&format!("# prof1.length={} prof2.length={}\n",
-            prof1.length, prof2.length));
-        for k in 0..prof1.length {
-            out.push_str(&format!("p1[{k}] gap={:.6} nong={:.6}",
-                prof1.gap_freq[k], prof1.nongap_freq[k]));
-            for a in 0..prof1.nalphabets {
-                if prof1.freqs[k][a] != 0.0 {
-                    out.push_str(&format!(" f{a}={:.6}", prof1.freqs[k][a]));
-                }
-            }
-            out.push_str(&format!(" o={:.6} f={:.6}\n",
-                prof1.ogcp[k], prof1.fgcp[k]));
-        }
-        for k in 0..prof2.length {
-            out.push_str(&format!("p2[{k}] gap={:.6} nong={:.6}",
-                prof2.gap_freq[k], prof2.nongap_freq[k]));
-            for a in 0..prof2.nalphabets {
-                if prof2.freqs[k][a] != 0.0 {
-                    out.push_str(&format!(" f{a}={:.6}", prof2.freqs[k][a]));
-                }
-            }
-            out.push_str(&format!(" o={:.6} f={:.6}\n",
-                prof2.ogcp[k], prof2.fgcp[k]));
-        }
-        std::fs::write(&path, out).ok();
-        eprintln!("[TEST_PROFILE_DUMP] dumped to {path}");
-    }
 
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
 
     // Rust DP: mirror the FFT fallback path (head_gap=false, tail_gap=false
-    // because the engine's FftAlignParams sets both to false).
-    let rust_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, false, false);
-    let rust_width = rust_aln.operations.len();
-    eprintln!("Rust profile_align: width={} score={:.2}", rust_width, rust_aln.score);
+    // — engine's FftAlignParams sets both to false).
+    let rust_aln = profile_align(
+        &prof1, &prof2, &scoring.substitution_matrix, &gap, false, false,
+    );
 
-    // C DP: A__align on the same input.
-    let mut c_seq1: Vec<CString> = group1.iter()
-        .map(|&i| CString::new(sequences[i].clone()).unwrap()).collect();
-    let mut c_seq2: Vec<CString> = group2.iter()
-        .map(|&i| CString::new(sequences[i].clone()).unwrap()).collect();
+    // Materialize Rust's first-of-cluster1 aligned sequence for byte
+    // comparison against C.
+    let mut rust_s1: Vec<u8> = Vec::with_capacity(rust_aln.operations.len());
+    let mut p = 0usize;
+    for op in &rust_aln.operations {
+        match op {
+            mafft_align::AlignOp::Match | mafft_align::AlignOp::Delete => {
+                rust_s1.push(aligned[group1[0]][p]);
+                p += 1;
+            }
+            mafft_align::AlignOp::Insert => rust_s1.push(b'-'),
+        }
+    }
 
+    // Now run C's A__align via FFI on the same prof1/prof2 input.
     unsafe {
         init_c_protein_bl50();
         std::ptr::addr_of_mut!(mafft_sys::njob).write(nseq as c_int);
-        // Pull penalty values from C's globals after constants() built them.
         let c_penalty = std::ptr::addr_of!(mafft_sys::penalty).read();
         let c_penalty_ex = std::ptr::addr_of!(mafft_sys::penalty_ex).read();
-        eprintln!("C penalty={} penalty_ex={}", c_penalty, c_penalty_ex);
 
-        let alloclen = (sequences[0].len() + 1000) as c_int;
-        let icyc = group1.len() as c_int;
-        let jcyc = group2.len() as c_int;
+        let alloclen = (aligned[group1[0]].len() + aligned[group2[0]].len() + 1000) as c_int;
 
-        // Each C string needs a buffer of at least alloclen+1 bytes for in-place editing.
-        let mut buf1: Vec<Vec<u8>> = c_seq1.iter().map(|s| {
+        // C strings (CString to ensure trailing null), then resize each
+        // buffer to alloclen+1 for in-place A__align edits.
+        let c_seqs1: Vec<CString> = group1.iter()
+            .map(|&i| CString::new(aligned[i].clone()).unwrap()).collect();
+        let c_seqs2: Vec<CString> = group2.iter()
+            .map(|&i| CString::new(aligned[i].clone()).unwrap()).collect();
+        let mut buf1: Vec<Vec<u8>> = c_seqs1.iter().map(|s| {
             let mut v = s.as_bytes().to_vec();
             v.resize(alloclen as usize + 1, 0);
             v
         }).collect();
-        let mut buf2: Vec<Vec<u8>> = c_seq2.iter().map(|s| {
+        let mut buf2: Vec<Vec<u8>> = c_seqs2.iter().map(|s| {
             let mut v = s.as_bytes().to_vec();
             v.resize(alloclen as usize + 1, 0);
             v
@@ -293,7 +255,6 @@ fn bl50_step33_profile_dp_matches_c() {
         let mut e1: Vec<c_double> = w1n.clone();
         let mut e2: Vec<c_double> = w2n.clone();
 
-        // n_dynamicmtx as f64 matrix from scoring.substitution_matrix
         let nalpha = scoring.substitution_matrix.len() as c_int;
         let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
         for i in 0..scoring.substitution_matrix.len() {
@@ -303,71 +264,44 @@ fn bl50_step33_profile_dp_matches_c() {
         }
 
         let mut impmatch = 0.0f64;
-
-        // Pass all-'o' sgap/egap to mirror C's Falign single-segment path.
-        let mut sgap1: Vec<u8> = vec![b'o'; group1.len() + 1];
-        let mut sgap2: Vec<u8> = vec![b'o'; group2.len() + 1];
-        let mut egap1: Vec<u8> = vec![b'o'; group1.len() + 1];
-        let mut egap2: Vec<u8> = vec![b'o'; group2.len() + 1];
-        let use_sgap = std::env::var("BL50_TEST_USE_SGAP").is_ok();
-        let (sgap1_p, sgap2_p, egap1_p, egap2_p) = if use_sgap {
-            (sgap1.as_mut_ptr() as *mut c_char,
-             sgap2.as_mut_ptr() as *mut c_char,
-             egap1.as_mut_ptr() as *mut c_char,
-             egap2.as_mut_ptr() as *mut c_char)
-        } else {
-            (std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
-        };
-
         let c_score = mafft_sys::A__align(
             n_dyn, c_penalty, c_penalty_ex,
             p1.as_mut_ptr(), p2.as_mut_ptr(),
             e1.as_mut_ptr(), e2.as_mut_ptr(),
-            icyc, jcyc, alloclen,
+            group1.len() as c_int, group2.len() as c_int, alloclen,
             0, &mut impmatch,
-            sgap1_p, sgap2_p, egap1_p, egap2_p,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
             std::ptr::null_mut(), 0, std::ptr::null_mut(),
-            0, 0,  // headgp, tailgp = 0 (matching engine.rs FftAlignParams head_gap/tail_gap = false)
+            0, 0,
             -1, -1,
             std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
             0.0, 0.0,
         );
 
-        // Find result width by reading back p1[0]
         let c_width = {
             let s = p1[0];
             let mut k = 0; while *s.add(k) != 0 { k += 1; } k
         };
-        eprintln!("C A__align: width={} score={:.2}", c_width, c_score);
+        let c_s1: Vec<u8> = (0..c_width).map(|k| *p1[0].add(k) as u8).collect();
 
-        // Save first 80 chars of C's first sequence
-        let c_s1: Vec<u8> = (0..c_width.min(80)).map(|k| *p1[0].add(k) as u8).collect();
-        let c_s1_str = std::str::from_utf8(&c_s1).unwrap_or("");
-        eprintln!("C    s1[..80] = {c_s1_str}");
-
-        // Reconstruct Rust's first sequence's first 80 chars from operations
-        // (Rust's profile_align doesn't materialize sequences; need to apply ops)
-        let mut rust_s1 = Vec::new();
-        let mut p = 0;
-        for op in rust_aln.operations.iter().take(80) {
-            match op {
-                mafft_align::AlignOp::Match | mafft_align::AlignOp::Delete => {
-                    if p < sequences[group1[0]].len() {
-                        rust_s1.push(sequences[group1[0]][p]);
-                        p += 1;
-                    }
-                }
-                mafft_align::AlignOp::Insert => rust_s1.push(b'-'),
-            }
-        }
-        let rust_s1_str = std::str::from_utf8(&rust_s1).unwrap_or("");
-        eprintln!("Rust s1[..80] = {rust_s1_str}");
-
+        // Cleanup before we panic on assert mismatch.
         mafft_sys::A__align(std::ptr::null_mut(), 0, 0, std::ptr::null_mut(), std::ptr::null_mut(),
             std::ptr::null_mut(), std::ptr::null_mut(), 0, 0, 0, 0, std::ptr::null_mut(),
             std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
             std::ptr::null_mut(), 0, std::ptr::null_mut(), 0, 0, -1, -1,
             std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0.0, 0.0);
         mafft_sys::freeconstants();
+
+        // Both DPs should produce byte-identical output (post-FMA fix).
+        // Pre-fix this differed at the F-residue placement around column
+        // 28-32 (Rust `DNFYVPF----SNK` vs C `DNFYVP----FSNK`).
+        assert_eq!(rust_s1.len(), c_width,
+            "BL50 step-24 width: Rust={} C={} Rust_score={:.2} C_score={:.2}",
+            rust_s1.len(), c_width, rust_aln.score, c_score);
+        assert!((rust_aln.score - c_score).abs() < 0.01,
+            "BL50 step-24 score: Rust={:.6} C={:.6}", rust_aln.score, c_score);
+        assert_eq!(rust_s1, c_s1,
+            "BL50 step-24 cluster1[0] alignment differs at first byte position {:?}",
+            rust_s1.iter().zip(c_s1.iter()).position(|(a, b)| a != b));
     }
 }

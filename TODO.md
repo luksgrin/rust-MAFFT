@@ -25,7 +25,7 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | E-INS-i (`--genafpair`)                    | 729     | 729        | 0          | byte-exact ✓ (closed 2026-05-07) |
 | BL30 FFT (`--bl 30`)                       | 773     | 773        | 0          | byte-exact ✓ |
 | BL45 FFT (`--bl 45`)                       | 729     | 729        | 0          | byte-exact ✓ |
-| BL50 FFT (`--bl 50`)                       | 712     | 738        | 961        | divergent — see §4 |
+| BL50 FFT (`--bl 50`)                       | 712     | 712        | 0          | byte-exact ✓ (closed 2026-05-08) |
 | BL62 FFT (`--bl 62`, default)              | 717     | 717        | 0          | byte-exact ✓ |
 | BL80 FFT (`--bl 80`)                       | 712     | 712        | 0          | byte-exact ✓ |
 | BL80 NW  (`--bl 80 --nofft`)               | 712     | 712        | 0          | byte-exact ✓ |
@@ -257,7 +257,13 @@ recomputing distances from the progressive alignment.
 
 ---
 
-## §4. BLOSUM50 (`--bl 50`) — direct profile DP divergent for gappy profiles at step 33
+## §4. BLOSUM50 (`--bl 50`) — RESOLVED 2026-05-08
+
+**Status as of 2026-05-08**: byte-identical to C MAFFT 7.526. Width
+712 = 712, 0-line diff. Regression test
+`fftns2_bl50_byte_identical_to_c` added.
+
+### Original symptom (pre-fix)
 
 **Status as of 2026-05-08**: Rust width 738 vs C 712, diff ~74 lines.
 Pre-rewrite (single-best-lag FFT): 961 lines diff.
@@ -345,35 +351,44 @@ while `st_OpeningGapCount` explicitly zeros `ogcp[len] = 0`. With BL62
 the score landscape is wide enough that this stale data doesn't tip
 DP cells; with BL50 (flatter scores) it does.
 
-**Concrete next task** (effort: 4-6 h):
+### Root cause and fix (closed 2026-05-08)
 
-The smallest reproducer is now **step 24 BL50** (clus1=6, clus2=1):
-- Use `MAFFT_STOP_AT_STEP=24 MAFFT_DUMP_PATH=...` to dump pre-step-24
-  state, replay through Rust `profile_align`, and via FFI through
-  C's `A__align`. Expected: both produce score 119988.9 width 375
-  but with different gap placements (matching the engine outputs
-  shown above). My test harness only confirmed *identical* outputs
-  on freshly-loaded sequences — the engine flow must be reproduced
-  including the prior 23 calls' static-state buildup.
+**Bug**: GCC `-O3` (and `clang`/`-O3` on aarch64) fuse `a + b * c` into
+a fused multiply-add (FMA) instruction with a single rounding step.
+Rust's `+=` followed by `*` produces two separate roundings. For most
+of our DP cells the 1-ULP difference is irrelevant, but for matrices
+with a flat score landscape (BL50 vs BL62/30/45/80), it surfaces as
+tie-break divergences when two equal-score paths exist.
 
-To find the exact tie-break:
-1. Add C-side diagnostic in A__align that, on the (icyc=6, jcyc=1)
-   call, dumps every wm/mi/m[j] cell where wm is updated. Compare
-   against Rust's profile_align cell-by-cell trace.
-2. Look specifically at gap-frequency boundary cells (gf1[lgth1]
-   etc.) — the sgap/egap interaction may use stale static buffer
-   data from prior smaller-cluster calls.
-3. Check Rust's `nongap_freq[len-1]` vs C's `gapfreq1pt[lgth1-1]`
-   handling at the trailing edge.
+**Trace**: At BL50 step 24 (clus1=6, clus2=1), `match_calc_row`'s
+`scarr[3] = sum_j matrix[j][3] * freq[j]` over j=10,12,13 with
+matrix entries -226, -226, -303 and freqs 0.1196, 0.3237, 0.3096
+produced:
+- C (with FMA via `gcc -O3`): -1.93985622366210719747e+02
+- Rust (without FMA): -1.93985622366210748169e+02
 
-**Diagnostic plumbing in place** (commit-ready):
-- `crates/mafft-core/tests/cross_validate_bl50_fft.rs` — two FFI
-  tests (one always-on regression for FFT scoring, one #[ignore]'d
-  diagnostic for profile DP comparison).
-- `MAFFT_STOP_AT_STEP=N` env var (in `progressive.rs`) — dumps
-  post-step-(N-1) aligned[] state to `MAFFT_DUMP_PATH`.
-- `MAFFT_DEBUG_STEPS_SEQ=1` env var — per-step `seq[step.left[0]]`
-  and `seq[0]` dumps via `RDBG step N seq[0]=...`.
+A 1-ULP difference (~2.84e-13). Through DP accumulation this
+propagated to cell (22, 19) where `wm = previousw[j-1]` and
+`g_jskip = mi + fgcp2[j-1] * gf1_i` were *equal* in C (both
+1.41977729539934080094e+03 — bit-equal) but differed by 4.5e-13 in
+Rust. With the strict `>` comparison, C kept the diagonal path
+(ijp=0), Rust took the j-skip path (ijp=-5). The traceback then
+diverged, placing F at column 28 vs column 32.
+
+**Fix**: `crates/mafft-align/src/profile.rs::profile_align_imp_with_boundary`
+now uses `f64::mul_add` for every accumulation involving a `+= a*b`
+pattern in `match_calc_row` (substitution score) and the inner DP
+loop (gap-frequency-modulated penalties). This produces bit-identical
+results to C's gcc-O3-FMA output.
+
+**Verified equal**:
+- `bl50_alignable_reagion_matches_c` (FFT scoring, was already passing)
+- `bl50_step33_profile_dp_matches_c` (#[ignore], diagnostic; now also
+  produces byte-identical output for the §4 reproducer)
+- `fftns2_bl50_byte_identical_to_c` (NEW regression test, BL50 width 712)
+- All other FFT-NS-2 byte tests (BL30/45/62/80, JTT200) still pass.
+
+### Original symptom (pre-fix, preserved for context)
 
 ---
 

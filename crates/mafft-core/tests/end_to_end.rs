@@ -380,6 +380,40 @@ fn fftns2_bl45_byte_identical_to_c() {
     }
 }
 
+/// `--bl 50` (FFT-NS-2 with BLOSUM50) must match C byte-for-byte.
+/// Closed 2026-05-08 by the FMA fix in `profile_align_imp_with_boundary`
+/// (see TODO §4) — gcc -O3 fuses `a + b * c` into FMA, Rust's `+` and `*`
+/// don't, so direct DP cells diverge by 1 ULP per accumulation. The
+/// flatter BL50 score landscape (vs BL62/30/45/80) exposed this as a
+/// tie-break divergence at step 24's profile DP. Fix: use `f64::mul_add`
+/// in match_calc_row and DP gap-frequency computations to match C's FMA.
+///
+/// Reference: `tests/fixtures/sample.bl50.fftns2`.
+#[test]
+fn fftns2_bl50_byte_identical_to_c() {
+    use mafft_types::ScoringModel;
+    let c_ref = read_fasta(fixture_path("sample.bl50.fftns2"))
+        .expect("missing tests/fixtures/sample.bl50.fftns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_scoring_model(ScoringModel::Blosum(50))
+        .align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --bl 50: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --bl 50 output"
+        );
+    }
+}
+
 /// `--bl 30` (FFT-NS-2 with BLOSUM30) must match C byte-for-byte.
 ///
 /// Reference: `tests/fixtures/sample.bl30.fftns2`.

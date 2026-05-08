@@ -63,6 +63,51 @@ pub fn progressive_align(
     )
 }
 
+/// Run progressive alignment merges 0..n_steps and return the
+/// intermediate `aligned[]` state at that point.
+///
+/// Used by FFI cross-validation tests that need to reproduce a
+/// specific step's input profiles without driving the binary or
+/// using env-var-controlled file dumps. Each sequence's length in
+/// the returned `Vec<Vec<u8>>` matches whatever cluster width it has
+/// at step `n_steps` entry (sequences in different clusters have
+/// different widths, mirroring C's progressive merge state).
+///
+/// Passing `n_steps == topology.steps.len()` runs all merges and
+/// returns the final padded alignment.
+pub fn progressive_align_partial(
+    sequences: &[Vec<u8>],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+    n_steps: usize,
+) -> Vec<Vec<u8>> {
+    let nseq = sequences.len();
+    if nseq <= 1 {
+        return sequences.to_vec();
+    }
+
+    let weights = sequence_weights(topology);
+    let mut aligned: Vec<Vec<u8>> = sequences.to_vec();
+
+    let mut gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    if let Some(shift) = shift_penalty {
+        gap = gap.with_shift(shift);
+    }
+
+    let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
+
+    let limit = n_steps.min(topology.steps.len());
+    for step in topology.steps.iter().take(limit) {
+        merge_step_cached(
+            &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
+            &mut profile_cache, None, false,
+        );
+    }
+    aligned
+}
+
 /// Progressive alignment with optional local-homology constraints.
 ///
 /// When `constraints` is `Some`, every merge calls `profile_align_imp`
@@ -106,31 +151,8 @@ pub fn progressive_align_with_constraints(
     // After each merge, the merged profile is stored so the next merge can reuse it.
     let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
 
-    let stop_at: Option<usize> = std::env::var("MAFFT_STOP_AT_STEP").ok()
-        .and_then(|s| s.parse().ok());
-
     let mut step_trace: Vec<StepTrace> = Vec::with_capacity(topology.steps.len());
     for (step_idx, step) in topology.steps.iter().enumerate() {
-        if let Some(stop) = stop_at {
-            if step_idx == stop {
-                // Diagnostic stop: dump aligned[] to a file before merge.
-                if let Some(path) = std::env::var("MAFFT_DUMP_PATH").ok() {
-                    let mut out = String::new();
-                    out.push_str(&format!("# step {stop} entry: g1={:?} g2={:?}\n",
-                        &step.left, &step.right));
-                    out.push_str(&format!("# step {stop} g1[0].len={} g2[0].len={}\n",
-                        aligned[step.left[0]].len(), aligned[step.right[0]].len()));
-                    for (i, s) in aligned.iter().enumerate() {
-                        out.push_str(&format!("seq{} {}\n", i,
-                            std::str::from_utf8(s).unwrap_or("?")));
-                    }
-                    std::fs::write(&path, out).ok();
-                    eprintln!("[MAFFT_STOP] step {stop} entry: g1[0].len={} g2[0].len={} → {path}",
-                        aligned[step.left[0]].len(), aligned[step.right[0]].len());
-                }
-                // Don't break — let the merge run so we can also dump profile.
-            }
-        }
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
             &mut profile_cache, constraints, penalize_term_gaps,
@@ -146,14 +168,6 @@ pub fn progressive_align_with_constraints(
         if std::env::var("MAFFT_DEBUG_STEPS").is_ok() {
             eprintln!("RDBG {} {} {} {} {:.1}",
                 step_idx, step.left.len(), step.right.len(), width, last_score);
-            if std::env::var("MAFFT_DEBUG_STEPS_SEQ").is_ok() {
-                let s = &aligned[step.left[0]];
-                let preview = std::str::from_utf8(&s[..s.len().min(80)]).unwrap_or("?");
-                eprintln!("RDBG step {step_idx} seq1[0]={preview}");
-                let s0 = &aligned[0];
-                let preview0 = std::str::from_utf8(&s0[..s0.len().min(80)]).unwrap_or("?");
-                eprintln!("RDBG step {step_idx} seq[0]={preview0}");
-            }
         }
     }
 
@@ -200,51 +214,6 @@ fn merge_step_cached(
         (prof, eff)
     };
 
-    // Diagnostic: when MAFFT_DUMP_STEP_PROFILE=N is set, dump prof1 and
-    // prof2 freqs/gaps at step N to MAFFT_PROFILE_PATH so we can
-    // compare cached vs freshly-rebuilt profiles for the §4 BL50 bug.
-    if let Ok(target) = std::env::var("MAFFT_DUMP_STEP_PROFILE") {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let cur = COUNTER.fetch_add(1, Ordering::Relaxed);
-        if let Ok(target_n) = target.parse::<usize>() {
-            if cur == target_n {
-                if let Ok(path) = std::env::var("MAFFT_PROFILE_PATH") {
-                    let mut out = String::new();
-                    out.push_str(&format!("# step {target_n}\n"));
-                    out.push_str(&format!("# prof1.length={} eff1={}\n", prof1.length, eff1));
-                    out.push_str(&format!("# prof2.length={} eff2={}\n", prof2.length, eff2));
-                    let cached1 = cache.contains_key(&key1);
-                    let cached2 = cache.contains_key(&key2);
-                    out.push_str(&format!("# prof1_cached={cached1} prof2_cached={cached2}\n"));
-                    for k in 0..prof1.length {
-                        out.push_str(&format!("p1[{k}] gap={:.6} nong={:.6}",
-                            prof1.gap_freq[k], prof1.nongap_freq[k]));
-                        for a in 0..prof1.nalphabets {
-                            if prof1.freqs[k][a] != 0.0 {
-                                out.push_str(&format!(" f{a}={:.6}", prof1.freqs[k][a]));
-                            }
-                        }
-                        out.push_str(&format!(" o={:.6} f={:.6}\n",
-                            prof1.ogcp[k], prof1.fgcp[k]));
-                    }
-                    for k in 0..prof2.length {
-                        out.push_str(&format!("p2[{k}] gap={:.6} nong={:.6}",
-                            prof2.gap_freq[k], prof2.nongap_freq[k]));
-                        for a in 0..prof2.nalphabets {
-                            if prof2.freqs[k][a] != 0.0 {
-                                out.push_str(&format!(" f{a}={:.6}", prof2.freqs[k][a]));
-                            }
-                        }
-                        out.push_str(&format!(" o={:.6} f={:.6}\n",
-                            prof2.ogcp[k], prof2.fgcp[k]));
-                    }
-                    std::fs::write(&path, out).ok();
-                    eprintln!("[MAFFT_PROFILE_DUMP] dumped step-{target_n} profile to {path}");
-                }
-            }
-        }
-    }
 
     // C uses Falign (FFT-accelerated) for ALL steps when ffttry is true
     // (nlen > clus, which is always true). G__align11 is only used when

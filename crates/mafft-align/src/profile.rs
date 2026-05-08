@@ -441,13 +441,19 @@ pub fn profile_align_imp_with_boundary(
         for l in 0..nalpha {
             scarr[l] = 0.0;
             for j in 0..nalpha {
-                scarr[l] += matrix[j][l] as f64 * prof1.freqs[row_pos][j];
+                // C's match_calc compiled with `gcc -O3` fuses
+                // `scarr[l] += a * b` into FMA (single-rounding fused
+                // multiply-add). Rust's `+=` followed by `*` produces two
+                // rounding steps. Use `mul_add` to match C's bit pattern.
+                let m = matrix[j][l] as f64;
+                let f = prof1.freqs[row_pos][j];
+                scarr[l] = m.mul_add(f, scarr[l]);
             }
         }
         for j in 0..m {
             output[j] = 0.0;
             for &(k, v) in &cpmx2_sparse[j] {
-                output[j] += scarr[k] * v;
+                output[j] = scarr[k].mul_add(v, output[j]);
             }
         }
     };
@@ -573,7 +579,12 @@ pub fn profile_align_imp_with_boundary(
         currentw[0] = initverticalw[i];
 
         let gf1_im1 = prof1.nongap_freq[i - 1]; // i-1 in 0..n-1, always valid
-        let mut mi = previousw[0] + ogcp2[1] * gf1_im1;
+        // Use mul_add throughout — C compiled with `gcc -O3 -mfma` (or
+        // equivalent) fuses `a + b * c` into FMA (single-rounding step);
+        // matching this behavior is required for bit-identity to C's
+        // A__align inner DP, which surfaces as tie-break divergences for
+        // matrices with flatter score landscapes (e.g. BL50).
+        let mut mi = ogcp2[1].mul_add(gf1_im1, previousw[0]);
         let mut mpi: usize = 0;
 
         for j in 1..=m {
@@ -588,28 +599,29 @@ pub fn profile_align_imp_with_boundary(
             let gf2_jm1 = prof2.nongap_freq[j - 1];
 
             let mut wm = previousw[j - 1];
+            let wm_diag = wm;
             ijp[i][j] = 0;
 
-            let g = mi + fgcp2[j - 1] * gf1_i;
-            if g > wm {
-                wm = g;
+            let g_jskip = fgcp2[j - 1].mul_add(gf1_i, mi);
+            if g_jskip > wm {
+                wm = g_jskip;
                 ijp[i][j] = -(j as i32 - mpi as i32);
             }
 
-            let g = previousw[j - 1] + ogcp2[j] * gf1_im1;
+            let g = ogcp2[j].mul_add(gf1_im1, previousw[j - 1]);
             let mi_update = if strict_part_tiebreak { g > mi } else { g >= mi };
             if mi_update {
                 mi = g;
                 mpi = j - 1;
             }
 
-            let g = mj[j] + fgcp1[i - 1] * gf2_j;
-            if g > wm {
-                wm = g;
+            let g_iskip = fgcp1[i - 1].mul_add(gf2_j, mj[j]);
+            if g_iskip > wm {
+                wm = g_iskip;
                 ijp[i][j] = i as i32 - mpj[j] as i32;
             }
 
-            let g = previousw[j - 1] + ogcp1[i] * gf2_jm1;
+            let g = ogcp1[i].mul_add(gf2_jm1, previousw[j - 1]);
             let mj_update = if strict_part_tiebreak { g > mj[j] } else { g >= mj[j] };
             if mj_update {
                 mj[j] = g;
@@ -622,27 +634,48 @@ pub fn profile_align_imp_with_boundary(
         lastverticalw[i] = currentw[m - 1];
     }
 
-    // Tail gap handling — mirrors `Atracking_localhom` (Salignmm.c:434-457)
-    // and `Atracking` (MSalignmm.c) for `outgap == 0`. When terminal gaps
-    // are free, scan the last column then the last row for the best
-    // endpoint. With `>=` the LATER-scanned direction wins ties, so the
-    // j (last-row) scan dominates the i (last-column) scan when scores
-    // are equal — matching C exactly.
+    // Tail gap handling — exact port of C's `Atracking` in Salignmm.c:891-925.
+    // C uses STRICT `>` on each scan, initializes wm BELOW the corner value,
+    // scans last row (j = lgth2-2 down to 0), then last column (i = lgth1-2
+    // down to 0), then explicitly checks if the corner cell wins.
+    //
+    // With STRICT `>` and decreasing-index scans, among tied-score cells:
+    //   - within the last row, the HIGHEST j wins (first encountered).
+    //   - within the last column, the HIGHEST i wins.
+    //   - the corner wins ONLY if strictly greater than both row and column.
+    //
+    // The earlier `>=` ascending-scan version produced different traceback
+    // endpoints on inputs with tied last-row/column cells (e.g. BL50 step
+    // 24 — see TODO §4 close 2026-05-08).
+    //
+    // TERMGAPFAC and TERMGAPFAC_EX are both 0.0 (Salignmm.c:12-13), so the
+    // additive correction terms drop out.
     if !tail_gap {
-        let mut wm = lastverticalw[0];
-        for i in 0..n {
-            if lastverticalw[i] >= wm {
-                wm = lastverticalw[i];
-                ijp[n][m] = (n - i) as i32;
-            }
-        }
-        for j in 0..m {
-            if h[n - 1][j] >= wm {
-                wm = h[n - 1][j];
+        // lasthorizontalw is the last row of h: h[n-1][j] for j=0..m-1.
+        // lastverticalw is the last column of h: h[i][m-1] for i=0..n-1.
+        let last_row_corner = h[n - 1][m - 1]; // = lasthorizontalw[lgth2-1]
+        let mut wm = last_row_corner - 1.0;
+        // Scan last row (j = m-2 down to 0).
+        for j in (0..m - 1).rev() {
+            let g = h[n - 1][j];
+            if g > wm {
+                wm = g;
                 ijp[n][m] = -((m - j) as i32);
             }
         }
-        // Set h[n][m] to the best score found (for the score field).
+        // Scan last column (i = n-2 down to 0). lastverticalw[i] = h[i][m-1].
+        for i in (0..n - 1).rev() {
+            let g = lastverticalw[i];
+            if g > wm {
+                wm = g;
+                ijp[n][m] = (n - i) as i32;
+            }
+        }
+        // Corner fallback: prefer the corner if strictly greater.
+        if last_row_corner > wm {
+            wm = last_row_corner;
+            ijp[n][m] = 0;
+        }
         h[n][m] = wm;
     }
 
