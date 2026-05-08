@@ -257,15 +257,22 @@ recomputing distances from the progressive alignment.
 
 ---
 
-## §4. BLOSUM50 (`--bl 50`) — FFT path divergent despite cell-equal matrix
+## §4. BLOSUM50 (`--bl 50`) — direct profile DP divergent for gappy profiles at step 33
 
-**Status as of 2026-05-07**: Rust width 738 vs C 712, diff ~74 lines after
-structural rewrite (down from 961 lines pre-rewrite).
+**Status as of 2026-05-08**: Rust width 738 vs C 712, diff ~74 lines.
+Pre-rewrite (single-best-lag FFT): 961 lines diff.
+Post-rewrite (full Falign-port FFT): 74 lines diff. **The structural
+rewrite did NOT change BL50 width** — it merely brought our
+implementation flow into structural alignment with C.
 
 **Verified equal**:
 - `cross_validate_blosum50_n_dis_cell_by_cell` (0 mismatches)
 - `cross_validate_blosum50_n_dis_fft_cell_by_cell` (0 mismatches)
 - BL50 raw 210-cell lower-triangle table matches `tmpmtx50` exactly
+- **NEW** `bl50_alignable_reagion_matches_c` (FFI, 2026-05-08) — calls
+  C's `alignableReagion` and Rust's `match_score` + `alignable_segments`
+  on the same input. Segments produced are byte-identical, eliminating
+  FFT segment scoring as the divergence source.
 
 **Structural rewrite landed 2026-05-07**: `find_fft_anchors`
 (`crates/mafft-align/src/fft_align.rs`) now mirrors C's `Falign` flow —
@@ -282,40 +289,91 @@ because at step 33 the first candidate (lag=39) returns 0 segments,
 the `break` fires, and the function falls back to direct DP — same as
 the pre-rewrite single-best-lag approach.
 
-**Pinpointed divergence (2026-05-07 diagnostic dumps)**:
+**Pinpointed divergence (2026-05-08 diagnostic dumps)**:
 
-At step 33 BL50 (n=385, m=604, clusters 13×8):
-- Top FFT candidate: lag=39, correlation score=29.14
-- Our `shift_and_score` at lag=39: max single-position score = 854,
-  max sliding-window-20 sum = 2204.6
-- Segment threshold (per `alignableReagion`): 9600 (= 80% × 600 × 20)
-- Window-max 2204 << threshold 9600 → 0 segments → break.
+At BL50 step 33 (clusters 13×8):
+- Per-step debug output (`MAFFT_DEBUG_STEPS=1`) shows steps 0-32 widths
+  and scores match C's reported values; step 33 diverges:
+  | Step | Clusters | C width / score | Rust width / score |
+  |------|----------|------------------|---------------------|
+  | 32   | 13 × 2   | identical        | 508 / 103322.3      |
+  | 33   | 13 × 8   | 624 / 47967.6    | 641 / 47954.6       |
+  | 34   | 21 × 15  | 721 / 56627.1    | 738 / 56582.8       |
+- At step 33, the post-step-32 profiles for clusters [13seq] and [8seq]
+  are very gappy (`prof1[0] nongap=0.228`, `prof2[0] nongap=0.220`).
+- Top FFT candidate: lag=39, correlation score=29.14. Our
+  `shift_and_score` at lag=39: max-window-20-sum=2204.6 <
+  threshold=9600. **C's `alignableReagion` must produce the same
+  result** since the segment-detection scoring is byte-identical
+  (proved by `bl50_alignable_reagion_matches_c`). So C's
+  `if (tmpint == 0) break;` fires too — both Rust and C fall back to
+  direct full-profile DP.
 
-C must produce segments at the same step (since C's BL50 width 712 is
-narrower than the no-anchor fallback width). Hypothesis: C's
-`alignableReagion` computes higher per-position scores at this step
-than ours. Possibilities:
-- `n_disFFT[k][j] = n_dis[k][j] + offset - offsetFFT` may have
-  different value for BL50 than what our `fft_matrix` produces (both
-  should be `n_dis` when `offset=offsetFFT=0`, but worth verifying via
-  a per-cell dump).
-- C's `eff` weights for clusters at step 33 may not sum to 1 (the
-  `stra[i] /= totaleff` on line 287 implies un-normalized
-  accumulation), and the absolute scale of `prf1[k] * prf2[j]`
-  products may differ from our normalized profile freqs.
+**The bug is a tie-break divergence in profile DP at step 24.**
+Established 2026-05-08 via end-to-end comparison:
 
-**Concrete next task** (effort: 3-4 h): instrument C's `alignableReagion`
-to dump `prf1`, `prf2`, `totaleff`, and the per-position `stra[i]`
-array at step 33 BL50 lag=39. Diff against our `shift_and_score`
-output for the same step. The first cell where the values differ
-identifies the score-scaling bug.
+The first divergent step is **step 24** (clus1=6, clus2=1, width=375
+on both sides). Both Rust and C produce **identical scores
+(119988.9)** but **different gap placements**:
+- Rust `seq[0]`: `MNGTEG--DNFYVPF----SNK` (F early, 4 gaps after)
+- C    `aseq[0]`: `MNGTEG--DNFYVP----FSNK` (4 gaps before F)
 
-If C's per-position scores actually exceed threshold while ours do
-not, the fix is in either `match_score` (profile dot product),
-`Profile::from_aligned` (freq accumulation), or in how we hand off
-weights from `progressive::build_profile_from_seqs` (we normalize to
-sum=1; C does not, but divides by `totaleff` at the end — these should
-be mathematically equivalent unless there's an asymmetry).
+This 4-column gap-shift propagates: step 27 widens to 385 in both,
+but the score diverges (Rust=111382.1 vs C=111516.6 — first divergent
+score). By step 33 the cumulative effect is 17-column width gap.
+
+**FFI tests confirm the DP/segment-detection layers match C
+byte-for-byte**:
+- `bl50_alignable_reagion_matches_c` — `match_score` +
+  `alignable_segments` produce identical segments to C's
+  `alignableReagion` (proves FFT scoring is correct).
+- `bl50_step33_profile_dp_matches_c` (#[ignore]) — when called
+  directly via FFI with the same prof1/prof2 input,
+  `profile_align(prof1, prof2, ...)` and `A__align(...)` produce
+  byte-identical output (width 638 step 33, width 385 step 26 with
+  same scores). Whether sgap1/egap1 are NULL or all-'o', both
+  produce the same alignment.
+
+**Conclusion**: The divergence is NOT in score computation, NOT in
+FFT, and NOT in the direct DP-with-clean-state. It's a tie-break in
+the DP that surfaces only when running the full progressive
+flow — likely due to **stale static-buffer state** in C's TLS
+buffers carrying over from previous calls. C's static `ogcp1[lgth1]`
+or `gapfreq1pt[lgth1]` slots may retain values from the previous
+call, since `new_OpeningGapCount` only zeros indices `0..lgth-1`
+while `st_OpeningGapCount` explicitly zeros `ogcp[len] = 0`. With BL62
+the score landscape is wide enough that this stale data doesn't tip
+DP cells; with BL50 (flatter scores) it does.
+
+**Concrete next task** (effort: 4-6 h):
+
+The smallest reproducer is now **step 24 BL50** (clus1=6, clus2=1):
+- Use `MAFFT_STOP_AT_STEP=24 MAFFT_DUMP_PATH=...` to dump pre-step-24
+  state, replay through Rust `profile_align`, and via FFI through
+  C's `A__align`. Expected: both produce score 119988.9 width 375
+  but with different gap placements (matching the engine outputs
+  shown above). My test harness only confirmed *identical* outputs
+  on freshly-loaded sequences — the engine flow must be reproduced
+  including the prior 23 calls' static-state buildup.
+
+To find the exact tie-break:
+1. Add C-side diagnostic in A__align that, on the (icyc=6, jcyc=1)
+   call, dumps every wm/mi/m[j] cell where wm is updated. Compare
+   against Rust's profile_align cell-by-cell trace.
+2. Look specifically at gap-frequency boundary cells (gf1[lgth1]
+   etc.) — the sgap/egap interaction may use stale static buffer
+   data from prior smaller-cluster calls.
+3. Check Rust's `nongap_freq[len-1]` vs C's `gapfreq1pt[lgth1-1]`
+   handling at the trailing edge.
+
+**Diagnostic plumbing in place** (commit-ready):
+- `crates/mafft-core/tests/cross_validate_bl50_fft.rs` — two FFI
+  tests (one always-on regression for FFT scoring, one #[ignore]'d
+  diagnostic for profile DP comparison).
+- `MAFFT_STOP_AT_STEP=N` env var (in `progressive.rs`) — dumps
+  post-step-(N-1) aligned[] state to `MAFFT_DUMP_PATH`.
+- `MAFFT_DEBUG_STEPS_SEQ=1` env var — per-step `seq[step.left[0]]`
+  and `seq[0]` dumps via `RDBG step N seq[0]=...`.
 
 ---
 
