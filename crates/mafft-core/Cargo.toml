@@ -22,3 +22,4 @@ rayon = "1"
 
 [dev-dependencies]
 mafft-sys = { path = "../mafft-sys" }
+num-complex = "0.4"

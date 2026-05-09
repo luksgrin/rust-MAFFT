@@ -30,13 +30,14 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | BL80 FFT (`--bl 80`)                       | 712     | 712        | 0          | byte-exact ✓ |
 | BL80 NW  (`--bl 80 --nofft`)               | 712     | 712        | 0          | byte-exact ✓ |
 | JTT 200 FFT (`--jtt 200`)                  | 729     | 729        | 0          | byte-exact ✓ |
-| JTT 100 FFT (`--jtt 100`)                  | 732     | 732        | 4          | content tie-break — see §5 |
+| JTT 100 FFT (`--jtt 100`)                  | 732     | 732        | 0          | byte-exact ✓ (closed 2026-05-09 by §4) |
 | TM 200 NW  (`--tm 200 --nofft`)            | 765     | 765        | 0          | byte-exact ✓ |
 | TM 100 NW  (`--tm 100 --nofft`)            | 767     | 767        | 0          | byte-exact ✓ |
+| TM 100 FFT (`--tm 100`)                    | 767     | 767        | 0          | byte-exact ✓ (closed 2026-05-09 by §4) |
 | TM 200 FFT (`--tm 200`)                    | 767     | 765        | 148        | divergent — see §5 |
 | RNA NW  (`--nofft samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 
-Test suite: 223 Rust tests pass (`cargo test --workspace --exclude pymafft
+Test suite: 250 Rust tests pass (`cargo test --workspace --exclude pymafft
 --release`), 0 failed, 0 ignored. Plus 32 Python tests pass.
 
 ---
@@ -392,22 +393,58 @@ results to C's gcc-O3-FMA output.
 
 ---
 
-## §5. FFT tie-break residuals on `--jtt 100` and `--tm * (FFT)`
+## §5. FFT anchor / segment tie-break on `--tm * (FFT)`, `--jtt 100`
 
-**Observed**:
-- `--jtt 100`: width matches (732 / 732), 4 lines diff (one residue
-  shifted by one column in seq 12: `MAA-W` vs `MA-AW`)
-- `--tm 200 --nofft`: byte-exact ✓
-- `--tm 100 --nofft`: byte-exact ✓
-- `--tm 200` (FFT): width 765 vs 767, 148-line diff
+**Status update 2026-05-09**: §4 (BL50 FMA fix) closed JTT 100 (was 4
+lines, now 0) and TM 100 FFT (now 0). FFT C-port (`fft_c_compat.rs`)
+ports MAFFT's hand-rolled Cooley-Tukey bit-for-bit and is verified by
+`cross_validate_fft.rs`. TM 200 FFT still 148 lines diff — root cause
+identified:
 
-Same class as §4 (BL50 FFT). Cell-by-cell matrix matches via
-`cross_validate_jtt100_n_dis`, `cross_validate_tm_n_dis`,
-`cross_validate_tm_n_dis_fft`. Float-precision tie-break in the FFT
-correlation peak or anchor-selection sort.
+1. **C MAFFT's `Falign` ALWAYS uses anchored segmented DP**; Rust's
+   `find_fft_anchors` returns `None` for ~70% of merges (e.g. step 12
+   of TM 200, top FFT lag −3) because `shift_and_score` scores the
+   pair `(seq1[i], seq2[i − lag])` — the OPPOSITE physical shift from
+   C's `zurasu2` which scores `(seq1[i], seq2[i + lag])`. With wrong
+   pairings, `alignable_segments` finds nothing above threshold and
+   `fft_profile_align` falls back to direct `profile_align`.
 
-**Concrete next task**: solve §4 first. The fix that closes BL50 will
-likely close JTT 100 and TM 200 (FFT) too — same root cause.
+2. The fallback `profile_align` is byte-exact to C's `A__align` (proved
+   by `bl50_step24_profile_dp_matches_c_a_align` and a step-12 TM 200
+   diagnostic). But C's `Falign` runs SEGMENTED A__align with
+   c-anchored boundaries, which can produce a different optimal-tied
+   traceback than monolithic A__align on the same input. At TM 200
+   step 12, both score 208675.46 but the gap placement around the
+   `EVSSV*SSVSPA` C-terminus differs by one column, which then steers
+   step 13 onto a different optimum (Rust 218942.5 vs C 219250.2).
+
+**Why a naive sign fix doesn't work**: flipping `j = i − lag` →
+`j = i + lag` (and `c2 = c1 + lag`) makes Rust find the SAME anchors as
+C for TM 200 step 12 (`(42,39), (151,148), (267,264), (327,324)`),
+**but** the segmentation for BL62 default starts diverging at the
+±1‑position level (e.g. step 1 anchor at `(252, 272)` vs C `(247, 267)`)
+because Rust's `alignable_segments` uses `len = MAX(prof1, prof2)` while
+C uses `MIN(strlen aseq1, strlen aseq2)` after `zurasu2`. The two
+length conventions only matter when shifted scoring leaves zero-tail
+entries — invisible at lag 0, decisive at non-zero lag. Adopting C's
+MIN convention plus the sign fix plus segment-boundary `align_with_anchors`
+(treat anchors as boundaries, not forced match cells) is the full fix
+but requires careful re-verification of every parity-passing mode.
+
+**Per-step bisection (TM 200, sample input)**:
+- Steps 0–11: byte-exact (cluster1[0] dump + score match)
+- Step 12: same score 208675.46, same cluster1[0], **different
+  traceback** for cluster1[1] / cluster1[2] (`EVSSV--SSVSPA` Rust vs
+  `EVSSVS--SVSPA` C). First divergence.
+- Step 13+: divergence amplifies (different scores from step 13).
+
+**Concrete next task**: implement the three-way fix together — (a)
+`shift_and_score` uses `j = i + lag` and `len = MIN(prof1.length,
+prof2.length)`-bounded scores array; (b) `c2 = c1 + lag` in
+`find_fft_anchors`; (c) `align_with_anchors` treats anchor positions as
+segment boundaries (start of next segment), not forced matches. Validate
+across all 18 parity-passing modes, especially BL30/45/50/62/80, JTT
+200, FFT-NS-2/i. Effort: 1–2 days.
 
 ---
 

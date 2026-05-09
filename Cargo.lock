@@ -383,6 +383,7 @@ dependencies = [
  "mafft-sys",
  "mafft-tree",
  "mafft-types",
+ "num-complex",
  "rayon",
 ]
 

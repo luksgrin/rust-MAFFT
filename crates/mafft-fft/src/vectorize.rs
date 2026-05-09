@@ -89,32 +89,34 @@ pub fn multichannel_correlate(
     }
 
     let n = channels_a[0].len();
-    let mut planner = FftPlanner::new();
-    let fft_fwd = planner.plan_fft_forward(n);
-    let fft_inv = planner.plan_fft_inverse(n);
 
-    // Accumulate correlation across all channels
+    // C's `fft()` (Cooley-Tukey radix-2, fft.c) and `rustfft` produce
+    // bit-different correlation peaks for the same input. For most
+    // scoring matrices the rounding doesn't shift the chosen anchor
+    // lag, but `--tm 200` (FFT) has a flatter correlation landscape
+    // that surfaces the difference as a 2-column shift in step 13's
+    // anchor placement. Route through the bit-for-bit C-port in
+    // `fft_c_compat` so anchor lags match C exactly.
+    use crate::fft_c_compat::fft_inplace;
+
+    // Accumulate correlation across all channels.
+    // C convention: forward FFT applies 1/n scale. Two forward FFTs +
+    // unnormalized inverse → result = correlation / n. Downstream peak
+    // selection is scale-invariant, so we don't multiply back by n.
     let mut sum = vec![Complex64::new(0.0, 0.0); n];
 
     for k in 0..num_channels {
         let mut fa = channels_a[k].clone();
         let mut fb = channels_b[k].clone();
-
-        fft_fwd.process(&mut fa);
-        fft_fwd.process(&mut fb);
-
-        // conj(a) * b for this channel
+        fft_inplace(&mut fa, /* inverse = */ false);
+        fft_inplace(&mut fb, /* inverse = */ false);
         for i in 0..n {
             sum[i] += fa[i].conj() * fb[i];
         }
     }
 
-    // Inverse FFT the summed correlation
-    fft_inv.process(&mut sum);
-
-    // Normalize
-    let scale = 1.0 / n as f64;
-    sum.iter().map(|c| c.re * scale).collect()
+    fft_inplace(&mut sum, /* inverse = */ true);
+    sum.iter().map(|c| c.re).collect()
 }
 
 #[cfg(test)]

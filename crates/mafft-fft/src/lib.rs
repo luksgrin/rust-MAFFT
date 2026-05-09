@@ -8,6 +8,7 @@ mod segments;
 mod candidates;
 mod vectorize;
 mod block_align;
+pub mod fft_c_compat;
 
 pub use correlation::{cross_correlate, inner_product};
 pub use segments::{alignable_segments, AlignableSegment, SegmentParams};

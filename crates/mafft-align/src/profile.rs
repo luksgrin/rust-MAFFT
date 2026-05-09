@@ -153,23 +153,24 @@ impl Profile {
         let freq1 = &self.freqs[i];
         let freq2 = &other.freqs[j];
 
-        // Pass 1: scarr[b] = sum_a(freq1[a] * matrix[a][b])
-        // This is branchless — zero freq1 values contribute zero, no skip needed.
-        let mut scarr = [0.0f64; 32]; // fixed-size for auto-vectorization (covers nalphabets <= 26)
+        // Use `mul_add` (single-rounding FMA) to match C's `gcc -O3` codegen
+        // for `scarr[l] += matrix * cpmx`. Without FMA, accumulation rounds
+        // twice per iteration and diverges from C by 1 ULP per term —
+        // surfaces as anchor-selection differences for matrices with flat
+        // score landscapes (e.g. `--tm 200 --bl 50`). See TODO §4/§5 close.
+        let mut scarr = [0.0f64; 32]; // covers nalphabets <= 26
         for a in 0..nalpha {
             let f1 = freq1[a];
-            // Compiler can vectorize this inner loop: scarr[b] += f1 * matrix[a][b]
             let row = &matrix[a];
             let row_len = nalpha.min(row.len());
             for b in 0..row_len {
-                scarr[b] += f1 * row[b] as f64;
+                scarr[b] = f1.mul_add(row[b] as f64, scarr[b]);
             }
         }
 
-        // Pass 2: dot product — perfectly vectorizable contiguous f64 multiply-add
         let mut score = 0.0f64;
         for b in 0..nalpha {
-            score += scarr[b] * freq2[b];
+            score = scarr[b].mul_add(freq2[b], score);
         }
         score
     }
