@@ -9,6 +9,7 @@ mod upgma;
 mod musclesupg;
 mod addonetip;
 mod parttree;
+pub mod parttree_dist;
 mod topology;
 mod weighting;
 

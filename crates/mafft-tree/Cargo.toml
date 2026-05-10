@@ -17,3 +17,4 @@ mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
 
 [dev-dependencies]
 mafft-sys = { path = "../mafft-sys" }
+mafft-io = { path = "../mafft-io" }

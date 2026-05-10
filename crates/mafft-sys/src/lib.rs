@@ -182,6 +182,8 @@ unsafe extern "C" {
     pub fn FreeIntVec(vec: *mut c_int);
     pub fn AllocateIntMtx(l1: c_int, l2: c_int) -> *mut *mut c_int;
     pub fn FreeIntMtx(mtx: *mut *mut c_int);
+    pub fn AllocateIntCub(l1: c_int, l2: c_int, l3: c_int) -> *mut *mut *mut c_int;
+    pub fn FreeIntCub(cub: *mut *mut *mut c_int);
     pub fn AllocateDoubleMtx(l1: c_int, l2: c_int) -> *mut *mut c_double;
     pub fn FreeDoubleMtx(mtx: *mut *mut c_double);
     pub fn AllocateFloatHalfMtx(l1: c_int) -> *mut *mut c_double;
@@ -209,6 +211,28 @@ unsafe extern "C" {
     pub fn upg2(nseq: c_int, eff: *mut *mut c_double, topol: *mut *mut *mut c_int, len: *mut *mut c_double);
     pub fn veryfastsupg_int(nseq: c_int, oeff: *mut *mut c_int, topol: *mut *mut *mut c_int, len: *mut *mut c_double);
     pub fn counteff_simple_double(nseq: c_int, topol: *mut *mut *mut c_int, len: *mut *mut c_double, node: *mut c_double);
+    /// `mltaln9.c::fixed_musclesupg_double_realloc_nobk_halfmtx` — the UPGMA
+    /// variant used by `splittbfast` (`--parttree`). Takes an upper-triangular
+    /// half matrix `eff[i][j-i]` (j >= i) of pairwise distances and emits
+    /// `topol`/`len`/`dep` describing the tree. `efffree` controls whether the
+    /// caller's `eff` rows are freed during the merge.
+    pub fn fixed_musclesupg_double_realloc_nobk_halfmtx(
+        nseq: c_int,
+        eff: *mut *mut c_double,
+        topol: *mut *mut *mut c_int,
+        len: *mut *mut c_double,
+        dep: *mut Treedep,
+        progressout: c_int,
+        efffree: c_int,
+    );
+
+    // -- 6-mer composition (parttree distance) --
+    pub fn commonsextet_p(table: *mut c_int, pointt: *mut c_int) -> c_int;
+    pub fn makecompositiontable_p(table: *mut c_int, pointt: *mut c_int);
+    pub fn makepointtable(pointt: *mut c_int, n: *mut c_int);
+    pub fn makepointtable_nuc(pointt: *mut c_int, n: *mut c_int);
+    pub fn seq_grp(grp: *mut c_int, seq: *const c_char) -> c_int;
+    pub fn seq_grp_nuc(grp: *mut c_int, seq: *const c_char) -> c_int;
 
     // -- Pairwise alignment --
     pub fn G__align11(
@@ -534,6 +558,14 @@ unsafe extern "C" {
     pub static mut amino_grp: [c_char; 0x100];
     pub static mut nalphabets: c_int;
     pub static mut nscoredalphabets: c_int;
+
+    // -- 6-mer composition globals (set by splittbfast/disttbfast init) --
+    pub static mut tsize: c_int;
+    pub static mut maxl: c_int;
+    pub static mut lenfaca: c_double;
+    pub static mut lenfacb: c_double;
+    pub static mut lenfacc: c_double;
+    pub static mut lenfacd: c_double;
 }
 
 #[cfg(test)]

@@ -36,15 +36,22 @@ fn main() {
         "iteration.c",
     ];
 
-    let source_paths: Vec<PathBuf> = library_sources
+    let mut source_paths: Vec<PathBuf> = library_sources
         .iter()
         .map(|f| core_dir.join(f))
         .collect();
+
+    // Local wrappers for symbols stuck behind `static` in splittbfast.c
+    // or living in C files with their own `main()` (addsingle.c,
+    // disttbfast.c). Bodies are copies of the canonical implementations.
+    let wrappers_dir: PathBuf = ["wrappers"].iter().collect();
+    source_paths.push(wrappers_dir.join("parttree_helpers.c"));
 
     let mut build = cc::Build::new();
     build
         .files(&source_paths)
         .include(&core_dir)
+        .include(&wrappers_dir)
         .opt_level(3)
         .std("c99")
         .define("enablemultithread", None)

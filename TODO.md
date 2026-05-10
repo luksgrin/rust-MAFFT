@@ -464,22 +464,104 @@ TM 200 FFT byte-identity row in the parity matrix above.
 
 ---
 
-## §6. PartTree (`--parttree`, `--dpparttree`)
+## §6. PartTree (`--parttree`, `--dpparttree`) — IN PROGRESS
 
-**Observed**: `--parttree --nofft` has ~940-line diff from C.
+**Observed**: `--parttree` width 717 (Rust) vs 752 (C), 941-line diff.
+`--dpparttree` shows the same divergence.
 
-**Priority**: Medium (separate algorithm, independent of refinement).
+**Priority**: Medium (separate algorithm, independent of refinement; for
+10K+ sequence datasets — our sample is 36 seqs which is below PartTree's
+intended scale, so the divergence here is algorithmic correctness, not
+scale-driven).
 
-**Location**: `crates/mafft-tree/src/parttree.rs`.
+**Location**: `crates/mafft-tree/src/parttree.rs` (replacement),
+`crates/mafft-tree/src/parttree_dist.rs` (new, distance helpers).
 
-The current port is functional but has a subtle bug in the
-subtree-grouping / seed-selection logic. Needs a full pass against
-C's `partSeedSelect`, `partTreeGrow`, and `getsuboptimal`-style
-pruning paths in `mltaln9.c`.
+### Algorithm-level differences from `disttbfast`/`tbfast`
 
-**Concrete next task**: port C's parttree pipeline exhaustively, with
-FFI-based cross-validation at each stage (seed set, subtree assignment,
-distance matrix). Effort: 1-2 days.
+C's `splittbfast.c` is a substantially different pipeline:
+
+1. **Distance**: `localcommonsextet_p` with C-exact `lenfac` and
+   `MAX6DIST = 10.0` clamp (NOT `* 2` clamped at 2.0 like
+   `disttbfast`). **Done** — see below.
+2. **Pivot selection**: deterministic seed-0 + most-distant +
+   `nkouho/2` deterministic + libc `rand()` random picks until
+   `npick == picksize`. For our `n = 36 < picksize = 50` case, all 36
+   become pivots and `qsort(picks)` canonicalizes — `rand()` doesn't
+   matter. For `nin > picksize` runs, `rand()` determinism becomes
+   load-bearing (macOS BSD libc ≠ glibc).
+3. **Pivot-redundancy filter**: `tokyoripara = 0.7`. For each `i < j`
+   in the pickmtx, if `pickmtx[i][j-i] < maxdist · 0.7`, mark `j`
+   redundant and `closeh[picks[j]] = closeh[picks[i]]`. Survivors form
+   `yukos[]`, count = `nyuko`.
+4. **`fixed_musclesupg_double_realloc_nobk_halfmtx`**: UPGMA variant on
+   `yukomtx` (the `nyuko × nyuko` slice of `pickmtx`). **Done** — Rust's
+   existing `musclesupg` already ports this. FFI-verified.
+5. **`splitseq_mq` recursion + treeorder**: nyuko-way split based on
+   each non-pivot's closest yuko (via `dfromc`), recursive sub-call per
+   yuko, output ordering follows the `topol`-leaf walk
+   (`splittbfast.c:2444-2519`).
+6. **`pairalign` uses `fastconjuction_noweight`** (`splittbfast.c:6`
+   `#define WEIGHT 0`) — UNWEIGHTED profiles, unlike `disttbfast`'s
+   weighted ones. Even with a perfect topology, our weighted
+   `progressive_align` produces different output. Need an
+   unweighted-profile mode threaded through.
+
+### Progress (2026-05-10)
+
+- [x] **Distance + `lenfac`** — `crates/mafft-tree/src/parttree_dist.rs`
+  ports `seq_grp`, `makepointtable`, `makecompositiontable_p`,
+  `commonsextet_p`, plus the `splittbfast` distance formula. FFI-
+  validated by 5 tests in `tests/cross_validate_parttree.rs`:
+  - `parttree_points_match_c` — 6-mer encoding byte-identical.
+  - `parttree_common_sextets_match_c` — common-count + composition
+    table byte-identical for all (i, j) of the 36-seq sample.
+  - `parttree_lenfac_matches_c_formula` — verifies `lenfac` constants
+    match C `lenfaca`/`b`/`c`/`d` globals + spot-checks the formula.
+  - `parttree_distance_clamps_at_max6dist` — exercises the 10.0 clamp.
+  - `parttree_distance_matches_c` — end-to-end pairwise distance
+    matches C-formula to within 1e-12.
+- [x] **`fixed_musclesupg_double_realloc_nobk_halfmtx`** — Rust's
+  existing `musclesupg` matches C's variant byte-identical.
+  FFI-validated by `parttree_upgma_matches_c` (compares topology
+  step-by-step on the 36-seq parttree distance matrix).
+- [ ] **Pivot selection + redundancy filter** (#40) — not started.
+  Includes the `dcompare` sort, `qsort(picks)` canonicalization, and
+  the `tokyoripara = 0.7` filter loop. For `n = 36 < picksize = 50`
+  the random-pick path is suppressed by qsort, simplifying the port.
+- [ ] **`splitseq_mq` recursion + treeorder** (#42) — not started.
+  Includes the `dfromc` (nyuko × nin) construction, the
+  `belongto`-based non-pivot assignment, and the topol-leaf-walk
+  output ordering (`splittbfast.c:2351-2519`).
+- [ ] **Unweighted-profile mode** for `pairalign` — not started.
+  Required for end-to-end byte-identity. Currently
+  `progressive_align` always uses weighted profiles.
+- [ ] **End-to-end byte-identity tests** (#43).
+
+### FFI scaffolding added this session
+
+- `crates/mafft-sys/wrappers/parttree_helpers.c` — local wrapper for
+  `seq_grp`, `seq_grp_nuc`, `makecompositiontable_p`, `makepointtable`,
+  `makepointtable_nuc` (needed because the upstream copies are `static`
+  in `splittbfast.c` or live in `addsingle.c`/`disttbfast.c` which both
+  carry `main()`).
+- `crates/mafft-sys/src/lib.rs` — new bindings for `commonsextet_p`,
+  `fixed_musclesupg_double_realloc_nobk_halfmtx`, `AllocateIntCub`,
+  the parttree global vars (`tsize`, `maxl`, `lenfac{a,b,c,d}`).
+- `crates/mafft-sys/build.rs` — wires the wrapper file into the static
+  archive.
+
+### Concrete next task
+
+Port `splitseq_mq` (`splittbfast.c:1174-2580`) into Rust. The
+implementation needs to: (a) sort scores by `dcompare`; (b) build
+`pickmtx` and apply the redundancy filter; (c) build `dfromc` and
+assign non-pivots to closest survivors via `belongto`; (d) run the
+already-validated UPGMA on `yukomtx`; (e) walk the resulting topol to
+emit a `Topology` whose `JoinStep` members are unions of the assigned
+sub-groups in `intcompare`-sorted order. Then add an unweighted-profile
+mode to `progressive_align` so the parttree path can match C's
+`fastconjuction_noweight`. Effort: 1-2 sessions.
 
 ---
 
