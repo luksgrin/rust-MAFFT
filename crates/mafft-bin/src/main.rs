@@ -279,9 +279,13 @@ fn main() {
 }
 
 fn determine_mode(args: &Args) -> AlignmentMode {
-    // C's `defaultiterate=1000` for INS-i modes (`scripts/mafft:145,150,155`)
-    // applies only when `--maxiterate` is not given on the command line.
-    // Explicit `--maxiterate 0` disables refinement; `args.maxiterate` is
+    // C's `defaultiterate` (`scripts/mafft:86`) is 0 when invoked as
+    // `mafft` — the bare flags `--localpair`/`--globalpair`/`--genafpair`
+    // do NOT change it. Only the script-name aliases `linsi` / `ginsi` /
+    // `einsi` (lines 142-156) set `defaultiterate=1000`. So `mafft
+    // --localpair` runs progressive-only; `linsi` runs 1000-iter refinement.
+    //
+    // Explicit `--maxiterate N` always wins. `args.maxiterate` is
     // `Option<usize>`, so `None` means unset and `Some(n)` is the user's
     // choice (including `Some(0)`).
     let iters_for = |default: usize| args.maxiterate.unwrap_or(default);
@@ -290,11 +294,11 @@ fn determine_mode(args: &Args) -> AlignmentMode {
     } else if args.xinsi {
         AlignmentMode::XInsi { iterations: iters_for(1000) }
     } else if args.localpair {
-        AlignmentMode::LInsi { iterations: iters_for(1000) }
+        AlignmentMode::LInsi { iterations: iters_for(0) }
     } else if args.globalpair {
-        AlignmentMode::GInsi { iterations: iters_for(1000) }
+        AlignmentMode::GInsi { iterations: iters_for(0) }
     } else if args.genafpair {
-        AlignmentMode::EInsi { iterations: iters_for(1000) }
+        AlignmentMode::EInsi { iterations: iters_for(0) }
     } else if let Some(n) = args.maxiterate.filter(|&n| n > 0) {
         AlignmentMode::FftNsi { iterations: n }
     } else {

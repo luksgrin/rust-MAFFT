@@ -20,9 +20,9 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | L-INS-1 (`--localpair --maxiterate 0`)     | 719     | 719        | 0          | byte-exact ✓ (closed 2026-05-05) |
 | G-INS-1 (`--globalpair --maxiterate 0`)    | 746     | 746        | 0          | byte-exact ✓ (closed 2026-05-06) |
 | E-INS-1 (`--genafpair --maxiterate 0`)     | 729     | 729        | 0          | byte-exact ✓ (closed 2026-05-06) |
-| L-INS-i (`--localpair`)                    | 731     | 731        | 0          | byte-exact ✓ (closed 2026-05-07) |
-| G-INS-i (`--globalpair`)                   | 746     | 746        | 0          | byte-exact ✓ (closed 2026-05-07) |
-| E-INS-i (`--genafpair`)                    | 729     | 729        | 0          | byte-exact ✓ (closed 2026-05-07) |
+| L-INS-i (`linsi` / `--localpair --maxiterate 1000`) | 731 | 731 | 0       | byte-exact ✓ (closed 2026-05-07) |
+| G-INS-i (`ginsi` / `--globalpair --maxiterate 1000`)| 746 | 746 | 0       | byte-exact ✓ (closed 2026-05-07) |
+| E-INS-i (`einsi` / `--genafpair --maxiterate 1000`) | 729 | 729 | 0       | byte-exact ✓ (closed 2026-05-07) |
 | BL30 FFT (`--bl 30`)                       | 773     | 773        | 0          | byte-exact ✓ |
 | BL45 FFT (`--bl 45`)                       | 729     | 729        | 0          | byte-exact ✓ |
 | BL50 FFT (`--bl 50`)                       | 712     | 712        | 0          | byte-exact ✓ (closed 2026-05-08) |
@@ -255,6 +255,20 @@ n=14 sample. That pointed to the distance matrix feeding
 `dvtditr.c:751-753` confirmed C uses a 3-decimal-rounded
 distance matrix from the `hat2` file, while Rust was
 recomputing distances from the progressive alignment.
+
+**CLI default fix landed 2026-05-10**: the bare flags `mafft
+--localpair` / `--globalpair` / `--genafpair` (without `--maxiterate`)
+now default to **0 iterations**, matching C's `scripts/mafft:86`
+where `defaultiterate=0` is the global default and only the script-name
+aliases `linsi` / `ginsi` / `einsi` (lines 142-156) bump it to 1000.
+Previously the Rust CLI defaulted to 1000 for the bare flags, producing
+an iter-1000 alignment for `mafft-rs --localpair` against C's iter-0
+output (937 lines diff). The algorithmic refinement was already byte-
+identical at every explicit iteration count — `--localpair --maxiterate
+N` has always matched C bit-for-bit; this fix only changes what the
+`None` default resolves to. Closes the last visible gap in the parity
+matrix without touching any algorithm code (`crates/mafft-bin/src/main.rs`
+only).
 
 ---
 
