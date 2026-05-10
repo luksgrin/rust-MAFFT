@@ -193,16 +193,21 @@ impl Profile {
 
 /// Align two profiles using anchor points, running DP within each segment.
 ///
-/// Shared implementation used by both `fft_align` and `constrained_align`.
+/// Mirrors C's `Falign` segment-DP loop (`Falign.c:684-705`): builds cuts
+/// `cut1 = [0, a1₀, a1₁, …, prof1.length]` and `cut2 = [0, a2₀, a2₁, …,
+/// prof2.length]`, then runs `count - 1` independent profile DPs over
+/// segments `[cut1[i], cut1[i+1]) × [cut2[i], cut2[i+1])`. Anchor
+/// positions are segment BOUNDARIES — they are the START of the next
+/// segment, NOT forced match cells. Within each segment the DP decides
+/// match/gap freely.
 ///
-/// Segment gap handling matches C's Falign (lines 686-687):
-///   - First segment:       headgp = outgap (0), tailgp = 1
-///   - Intermediate:        headgp = 1,          tailgp = 1
-///   - Last segment:        headgp = 1,          tailgp = outgap (0)
+/// Segment gap handling (Falign.c:686-687):
+///   - First segment       (i == 0):           headgp = outgap (0), tailgp = 1
+///   - Intermediate:                            headgp = 1,           tailgp = 1
+///   - Last segment        (i == count - 2):   headgp = 1,           tailgp = outgap (0)
 ///
-/// With outgap=0 (always set by the mafft script via `-O`):
-///   first segment gets head_gap=false, last gets tail_gap=false,
-///   and all intermediate segments get head_gap=true, tail_gap=true.
+/// With outgap=0 (the mafft script always sets `-O`):
+///   first → head_gap=false, last → tail_gap=false, middle → both true.
 pub fn align_with_anchors(
     prof1: &Profile,
     prof2: &Profile,
@@ -210,46 +215,51 @@ pub fn align_with_anchors(
     gap: &GapModel,
     anchors: &[(usize, usize)],
 ) -> Alignment {
+    // Build cut1/cut2 mirroring C's Falign: bracket anchors with [0, …, length].
+    let mut cut1: Vec<usize> = Vec::with_capacity(anchors.len() + 2);
+    let mut cut2: Vec<usize> = Vec::with_capacity(anchors.len() + 2);
+    cut1.push(0);
+    cut2.push(0);
+    for &(a1, a2) in anchors {
+        // Skip anchors that lie at or past either profile end (boundary
+        // collision with the trailing length cut). Also skip if the anchor
+        // would not advance both cursors (defensive — shouldn't happen with
+        // a well-formed anchor list from `find_fft_anchors` since
+        // `block_align` enforces monotonic ordering).
+        if a1 >= prof1.length || a2 >= prof2.length { continue; }
+        let prev1 = *cut1.last().unwrap();
+        let prev2 = *cut2.last().unwrap();
+        if a1 < prev1 || a2 < prev2 { continue; }
+        if a1 == prev1 && a2 == prev2 { continue; }
+        cut1.push(a1);
+        cut2.push(a2);
+    }
+    cut1.push(prof1.length);
+    cut2.push(prof2.length);
+    let count = cut1.len();
+
     let mut all_ops = Vec::new();
     let mut total_score = 0.0;
-    let mut p1 = 0usize;
-    let mut p2 = 0usize;
 
-    // Collect segment boundaries: each anchor defines a break point.
-    // Segments are: [0..anchor0), anchor0, [anchor0+1..anchor1), anchor1, ... [lastanchor+1..end)
-    // C counts: segment 0 = before first anchor, segment count-2 = after last anchor.
-    let num_anchors = anchors.len();
+    for i in 0..count - 1 {
+        let p1 = cut1[i];
+        let p2 = cut2[i];
+        let q1 = cut1[i + 1];
+        let q2 = cut2[i + 1];
 
-    for (anchor_idx, &(a1, a2)) in anchors.iter().enumerate() {
-        if a1 > p1 || a2 > p2 {
-            let sub1 = prof1.sub_profile(p1, a1);
-            let sub2 = prof2.sub_profile(p2, a2);
-            let is_first = anchor_idx == 0;
-            // headgp: first segment gets outgap (false), others get 1 (true).
-            // tailgp: all pre-anchor segments are followed by an anchor, so tailgp=1 (true).
-            let seg_aln = profile_align(&sub1, &sub2, matrix, gap, !is_first, true);
+        // C's Falign.c:686-687 with outgap=0:
+        //   headgp = (i == 0) ? 0 : 1   →  head_gap = (i != 0)
+        //   tailgp = (i == count-2) ? 0 : 1  →  tail_gap = (i != count - 2)
+        let head_gap = i != 0;
+        let tail_gap = i != count - 2;
+
+        if q1 > p1 || q2 > p2 {
+            let sub1 = prof1.sub_profile(p1, q1);
+            let sub2 = prof2.sub_profile(p2, q2);
+            let seg_aln = profile_align(&sub1, &sub2, matrix, gap, head_gap, tail_gap);
             total_score += seg_aln.score;
             all_ops.extend(seg_aln.operations);
         }
-        if a1 < prof1.length && a2 < prof2.length {
-            total_score += prof1.match_score(a1, prof2, a2, matrix);
-            all_ops.push(AlignOp::Match);
-            p1 = a1 + 1;
-            p2 = a2 + 1;
-        }
-    }
-
-    // Trailing segment (after last anchor): headgp=1, tailgp=outgap (false).
-    if p1 < prof1.length || p2 < prof2.length {
-        let sub1 = prof1.sub_profile(p1, prof1.length);
-        let sub2 = prof2.sub_profile(p2, prof2.length);
-        let is_only_segment = num_anchors == 0;
-        // headgp: if there are anchors, this follows an anchor → headgp=1.
-        //         if there are no anchors, this is the first (and only) segment → headgp=outgap (false).
-        // tailgp: last segment → tailgp=outgap (false).
-        let seg_aln = profile_align(&sub1, &sub2, matrix, gap, !is_only_segment, false);
-        total_score += seg_aln.score;
-        all_ops.extend(seg_aln.operations);
     }
 
     Alignment {

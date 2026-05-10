@@ -756,6 +756,7 @@ fn diagnostic_fft_anchoring() {
         head_gap: true,
         tail_gap: true,
         num_channels: 20,
+        property_channels: None,
     };
     let fft_aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params);
 
@@ -1172,6 +1173,7 @@ fn diagnostic_fft_anchors() {
         head_gap: true,
         tail_gap: true,
         num_channels: scoring.nscoredalphabets,
+        property_channels: None,
     };
 
     let aln_fft = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params);
@@ -1275,6 +1277,7 @@ fn diagnostic_fft_pipeline() {
         head_gap: true,
         tail_gap: true,
         num_channels: scoring.nscoredalphabets,
+        property_channels: None,
     };
     let aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &params);
     eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());
@@ -1340,6 +1343,7 @@ fn diagnostic_step3_anchors() {
         head_gap: true,
         tail_gap: true,
         num_channels: scoring.nscoredalphabets,
+        property_channels: None,
     };
     let aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &params);
     eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());

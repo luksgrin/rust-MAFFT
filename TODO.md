@@ -34,7 +34,7 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | TM 200 NW  (`--tm 200 --nofft`)            | 765     | 765        | 0          | byte-exact ✓ |
 | TM 100 NW  (`--tm 100 --nofft`)            | 767     | 767        | 0          | byte-exact ✓ |
 | TM 100 FFT (`--tm 100`)                    | 767     | 767        | 0          | byte-exact ✓ (closed 2026-05-09 by §4) |
-| TM 200 FFT (`--tm 200`)                    | 767     | 765        | 148        | divergent — see §5 |
+| TM 200 FFT (`--tm 200`)                    | 767     | 767        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | RNA NW  (`--nofft samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 
 Test suite: 250 Rust tests pass (`cargo test --workspace --exclude pymafft
@@ -393,58 +393,60 @@ results to C's gcc-O3-FMA output.
 
 ---
 
-## §5. FFT anchor / segment tie-break on `--tm * (FFT)`, `--jtt 100`
+## §5. FFT anchor / segment tie-break on `--tm * (FFT)` — RESOLVED 2026-05-10
 
-**Status update 2026-05-09**: §4 (BL50 FMA fix) closed JTT 100 (was 4
-lines, now 0) and TM 100 FFT (now 0). FFT C-port (`fft_c_compat.rs`)
-ports MAFFT's hand-rolled Cooley-Tukey bit-for-bit and is verified by
-`cross_validate_fft.rs`. TM 200 FFT still 148 lines diff — root cause
-identified:
+**Mode**: `--tm 200` FFT now byte-identical to C. JTT 100 / TM 100 FFT
+were already closed by §4's FMA fix.
 
-1. **C MAFFT's `Falign` ALWAYS uses anchored segmented DP**; Rust's
-   `find_fft_anchors` returns `None` for ~70% of merges (e.g. step 12
-   of TM 200, top FFT lag −3) because `shift_and_score` scores the
-   pair `(seq1[i], seq2[i − lag])` — the OPPOSITE physical shift from
-   C's `zurasu2` which scores `(seq1[i], seq2[i + lag])`. With wrong
-   pairings, `alignable_segments` finds nothing above threshold and
-   `fft_profile_align` falls back to direct `profile_align`.
+**Four combined fixes** to the FFT pipeline (`fft_align.rs` + `profile.rs`):
 
-2. The fallback `profile_align` is byte-exact to C's `A__align` (proved
-   by `bl50_step24_profile_dp_matches_c_a_align` and a step-12 TM 200
-   diagnostic). But C's `Falign` runs SEGMENTED A__align with
-   c-anchored boundaries, which can produce a different optimal-tied
-   traceback than monolithic A__align on the same input. At TM 200
-   step 12, both score 208675.46 but the gap placement around the
-   `EVSSV*SSVSPA` C-terminus differs by one column, which then steers
-   step 13 onto a different optimum (Rust 218942.5 vs C 219250.2).
+1. **Bit-for-bit FFT C-port** (`crates/mafft-fft/src/fft_c_compat.rs`).
+   Replaced `rustfft` with a hand port of MAFFT's Cooley-Tukey radix-2
+   `fft()` (`fft.c:7-126`), including the `make_sintbl` /
+   `make_bitrev` precomputed tables, butterfly multiply-add order, and
+   forward-only `1/n` post-scale. `rustfft`'s scheduling produces
+   1-ULP-different correlation values which were enough to flip
+   anchor selection on flat-landscape matrices like `--tm 200`.
+   Verified bit-identical via `cross_validate_fft.rs`.
 
-**Why a naive sign fix doesn't work**: flipping `j = i − lag` →
-`j = i + lag` (and `c2 = c1 + lag`) makes Rust find the SAME anchors as
-C for TM 200 step 12 (`(42,39), (151,148), (267,264), (327,324)`),
-**but** the segmentation for BL62 default starts diverging at the
-±1‑position level (e.g. step 1 anchor at `(252, 272)` vs C `(247, 267)`)
-because Rust's `alignable_segments` uses `len = MAX(prof1, prof2)` while
-C uses `MIN(strlen aseq1, strlen aseq2)` after `zurasu2`. The two
-length conventions only matter when shifted scoring leaves zero-tail
-entries — invisible at lag 0, decisive at non-zero lag. Adopting C's
-MIN convention plus the sign fix plus segment-boundary `align_with_anchors`
-(treat anchors as boundaries, not forced match cells) is the full fix
-but requires careful re-verification of every parity-passing mode.
+2. **`shift_and_score` sign + length convention** (Falign.c:540-548 /
+   alignableReagion.c:226-227). At lag `L`, the per-position score
+   array is in the LATER-starting sequence's frame, with length
+   `MIN(strlen aseq1, strlen aseq2)` after `zurasu2`:
+   - L ≥ 0: `scores[i] = match(prof1[i], prof2[i+L])`, `len = min(n, m-L)`
+   - L < 0: `scores[i] = match(prof1[i-L], prof2[i])`, `len = min(n+L, m)`
+   Pre-fix Rust used `j = i - lag` with `len = max(n, m)` and
+   zero-padding, which gave the OPPOSITE physical pairing — invisible
+   at lag 0 but wrong everywhere else.
 
-**Per-step bisection (TM 200, sample input)**:
-- Steps 0–11: byte-exact (cluster1[0] dump + score match)
-- Step 12: same score 208675.46, same cluster1[0], **different
-  traceback** for cluster1[1] / cluster1[2] (`EVSSV--SSVSPA` Rust vs
-  `EVSSVS--SVSPA` C). First divergence.
-- Step 13+: divergence amplifies (different scores from step 13).
+3. **Anchor coordinate mapping** in `find_fft_anchors`. With the new
+   sign convention, segment center `c` (in the shifted frame) maps to
+   absolute coords `(c1, c2)` where `c2 - c1 = lag`:
+   - L ≥ 0: `c1 = center`, `c2 = center + lag`
+   - L < 0: `c1 = center - lag`, `c2 = center`
 
-**Concrete next task**: implement the three-way fix together — (a)
-`shift_and_score` uses `j = i + lag` and `len = MIN(prof1.length,
-prof2.length)`-bounded scores array; (b) `c2 = c1 + lag` in
-`find_fft_anchors`; (c) `align_with_anchors` treats anchor positions as
-segment boundaries (start of next segment), not forced matches. Validate
-across all 18 parity-passing modes, especially BL30/45/50/62/80, JTT
-200, FFT-NS-2/i. Effort: 1–2 days.
+4. **`align_with_anchors` as segment-boundary DP** (Falign.c:684-705).
+   Pre-fix Rust treated anchors as forced match cells, emitting an
+   `AlignOp::Match` at each anchor and DP'ing only the gaps between.
+   C runs `count - 1` independent profile-DPs over segments
+   `[cut1[i], cut1[i+1]) × [cut2[i], cut2[i+1])` with cuts bracketing
+   the anchors — anchor positions are the START of the next segment,
+   the DP decides match/gap freely. Now mirrored.
+
+5. **2-channel polarity+volume FFT for protein**. Rust was always
+   building 20-channel indicator vectors (one per residue). C's
+   `Falign.c:342-348` takes the `seq_vec_2` path for protein
+   (`fftscore && scoremtx != -1`), using just 2 channels filled with
+   per-residue polarity and volume. Added
+   `profile_to_property_channels` + a `property_channels` field on
+   `FftAlignParams`; engine populates it from `scoring.polarity` /
+   `scoring.volume` for non-nucleotide modes. This was the load-bearing
+   fix for TM 200 — the 20-channel indicator correlation has different
+   peak structure than C's 2-channel polarity+volume on flat matrices.
+
+**Regression guards**: existing `cross_validate_fft.rs` (FFT FFI),
+`cross_validate_bl50_fft.rs` (segment scoring + step-24 DP), plus the
+TM 200 FFT byte-identity row in the parity matrix above.
 
 ---
 

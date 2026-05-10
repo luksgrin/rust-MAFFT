@@ -26,8 +26,16 @@ pub struct FftAlignParams {
     /// Whether to penalize head/tail gaps.
     pub head_gap: bool,
     pub tail_gap: bool,
-    /// Number of FFT channels (20 for protein, 4 for DNA).
+    /// Number of FFT channels (20 for protein, 4 for DNA). Ignored when
+    /// `property_channels` is `Some(_)`.
     pub num_channels: usize,
+    /// Per-internal-index polarity and volume values. When `Some`, the FFT
+    /// uses 2-channel polarity+volume convolution mirroring C's `seq_vec_2`
+    /// path (`Falign.c:342-348`, taken when `fftscore && scoremtx != -1`).
+    /// When `None`, falls back to `num_channels`-indicator channels via
+    /// `seq_vec_3`. C uses property channels for all protein scoring
+    /// matrices (BLOSUM/JTT/TM); DNA always uses indicator channels.
+    pub property_channels: Option<(Vec<f64>, Vec<f64>)>,
 }
 
 impl FftAlignParams {
@@ -39,6 +47,7 @@ impl FftAlignParams {
             head_gap: true,
             tail_gap: true,
             num_channels: 20,
+            property_channels: None,
         }
     }
 
@@ -50,6 +59,7 @@ impl FftAlignParams {
             head_gap: true,
             tail_gap: true,
             num_channels: 4,
+            property_channels: None,
         }
     }
 }
@@ -80,8 +90,19 @@ pub fn find_fft_anchors(
     }
 
     let fft_size = n.max(m).next_power_of_two();
-    let channels_a = profile_to_channels(prof1, params.num_channels, fft_size);
-    let channels_b = profile_to_channels(prof2, params.num_channels, fft_size);
+    let (channels_a, channels_b) = if let Some((polarity, volume)) = &params.property_channels {
+        // Mirrors C's `seq_vec_2` 2-channel polarity+volume convolution
+        // (`Falign.c:342-348`). Used by all protein scoring matrices.
+        (
+            profile_to_property_channels(prof1, polarity, volume, fft_size),
+            profile_to_property_channels(prof2, polarity, volume, fft_size),
+        )
+    } else {
+        (
+            profile_to_channels(prof1, params.num_channels, fft_size),
+            profile_to_channels(prof2, params.num_channels, fft_size),
+        )
+    };
     let raw_corr = multichannel_correlate(&channels_a, &channels_b);
 
     let nlen = fft_size;
@@ -115,13 +136,16 @@ pub fn find_fft_anchors(
             break; // C: `if(tmpint == 0) break;`
         }
         for seg in segments {
-            // shift_and_score puts scores[i] = match(prof1[i], prof2[i - lag]).
-            // Segment.center maps to (seq1=center, seq2=center-lag) — the
-            // sign is opposite to C's because our FFT correlation peak
-            // convention is mirrored relative to C's `zurasu2`. Empirically
-            // this matches all FFT-NS-2 byte tests.
-            let c1 = seg.center;
-            let c2_signed = seg.center as i32 - lag;
+            // shift_and_score's `seg.center` is in the shifted-frame:
+            //   lag >= 0: index in prof1 → seq1_idx = center, seq2_idx = center + lag
+            //   lag <  0: index in prof2 → seq2_idx = center, seq1_idx = center - lag
+            // Either way `seq2_idx - seq1_idx == lag`. Mirrors C's segment1/2
+            // mapping in Falign.c:540-563.
+            let (c1, c2_signed): (usize, i32) = if lag >= 0 {
+                (seg.center, seg.center as i32 + lag)
+            } else {
+                ((seg.center as i32 - lag) as usize, seg.center as i32)
+            };
             if c1 >= n || c2_signed < 0 || (c2_signed as usize) >= m { continue; }
             all.push(PairSeg { center1: c1, center2: c2_signed as usize, score: seg.score });
         }
@@ -218,19 +242,76 @@ fn profile_to_channels(
     channels
 }
 
+/// Convert profile frequencies to 2-channel polarity+volume FFT inputs.
+///
+/// Mirrors C's `seq_vec_2` (`Falign.c:43-54`) but in profile space: for
+/// each position `p`, channel 0 = `Σ_a freqs[p][a] · polarity[a]`, channel
+/// 1 = `Σ_a freqs[p][a] · volume[a]`. Imaginary part is zero (C only sets
+/// `result->R`).
+///
+/// `polarity[a]` and `volume[a]` are indexed by INTERNAL alphabet index
+/// (0..nscored), already mapped from C's character-indexed `polarity[256]`
+/// / `volume[256]` arrays via the scoring context's amino-map.
+fn profile_to_property_channels(
+    prof: &Profile,
+    polarity: &[f64],
+    volume: &[f64],
+    fft_size: usize,
+) -> Vec<Vec<num_complex::Complex64>> {
+    use num_complex::Complex64;
+    let mut channels = vec![vec![Complex64::new(0.0, 0.0); fft_size]; 2];
+    let nalpha = prof.nalphabets.min(polarity.len()).min(volume.len());
+    for pos in 0..prof.length.min(fft_size) {
+        let mut p_val = 0.0f64;
+        let mut v_val = 0.0f64;
+        for a in 0..nalpha {
+            let f = prof.freqs[pos][a];
+            if f != 0.0 {
+                p_val += f * polarity[a];
+                v_val += f * volume[a];
+            }
+        }
+        channels[0][pos].re = p_val;
+        channels[1][pos].re = v_val;
+    }
+    channels
+}
+
 /// Compute per-position match scores between two profiles at a given lag.
+///
+/// Mirrors C's `zurasu2` + `alignableReagion` per-position scoring. The
+/// scoring frame is the LATER-starting sequence: for `lag >= 0` we pair
+/// `(prof1[i], prof2[i + lag])`; for `lag < 0` we pair
+/// `(prof1[i - lag], prof2[i])`. Either way `prof2_idx - prof1_idx = lag`.
+///
+/// The result length matches C's `MIN(strlen(aseq1[0]), strlen(aseq2[0]))`
+/// after `zurasu2` advances the pointer of the earlier-starting sequence:
+///   `lag >= 0`: `min(prof1.length, prof2.length - lag)`
+///   `lag <  0`: `min(prof1.length + lag, prof2.length)`
+/// scores beyond that range are absent — segment detection sees only valid
+/// overlap, not zero-padding.
 fn shift_and_score(
     prof1: &Profile,
     prof2: &Profile,
     matrix: &[Vec<i32>],
     lag: i32,
 ) -> Vec<f64> {
-    let len = prof1.length.max(prof2.length);
-    let mut scores = vec![0.0; len];
-    for i in 0..prof1.length {
-        let j = i as i32 - lag;
-        if j >= 0 && (j as usize) < prof2.length {
-            scores[i] = prof1.match_score(i, prof2, j as usize, matrix);
+    let n = prof1.length as i32;
+    let m = prof2.length as i32;
+    let valid_len = if lag >= 0 {
+        n.min(m - lag).max(0)
+    } else {
+        (n + lag).min(m).max(0)
+    } as usize;
+    let mut scores = vec![0.0f64; valid_len];
+    if lag >= 0 {
+        for i in 0..valid_len {
+            scores[i] = prof1.match_score(i, prof2, i + lag as usize, matrix);
+        }
+    } else {
+        let off = (-lag) as usize;
+        for i in 0..valid_len {
+            scores[i] = prof1.match_score(i + off, prof2, i, matrix);
         }
     }
     scores
@@ -270,6 +351,7 @@ mod tests {
             head_gap: true,
             tail_gap: true,
             num_channels: 4,
+            property_channels: None,
         };
         let aln = fft_profile_align(&prof, &prof, &mtx, &params);
         assert!(aln.score > 0.0);

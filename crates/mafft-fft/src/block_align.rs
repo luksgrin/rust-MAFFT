@@ -13,6 +13,15 @@
 /// - `gap_penalty`: cost for skipping segments (non-diagonal moves).
 ///
 /// Returns the selected pairs as `(cut1_indices, cut2_indices)`.
+///
+/// **Bug-for-bug port of C's `blockAlign2`** (`fftFunctions.c:455-509`).
+/// C has a typo where the FIRST inner loop reads `maxj` (which is reset
+/// only by the SECOND inner loop on the previous iteration) instead of
+/// `maxi`. The `maxi`/`maxj` are also static TLS so they persist across
+/// (i, j) iterations. We reproduce this state propagation faithfully —
+/// changing the comparison to the "correct" `> maxi` shifts anchor
+/// selection on inputs whose top-N candidates have similar correlation
+/// scores (e.g. BL62 default step 15).
 pub fn block_align(
     cross_scores: &[Vec<f64>],
     gap_penalty: f64,
@@ -37,42 +46,65 @@ pub fn block_align(
         }
     }
 
-    // Fill DP. Mirrors C's `blockAlign2` (`fftFunctions.c:455-509`).
-    //
-    // C calls `permit(seg_a, seg_b)` to gate non-corner skip transitions —
-    // but the production C code defines `permit` as `return( 0 );` followed
-    // by dead code (`fftFunctions.c:378-384`). With `permit == 0` the
-    // condition `if( k && k<ncut-1 && j<ncut-1 && !permit(...) ) continue;`
-    // simplifies to: skip iff `k != 0 AND k < ncut-1 AND j < ncut-1`. So
-    // for interior cells only k=0 (corner-jump) is allowed; only boundary
-    // cells (last row or column) consider full skips.
+    // Cross-iteration state mirroring C's `static TLS double maxj`.
+    // `maxj` is reset to 0.0 inside the SECOND inner loop, but read by
+    // the FIRST inner loop — so its value at the start of each (i, j)
+    // iteration is whatever the previous iteration's second loop left it.
+    let mut maxj_state: f64 = 0.0;
+
     for i in 1..ncut {
         for j in 1..ncut {
-            // Diagonal: continue from (i-1, j-1)
-            let mut best = dp[i - 1][j - 1];
+            // First loop: skip in j (column skip). C's typo compares
+            // crossscore[i-1][k] against `maxj` (the stale outer state),
+            // not `maxi` — see fftFunctions.c:470.
+            let mut pointi: usize = 0;
+            let mut maxi: f64 = 0.0;
+            let klim_j = (j as i32 - 2).max(0) as usize;
+            for k in 0..klim_j {
+                // permit() == 0 in production C → skip iff (k != 0 AND
+                // k < ncut-1 AND j < ncut-1).
+                if k != 0 && k < ncut - 1 && j < ncut - 1 { continue; }
+                if dp[i - 1][k] > maxj_state {
+                    pointi = k;
+                    maxi = dp[i - 1][k];
+                }
+            }
+
+            // Second loop: skip in i (row skip). Resets maxj to 0.0
+            // BEFORE scanning, so it sees fresh-state — but the freshly-
+            // computed maxj will be observed as the stale state by the
+            // NEXT (i, j) iteration's first loop.
+            let mut pointj: usize = 0;
+            let mut maxj: f64 = 0.0;
+            let klim_i = (i as i32 - 2).max(0) as usize;
+            for k in 0..klim_i {
+                if k != 0 && k < ncut - 1 && i < ncut - 1 { continue; }
+                if dp[k][j - 1] > maxj {
+                    pointj = k;
+                    maxj = dp[k][j - 1];
+                }
+            }
+
+            let maxi_pen = maxi + gap_penalty;
+            let maxj_pen = maxj + gap_penalty;
+
+            let mut maximum = dp[i - 1][j - 1];
             track[i][j] = 0;
 
-            // Skip segments in j (gap in group2's segments).
-            for k in 0..j.saturating_sub(2) {
-                if k != 0 && k < ncut - 1 && j < ncut - 1 { continue; }
-                let score = dp[i - 1][k] + gap_penalty;
-                if score > best {
-                    best = score;
-                    track[i][j] = (j - k) as i32;
-                }
+            if maximum < maxi_pen {
+                maximum = maxi_pen;
+                track[i][j] = (j - pointi) as i32;
+            }
+            if maximum < maxj_pen {
+                maximum = maxj_pen;
+                track[i][j] = -((i as i32) - pointj as i32);
             }
 
-            // Skip segments in i (gap in group1's segments).
-            for k in 0..i.saturating_sub(2) {
-                if k != 0 && k < ncut - 1 && i < ncut - 1 { continue; }
-                let score = dp[k][j - 1] + gap_penalty;
-                if score > best {
-                    best = score;
-                    track[i][j] = -((i - k) as i32);
-                }
-            }
+            dp[i][j] = cross_scores[i][j] + maximum;
 
-            dp[i][j] = cross_scores[i][j] + best;
+            // Propagate the local maxj into outer state for the NEXT
+            // iteration's first loop (mirrors C's static TLS persistence).
+            maxj_state = maxj;
         }
     }
 

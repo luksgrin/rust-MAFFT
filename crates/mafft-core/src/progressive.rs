@@ -239,6 +239,25 @@ fn merge_step_cached(
     } else if use_fft {
         // C uses Falign for ALL steps when use_fft=true (ffttry = nlen > clus,
         // always true). No minimum profile length check.
+        //
+        // For protein scoring matrices C uses 2-channel polarity+volume FFT
+        // via `seq_vec_2` (`Falign.c:342-348`). Build per-internal-index
+        // polarity/volume vectors so `find_fft_anchors` can mirror that.
+        let property_channels = if scoring.seq_type.is_nucleotide() {
+            None
+        } else {
+            let nscored = scoring.nscoredalphabets;
+            let mut polarity_by_idx = vec![0.0f64; nscored];
+            let mut volume_by_idx = vec![0.0f64; nscored];
+            for ch in 0u16..256 {
+                let idx = scoring.amino_map[ch as usize] as usize;
+                if idx < nscored {
+                    polarity_by_idx[idx] = scoring.polarity[ch as usize];
+                    volume_by_idx[idx] = scoring.volume[ch as usize];
+                }
+            }
+            Some((polarity_by_idx, volume_by_idx))
+        };
         let fft_params = FftAlignParams {
             num_candidates: 20,
             segment_params: if scoring.seq_type.is_nucleotide() {
@@ -250,6 +269,7 @@ fn merge_step_cached(
             head_gap: false,
             tail_gap: false,
             num_channels: scoring.nscoredalphabets,
+            property_channels,
         };
         fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params)
     } else if let Some(table) = constraints {
