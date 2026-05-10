@@ -336,7 +336,7 @@ impl MafftEngine {
             // so to reach `localthr = -pair_offset_int` we pass
             // `score_offset = pair_offset_int / 600`.
             let score_offset_for_local = pair_offset_int as f64 / 600.0;
-            let (table, dist) = mafft_align::build_homology_table(
+            let (table, dist) = mafft_align::build_homology_table_with_unalign(
                 &seq_refs,
                 &shifted,
                 &scoring.amino_map,
@@ -344,6 +344,7 @@ impl MafftEngine {
                 score_offset_for_local,
                 aligner,
                 pair_op,
+                self.unalign_level,
             );
             // For L-INS-i, tbfast computes pairwise alignments in-memory
             // via `callpairlocalalign=1`. The `iscore` distance matrix

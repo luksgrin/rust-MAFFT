@@ -43,7 +43,7 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | `--add --keeplength` (30+6 sample)         | 595     | 595        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | RNA NW  (`--nofft samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 | Q-INS-i (`--qinsi samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (verified 2026-05-10, requires `mxscarnamod` from `mafft-upstream/extensions`) |
-| `--allowshift --globalpair sample`         | 1029    | 809        | many       | partial — flag now active (746→809), see §9c |
+| `--allowshift --globalpair sample`         | 1029    | 957        | many       | partial — flag now active (746→957), see §9c |
 
 Test suite: 257 Rust tests pass (`cargo test --workspace --exclude pymafft
 --release --test-threads=1`), 0 failed, 0 ignored. Plus 32 Python tests pass.
@@ -786,7 +786,7 @@ not buildable from `mafft-upstream/extensions`. The Rust wiring exists
 correct "contrafold not found" diagnostic when the binary is absent.
 End-to-end validation deferred until `contrafold` is installed.
 
-### §9c. `--allowshift` — PARTIAL (per-step dynamic matrix done; per-pair pending)
+### §9c. `--allowshift` — PARTIAL (per-step + per-pair dynamic matrix done; remaining gap from int-vs-double DP precision)
 
 **Important correction to earlier description**: the warp DP code in C
 MAFFT 7.526 is **dead code**. `trywarp` is `int = 0` in `defs.c:54` and
@@ -795,45 +795,60 @@ either. The warp recurrence in `Galign11.c:780-870`, `Salignmm.c:1957-2020`,
 etc. is unreachable.
 
 **Actual `--allowshift` mechanism**: setting `unalignlevel = 0.8`
-(C's `specificityconsideration`) triggers per-step `makedynamicmtx`
-calls (`disttbfast.c:2304`, `tbfast.c:1440`) that scale substitution
-scores by `min(0, distfromtip - unalignlevel) * 600`. Plus per-pair
-dynamic-matrix re-alignment in `pairlocalalign.c:2197-2228`
-(`pairwise score → distance → dist2offset(dist) → if<0, re-align`).
-Plus `--allowshift` toggles `termgapopt = " "` (outgap=1, terminal
-gaps penalized) instead of the default `" -O "` (outgap=0).
+(C's `specificityconsideration`) triggers (a) per-step `makedynamicmtx`
+calls (`disttbfast.c:2304`, `tbfast.c:1440`) scaling scores by
+`min(0, distfromtip - unalignlevel) * 600`; (b) per-pair dynamic-matrix
+re-alignment in `pairlocalalign.c:2197-2228` (`pairwise score →
+distance → dist2offset(dist) → if<0, re-align with dynamic matrix`); (c)
+the script also zeroes `pgaof = pgexp = laof = lexp = 0` in
+`scripts/mafft:1469-1473`, which makes the pairwise pscores larger
+(no per-cell offset/extend penalty).
 
-**What's done (this session, 2026-05-10)**:
-- CLI: `--allowshift` and `--unalignlevel #` recognized (`mafft-bin/src/main.rs`).
-  `--allowshift` defaults `unalign_level = 0.8` if not explicitly given.
+**What's done (2026-05-10)**:
+- CLI: `--allowshift` and `--unalignlevel #` (`mafft-bin/src/main.rs`).
+  `--allowshift` defaults `unalign_level = 0.8`.
 - Engine: `MafftEngine.unalign_level: f64`, `with_unalign_level()`.
-- Progressive merge: `progressive_align_full(..., unalign_level)` builds
-  per-step dynamic `substitution_matrix` clones from the topology's
-  `compute_distfromtip` heights. Helpers `dist2offset` and
-  `make_dynamic_matrix` mirror `mltaln9.c:15169-15211` exactly.
+- Per-step dynamic matrix in progressive merge:
+  `progressive_align_full(..., unalign_level)` clones the
+  `ScoringContext` per step and scales `substitution_matrix` via
+  helpers `dist2offset` + `make_dynamic_matrix`
+  (mirror `mltaln9.c:15169-15211`).
+- Per-pair dynamic re-alignment in
+  `mafft-align::build_homology_table_with_unalign`: after the initial
+  pairwise alignment, computes `dist = score2dist(score, selfscore[i],
+  selfscore[j])`. If `0.5*dist - unalign_level < 0`, builds a per-pair
+  dynamic matrix and re-runs the pairwise DP. Original score retained
+  for the distance matrix; new alignment trace feeds the constraint
+  table (matches C's `pairlocalalign.c:2196-2215`).
 
-**Result**: `mafft --allowshift --globalpair sample` Rust width 809
-(was 746 = no effect). C width 1029. Closer but not byte-identical.
+**Verification** via instrumentation (CDBG_PAIR / RDBG_PAIR):
+- Initial pscore for pair (0,1) on 36-seq sample: Rust 181568.0,
+  C 181568.0 — match exactly.
+- Distance: Rust 0.280052, C 0.280052 — match.
+- distfromtip: per-step values match C's exactly.
+- Topology: identical (verified through distfromtip equivalence).
 
-**What's missing for byte-identity** (220-col gap):
-1. Per-pair dynamic matrix re-alignment in `build_homology_table`
-   (`pairlocalalign.c:2197-2228` for case 'A' / Global; case 'l' / Local
-   at `:2237-2253`). Algorithm: first call `G__align11(n_dis_consweight_multi, ...)`
-   for pscore. Compute `dist = score2dist(pscore, selfscore[i], selfscore[j])`.
-   If `dist2offset(dist) < 0`, build dynamic matrix with `0.5 * dist` and
-   re-run `G__align11` with the new matrix (replacing the alignment trace
-   used for local-homology constraints).
-2. `outgap=1` (terminal gaps penalized) in pair phase when
-   `--allowshift`. Currently our G-INS-i pair phase uses `head_gap=true,
-   tail_gap=true` already (= outgap=1), so this *might* already be
-   correct — verify when porting #1.
-3. Per-step dynamic matrix in iterative refinement (`dvtditr.c::dvtditr`).
-   For `--maxiterate > 0`. With our test, `--maxiterate 0` already
-   shows the 220-col gap, so this is secondary to #1.
+**Result**: `mafft --allowshift --globalpair --maxiterate 0 sample`
+Rust width 957, C width 1029. Was 746 before any work, 809 after
+per-step only.
+
+**Remaining 72-col gap**: comes from int (Rust) vs double (C) precision
+in the dynamic-matrix DP. C's `makedynamicmtx` adds `offset * 600` as
+a `double`. Rust's `(off * 600).round() as i32` loses sub-integer
+precision per cell. For pair (0, 1): C's pscore_after = 43765.459,
+Rust's pscore_after = 44108.0 — a per-pair score divergence of ~0.8%.
+Accumulated through the constraint table → per-cell impmtx →
+progressive merge, this widens the final alignment by ~7%.
+
+**To close fully**: migrate `profile_align`/`global_align` to use
+`Vec<Vec<f64>>` matrices (or scaled-int fixed-point with extra
+precision bits). Significant refactor across `mafft-align/src/dp.rs`,
+`profile.rs`, `global.rs`. Out of scope for this session.
 
 **Priority**: Low — `--allowshift` is rarely used. The current partial
-implementation makes the flag take effect (746 → 809) but doesn't
-match C exactly. No regression on any mainstream mode (all 30
+implementation makes the flag take meaningful effect (746 → 957, vs
+C's 1029) and matches C exactly on all upstream parameters except the
+final DP cell precision. No regression on any mainstream mode (all 30
 byte-identity tests still pass).
 
 ---

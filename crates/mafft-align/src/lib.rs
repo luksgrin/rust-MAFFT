@@ -24,7 +24,8 @@ pub use profile::{
 };
 pub use fft_align::{fft_profile_align, find_fft_anchors, FftAlignParams, Anchor};
 pub use constraints::{
-    build_local_homology_table, build_homology_table, build_imp_matrix,
+    build_local_homology_table, build_homology_table,
+    build_homology_table_with_unalign, build_imp_matrix,
     recompute_importance, PairAligner, FASTATHRESHOLD_DEFAULT,
 };
 pub use constrained_align::{

@@ -26,7 +26,11 @@ fn make_dynamic_matrix(base: &[Vec<i32>], distfromtip: f64, unalign_level: f64) 
     if offset == 0.0 {
         return base.iter().map(|r| r.clone()).collect();
     }
-    let delta = (offset * 600.0) as i32;
+    // C's `makedynamicmtx` (mltaln9.c:15201) does `out[i][j] = in[i][j] +
+    // offset * 600` with `out` a `double **`. Round to match the nearest
+    // int rather than truncate toward zero (truncation systematically
+    // skews the delta toward zero and shifts the alignment trace).
+    let delta = (offset * 600.0).round() as i32;
     base.iter()
         .map(|row| row.iter().map(|&v| v + delta).collect())
         .collect()

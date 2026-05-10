@@ -286,6 +286,32 @@ pub fn build_homology_table(
     aligner: PairAligner,
     op_penalty: f64,
 ) -> (LocalHomologyTable, Vec<Vec<f64>>) {
+    build_homology_table_with_unalign(
+        sequences, matrix, amino_map, gap, score_offset, aligner, op_penalty, 0.0,
+    )
+}
+
+/// Like `build_homology_table` but with per-pair dynamic-matrix
+/// re-alignment when `unalign_level > 0`. Mirrors C's
+/// `pairlocalalign.c:2196-2228` (case 'A') and `:2237-2253` (case 'l'):
+/// after the initial pairwise alignment, compute
+/// `dist = score2dist(score, selfscore[i], selfscore[j])`. If
+/// `dist2offset(dist) < 0` (= `0.5*dist - unalign_level < 0`), build a
+/// dynamic substitution matrix with offset `(0.5*dist - unalign_level) *
+/// 600` and re-run the pairwise alignment. The new alignment is used
+/// for the local-homology constraints; the *original* score is kept for
+/// the distance matrix (matching C, which never assigns the second
+/// `G__align11`'s return value back to `pscore`).
+pub fn build_homology_table_with_unalign(
+    sequences: &[&[u8]],
+    matrix: &[Vec<i32>],
+    amino_map: &[u8; 256],
+    gap: &GapModel,
+    score_offset: f64,
+    aligner: PairAligner,
+    op_penalty: f64,
+    unalign_level: f64,
+) -> (LocalHomologyTable, Vec<Vec<f64>>) {
     let nseq = sequences.len();
 
     // C's `pairlocalalign.c:2590-2596`: selfscore[i] = sum of diagonal
@@ -319,43 +345,85 @@ pub fn build_homology_table(
             // Branch at the alignment call to keep the rest of the
             // chaining logic shared. For Local, we have a true offset
             // into both sequences. For Global, both offsets are 0.
-            let (alignment, offset1, offset2) = match aligner {
-                PairAligner::Local => {
-                    let r = local_align(
-                        sequences[i], sequences[j],
-                        matrix, amino_map, gap, score_offset,
-                    );
-                    (r.alignment, r.offset1, r.offset2)
-                }
-                PairAligner::Global => {
-                    // Match C's `pairlocalalign -A` (`pairlocalalign.c:2196`)
-                    // which calls `G__align11` with `outgap` controlling
-                    // terminal-gap treatment. The script for G-INS-i
-                    // doesn't pass `-O`, so `outgap` defaults to 1 →
-                    // both head and tail gaps are penalized.
-                    let r = crate::global::global_align(
-                        sequences[i], sequences[j],
-                        matrix, amino_map, gap,
-                        true, true,
-                    );
-                    (r, 0, 0)
-                }
-                PairAligner::GeneralizedAffine => {
-                    // C's `pairlocalalign -N` (`pairlocalalign.c:2233`) →
-                    // `genL__align11`: max-so-far Smith-Waterman with an
-                    // extra "skip" gap state (penalty_OP, no extension).
-                    use crate::genaffine::{genaffine_local_align, GenAffineGapModel};
-                    let gen_gap = GenAffineGapModel {
-                        affine: gap.clone(),
-                        open_generalized: op_penalty,
-                    };
-                    let r = genaffine_local_align(
-                        sequences[i], sequences[j],
-                        matrix, amino_map, &gen_gap, score_offset,
-                    );
-                    (r.alignment, r.offset1, r.offset2)
+            let run_align = |mat: &[Vec<i32>]| -> (crate::dp::Alignment, usize, usize) {
+                match aligner {
+                    PairAligner::Local => {
+                        let r = local_align(
+                            sequences[i], sequences[j],
+                            mat, amino_map, gap, score_offset,
+                        );
+                        (r.alignment, r.offset1, r.offset2)
+                    }
+                    PairAligner::Global => {
+                        // Match C's `pairlocalalign -A` (`pairlocalalign.c:2196`)
+                        // which calls `G__align11` with `outgap` controlling
+                        // terminal-gap treatment. The script for G-INS-i
+                        // doesn't pass `-O`, so `outgap` defaults to 1 →
+                        // both head and tail gaps are penalized.
+                        let r = crate::global::global_align(
+                            sequences[i], sequences[j],
+                            mat, amino_map, gap,
+                            true, true,
+                        );
+                        (r, 0, 0)
+                    }
+                    PairAligner::GeneralizedAffine => {
+                        // C's `pairlocalalign -N` (`pairlocalalign.c:2233`) →
+                        // `genL__align11`: max-so-far Smith-Waterman with an
+                        // extra "skip" gap state (penalty_OP, no extension).
+                        use crate::genaffine::{genaffine_local_align, GenAffineGapModel};
+                        let gen_gap = GenAffineGapModel {
+                            affine: gap.clone(),
+                            open_generalized: op_penalty,
+                        };
+                        let r = genaffine_local_align(
+                            sequences[i], sequences[j],
+                            mat, amino_map, &gen_gap, score_offset,
+                        );
+                        (r.alignment, r.offset1, r.offset2)
+                    }
                 }
             };
+            let (mut alignment, mut offset1, mut offset2) = run_align(matrix);
+
+            // Per-pair dynamic re-alignment (C `pairlocalalign.c:2199-2215`):
+            // when `specificityconsideration > 0` and the initial alignment's
+            // distance falls under `2*unalign_level`, re-run the pairwise DP
+            // with a substitution matrix scaled by `(0.5*dist - unalign_level)
+            // * 600`. The original `alignment.score` is kept for the distance
+            // matrix; only the alignment trace is replaced (used for the
+            // local-homology region extraction below).
+            if unalign_level > 0.0 && alignment.score > 0.0 {
+                let bunbo = selfscore[i].min(selfscore[j]);
+                let dist_for_offset = if bunbo == 0.0 {
+                    2.0
+                } else if bunbo < alignment.score {
+                    0.0
+                } else {
+                    (1.0 - alignment.score / bunbo) * 2.0
+                };
+                let off = 0.5 * dist_for_offset - unalign_level;
+                if off < 0.0 {
+                    // C `mltaln9.c::makedynamicmtx` adds `offset * 600` as a
+                    // double. Our DP uses `i32` matrices, so we must round
+                    // here. Truncation toward zero would systematically
+                    // produce a less-negative delta and a different trace.
+                    let delta = (off * 600.0).round() as i32;
+                    let dyn_matrix: Vec<Vec<i32>> = matrix
+                        .iter()
+                        .map(|row| row.iter().map(|&v| v + delta).collect())
+                        .collect();
+                    let original_score = alignment.score;
+                    let (re_aln, re_off1, re_off2) = run_align(&dyn_matrix);
+                    alignment = re_aln;
+                    offset1 = re_off1;
+                    offset2 = re_off2;
+                    // Restore C's invariant: the distance comes from the
+                    // *original* score (line 2204 reads `pscore` from the
+                    // first alignment, not the re-aligned one).
+                    alignment.score = original_score;
+                }
+            }
 
             // For E-INS-i, C's `pairlocalalign -N -Z`
             // (`scripts/mafft:1946`, `pairlocalalign.c:2225-2229`) overrides
