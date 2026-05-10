@@ -554,14 +554,49 @@ C's `splittbfast.c` is a substantially different pipeline:
       pipeline (max-selfscore swap + initial scores via FFI
       `commonsextet_p` + dcompare sort) and asserts every sorted
       `(numinseq, score, selfscore, orilen)` tuple matches Rust's.
-- [ ] **`splitseq_mq` recursion + treeorder** (#42) — not started.
-  Includes the `dfromc` (nyuko × nin) construction, the
-  `belongto`-based non-pivot assignment, and the topol-leaf-walk
-  output ordering (`splittbfast.c:2351-2519`).
-- [ ] **Unweighted-profile mode** for `pairalign` — not started.
-  Required for end-to-end byte-identity. Currently
-  `progressive_align` always uses weighted profiles.
-- [ ] **End-to-end byte-identity tests** (#43).
+- [x] **`splitseq_mq` topology assembly** —
+  `crates/mafft-tree/src/parttree_split.rs`:
+  - `build_dfromc` — nyuko × nin distance matrix from each surviving
+    yuko to all sorted-position sequences (`splittbfast.c:2132-2236`).
+  - `assign_to_yukos` — argmin assignment of every sequence to its
+    closest yuko, building `outs[]` lists
+    (`splittbfast.c:2244-2302`). For our n=36 fixture, the duplicate
+    at sorted-position 1 lands in the reference yuko, giving one
+    2-member `outs[]`.
+  - `assemble_topology` — emits internal-alignment `JoinStep`s for
+    each multi-member yuko (1 step per pair-merge in left-fold
+    chain), then yuko-level steps from UPGMA on yukomtx. Total
+    `nin - 1` steps. JoinStep `left` / `right` sorted ascending
+    (matching C's `qsort(mem1, ..., intcompare)` at
+    `splittbfast.c:2477-2478`).
+- [x] **Unweighted-profile mode for `progressive_align`** —
+  `progressive_align_with_weights_override` (and shorthand
+  `progressive_align_unweighted`) accept a per-sequence weight vector
+  that bypasses the tree-derived `sequence_weights`. Engine passes
+  `vec![1.0; nseq]` whenever `use_parttree`. Mirrors
+  `splittbfast.c:6` `#define WEIGHT 0` selecting
+  `fastconjuction_noweight`.
+- [ ] **End-to-end byte-identity tests** (#43) — IN PROGRESS. Current
+  state on the 36-seq sample:
+  - `--parttree`: Rust width 746 vs C 752 (after retree=2). Same
+    sequence content but ~6-column shift.
+  - `--parttree --retree 1`: Rust 737 vs C 732, 974-line diff.
+  Remaining gap is likely a subtle topology-execution-order detail
+  or splittbfast's pass-2 `-Z` flag behavior; needs per-step FFI-
+  driven bisection (analogous to the `MAFFT_DEBUG_STEPS` /
+  `CDBG_STEPS` approach used to close §5 TM 200).
+
+### Session results so far
+
+- 260 Rust tests pass, 0 failed.
+- 8 new FFI tests in `tests/cross_validate_parttree.rs` covering
+  every layer of the pipeline below alignment.
+- All previously parity-passing modes (FFT-NS-2, BL/JTT/TM,
+  L/G/E-INS-i, NW) remain byte-exact — no regression.
+- New crates: `parttree_dist.rs`, `parttree_pivot.rs`,
+  `parttree_split.rs`. ~700 lines of new Rust.
+- New FFI: `commonsextet_p`, `fixed_musclesupg_*`, `AllocateIntCub`,
+  `parttree_helpers.c` wrapper, parttree global vars.
 
 ### FFI scaffolding added this session
 

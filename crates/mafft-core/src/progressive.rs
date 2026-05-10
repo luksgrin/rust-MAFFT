@@ -63,6 +63,30 @@ pub fn progressive_align(
     )
 }
 
+/// Run progressive alignment with all per-sequence weights set to 1.0.
+/// When normalized within each cluster, this yields uniform weights
+/// `1/clus_size` — mirroring C `splittbfast.c::fastconjuction_noweight`'s
+/// behavior (used by `--parttree` because `splittbfast.c:6` defines
+/// `WEIGHT 0`).
+///
+/// The standard `progressive_align` derives weights from the guide tree's
+/// branch lengths via `weighting::sequence_weights` (matching `disttbfast`
+/// / `tbfast`'s `fastconjuction_noname` path).
+pub fn progressive_align_unweighted(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+) -> MultipleAlignment {
+    let weights = vec![1.0f64; sequences.len()];
+    progressive_align_with_weights_override(
+        sequences, names, topology, scoring, use_fft, shift_penalty,
+        None, false, Some(&weights),
+    )
+}
+
 /// Run progressive alignment merges 0..n_steps and return the
 /// intermediate `aligned[]` state at that point.
 ///
@@ -126,6 +150,29 @@ pub fn progressive_align_with_constraints(
     constraints: Option<&mafft_types::LocalHomologyTable>,
     penalize_term_gaps: bool,
 ) -> MultipleAlignment {
+    progressive_align_with_weights_override(
+        sequences, names, topology, scoring, use_fft, shift_penalty,
+        constraints, penalize_term_gaps, None,
+    )
+}
+
+/// Like `progressive_align_with_constraints` but allows overriding the
+/// per-sequence weights. When `weights_override` is `Some(w)`, each
+/// `w[i]` is used directly (still normalized within each cluster at
+/// merge time). When `None`, the weights come from
+/// `sequence_weights(topology)` (the tree-derived
+/// `weightFromABranch`-based defaults).
+pub fn progressive_align_with_weights_override(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+    constraints: Option<&mafft_types::LocalHomologyTable>,
+    penalize_term_gaps: bool,
+    weights_override: Option<&[f64]>,
+) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
@@ -138,7 +185,10 @@ pub fn progressive_align_with_constraints(
         };
     }
 
-    let weights = sequence_weights(topology);
+    let weights = match weights_override {
+        Some(w) => w.to_vec(),
+        None => sequence_weights(topology),
+    };
     let mut aligned: Vec<Vec<u8>> = sequences.to_vec();
 
     let mut last_score = 0.0;

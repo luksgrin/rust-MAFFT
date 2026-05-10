@@ -5,6 +5,8 @@ use rayon::prelude::*;
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
 use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, scoring_matrix_distance, parttree, PartTreeParams};
+use mafft_tree::parttree_split::{build_parttree_topology};
+use mafft_tree::parttree_pivot::PtSeqKind;
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
 
@@ -206,16 +208,28 @@ impl MafftEngine {
         );
 
         // Step 1: Initial guide tree
-        // For PartTree mode, use divide-and-conquer (O(n log n)) instead of
-        // full pairwise distances (O(n²)).
+        // For PartTree mode, route through the C-equivalent splittbfast
+        // pipeline (`crates/mafft-tree/src/parttree_split.rs`). Falls
+        // back to the legacy `parttree(...)` shim for `--dpparttree`
+        // since the DP-based distance variant isn't ported yet.
         let use_parttree = self.parttree || self.dpparttree;
         let parttree_topo = if use_parttree {
-            let params = PartTreeParams {
-                group_size: self.groupsize.unwrap_or(150),
-                pick_size: 50,
-                use_dp: self.dpparttree,
-            };
-            Some(parttree(&sequences, &params))
+            if self.dpparttree {
+                let params = PartTreeParams {
+                    group_size: self.groupsize.unwrap_or(150),
+                    pick_size: 50,
+                    use_dp: self.dpparttree,
+                };
+                Some(parttree(&sequences, &params))
+            } else {
+                let kind = if scoring.seq_type.is_nucleotide() {
+                    PtSeqKind::Dna
+                } else {
+                    PtSeqKind::Protein
+                };
+                let picksize = 50;
+                Some(build_parttree_topology(&sequences, kind, picksize))
+            }
         } else {
             None
         };
@@ -419,9 +433,20 @@ impl MafftEngine {
             // The progressive A__align/profile_align_imp call propagates
             // this as `headgp = tailgp = outgap`.
             let penalize_term_gaps = matches!(self.mode, AlignmentMode::GInsi { .. });
-            msa = progressive_align_with_constraints(
+            // C `splittbfast.c:6` `#define WEIGHT 0` makes `--parttree` use
+            // `fastconjuction_noweight` (uniform per-cluster weights) for
+            // its internal `pairalign`. We mirror that by passing a
+            // uniform-1.0 weight vector when `use_parttree`. All other
+            // modes derive weights from the guide tree's branch lengths.
+            let weights_override: Option<Vec<f64>> = if use_parttree {
+                Some(vec![1.0; sequences.len()])
+            } else {
+                None
+            };
+            msa = crate::progressive::progressive_align_with_weights_override(
                 &input_seqs, &names, &topo, &scoring, use_fft, shift,
                 progress_constraints, penalize_term_gaps,
+                weights_override.as_deref(),
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
 
