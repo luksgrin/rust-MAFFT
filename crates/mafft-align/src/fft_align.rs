@@ -12,7 +12,7 @@ use mafft_fft::{
 };
 
 use crate::dp::{Alignment, GapModel};
-use crate::profile::{align_with_anchors, profile_align, Profile};
+use crate::profile::{align_with_anchors_outgap, profile_align, Profile};
 
 /// Parameters controlling FFT-accelerated alignment.
 #[derive(Debug, Clone)]
@@ -221,7 +221,16 @@ pub fn fft_profile_align(
     }
 
     match find_fft_anchors(prof1, prof2, matrix, params) {
-        Some(anchors) => align_with_anchors(prof1, prof2, matrix, &params.gap, &anchors),
+        Some(anchors) => align_with_anchors_outgap(
+            prof1, prof2, matrix, &params.gap, &anchors,
+            // The fft path's `head_gap`/`tail_gap` are conventionally
+            // both equal to the outer C `outgap` (Falign passes a single
+            // value into its first/last segment). Pass `head_gap` as the
+            // canonical outgap here — for our progressive merges
+            // `head_gap == tail_gap` (both controlled by
+            // `penalize_term_gaps` in `progressive::merge_step_cached`).
+            params.head_gap,
+        ),
         None => profile_align(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap),
     }
 }

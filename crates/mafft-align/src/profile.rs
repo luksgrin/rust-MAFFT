@@ -202,18 +202,36 @@ impl Profile {
 /// match/gap freely.
 ///
 /// Segment gap handling (Falign.c:686-687):
-///   - First segment       (i == 0):           headgp = outgap (0), tailgp = 1
-///   - Intermediate:                            headgp = 1,           tailgp = 1
-///   - Last segment        (i == count - 2):   headgp = 1,           tailgp = outgap (0)
+///   - First segment       (i == 0):           headgp = outgap, tailgp = 1
+///   - Intermediate:                            headgp = 1,      tailgp = 1
+///   - Last segment        (i == count - 2):   headgp = 1,      tailgp = outgap
 ///
-/// With outgap=0 (the mafft script always sets `-O`):
+/// With outgap=0 (the mafft script's `-O` for FFT-NS-2/L-INS-i/E-INS-i):
 ///   first → head_gap=false, last → tail_gap=false, middle → both true.
+/// With outgap=1 (G-INS-i, --parttree — script omits `-O`):
+///   ALL segments → head_gap=true, tail_gap=true.
+///
+/// Defaults to outgap=0; see `align_with_anchors_outgap` for the
+/// outgap=1 variant used by `--parttree`.
 pub fn align_with_anchors(
     prof1: &Profile,
     prof2: &Profile,
     matrix: &[Vec<i32>],
     gap: &GapModel,
     anchors: &[(usize, usize)],
+) -> Alignment {
+    align_with_anchors_outgap(prof1, prof2, matrix, gap, anchors, false)
+}
+
+/// Variant of [`align_with_anchors`] that explicitly takes the C
+/// `outgap` flag (`true` = penalize term gaps).
+pub fn align_with_anchors_outgap(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<i32>],
+    gap: &GapModel,
+    anchors: &[(usize, usize)],
+    outgap: bool,
 ) -> Alignment {
     // Build cut1/cut2 mirroring C's Falign: bracket anchors with [0, …, length].
     let mut cut1: Vec<usize> = Vec::with_capacity(anchors.len() + 2);
@@ -247,11 +265,11 @@ pub fn align_with_anchors(
         let q1 = cut1[i + 1];
         let q2 = cut2[i + 1];
 
-        // C's Falign.c:686-687 with outgap=0:
-        //   headgp = (i == 0) ? 0 : 1   →  head_gap = (i != 0)
-        //   tailgp = (i == count-2) ? 0 : 1  →  tail_gap = (i != count - 2)
-        let head_gap = i != 0;
-        let tail_gap = i != count - 2;
+        // C's Falign.c:686-687:
+        //   headgp = (i == 0) ? outgap : 1
+        //   tailgp = (i == count-2) ? outgap : 1
+        let head_gap = if i == 0 { outgap } else { true };
+        let tail_gap = if i == count - 2 { outgap } else { true };
 
         if q1 > p1 || q2 > p2 {
             let sub1 = prof1.sub_profile(p1, q1);

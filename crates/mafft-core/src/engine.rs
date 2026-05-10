@@ -432,7 +432,17 @@ impl MafftEngine {
             // penalized). L-INS-i and E-INS-i pass `-O` so `outgap = 0`.
             // The progressive A__align/profile_align_imp call propagates
             // this as `headgp = tailgp = outgap`.
-            let penalize_term_gaps = matches!(self.mode, AlignmentMode::GInsi { .. });
+            // C `outgap=1` (terminal gaps penalized) is the global default
+            // (`splittbfast.c:560`, `disttbfast.c:185`) and is overridden to
+            // 0 by the `-O` flag (`scripts/mafft:291 termgapopt=" -O "`).
+            // The mafft script passes `-O` to disttbfast/tbfast for most
+            // modes but withholds it for:
+            //   - `--globalpair` (G-INS-i / G-INS-1) — `scripts/mafft:2584`
+            //     vs L-INS-i/E-INS-i which include termgapopt.
+            //   - `--parttree` / `--dpparttree` — `scripts/mafft:2655` does
+            //     not include `$termgapopt` in the splittbfast call.
+            let penalize_term_gaps = matches!(self.mode, AlignmentMode::GInsi { .. })
+                || use_parttree;
             // C `splittbfast.c:6` `#define WEIGHT 0` makes `--parttree` use
             // `fastconjuction_noweight` (uniform per-cluster weights) for
             // its internal `pairalign`. We mirror that by passing a

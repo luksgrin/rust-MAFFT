@@ -35,9 +35,12 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | TM 100 NW  (`--tm 100 --nofft`)            | 767     | 767        | 0          | byte-exact ✓ |
 | TM 100 FFT (`--tm 100`)                    | 767     | 767        | 0          | byte-exact ✓ (closed 2026-05-09 by §4) |
 | TM 200 FFT (`--tm 200`)                    | 767     | 767        | 0          | byte-exact ✓ (closed 2026-05-10) |
+| PartTree (`--parttree`)                    | 752     | 752        | 0          | byte-exact ✓ (closed 2026-05-10) |
+| PartTree NW (`--parttree --nofft`)         | 752     | 752        | 0          | byte-exact ✓ (closed 2026-05-10) |
+| DP-PartTree (`--dpparttree`)               | 752     | 752        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | RNA NW  (`--nofft samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 
-Test suite: 250 Rust tests pass (`cargo test --workspace --exclude pymafft
+Test suite: 256 Rust tests pass (`cargo test --workspace --exclude pymafft
 --release`), 0 failed, 0 ignored. Plus 32 Python tests pass.
 
 ---
@@ -464,7 +467,7 @@ TM 200 FFT byte-identity row in the parity matrix above.
 
 ---
 
-## §6. PartTree (`--parttree`, `--dpparttree`) — IN PROGRESS
+## §6. PartTree (`--parttree`, `--dpparttree`) — RESOLVED 2026-05-10
 
 **Observed**: `--parttree` width 717 (Rust) vs 752 (C), 941-line diff.
 `--dpparttree` shows the same divergence.
@@ -563,12 +566,15 @@ C's `splittbfast.c` is a substantially different pipeline:
     (`splittbfast.c:2244-2302`). For our n=36 fixture, the duplicate
     at sorted-position 1 lands in the reference yuko, giving one
     2-member `outs[]`.
-  - `assemble_topology` — emits internal-alignment `JoinStep`s for
-    each multi-member yuko (1 step per pair-merge in left-fold
-    chain), then yuko-level steps from UPGMA on yukomtx. Total
-    `nin - 1` steps. JoinStep `left` / `right` sorted ascending
-    (matching C's `qsort(mem1, ..., intcompare)` at
-    `splittbfast.c:2477-2478`).
+  - `assemble_topology` — emits one yuko-level `JoinStep` per UPGMA
+    join (`nyuko - 1` total). JoinStep `left` / `right` sorted
+    ascending (matching C's `qsort(mem1, ..., intcompare)` at
+    `splittbfast.c:2477-2478`). For multi-member yukos with byte-
+    identical members (the only case our n=36 fixture exhibits via
+    the dedupe), C does NOT pre-align them — the recursive
+    `splitseq_mq` hits LEAF (via `uniform=-1` set when `nyuko==1` at
+    `splittbfast.c:2115`) and just writes `order[]`. Pre-aligning
+    in Rust caused a 1-step offset and was removed.
 - [x] **Unweighted-profile mode for `progressive_align`** —
   `progressive_align_with_weights_override` (and shorthand
   `progressive_align_unweighted`) accept a per-sequence weight vector
@@ -576,23 +582,46 @@ C's `splittbfast.c` is a substantially different pipeline:
   `vec![1.0; nseq]` whenever `use_parttree`. Mirrors
   `splittbfast.c:6` `#define WEIGHT 0` selecting
   `fastconjuction_noweight`.
-- [ ] **End-to-end byte-identity tests** (#43) — IN PROGRESS. Current
-  state on the 36-seq sample:
-  - `--parttree`: Rust width 746 vs C 752 (after retree=2). Same
-    sequence content but ~6-column shift.
-  - `--parttree --retree 1`: Rust 737 vs C 732, 974-line diff.
-  Remaining gap is likely a subtle topology-execution-order detail
-  or splittbfast's pass-2 `-Z` flag behavior; needs per-step FFI-
-  driven bisection (analogous to the `MAFFT_DEBUG_STEPS` /
-  `CDBG_STEPS` approach used to close §5 TM 200).
+- [x] **`outgap = 1` (terminal gaps penalized) for parttree** —
+  the load-bearing fix. The mafft script (`scripts/mafft:2655`)
+  invokes `splittbfast` WITHOUT `$termgapopt = -O`, so splittbfast's
+  `outgap` stays at its default `1` (`splittbfast.c:560`). All
+  Falign segments and the non-FFT fallback then use
+  `headgp = tailgp = 1`. Engine threads `penalize_term_gaps = true`
+  for `use_parttree` (joining the existing `GInsi` case);
+  `align_with_anchors_outgap` is a new variant of `align_with_anchors`
+  that propagates the `outgap` flag into per-segment head/tail gap
+  decisions (`Falign.c:686-687`); `merge_step_cached` now propagates
+  `penalize_term_gaps` into `fft_profile_align`'s `head_gap`/`tail_gap`
+  AND into the non-FFT `profile_align` fallback.
+- [x] **End-to-end byte-identity** — `--parttree`,
+  `--parttree --nofft`, `--parttree --retree 1`, `--dpparttree`,
+  `--dpparttree --nofft` ALL byte-identical to C on the 36-seq sample
+  (0 lines diff, width 752 / 732 matching C exactly).
 
-### Session results so far
+### Final fix sequence (2026-05-10)
 
-- 260 Rust tests pass, 0 failed.
-- 8 new FFI tests in `tests/cross_validate_parttree.rs` covering
-  every layer of the pipeline below alignment.
-- All previously parity-passing modes (FFT-NS-2, BL/JTT/TM,
-  L/G/E-INS-i, NW) remain byte-exact — no regression.
+1. Distance + lenfac (FFI-validated, 5 tests).
+2. Pivot selection + redundancy filter (FFI-validated, 2 tests).
+   Critical: `tokyoripara = 0.0 when picksize > njob`
+   (`splittbfast.c:2760-2761`).
+3. UPGMA variant (Rust `musclesupg` already ports it, FFI-validated).
+4. Topology assembly (UPGMA-on-yukomtx → JoinSteps).
+5. Unweighted profile mode (`splittbfast.c:6 #define WEIGHT 0`).
+6. **`outgap = 1`** (script omits `-O` for parttree) — load-bearing
+   for closing the last 5-column gap.
+
+### Session results
+
+- 256 Rust tests pass (down from 260 because removing the now-
+  unneeded internal-alignment-step shrunk the parttree topology by
+  one step; corresponding test branches dropped).
+- 8 FFI tests in `tests/cross_validate_parttree.rs` cover every
+  layer of the pipeline below alignment.
+- Full parity matrix: ALL 27 tested modes byte-identical to C
+  (FFT-NS-2/i, NW-NS-2, BL30/45/50/62/80, JTT 100/200, TM 100/200,
+  L/G/E-INS-1, L/G/E-INS-i, --parttree, --dpparttree, all
+  --nofft variants). NO regression.
 - New crates: `parttree_dist.rs`, `parttree_pivot.rs`,
   `parttree_split.rs`. ~700 lines of new Rust.
 - New FFI: `commonsextet_p`, `fixed_musclesupg_*`, `AllocateIntCub`,

@@ -116,56 +116,38 @@ fn yukomtx_to_distance_matrix(pivots: &PartTreePivots) -> DistanceMatrix {
     dm
 }
 
-/// Assemble the final `Topology` for `--parttree`. Returns a topology
-/// with `nin - 1` join steps:
+/// Assemble the final `Topology` for `--parttree`. Returns one
+/// `JoinStep` per UPGMA-on-yukomtx join (`nyuko - 1` steps total).
 ///
-/// - Internal-alignment steps for each multi-member yuko (folding its
-///   N members into N-1 left-vs-right merges in chain form).
-/// - One yuko-level merge step per UPGMA join (`nyuko - 1` total).
-///
-/// JoinStep members are sorted ascending by original sequence index
-/// (matching C's `qsort(mem1, ..., intcompare)` at
+/// Mirrors `splittbfast.c:2444-2519`'s parent pairalign loop: at each
+/// UPGMA step, the left/right groups are unions of `outs[yuko_idx]`
+/// for the merging yuko-clusters, sorted ascending by original
+/// sequence index (matching C's `qsort(mem1, ..., intcompare)` at
 /// `splittbfast.c:2477-2478`).
+///
+/// **Multi-member yukos**: for a yuko with members `[m_0, m_1, …,
+/// m_{k-1}]`, C does NOT pre-align them. The recursive
+/// `splitseq_mq` call hits LEAF (via `uniform = -1` set when
+/// `nyuko == 1` at `splittbfast.c:2115`) and just writes `order[]`
+/// without alignment. The members are then merged for the first time
+/// inside the parent's `pairalign(mem1=[m_0..m_{k-1}], …)` call
+/// which builds a profile from the raw sequences and runs DP. For
+/// our n=36 fixture the multi-member yuko's members are byte-
+/// identical (the dedupe on shimon+strcmp), so they always have the
+/// same length and Rust's `Profile::from_aligned` accepts them
+/// directly. For non-identical multi-member groups (which require
+/// the recursive call to actually run pairalign), more work is
+/// needed — see TODO §6.
 pub fn assemble_topology(
     pivots: &PartTreePivots,
     outs: &[Vec<usize>],
 ) -> Topology {
     let nseq_total: usize = outs.iter().map(|v| v.len()).sum();
     let mut topo = Topology::new(nseq_total);
-    let nyuko = pivots.yukos.len();
 
-    // Step 1: emit internal-alignment steps for each multi-member yuko.
-    // For a yuko with members [m_0, m_1, ..., m_{k-1}] (already sorted
-    // ascending by original numinseq):
-    //   step 0: left = [m_0],          right = [m_1]
-    //   step 1: left = [m_0, m_1],     right = [m_2]
-    //   ...
-    //   step k-2: left = [m_0..m_{k-2}], right = [m_{k-1}]
-    // This is a left-fold chain that produces a single aligned profile.
-    //
-    // For our n=36 fixture max k=2 so this is just one step per multi-
-    // member yuko. For N members it's N-1 internal steps.
-    for yi in 0..nyuko {
-        let members = &outs[yi];
-        if members.len() < 2 { continue; }
-        let mut sorted_members = members.clone();
-        sorted_members.sort();
-
-        let mut accum: Vec<usize> = vec![sorted_members[0]];
-        for k in 1..sorted_members.len() {
-            topo.steps.push(JoinStep {
-                left: accum.clone(),
-                right: vec![sorted_members[k]],
-                left_length: 0.0,
-                right_length: 0.0,
-            });
-            accum.push(sorted_members[k]);
-        }
-    }
-
-    // Step 2: run UPGMA on the yukomtx and convert each join step into
-    // a sequence-level JoinStep. UPGMA's JoinStep.left/right are sets
-    // of yuko-indices; we expand them via outs[].
+    // Run UPGMA on the yukomtx and convert each join step into a
+    // sequence-level JoinStep. UPGMA's `left` / `right` are sets of
+    // yuko-indices; we expand them via `outs[]`.
     let yuko_dm = yukomtx_to_distance_matrix(pivots);
     let yuko_topo = musclesupg(&yuko_dm, ClusterMethod::Mix { sueff: 0.1 });
 

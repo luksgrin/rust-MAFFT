@@ -219,6 +219,10 @@ pub fn progressive_align_with_weights_override(
             eprintln!("RDBG {} {} {} {} {:.1}",
                 step_idx, step.left.len(), step.right.len(), width, last_score);
         }
+        if std::env::var("RDBG_PT_STEPS").is_ok() {
+            eprintln!("RDBG_PT step={} clus1={} clus2={} width={} mem1={:?} mem2={:?}",
+                step_idx, step.left.len(), step.right.len(), width, step.left, step.right);
+        }
     }
 
     let max_width = aligned.iter().map(|s| s.len()).max().unwrap_or(0);
@@ -316,8 +320,13 @@ fn merge_step_cached(
                 mafft_fft::SegmentParams::protein()
             },
             gap: gap.clone(),
-            head_gap: false,
-            tail_gap: false,
+            // C `Falign.c:686-687` sets the per-segment `headgp/tailgp`
+            // to the global `outgap` for the first/last segment. So
+            // when outgap=1 (term gaps penalized — G-INS-i, --parttree),
+            // we set head_gap/tail_gap=true. Threaded via
+            // `penalize_term_gaps`.
+            head_gap: penalize_term_gaps,
+            tail_gap: penalize_term_gaps,
             num_channels: scoring.nscoredalphabets,
             property_channels,
         };
@@ -368,7 +377,15 @@ fn merge_step_cached(
             penalize_term_gaps, penalize_term_gaps, Some(&imp),
         )
     } else {
-        profile_align(&prof1, &prof2, &scoring.substitution_matrix, gap, false, false)
+        // Non-FFT, no-constraints fallback (`--nofft` path or single-vs-
+        // single without constraints). C's `outgap` flows through here
+        // via `penalize_term_gaps`: false → outgap=0 (term-gap free,
+        // FFT-NS-2/L-INS-i/E-INS-i defaults), true → outgap=1
+        // (G-INS-i and `--parttree`).
+        profile_align(
+            &prof1, &prof2, &scoring.substitution_matrix, gap,
+            penalize_term_gaps, penalize_term_gaps,
+        )
     };
 
     // Build gaptables for profile caching (matching C's gaptable1/gaptable2)
