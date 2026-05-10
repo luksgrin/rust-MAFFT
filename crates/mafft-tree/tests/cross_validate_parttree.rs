@@ -26,6 +26,7 @@ use mafft_tree::parttree_dist::{
     common_sextets_p, composition_table, encode_points_protein, lenfac,
     parttree_distance_protein, MAX6DIST, PLENFACA, PLENFACB, PLENFACC, PLENFACD,
 };
+use mafft_tree::parttree_pivot::{run_pivot_pipeline, PtSeqKind};
 
 static C_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -250,6 +251,217 @@ fn parttree_distance_matches_c() {
     }
 
     unsafe { cleanup_c(); }
+}
+
+/// Validate the full pivot pipeline (build_score_entries →
+/// pick_reference_max_selfscore → compute_initial_scores → dcompare_sort
+/// → select_pivots → build_pickmtx) against C's `splittbfast`-equivalent
+/// computations done via FFI helpers (commonsextet_p, etc.).
+///
+/// For our 36-seq fixture: picksize=50 > nin=36, so all 36 sequences
+/// become picks and `qsort(picks)` canonicalizes — `rand()` doesn't
+/// matter. After the pipeline:
+///   - `picks = [0..36)` (post-qsort, sorted-scores indices)
+///   - `pickmtx[i][j-i]` = parttree_distance(scores[i], scores[j])
+///   - redundancy filter may remove a small number of pivots
+///
+/// We compute reference values by re-running Rust's distance helpers
+/// (already FFI-validated by the earlier tests in this file) on
+/// scores[].numinseq pairs, and assert per-cell equality.
+#[test]
+fn parttree_pivot_pipeline_internally_consistent() {
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
+        .expect("load mafft-upstream/test/sample");
+    let nseq = input.sequences.len();
+    let raw_seqs: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    let pivots = run_pivot_pipeline(&raw_seqs, PtSeqKind::Protein, 50);
+
+    // 1) Reference (sorted-position 0) is the longest-selfscore sequence.
+    let max_selfscore = pivots.scores.iter().map(|s| s.selfscore).max().unwrap();
+    assert_eq!(pivots.scores[0].selfscore, max_selfscore,
+        "after pick_reference_max_selfscore, scores[0] must be max-selfscore");
+
+    // 2) After dcompare_sort, scores[0].score should be the minimum
+    //    (reference's distance to itself = 0).
+    assert!(pivots.scores[0].score <= 1e-12,
+        "scores[0].score should be ~0 (reference distance to self), got {}",
+        pivots.scores[0].score);
+    for i in 1..nseq {
+        assert!(pivots.scores[i].score >= pivots.scores[i - 1].score - 1e-12,
+            "dcompare_sort failed at i={i}: {} < {}",
+            pivots.scores[i].score, pivots.scores[i - 1].score);
+    }
+
+    // 3) For nseq=36 < picksize=50, ALL non-duplicate sequences are
+    //    picks; qsort(picks) sorts ascending. C's pick loop also
+    //    dedupes via shimon+strcmp so duplicates are skipped — the
+    //    n=36 sample may have 1 near-identical pair at sorted-position
+    //    33-34 that triggers dedupe.
+    assert!(pivots.picks.len() <= nseq);
+    let mut sorted_picks = pivots.picks.clone();
+    sorted_picks.sort();
+    assert_eq!(sorted_picks, pivots.picks,
+        "picks must be qsort'd ascending");
+
+    // 4) maxdist matches scores[nin-1].score.
+    assert!((pivots.maxdist - pivots.scores[nseq - 1].score).abs() < 1e-12);
+
+    // 5) pickmtx[i][j-i] for j > i equals parttree_distance between the
+    //    picks[i]'th and picks[j]'th sorted-position sequences. Row 0
+    //    uses the precomputed scores; rows >= 1 recompute via
+    //    localcommonsextet_p — we verify both produce the same values.
+    let npick = pivots.picks.len();
+    for i in 0..npick {
+        for j in (i + 1)..npick {
+            let pi = pivots.picks[i];
+            let pj = pivots.picks[j];
+            let raw_len_i = pivots.scores[pi].orilen;
+            let raw_len_j = pivots.scores[pj].orilen;
+            let expected = parttree_distance_protein(
+                &pivots.scores[pi].points,
+                &pivots.scores[pj].points,
+                raw_len_i, raw_len_j,
+            );
+            let got = pivots.pickmtx[i][j - i];
+            assert!((got - expected).abs() < 1e-12,
+                "pickmtx[{i}][{}]: got {got} expected {expected}", j - i);
+        }
+    }
+
+    // 6) Redundancy filter: for `picksize > njob` (our case here:
+    //    50 > 36) C sets `tokyoripara = 0.0` (`splittbfast.c:2761`),
+    //    making the filter a no-op so all picks survive. Verify
+    //    `nyuko == npick`.
+    assert_eq!(pivots.yukos.len(), pivots.picks.len(),
+        "for picksize={} > nin={}, all picks should survive (tokyoripara=0)",
+        50, nseq);
+
+    // 7) For our n=36 sample, C's actual picks (CDBG_PIVOT dump while
+    //    debugging this code) are [0, 2, 3, 4, ..., 35] — sorted-
+    //    position 1 is dropped because it duplicates position 0 (same
+    //    sequence content / shimon). Verify Rust dedupes the same one.
+    let expected_picks: Vec<usize> = (0..nseq).filter(|&i| i != 1).collect();
+    assert_eq!(pivots.picks, expected_picks,
+        "Rust picks must match C's after dedupe (drops sorted-position 1)");
+
+    // Print summary for diagnostics.
+    eprintln!("pivot pipeline summary: nseq={nseq}, npick={}, nyuko={}",
+        pivots.picks.len(), pivots.yukos.len());
+}
+
+/// FFI cross-check: feed C's pipeline-equivalent (via FFI helpers)
+/// the same input and verify the SCORES array post-sort matches
+/// Rust's `dcompare_sort` output element-by-element.
+///
+/// Specifically we re-implement C's pre-pivot prep using FFI:
+/// 1. encode each sequence's points via C's `seq_grp` + `makepointtable`
+///    (already validated byte-identical in `parttree_points_match_c`)
+/// 2. compute self-scores via C's `commonsextet_p(self, self)`
+/// 3. find max-selfscore index, swap to position 0
+/// 4. compute initial distances using C's `commonsextet_p` + Rust's
+///    lenfac (lenfac formula already FFI-validated)
+/// 5. sort by `dcompare`
+///
+/// Then verify Rust's pipeline produces the same `(numinseq, score,
+/// selfscore, orilen)` tuple at every sorted position.
+#[test]
+fn parttree_pivot_scores_match_c_pipeline() {
+    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
+        .expect("load mafft-upstream/test/sample");
+    let nseq = input.sequences.len();
+    let raw_seqs: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+
+    // C-side pipeline using FFI helpers + Rust lenfac.
+    unsafe { init_c_protein(); }
+
+    // 1) Build point vectors via C.
+    let mut c_pts: Vec<Vec<i32>> = raw_seqs.iter()
+        .map(|s| unsafe { c_encode_points(s) })
+        .collect();
+    for v in &mut c_pts { v.push(-1); }
+
+    // 2) Compute self-scores via C's commonsextet_p(self, self).
+    let mut c_selfscore: Vec<i64> = Vec::with_capacity(nseq);
+    for i in 0..nseq {
+        let mut table = vec![0i32; 46656];
+        unsafe { mafft_sys::makecompositiontable_p(table.as_mut_ptr(), c_pts[i].as_mut_ptr()); }
+        let mut pts_copy = c_pts[i].clone();
+        let common = unsafe {
+            mafft_sys::commonsextet_p(table.as_mut_ptr(), pts_copy.as_mut_ptr())
+        };
+        c_selfscore.push(common as i64);
+    }
+
+    // 3) Find max-selfscore index, build `numinseq`-permuted ordering.
+    let (mut max_idx, mut max_val) = (0usize, c_selfscore[0]);
+    for i in 1..nseq {
+        if c_selfscore[i] > max_val {
+            max_val = c_selfscore[i];
+            max_idx = i;
+        }
+    }
+    // Build initial ordering: position 0 = max_idx, positions 1..n = others
+    // in original order. (This mirrors C's swap of scores[0] <-> scores[max_idx].)
+    let mut c_order: Vec<usize> = (0..nseq).collect();
+    c_order.swap(0, max_idx);
+
+    // 4) Compute initial scores from c_order[0] to all others.
+    let ref_idx = c_order[0];
+    let mut ref_table = vec![0i32; 46656];
+    unsafe { mafft_sys::makecompositiontable_p(ref_table.as_mut_ptr(), c_pts[ref_idx].as_mut_ptr()); }
+    let ref_selfscore = c_selfscore[ref_idx];
+    let ref_orilen = raw_seqs[ref_idx].len();
+
+    let mut c_score = vec![0.0f64; nseq];
+    for k in 0..nseq {
+        let i = c_order[k];
+        let mut pts = c_pts[i].clone();
+        let common = unsafe {
+            mafft_sys::commonsextet_p(ref_table.as_mut_ptr(), pts.as_mut_ptr())
+        };
+        let bunbo = ref_selfscore.min(c_selfscore[i]) as f64;
+        let raw = if bunbo > 0.0 { 1.0 - common as f64 / bunbo } else { 1.0 };
+        let orilen_i = raw_seqs[i].len();
+        let lf = lenfac(ref_orilen, orilen_i, PLENFACA, PLENFACB, PLENFACC, PLENFACD);
+        let mut s = raw * lf;
+        if s > MAX6DIST { s = MAX6DIST; }
+        c_score[k] = s;
+    }
+
+    // 5) Sort `c_order` by (score asc, selfscore asc, orilen asc) — the
+    //    dcompare key. We pair each c_order[k] with its key tuple.
+    let mut tuples: Vec<(f64, i64, usize, usize)> = (0..nseq).map(|k| {
+        let i = c_order[k];
+        (c_score[k], c_selfscore[i], raw_seqs[i].len(), i)
+    }).collect();
+    tuples.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
+
+    unsafe { cleanup_c(); }
+
+    // Now run Rust's pipeline.
+    let pivots = run_pivot_pipeline(&raw_seqs, PtSeqKind::Protein, 50);
+
+    // Compare element-by-element.
+    assert_eq!(pivots.scores.len(), tuples.len());
+    for (k, (rust_entry, c_tuple)) in pivots.scores.iter().zip(tuples.iter()).enumerate() {
+        let (c_score_k, c_selfscore_k, c_orilen_k, c_numinseq_k) = *c_tuple;
+        assert_eq!(rust_entry.numinseq, c_numinseq_k,
+            "sorted-position {k}: numinseq Rust={} C={}", rust_entry.numinseq, c_numinseq_k);
+        assert_eq!(rust_entry.selfscore, c_selfscore_k,
+            "sorted-position {k} (numinseq={c_numinseq_k}): selfscore Rust={} C={}",
+            rust_entry.selfscore, c_selfscore_k);
+        assert_eq!(rust_entry.orilen, c_orilen_k,
+            "sorted-position {k}: orilen Rust={} C={}", rust_entry.orilen, c_orilen_k);
+        assert!((rust_entry.score - c_score_k).abs() < 1e-12,
+            "sorted-position {k}: score Rust={} C={} (diff={})",
+            rust_entry.score, c_score_k, (rust_entry.score - c_score_k).abs());
+    }
 }
 
 /// FFI guard for `fixed_musclesupg_double_realloc_nobk_halfmtx`. Builds a

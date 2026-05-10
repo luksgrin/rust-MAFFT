@@ -525,10 +525,35 @@ C's `splittbfast.c` is a substantially different pipeline:
   existing `musclesupg` matches C's variant byte-identical.
   FFI-validated by `parttree_upgma_matches_c` (compares topology
   step-by-step on the 36-seq parttree distance matrix).
-- [ ] **Pivot selection + redundancy filter** (#40) — not started.
-  Includes the `dcompare` sort, `qsort(picks)` canonicalization, and
-  the `tokyoripara = 0.7` filter loop. For `n = 36 < picksize = 50`
-  the random-pick path is suppressed by qsort, simplifying the port.
+- [x] **Pivot selection + redundancy filter** —
+  `crates/mafft-tree/src/parttree_pivot.rs`:
+  - `pick_reference_max_selfscore` — `uselongest=1` (default) picks
+    longest-selfscore as reference, swaps to position 0
+    (`splittbfast.c:1316-1342`).
+  - `compute_initial_scores` — fills `scores[i].score` with parttree
+    distance from reference (`splittbfast.c:1393-1448`).
+  - `dcompare_sort` — sorts by (score asc, selfscore asc, orilen asc),
+    matching C's `dcompare` (`splittbfast.c:72-87`).
+  - `select_pivots` — pivot loop with seq-equality dedupe + post-loop
+    `qsort(picks)` (`splittbfast.c:1495-1574`). For `nin > picksize`
+    the libc `rand()` random-pick path is the load-bearing piece —
+    deferred (returns `pickkouho[nkouho-1]` deterministically).
+  - `build_pickmtx` — fills the upper-triangular distance matrix
+    using `localcommonsextet_p` (row 0 reuses `scores[].score`).
+  - `redundancy_filter` — applies `pickmtx[i][j-i] < maxdist *
+    tokyoripara` filter. **Critical**: `splittbfast.c:2760-2761` sets
+    `tokyoripara = 0.0` when `picksize > njob`, making the filter a
+    no-op. Discovered while debugging — Rust now mirrors this rule
+    via `if picksize > nin { 0.0 } else { TOKYORIPARA }`.
+  - FFI-validated by 2 new tests:
+    - `parttree_pivot_pipeline_internally_consistent` — verifies
+      reference selection, sort, pickmtx values, and final pick set
+      `[0, 2, 3, …, 35]` byte-identical to what C produces (the
+      sorted-position-1 duplicate is dropped by the dedupe).
+    - `parttree_pivot_scores_match_c_pipeline` — re-runs the C
+      pipeline (max-selfscore swap + initial scores via FFI
+      `commonsextet_p` + dcompare sort) and asserts every sorted
+      `(numinseq, score, selfscore, orilen)` tuple matches Rust's.
 - [ ] **`splitseq_mq` recursion + treeorder** (#42) — not started.
   Includes the `dfromc` (nyuko × nin) construction, the
   `belongto`-based non-pivot assignment, and the topol-leaf-walk

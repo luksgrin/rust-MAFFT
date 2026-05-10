@@ -10,6 +10,7 @@ mod musclesupg;
 mod addonetip;
 mod parttree;
 pub mod parttree_dist;
+pub mod parttree_pivot;
 mod topology;
 mod weighting;
 
