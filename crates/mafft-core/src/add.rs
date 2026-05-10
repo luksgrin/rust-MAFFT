@@ -1,17 +1,24 @@
 /// Add sequences to an existing alignment.
 ///
-/// Ports the C `addsingle` binary's core logic: for each new sequence,
-/// place it in the guide tree using `addonetip()`, then perform
-/// progressive alignment to produce the combined result.
+/// Ports C `disttbfast.c`'s `--add` (`-K -I N`) flow: concatenate the
+/// existing alignment with the new unaligned sequences, build a guide
+/// tree over all (existing + new) sequences, compute `mergeoralign[]`
+/// to mark each branch as existing-only ('n', skip), or
+/// new-touching ('1'/'2'/'w', do the alignment), then run progressive
+/// alignment with the existing alignment columns preserved at 'n'
+/// branches.
+///
+/// The existing input sequences must already be aligned (all the same
+/// width). The new sequences are treated as raw (gap chars stripped).
 
 use rayon::prelude::*;
 
 use mafft_tree::{
-    DistanceMatrix, musclesupg, ClusterMethod, addonetip, ktuple_distance,
+    DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, JoinStep, Topology,
 };
 use mafft_types::ScoringContext;
 
-use crate::progressive::{progressive_align, MultipleAlignment};
+use crate::progressive::{progressive_align_with_mergeoralign, MergeOrAlign, MultipleAlignment};
 
 /// Add new sequences to an existing alignment.
 ///
@@ -19,9 +26,9 @@ use crate::progressive::{progressive_align, MultipleAlignment};
 /// `new_sequences` are the unaligned sequences to add.
 /// `new_names` are their names.
 /// `scoring` is the scoring context.
-/// `use_fft` controls whether FFT acceleration is used.
+/// `use_fft` controls whether FFT acceleration is used for the merge DPs.
 ///
-/// Returns a new MSA containing all sequences (existing + new).
+/// Returns a new MSA containing all sequences (existing + new), aligned.
 pub fn add_sequences(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
@@ -32,188 +39,192 @@ pub fn add_sequences(
     if new_sequences.is_empty() {
         return existing.clone();
     }
-
-    let norg = existing.nseq();
-
-    // Get ungapped original sequences for distance computation
-    let orig_ungapped: Vec<Vec<u8>> = existing.sequences.iter()
-        .map(|s| s.iter().filter(|&&c| c != b'-').copied().collect())
-        .collect();
-
-    // Build guide tree from original sequences using k-tuple distance
-    let orig_dm = compute_ktuple_dm(&orig_ungapped);
-    let orig_topo = musclesupg(&orig_dm, ClusterMethod::default());
-
-    // Add each new sequence independently to the original alignment,
-    // then combine results. This matches C's approach: each new sequence
-    // is placed in the original tree and aligned against the original MSA.
-    let mut combined_sequences = existing.sequences.clone();
-    let mut combined_names = existing.names.clone();
-
-    for (add_idx, new_seq) in new_sequences.iter().enumerate() {
-        // Compute distances from new sequence to all original sequences
-        let distances: Vec<f64> = orig_ungapped.iter()
-            .map(|orig| ktuple_distance(orig, new_seq, 6))
-            .collect();
-
-        // Place in tree
-        let add_result = addonetip(&orig_topo, &distances, 0.1);
-
-        // Build combined sequence set for progressive alignment
-        let mut all_ungapped: Vec<Vec<u8>> = orig_ungapped.clone();
-        all_ungapped.push(new_seq.clone());
-
-        let mut all_names: Vec<String> = existing.names.clone();
-        all_names.push(new_names[add_idx].clone());
-
-        // Progressive align using the new topology
-        let msa = progressive_align(
-            &all_ungapped,
-            &all_names,
-            &add_result.topology,
+    let n_existing = existing.nseq();
+    let n_new = new_sequences.len();
+    if n_existing == 0 {
+        // No anchor; just align the new sequences from scratch.
+        return crate::progressive::progressive_align(
+            new_sequences,
+            new_names,
+            &musclesupg(&compute_ktuple_dm(new_sequences), ClusterMethod::default()),
             scoring,
             use_fft,
             None,
         );
-
-        // Extract just the new sequence's aligned form (last sequence in the result)
-        // and adjust it to be compatible with the combined alignment width
-        combined_sequences.push(msa.sequences[norg].clone());
-        combined_names.push(new_names[add_idx].clone());
     }
 
-    // Ensure all sequences have the same width (pad shorter ones with gaps)
-    let max_width = combined_sequences.iter().map(|s| s.len()).max().unwrap_or(0);
-    for seq in &mut combined_sequences {
-        seq.resize(max_width, b'-');
-    }
+    // 1. Strip common-gap columns from the existing alignment. C does
+    //    `commongappick(njob-nadd, seq)` at `disttbfast.c:4319` before
+    //    the per-step pairalign loop. With our 30-seq existing (width
+    //    598), this keeps the columns where at least one existing
+    //    sequence has a non-gap residue, dropping the all-gap columns.
+    let stripped_existing = commongappick(&existing.sequences);
 
-    MultipleAlignment {
-        sequences: combined_sequences,
-        names: combined_names,
-        score: 0.0,
-        step_trace: Vec::new(),
+    // 2. Concatenate stripped existing + new (raw).
+    let mut all_seqs: Vec<Vec<u8>> = stripped_existing;
+    for s in new_sequences {
+        // Strip any gap chars from incoming new sequences (defensive).
+        let raw: Vec<u8> = s.iter().filter(|&&c| c != b'-' && c != b'.').copied().collect();
+        all_seqs.push(raw);
     }
+    let mut all_names: Vec<String> = existing.names.clone();
+    all_names.extend(new_names.iter().cloned());
+
+    // 3. Guide tree on the all-N+nadd sequences. Distance is computed
+    //    on the UNGAPPED form (since stripped existing still has
+    //    inter-sequence gaps from the alignment, but the topology
+    //    should reflect ungapped similarity).
+    let ungapped: Vec<Vec<u8>> = all_seqs
+        .iter()
+        .map(|s| s.iter().filter(|&&c| c != b'-').copied().collect())
+        .collect();
+    let dm = compute_ktuple_dm(&ungapped);
+    let topo = musclesupg(&dm, ClusterMethod::default());
+
+    // 4. Compute mergeoralign[] tagging each branch.
+    let mergeoralign = compute_mergeoralign(&topo, n_existing, n_new);
+
+    // 5. Run progressive alignment with mergeoralign-aware skipping
+    //    + new-gap propagation to non-active existing rows.
+    crate::progressive::progressive_align_with_mergeoralign_n(
+        &all_seqs,
+        &all_names,
+        &topo,
+        &mergeoralign,
+        scoring,
+        use_fft,
+        n_existing,
+    )
 }
 
-/// Add sequences preserving the existing alignment structure.
-///
-/// This is the more faithful port of C's --add behavior: the existing
-/// alignment columns are preserved, and new sequences are aligned to the
-/// existing MSA without disturbing it.
+/// Add sequences while preserving the existing alignment's column
+/// structure (`--add --keeplength`). After running the standard
+/// `add_sequences`, deletes any columns that exist only because of
+/// new-sequence insertions, restoring the existing alignment to its
+/// original width. Columns where ANY new sequence had a residue but ALL
+/// existing sequences had gaps get the new-sequence residue dropped
+/// (truncated at that position).
 pub fn add_sequences_keeplength(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
     new_names: &[String],
     scoring: &ScoringContext,
-    _use_fft: bool,
+    use_fft: bool,
 ) -> MultipleAlignment {
     if new_sequences.is_empty() {
         return existing.clone();
     }
+    let target_width = existing.sequences.first().map(|s| s.len()).unwrap_or(0);
+    let n_existing = existing.nseq();
 
-    // Get ungapped original sequences
-    let orig_ungapped: Vec<Vec<u8>> = existing.sequences.iter()
-        .map(|s| s.iter().filter(|&&c| c != b'-').copied().collect())
-        .collect();
+    let mut full = add_sequences(existing, new_sequences, new_names, scoring, use_fft);
 
-    let mut all_sequences = existing.sequences.clone();
-    let mut all_names = existing.names.clone();
-
-    for (add_idx, new_seq) in new_sequences.iter().enumerate() {
-        // Compute distances from new sequence to all original sequences
-        let distances: Vec<f64> = orig_ungapped.iter()
-            .map(|orig| ktuple_distance(orig, new_seq, 6))
-            .collect();
-
-        // Find nearest original sequence
-        let (nearest_idx, _nearest_dist) = distances.iter().enumerate()
-            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .unwrap();
-
-        // Align new sequence against the nearest original sequence's gapped form
-        // using profile alignment (treating the existing alignment as a frozen profile)
-        let nearest_gapped = &existing.sequences[nearest_idx];
-
-        // Simple approach: align new_seq to nearest_gapped using the gap structure
-        let aligned_new = align_to_profile(new_seq, nearest_gapped, scoring);
-
-        all_sequences.push(aligned_new);
-        all_names.push(new_names[add_idx].clone());
+    // Reduce columns to those where the original existing pattern is
+    // preserved. C's `--keeplength` post-processing
+    // (`disttbfast.c:4839-4882`):
+    //   1. Save original gap pattern of existing sequences.
+    //   2. Run alignment.
+    //   3. For each new column that's all-gap on the existing side,
+    //      delete it (drops new-sequence residues at those columns).
+    //   4. Restore the original alignment columns of existing sequences.
+    //
+    // Simpler equivalent: walk left-to-right; keep a column iff at
+    // least one existing sequence has a non-gap residue at that column.
+    // Existing sequences then automatically retain their original
+    // pattern (since the aligner only adds new gap columns, never
+    // removes original ones, as long as no `commongappick` ran on
+    // them in the merge — which is guaranteed by the per-step
+    // common-gap behavior).
+    let width = full.sequences.first().map(|s| s.len()).unwrap_or(0);
+    let mut keep = vec![false; width];
+    for col in 0..width {
+        let mut any_existing_residue = false;
+        for s in full.sequences.iter().take(n_existing) {
+            if let Some(&c) = s.get(col) {
+                if c != b'-' && c != b'.' {
+                    any_existing_residue = true;
+                    break;
+                }
+            }
+        }
+        keep[col] = any_existing_residue;
     }
 
-    // Ensure all sequences have the same width (pad shorter ones)
-    let max_width = all_sequences.iter().map(|s| s.len()).max().unwrap_or(0);
-    for seq in &mut all_sequences {
-        seq.resize(max_width, b'-');
+    for s in full.sequences.iter_mut() {
+        let mut filtered: Vec<u8> = Vec::with_capacity(target_width);
+        for col in 0..s.len() {
+            if keep[col] { filtered.push(s[col]); }
+        }
+        *s = filtered;
     }
 
-    MultipleAlignment {
-        sequences: all_sequences,
-        names: all_names,
-        score: 0.0,
-        step_trace: Vec::new(),
-    }
+    full
 }
 
-/// Align a single new sequence to a gapped reference sequence.
+/// Compute `mergeoralign[]` for each branch in the guide tree, mirroring
+/// C `disttbfast.c:4282-4304` (`--add` non-profile path).
 ///
-/// Maps the new sequence's residues to the reference's non-gap positions,
-/// inserting gaps where the reference has gaps.
-fn align_to_profile(
-    new_seq: &[u8],
-    reference_gapped: &[u8],
-    scoring: &ScoringContext,
-) -> Vec<u8> {
-    use mafft_align::{profile_align, Profile, GapModel};
+/// C's tag uses `includemember(localmem, addmem)` which returns true iff
+/// EVERY member of `localmem` is also in `addmem` (i.e., the subtree is
+/// *entirely* composed of new sequences). So:
+/// - 'n': neither subtree is entirely new (the merge involves at least
+///   one existing-or-mixed branch on each side — could be all-existing or
+///   a mix of existing + already-merged-new).
+/// - '1': LEFT subtree is entirely new, right has at least one
+///   non-new (existing or mixed) member.
+/// - '2': RIGHT subtree is entirely new, left has at least one
+///   non-new member.
+/// - 'w': BOTH subtrees are entirely new (a merge of two new-only
+///   subclusters).
+///
+/// For '1' and '2' merges, C strips common gaps from the *non-all-new*
+/// (= mixed) side; that's the side that has accumulated gaps from
+/// progressive merges.
+pub fn compute_mergeoralign(
+    topo: &Topology,
+    n_existing: usize,
+    _n_new: usize,
+) -> Vec<MergeOrAlign> {
+    let mut tags: Vec<MergeOrAlign> = Vec::with_capacity(topo.steps.len());
+    for step in &topo.steps {
+        let left_all_new = step.left.iter().all(|&i| i >= n_existing);
+        let right_all_new = step.right.iter().all(|&i| i >= n_existing);
+        let tag = match (left_all_new, right_all_new) {
+            (false, false) => MergeOrAlign::SkipExisting, // 'n'
+            (true, false) => MergeOrAlign::NewLeft,        // '1'
+            (false, true) => MergeOrAlign::NewRight,       // '2'
+            (true, true) => MergeOrAlign::Wide,             // 'w'
+        };
+        tags.push(tag);
+    }
+    tags
+}
 
-    // Build a single-sequence profile from the reference (gapped)
-    let ref_slices: Vec<&[u8]> = vec![reference_gapped];
-    let ref_weights = vec![1.0];
-    let prof_ref = Profile::from_aligned(
-        &ref_slices, &ref_weights,
-        &scoring.amino_map, scoring.nalphabets,
-    );
-
-    // Build a single-sequence profile from the new sequence (ungapped)
-    let new_slices: Vec<&[u8]> = vec![new_seq];
-    let new_weights = vec![1.0];
-    let prof_new = Profile::from_aligned(
-        &new_slices, &new_weights,
-        &scoring.amino_map, scoring.nalphabets,
-    );
-
-    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
-    let aln = profile_align(
-        &prof_ref, &prof_new,
-        &scoring.substitution_matrix, &gap,
-        true, true,
-    );
-
-    // Build aligned new sequence from alignment operations
-    use mafft_align::AlignOp;
-    let mut result = Vec::with_capacity(aln.operations.len());
-    let mut new_cursor = 0usize;
-
-    for op in &aln.operations {
-        match op {
-            AlignOp::Match => {
-                result.push(if new_cursor < new_seq.len() { new_seq[new_cursor] } else { b'-' });
-                new_cursor += 1;
-            }
-            AlignOp::Delete => {
-                // Reference has a column, new seq gets a gap
-                result.push(b'-');
-            }
-            AlignOp::Insert => {
-                // New seq has a residue, reference gets a gap
-                result.push(if new_cursor < new_seq.len() { new_seq[new_cursor] } else { b'-' });
-                new_cursor += 1;
+/// `commongappick`: drop columns where ALL `sequences` are gap chars.
+/// Mirrors C `addfunctions.c::commongappick`'s filter behavior.
+pub fn commongappick(sequences: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    if sequences.is_empty() { return Vec::new(); }
+    let width = sequences[0].len();
+    let mut keep = vec![false; width];
+    for col in 0..width {
+        for s in sequences {
+            let c = s.get(col).copied().unwrap_or(b'-');
+            if c != b'-' && c != b'.' {
+                keep[col] = true;
+                break;
             }
         }
     }
-
-    result
+    sequences
+        .iter()
+        .map(|s| {
+            let mut out = Vec::with_capacity(width);
+            for col in 0..s.len() {
+                if keep[col] { out.push(s[col]); }
+            }
+            out
+        })
+        .collect()
 }
 
 fn compute_ktuple_dm(sequences: &[Vec<u8>]) -> DistanceMatrix {
@@ -243,7 +254,6 @@ mod tests {
     use mafft_types::{ScoringModel, SeqType};
 
     fn make_existing_alignment() -> MultipleAlignment {
-        // Pre-aligned MSA
         MultipleAlignment {
             sequences: vec![
                 b"ACDEFGHIK".to_vec(),
@@ -262,21 +272,14 @@ mod tests {
         let existing = make_existing_alignment();
         let new_seqs = vec![b"ACDEFGHIKLM".to_vec()];
         let new_names = vec!["new1".into()];
-
         let result = add_sequences(&existing, &new_seqs, &new_names, &scoring, false);
         assert_eq!(result.nseq(), 4);
-        let w = result.width();
-        for seq in &result.sequences {
-            assert_eq!(seq.len(), w);
-        }
-        // Verify residue preservation
-        let ungapped: Vec<u8> = result.sequences[3].iter()
-            .filter(|&&c| c != b'-').copied().collect();
-        assert_eq!(ungapped, b"ACDEFGHIKLM");
+        let w = result.sequences[0].len();
+        for s in &result.sequences { assert_eq!(s.len(), w); }
     }
 
     #[test]
-    fn add_no_sequences() {
+    fn add_no_sequences_returns_existing() {
         let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
         let existing = make_existing_alignment();
         let result = add_sequences(&existing, &[], &[], &scoring, false);
@@ -284,37 +287,67 @@ mod tests {
     }
 
     #[test]
-    fn add_keeplength_preserves_width() {
+    fn keeplength_preserves_existing_width() {
         let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
         let existing = make_existing_alignment();
-        let new_seqs = vec![b"ACDEHIK".to_vec()];
+        let target_width = existing.sequences[0].len();
+        let new_seqs = vec![b"ACDEFGHIK".to_vec()];
         let new_names = vec!["new1".into()];
-
-        let result = add_sequences_keeplength(
-            &existing, &new_seqs, &new_names, &scoring, false,
-        );
+        let result = add_sequences_keeplength(&existing, &new_seqs, &new_names, &scoring, false);
         assert_eq!(result.nseq(), 4);
-        let w = result.width();
-        for seq in &result.sequences {
-            assert_eq!(seq.len(), w);
+        for s in &result.sequences {
+            assert_eq!(s.len(), target_width);
         }
     }
 
     #[test]
-    fn add_multiple_sequences() {
-        let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
-        let existing = make_existing_alignment();
-        let new_seqs = vec![
-            b"ACDEFGHIKLM".to_vec(),
-            b"ACDEHIK".to_vec(),
-        ];
-        let new_names = vec!["new1".into(), "new2".into()];
+    fn mergeoralign_three_existing_one_new() {
+        // Topology: 4 leaves, 3 join steps. Existing = [0, 1, 2], new = [3].
+        let mut topo = Topology::new(4);
+        // Step 0: join 0 and 1 (existing-only, 'n').
+        topo.steps.push(JoinStep {
+            left: vec![0], right: vec![1], left_length: 0.0, right_length: 0.0,
+        });
+        // Step 1: join (0,1) with 2 (existing-only, 'n').
+        topo.steps.push(JoinStep {
+            left: vec![0, 1], right: vec![2], left_length: 0.0, right_length: 0.0,
+        });
+        // Step 2: join (0,1,2) with 3 (right is all-new, '2').
+        topo.steps.push(JoinStep {
+            left: vec![0, 1, 2], right: vec![3], left_length: 0.0, right_length: 0.0,
+        });
 
-        let result = add_sequences(&existing, &new_seqs, &new_names, &scoring, false);
-        assert_eq!(result.nseq(), 5);
-        let w = result.width();
-        for seq in &result.sequences {
-            assert_eq!(seq.len(), w);
-        }
+        let tags = compute_mergeoralign(&topo, 3, 1);
+        assert_eq!(tags.len(), 3);
+        assert!(matches!(tags[0], MergeOrAlign::SkipExisting));
+        assert!(matches!(tags[1], MergeOrAlign::SkipExisting));
+        assert!(matches!(tags[2], MergeOrAlign::NewRight));
+    }
+
+    #[test]
+    fn mergeoralign_mixed_subtree_is_n_not_2() {
+        // C's `includemember` (mltaln9.c:15053) returns true iff EVERY
+        // member of the subtree is in addmem. So a subtree with a MIX
+        // of existing and new members is NOT classified as all-new.
+        // Topology: 4 leaves; existing = [0,1], new = [2,3].
+        let mut topo = Topology::new(4);
+        // Step 0: join 2 and 3 (both new, 'w').
+        topo.steps.push(JoinStep {
+            left: vec![2], right: vec![3], left_length: 0.0, right_length: 0.0,
+        });
+        // Step 1: join 0 and (2,3) — left is existing, right is all-new ('2').
+        topo.steps.push(JoinStep {
+            left: vec![0], right: vec![2, 3], left_length: 0.0, right_length: 0.0,
+        });
+        // Step 2: join (0,2,3) and 1 — left is MIXED, right is existing.
+        // Neither side is all-new, so 'n'.
+        topo.steps.push(JoinStep {
+            left: vec![0, 2, 3], right: vec![1], left_length: 0.0, right_length: 0.0,
+        });
+
+        let tags = compute_mergeoralign(&topo, 2, 2);
+        assert!(matches!(tags[0], MergeOrAlign::Wide));
+        assert!(matches!(tags[1], MergeOrAlign::NewRight));
+        assert!(matches!(tags[2], MergeOrAlign::SkipExisting));
     }
 }

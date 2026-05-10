@@ -50,6 +50,21 @@ struct CachedProfile {
     eff: f64,
 }
 
+/// Per-step branch tag for `--add` progressive alignment, mirroring
+/// C `disttbfast.c::mergeoralign[]` (lines 4188-4302):
+/// - `SkipExisting` ('n'): both subtrees are existing-only — the
+///   alignment is already in place; do nothing.
+/// - `NewLeft` ('1'): only the LEFT subtree contains a "new" sequence.
+/// - `NewRight` ('2'): only the RIGHT subtree contains a "new" sequence.
+/// - `Wide` ('w'): both subtrees contain new sequences — full DP merge.
+#[derive(Debug, Clone, Copy)]
+pub enum MergeOrAlign {
+    SkipExisting,
+    NewLeft,
+    NewRight,
+    Wide,
+}
+
 pub fn progressive_align(
     sequences: &[Vec<u8>],
     names: &[String],
@@ -85,6 +100,435 @@ pub fn progressive_align_unweighted(
         sequences, names, topology, scoring, use_fft, shift_penalty,
         None, false, Some(&weights),
     )
+}
+
+/// Progressive alignment for `--add`-style merges, with per-step
+/// `mergeoralign[]` tags driving skip/merge decisions. Mirrors C's
+/// `disttbfast.c::treebase` mergeoralign-aware loop:
+///   - `SkipExisting` branches: do NOTHING — both subtrees are
+///     existing-only and already aligned.
+///   - All other branches: standard merge_step_cached call, then
+///     propagate any new gap columns inserted during the merge to
+///     the OTHER existing rows (those not in left/right).
+///
+/// `sequences[0..n_existing]` should be the (commongappick-stripped)
+/// existing alignment, all the same width. `sequences[n_existing..]`
+/// are the new raw sequences. The topology is built over all
+/// `n_existing + n_new` sequences.
+///
+/// The gap-propagation step mirrors C's `insertnewgaps_bothorders`
+/// (`addfunctions.c:675`) at a coarser grain: instead of using
+/// `gaplen`/`gapmap` arrays from `findnewgaps`/`findcommongaps`, we
+/// observe the pre-vs-post-merge state of any active existing row to
+/// compute new-gap positions and apply the same insertions to the
+/// non-active existing rows. Sufficient for byte-identity when the
+/// per-step common-gap strip/restore would otherwise be a no-op
+/// (= no all-gap columns exist within any active existing subcluster).
+pub fn progressive_align_with_mergeoralign(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    mergeoralign: &[MergeOrAlign],
+    scoring: &ScoringContext,
+    use_fft: bool,
+) -> MultipleAlignment {
+    progressive_align_with_mergeoralign_n(
+        sequences, names, topology, mergeoralign, scoring, use_fft,
+        sequences.len(), // default: treat all rows as existing
+    )
+}
+
+/// Variant that takes `n_existing` explicitly so the caller can
+/// distinguish existing rows (whose intra-alignment must be preserved)
+/// from new rows (which can be freely re-aligned).
+pub fn progressive_align_with_mergeoralign_n(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    mergeoralign: &[MergeOrAlign],
+    scoring: &ScoringContext,
+    use_fft: bool,
+    n_existing: usize,
+) -> MultipleAlignment {
+    let nseq = sequences.len();
+    if nseq == 0 {
+        return MultipleAlignment {
+            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(),
+        };
+    }
+    if nseq == 1 {
+        return MultipleAlignment {
+            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(),
+        };
+    }
+
+    let weights = sequence_weights(topology);
+    let mut aligned: Vec<Vec<u8>> = sequences.to_vec();
+
+    let mut last_score = 0.0;
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+
+    let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
+
+    // Track which rows are "already aligned" — i.e., have participated
+    // in some merge already. Existing rows start aligned (the input
+    // alignment). New rows become aligned after their first non-'n'
+    // merge. Mirrors C's `alreadyaligned[]` (`disttbfast.c:2257-2258`).
+    let mut already_aligned: Vec<bool> = (0..nseq).map(|i| i < n_existing).collect();
+
+    let mut step_trace: Vec<StepTrace> = Vec::with_capacity(topology.steps.len());
+    for (step_idx, step) in topology.steps.iter().enumerate() {
+        let tag = mergeoralign.get(step_idx).copied().unwrap_or(MergeOrAlign::Wide);
+        match tag {
+            MergeOrAlign::SkipExisting => {
+                let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
+                step_trace.push(StepTrace {
+                    clus1: step.left.len(),
+                    clus2: step.right.len(),
+                    width,
+                    score: 0.0,
+                });
+            }
+            MergeOrAlign::NewRight | MergeOrAlign::NewLeft => {
+                // C `disttbfast.c:2745-2756`: for case '2' (NewRight), strip
+                // common gaps from group1 (the existing-only side) before the
+                // merge, then restore them afterwards. The DP runs between
+                // (stripped existing-side) and (full has-new-side). After the
+                // merge:
+                //   - existing-side and has-new-side are at post_merge_W.
+                //   - Restore: re-insert the stripped common-gap columns into
+                //     both sides as all-gap columns.
+                //   - For OTHER aligned rows (not in either side): expand
+                //     from L_pre to L_pre + N1 by inserting gap chars at the
+                //     positions corresponding to new merge gaps in the
+                //     existing-side representative.
+                //
+                // Case '1' (NewLeft) is "nai" (never reached) per
+                // `disttbfast.c:2934`, but we handle it symmetrically.
+                let (existing_grp, new_grp) = match tag {
+                    MergeOrAlign::NewRight => (&step.left[..], &step.right[..]),
+                    MergeOrAlign::NewLeft => (&step.right[..], &step.left[..]),
+                    _ => unreachable!(),
+                };
+
+                let pre_width = aligned[existing_grp[0]].len();
+
+                // findcommongaps: find columns where ALL existing_grp rows
+                // are gap. These are the columns to strip.
+                let pre_classification: Vec<bool> = (0..pre_width)
+                    .map(|col| {
+                        existing_grp.iter().all(|&i| {
+                            let c = aligned[i].get(col).copied().unwrap_or(b'-');
+                            c == b'-' || c == b'.'
+                        })
+                    })
+                    .collect();
+                let n_gap_cols = pre_classification.iter().filter(|&&b| b).count();
+
+                // Save the pre-strip representative (for OTHER reconstruction).
+                let pre_rep_full = aligned[existing_grp[0]].clone();
+
+                // commongappick(existing_grp): strip the all-gap columns.
+                let pre_rep_stripped: Vec<u8>;
+                if n_gap_cols > 0 {
+                    pre_rep_stripped = pre_rep_full
+                        .iter()
+                        .enumerate()
+                        .filter(|(col, _)| !pre_classification[*col])
+                        .map(|(_, &c)| c)
+                        .collect();
+                    for &i in existing_grp {
+                        let stripped: Vec<u8> = aligned[i]
+                            .iter()
+                            .enumerate()
+                            .filter(|(col, _)| !pre_classification[*col])
+                            .map(|(_, &c)| c)
+                            .collect();
+                        aligned[i] = stripped;
+                    }
+                } else {
+                    pre_rep_stripped = pre_rep_full.clone();
+                }
+                let stripped_width = pre_rep_stripped.len();
+
+                // Run the merge. left/right ordering preserved.
+                last_score = merge_step_cached(
+                    &step.left,
+                    &step.right,
+                    &mut aligned,
+                    &weights,
+                    scoring,
+                    &gap,
+                    use_fft,
+                    &mut profile_cache,
+                    None,
+                    false,
+                );
+
+                let post_merge_width = aligned[existing_grp[0]].len();
+                let post_rep = aligned[existing_grp[0]].clone();
+
+                // Identify "new merge gap" positions in the post-merge
+                // existing-side representative. These are post-merge columns
+                // where the merge DP inserted a gap into existing_grp's rows
+                // (= positions not corresponding to any pre-strip char).
+                let new_merge_gap_set = compute_new_merge_gap_set(&pre_rep_stripped, &post_rep);
+
+                // Build mapping: stripped_idx -> pre-merge anchor positions,
+                // and gap_cols_before[s] = the gap_col positions sitting
+                // between the (s-1)-th and s-th anchor in pre-merge.
+                let anchor_positions: Vec<usize> = (0..pre_width)
+                    .filter(|&k| !pre_classification[k])
+                    .collect();
+                debug_assert_eq!(anchor_positions.len(), stripped_width);
+                let mut gap_cols_before: Vec<Vec<usize>> =
+                    vec![Vec::new(); stripped_width + 1];
+                {
+                    let mut s = 0usize;
+                    for k in 0..pre_width {
+                        if pre_classification[k] {
+                            gap_cols_before[s].push(k);
+                        } else {
+                            s += 1;
+                        }
+                    }
+                }
+
+                // restorecommongaps: for both groups, insert n_gap_cols all-gap
+                // columns at the right post-merge positions. For each
+                // gap_col at pre-merge position k_pre with stripped_idx_after = s,
+                // a gap col is inserted right BEFORE the s-th type A position
+                // in post-merge (after any preceding type B's).
+                if n_gap_cols > 0 {
+                    let inserts_per_strip_idx: Vec<usize> =
+                        gap_cols_before.iter().map(|v| v.len()).collect();
+                    let active: Vec<usize> =
+                        step.left.iter().chain(step.right.iter()).copied().collect();
+                    for &i in &active {
+                        aligned[i] = restore_common_gaps_to_merged_row(
+                            &aligned[i],
+                            &new_merge_gap_set,
+                            &inserts_per_strip_idx,
+                        );
+                    }
+                }
+
+                // For OTHER already-aligned rows: build the post-restore
+                // representation. OTHER preserves its pre-merge content at
+                // type A (anchor) and type C (gap_col) positions, and gets
+                // gap chars at type B (new merge gap) positions.
+                let n1 = post_merge_width - stripped_width;
+                if n1 > 0 || n_gap_cols > 0 {
+                    let active_set: std::collections::HashSet<usize> =
+                        step.left.iter().chain(step.right.iter()).copied().collect();
+                    let other_indices: Vec<usize> = (0..nseq)
+                        .filter(|i| already_aligned[*i] && !active_set.contains(i))
+                        .collect();
+                    for i in other_indices {
+                        let other_pre = aligned[i].clone();
+                        // Defensive: only rebuild if OTHER is at pre_width.
+                        // Other widths shouldn't happen if invariants hold.
+                        if other_pre.len() == pre_width {
+                            aligned[i] = build_other_post_restore_row(
+                                &other_pre,
+                                &anchor_positions,
+                                &gap_cols_before,
+                                &new_merge_gap_set,
+                                post_merge_width,
+                            );
+                        }
+                    }
+                }
+
+                // Mark new-side rows as aligned (existing-side was already).
+                for &i in new_grp {
+                    already_aligned[i] = true;
+                }
+
+                let width = aligned[step.left[0]].len();
+                let _ = (pre_width, n_gap_cols, stripped_width, post_merge_width, n1);
+                step_trace.push(StepTrace {
+                    clus1: step.left.len(),
+                    clus2: step.right.len(),
+                    width,
+                    score: last_score,
+                });
+            }
+            MergeOrAlign::Wide => {
+                // Both sides have new sequences. C does no per-step strip
+                // for case 'w' (`disttbfast.c:2745-2756` only strips for
+                // cases '1' and '2'). Just run the merge.
+                last_score = merge_step_cached(
+                    &step.left,
+                    &step.right,
+                    &mut aligned,
+                    &weights,
+                    scoring,
+                    &gap,
+                    use_fft,
+                    &mut profile_cache,
+                    None,
+                    false,
+                );
+
+                for &i in step.left.iter().chain(step.right.iter()) {
+                    already_aligned[i] = true;
+                }
+
+                let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
+                step_trace.push(StepTrace {
+                    clus1: step.left.len(),
+                    clus2: step.right.len(),
+                    width,
+                    score: last_score,
+                });
+            }
+        }
+    }
+
+    let max_width = aligned.iter().map(|s| s.len()).max().unwrap_or(0);
+    for seq in &mut aligned {
+        seq.resize(max_width, b'-');
+    }
+
+    MultipleAlignment {
+        sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
+    }
+}
+
+/// Walk pre-strip and post-merge representatives to identify "new merge gap"
+/// post-merge positions. A new merge gap is a post-merge column that doesn't
+/// correspond to any pre-strip char (i.e., the DP's "insert" op put a gap in
+/// existing_grp at this column).
+///
+/// Lockstep: walk post; for each post char, if it equals the next pre char,
+/// advance both. Otherwise, mark it as a new merge gap. This works because
+/// the merge preserves residue order (only inserts gap chars), so pre and
+/// post agree on residues with `post_merge_W - L_strip` extra gaps inserted.
+fn compute_new_merge_gap_set(
+    pre_strip: &[u8],
+    post_merge: &[u8],
+) -> std::collections::HashSet<usize> {
+    let mut gap_set = std::collections::HashSet::new();
+    let mut p = 0usize;
+    for (q, &c) in post_merge.iter().enumerate() {
+        if p < pre_strip.len() && pre_strip[p] == c {
+            p += 1;
+        } else {
+            gap_set.insert(q);
+        }
+    }
+    gap_set
+}
+
+/// For a merged-group row at post_merge_W chars, expand to post-restore
+/// width by inserting `inserts_per_strip_idx[s]` gap chars right BEFORE
+/// the s-th type A (anchor) position, plus trailing
+/// `inserts_per_strip_idx[L_strip]` gap chars at the end. Mirrors C's
+/// `restorecommongaps` (`addfunctions.c:1453`).
+fn restore_common_gaps_to_merged_row(
+    row: &[u8],
+    new_merge_gap_set: &std::collections::HashSet<usize>,
+    inserts_per_strip_idx: &[usize],
+) -> Vec<u8> {
+    let total_inserts: usize = inserts_per_strip_idx.iter().sum();
+    let mut out = Vec::with_capacity(row.len() + total_inserts);
+    let mut s = 0usize;
+    for q in 0..row.len() {
+        if !new_merge_gap_set.contains(&q) {
+            for _ in 0..inserts_per_strip_idx[s] {
+                out.push(b'-');
+            }
+            out.push(row[q]);
+            s += 1;
+        } else {
+            out.push(row[q]);
+        }
+    }
+    let l_strip = inserts_per_strip_idx.len() - 1;
+    for _ in 0..inserts_per_strip_idx[l_strip] {
+        out.push(b'-');
+    }
+    out
+}
+
+/// For an OTHER (already-aligned, not-in-merge) row at pre-merge L_pre,
+/// build its post-restore representation. OTHER preserves its char at
+/// type A (anchor) and type C (gap_col) positions, and gets gap chars at
+/// type B (new merge gap) positions. Mirrors C's `insertnewgaps`
+/// (`addfunctions.c:445`) but without the profilealignment refinement.
+fn build_other_post_restore_row(
+    other_pre: &[u8],
+    anchor_positions: &[usize],
+    gap_cols_before: &[Vec<usize>],
+    new_merge_gap_set: &std::collections::HashSet<usize>,
+    post_merge_w: usize,
+) -> Vec<u8> {
+    let total_size = other_pre.len() + new_merge_gap_set.len();
+    let mut out: Vec<u8> = Vec::with_capacity(total_size);
+    let mut s = 0usize;
+    for q in 0..post_merge_w {
+        if new_merge_gap_set.contains(&q) {
+            out.push(b'-');
+        } else {
+            for &k_pre in &gap_cols_before[s] {
+                out.push(other_pre.get(k_pre).copied().unwrap_or(b'-'));
+            }
+            out.push(other_pre.get(anchor_positions[s]).copied().unwrap_or(b'-'));
+            s += 1;
+        }
+    }
+    let l_strip = anchor_positions.len();
+    for &k_pre in &gap_cols_before[l_strip] {
+        out.push(other_pre.get(k_pre).copied().unwrap_or(b'-'));
+    }
+    out
+}
+
+/// Walk `pre` and `post` together to find columns of `post` that are
+/// gaps inserted by the merge. Returns positions in `post`-coordinates
+/// where a gap was inserted (relative to the pre-merge alignment). Both
+/// `pre` and `post` are assumed to contain the SAME residue sequence
+/// (same row of the alignment, before and after the merge), with `post`
+/// possibly having extra gap columns inserted.
+fn diff_new_gap_positions(pre: &[u8], post: &[u8]) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut pi = 0usize;
+    for (qi, &c) in post.iter().enumerate() {
+        if pi < pre.len() && pre[pi] == c {
+            pi += 1;
+        } else {
+            // Either `c` is an inserted-gap column, or there's a
+            // mismatch we don't expect. Treat as new-gap insertion.
+            positions.push(qi);
+        }
+    }
+    positions
+}
+
+/// Insert gap characters into `seq` at the specified `post`-coordinate
+/// positions, returning the expanded sequence.
+fn insert_gaps_at(seq: &[u8], positions: &[usize]) -> Vec<u8> {
+    if positions.is_empty() { return seq.to_vec(); }
+    let new_len = seq.len() + positions.len();
+    let mut out = Vec::with_capacity(new_len);
+    let mut pos_iter = positions.iter().copied();
+    let mut next_pos = pos_iter.next();
+    let mut src = 0usize;
+    let mut dst = 0usize;
+    while dst < new_len {
+        if Some(dst) == next_pos {
+            out.push(b'-');
+            next_pos = pos_iter.next();
+        } else if src < seq.len() {
+            out.push(seq[src]);
+            src += 1;
+        } else {
+            out.push(b'-');
+        }
+        dst += 1;
+    }
+    out
 }
 
 /// Run progressive alignment merges 0..n_steps and return the

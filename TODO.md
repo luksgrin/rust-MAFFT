@@ -38,10 +38,13 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | PartTree (`--parttree`)                    | 752     | 752        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | PartTree NW (`--parttree --nofft`)         | 752     | 752        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | DP-PartTree (`--dpparttree`)               | 752     | 752        | 0          | byte-exact ✓ (closed 2026-05-10) |
+| `--add` (30+6 sample)                      | 741     | 741        | 0          | byte-exact ✓ (closed 2026-05-10) |
+| `--add --nofft` (30+6 sample)              | 741     | 741        | 0          | byte-exact ✓ (closed 2026-05-10) |
+| `--add --keeplength` (30+6 sample)         | 595     | 595        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | RNA NW  (`--nofft samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 
-Test suite: 256 Rust tests pass (`cargo test --workspace --exclude pymafft
---release`), 0 failed, 0 ignored. Plus 32 Python tests pass.
+Test suite: 257 Rust tests pass (`cargo test --workspace --exclude pymafft
+--release --test-threads=1`), 0 failed, 0 ignored. Plus 32 Python tests pass.
 
 ---
 
@@ -654,28 +657,80 @@ mode to `progressive_align` so the parttree path can match C's
 
 ---
 
-## §7. Add / AddFragments (`--add`, `--addfragments`, `--keeplength`)
+## §7. Add / AddFragments (`--add`, `--addfragments`, `--keeplength`) — RESOLVED 2026-05-10
 
-**Observed**: `--add --nofft` has ~900-line diff from C.
+**Status**: Byte-identical to C MAFFT 7.526 on the 30+6 sample split for
+all three variants:
+- `--add` (FFT-NS-2): 741 cols, byte-exact ✓
+- `--add --nofft`: 741 cols, byte-exact ✓
+- `--add --keeplength`: 595 cols, byte-exact ✓
 
-**Priority**: Medium-high (this feature also blocks the per-group-strip
-perf fix in progressive alignment — see §8).
+**Two coordinated fixes** closed the gap from a baseline 1075-cols (vs C's
+741):
 
-**Location**: `crates/mafft-core/src/add.rs`.
+1. **`mergeoralign[]` semantics** — C's `includemember(mem, cand)`
+   (`mltaln9.c:15053`) returns true iff EVERY member of `mem` is in
+   `cand`, not "any". So:
+   - `'1'` (NewLeft): LEFT subtree consists *entirely* of new sequences.
+   - `'2'` (NewRight): RIGHT subtree consists *entirely* of new
+     sequences.
+   - `'w'`: BOTH subtrees consist entirely of new sequences (a merge
+     between two new-only subclusters).
+   - `'n'`: neither subtree is entirely new (either all existing, or a
+     mix of existing + already-merged-new).
 
-C's `addsingle.c` + `insertnewgaps()` from `addfunctions.c` (lines
-445-673) is only partially ported. The `gaplen[]` / `gapmap[]` /
-`posin12`-counter machinery is missing.
+   I had incorrectly used `any` (= "subtree has at least one new"),
+   which mistagged ~3 of the 9 non-'n' steps as `'2'` when C had them
+   as `'n'`, ballooning width via spurious strip+restore cycles.
+   Fix: `add.rs::compute_mergeoralign` now uses `iter().all()`.
 
-**Concrete next task**: port `insertnewgaps()` fully:
-1. After profile DP, reconstruct group1/group2 aligned sequences with
-   `=` markers at new-gap positions.
-2. Port `findnewgaps()` → `gaplen[]`.
-3. Port `adjustgapmap()` → `gapmap[]`.
-4. Port the main loop of `insertnewgaps()` using `j` and `posin12`
-   counters.
+2. **Per-step `findcommongaps` / `commongappick` /
+   `restorecommongaps` / `insertnewgaps`** — for `'2'` steps
+   (`disttbfast.c:2745-2756, 2937-2961`), strip all-gap columns from
+   the existing-or-mixed side before the merge DP, then post-merge:
+   restore those common gaps to the merged group AND propagate the
+   new merge gap columns to OTHER already-aligned rows.
 
-Effort: 2-3 days.
+   Implementation in `progressive.rs::progressive_align_with_mergeoralign_n`:
+   - `compute_new_merge_gap_set(pre_strip, post_merge)`: lockstep
+     diff to identify post-merge positions where the DP inserted a
+     new gap into the existing-side rows.
+   - `restore_common_gaps_to_merged_row(...)`: re-insert the stripped
+     common-gap cols at the right post-merge positions (right before
+     each anchor).
+   - `build_other_post_restore_row(...)`: for each OTHER already-
+     aligned row, build its post-restore representation by walking
+     post-merge cols and emitting OTHER's char at type A (anchor) /
+     type C (gap_col) positions and gap chars at type B (new merge
+     gap) positions.
+
+### File inventory
+
+- `crates/mafft-core/src/add.rs` — `compute_mergeoralign` uses
+  `iter().all(|i| i >= n_existing)` for "subtree all-new" check.
+- `crates/mafft-core/src/progressive.rs` — strip+restore helpers
+  (~80 lines); per-step strip in `NewRight`/`NewLeft` arms, no-strip
+  in `Wide` (matches C `disttbfast.c`).
+- `crates/mafft-core/tests/end_to_end.rs` — `add_six_to_thirty_byte_identical_to_c`
+  asserts byte-identity against `sample.add6.aln` fixture.
+- `crates/mafft-core/tests/fixtures/sample.first30.fa`,
+  `sample.first30.fftns2.aln`, `sample.last6_for_add.fa`,
+  `sample.add6.aln` — committed C-reference fixtures.
+
+### Limitations / non-goals
+
+- Smoothing path (`disttbfast.c:2950-2954`,
+  `restorecommongapssmoothly` + `insertnewgaps_bothorders`) is not
+  ported. C falls into this branch only when the `--smoothing` flag
+  is set; default is the simpler path which we match exactly.
+- `profilealignment` refinement around common-gap regions
+  (`addfunctions.c:587`) is not implemented. It only fires when
+  `gapshift > 0` AND there are existing rows being expanded into a
+  mixed/restored region. On our 30+6 sample the byte-identical
+  output proves this corner doesn't fire; future inputs that
+  trigger it would need a port of the 3-way profile alignment.
+
+**Tests**: 257 pass (256 prior + 1 new), 0 failed.
 
 ---
 
