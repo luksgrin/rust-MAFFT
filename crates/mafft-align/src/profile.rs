@@ -147,7 +147,7 @@ impl Profile {
         i: usize,
         other: &Profile,
         j: usize,
-        matrix: &[Vec<i32>],
+        matrix: &[Vec<f64>],
     ) -> f64 {
         let nalpha = self.nalphabets.min(other.nalphabets).min(matrix.len());
         let freq1 = &self.freqs[i];
@@ -164,7 +164,7 @@ impl Profile {
             let row = &matrix[a];
             let row_len = nalpha.min(row.len());
             for b in 0..row_len {
-                scarr[b] = f1.mul_add(row[b] as f64, scarr[b]);
+                scarr[b] = f1.mul_add(row[b], scarr[b]);
             }
         }
 
@@ -216,7 +216,7 @@ impl Profile {
 pub fn align_with_anchors(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     gap: &GapModel,
     anchors: &[(usize, usize)],
 ) -> Alignment {
@@ -228,7 +228,7 @@ pub fn align_with_anchors(
 pub fn align_with_anchors_outgap(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     gap: &GapModel,
     anchors: &[(usize, usize)],
     outgap: bool,
@@ -297,7 +297,7 @@ pub fn align_with_anchors_outgap(
 pub fn profile_align(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     gap: &GapModel,
     head_gap: bool,
     tail_gap: bool,
@@ -315,7 +315,7 @@ pub fn profile_align(
 pub fn profile_align_imp(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     gap: &GapModel,
     head_gap: bool,
     tail_gap: bool,
@@ -358,7 +358,7 @@ impl Default for BoundaryFreqs {
 pub fn profile_align_imp_with_tiebreak(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     gap: &GapModel,
     head_gap: bool,
     tail_gap: bool,
@@ -380,7 +380,7 @@ pub fn profile_align_imp_with_tiebreak(
 pub fn profile_align_imp_with_boundary(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     gap: &GapModel,
     head_gap: bool,
     tail_gap: bool,
@@ -474,7 +474,7 @@ pub fn profile_align_imp_with_boundary(
                 // `scarr[l] += a * b` into FMA (single-rounding fused
                 // multiply-add). Rust's `+=` followed by `*` produces two
                 // rounding steps. Use `mul_add` to match C's bit pattern.
-                let m = matrix[j][l] as f64;
+                let m = matrix[j][l];
                 let f = prof1.freqs[row_pos][j];
                 scarr[l] = m.mul_add(f, scarr[l]);
             }
@@ -513,7 +513,7 @@ pub fn profile_align_imp_with_boundary(
         for l in 0..nalpha {
             scarr[l] = 0.0;
             for j in 0..nalpha {
-                scarr[l] += matrix[j][l] as f64 * prof2.freqs[0][j];
+                scarr[l] += matrix[j][l] * prof2.freqs[0][j];
             }
         }
         for i in 0..n {
@@ -544,7 +544,7 @@ pub fn profile_align_imp_with_boundary(
         for l in 0..nalpha {
             scarr[l] = 0.0;
             for j in 0..nalpha {
-                scarr[l] += matrix[j][l] as f64 * prof1.freqs[0][j];
+                scarr[l] += matrix[j][l] * prof1.freqs[0][j];
             }
         }
         for j in 0..m {
@@ -790,7 +790,7 @@ pub fn profile_align_imp_with_boundary(
 pub fn pairwise_align11(
     seq1: &[u8],
     seq2: &[u8],
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     amino_map: &[u8; 256],
     penalty: f64,
     head_gap: bool,
@@ -815,7 +815,7 @@ pub fn pairwise_align11(
     let score_pair = |c1: u8, c2: u8| -> f64 {
         let i = amino_map[c1 as usize] as usize;
         let j = amino_map[c2 as usize] as usize;
-        if i < nalpha && j < nalpha { matrix[i][j] as f64 } else { 0.0 }
+        if i < nalpha && j < nalpha { matrix[i][j] } else { 0.0 }
     };
 
     // initverticalw: match_calc_mtx(seq2, seq1, 0, lgth1)
@@ -986,9 +986,9 @@ pub fn pairwise_align11(
 mod tests {
     use super::*;
 
-    fn simple_setup() -> (Vec<Vec<i32>>, [u8; 256]) {
-        let mut mtx = vec![vec![-100i32; 5]; 5];
-        for i in 0..4 { mtx[i][i] = 100; }
+    fn simple_setup() -> (Vec<Vec<f64>>, [u8; 256]) {
+        let mut mtx = vec![vec![-100.0f64; 5]; 5];
+        for i in 0..4 { mtx[i][i] = 100.0; }
         let mut map = [0xFFu8; 256];
         map[b'A' as usize] = 0;
         map[b'C' as usize] = 1;

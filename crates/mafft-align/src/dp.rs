@@ -100,14 +100,24 @@ impl Default for GapModel {
 pub fn score_pair(
     a: u8,
     b: u8,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     amino_map: &[u8; 256],
 ) -> f64 {
     let i = amino_map[a as usize] as usize;
     let j = amino_map[b as usize] as usize;
     if i < matrix.len() && j < matrix[0].len() {
-        matrix[i][j] as f64
+        matrix[i][j]
     } else {
         0.0
     }
+}
+
+/// Convert an integer substitution matrix to f64 (used to bridge from
+/// `ScoringContext.substitution_matrix: Vec<Vec<i32>>` to the DP layer
+/// which now operates on `Vec<Vec<f64>>` for the per-step / per-pair
+/// dynamic-matrix path that requires sub-integer precision).
+pub fn matrix_i32_to_f64(matrix: &[Vec<i32>]) -> Vec<Vec<f64>> {
+    matrix.iter()
+        .map(|row| row.iter().map(|&v| v as f64).collect())
+        .collect()
 }

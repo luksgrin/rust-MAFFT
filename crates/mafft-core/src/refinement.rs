@@ -372,7 +372,7 @@ fn realign_all(
         );
         let aln = profile_align_imp(
             &stripped_prof1, &stripped_prof2,
-            &scoring.substitution_matrix,
+            &scoring.consweight_matrix,
             gap,
             true, true,
             Some(&imp),
@@ -419,7 +419,7 @@ fn realign_all(
         let mut site_scores = vec![0.0f64; len];
         for i in 0..len {
             site_scores[i] =
-                full_prof1.match_score(i, &full_prof2, i, &scoring.substitution_matrix)
+                full_prof1.match_score(i, &full_prof2, i, &scoring.consweight_matrix)
                 / totaleff;
         }
 
@@ -548,7 +548,7 @@ fn realign_all(
             //   headgp = (i==0) ? outgap : 1   ;   tailgp = (i==count-2) ? outgap : 1
             // outgap=1 in dvtditr.c:73, so headgp=tailgp=1 for every segment.
             let seg_aln = profile_align(
-                &prof_seg1, &prof_seg2, &scoring.substitution_matrix, gap, true, true,
+                &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap, true, true,
             );
             total_score += seg_aln.score;
 
@@ -595,7 +595,7 @@ fn realign_all(
     // Non-FFT path: profile_align on stripped profiles.
     let aln = profile_align(
         &stripped_prof1, &stripped_prof2,
-        &scoring.substitution_matrix, gap, true, true,
+        &scoring.consweight_matrix, gap, true, true,
     );
     build_result_from_stripped(
         &aln, group1, group2, sequences, &kept1, &kept2,
@@ -655,7 +655,7 @@ fn realign_all_constrained_fft(
     let mut site_scores = vec![0.0f64; len];
     for i in 0..len {
         site_scores[i] = full_prof1.match_score(
-            i, &full_prof2, i, &scoring.substitution_matrix,
+            i, &full_prof2, i, &scoring.consweight_matrix,
         ) / totaleff;
     }
     let segments = alignable_segments(&site_scores, &segment_params);
@@ -841,7 +841,7 @@ fn realign_all_constrained_fft(
         } else { 1.0 };
         let boundary = BoundaryFreqs { head1, head2, tail1, tail2 };
         let seg_aln = profile_align_imp_with_boundary(
-            &prof_seg1, &prof_seg2, &scoring.substitution_matrix, gap,
+            &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap,
             true, true, Some(&local_imp), true, boundary,
         );
         total_score += seg_aln.score;
@@ -1087,7 +1087,7 @@ fn compute_split_score(
 #[inline]
 fn pairwise_score(seq1: &[u8], seq2: &[u8], scoring: &ScoringContext) -> f64 {
     let map = &scoring.amino_map;
-    let mtx = &scoring.substitution_matrix;
+    let mtx = &scoring.consweight_matrix;
     let mtx_size = mtx.len();
 
     // Port of C's intergroup_score (mltaln9.c lines 404-475):
@@ -1128,7 +1128,7 @@ fn pairwise_score(seq1: &[u8], seq2: &[u8], scoring: &ScoringContext) -> f64 {
         let i = map[a as usize] as usize;
         let j = map[b as usize] as usize;
         if i < mtx_size && j < mtx_size {
-            score += mtx[i][j] as f64;
+            score += mtx[i][j];
         }
         k += 1;
     }

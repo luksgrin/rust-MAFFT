@@ -21,16 +21,15 @@ fn dist2offset(dist: f64, sc: f64) -> f64 {
 /// score where `offset = dist2offset(2 * distfromtip, sc)`. Negative for
 /// shallow merges (close-related), zero for deep merges. Pulls divergent
 /// regions apart at shallow merges → wider final alignment.
-fn make_dynamic_matrix(base: &[Vec<i32>], distfromtip: f64, unalign_level: f64) -> Vec<Vec<i32>> {
+fn make_dynamic_matrix(base: &[Vec<f64>], distfromtip: f64, unalign_level: f64) -> Vec<Vec<f64>> {
     let offset = dist2offset(distfromtip * 2.0, unalign_level);
     if offset == 0.0 {
         return base.iter().map(|r| r.clone()).collect();
     }
     // C's `makedynamicmtx` (mltaln9.c:15201) does `out[i][j] = in[i][j] +
-    // offset * 600` with `out` a `double **`. Round to match the nearest
-    // int rather than truncate toward zero (truncation systematically
-    // skews the delta toward zero and shifts the alignment trace).
-    let delta = (offset * 600.0).round() as i32;
+    // offset * 600` with `out` a `double **`. Now that our DP also uses
+    // f64 matrices, we can preserve the full sub-integer precision.
+    let delta = offset * 600.0;
     base.iter()
         .map(|row| row.iter().map(|&v| v + delta).collect())
         .collect()
@@ -703,14 +702,15 @@ pub fn progressive_align_full(
         Vec::new()
     };
     // Per-step scoring contexts (only when unalign_level > 0). Each
-    // entry differs from `scoring` only in `substitution_matrix`.
+    // entry differs from `scoring` only in `consweight_matrix` (the
+    // f64 version of the substitution matrix used by all DP routines).
     let dyn_scoring: Vec<ScoringContext> = if unalign_level > 0.0 {
         distfromtip
             .iter()
             .map(|&dft| {
                 let mut s = scoring.clone();
-                s.substitution_matrix =
-                    make_dynamic_matrix(&scoring.substitution_matrix, dft, unalign_level);
+                s.consweight_matrix =
+                    make_dynamic_matrix(&scoring.consweight_matrix, dft, unalign_level);
                 s
             })
             .collect()
@@ -809,7 +809,7 @@ fn merge_step_cached(
         // profile DP below.
         pairwise_align11(
             &aligned[group1[0]], &aligned[group2[0]],
-            &scoring.substitution_matrix, &scoring.amino_map,
+            &scoring.consweight_matrix, &scoring.amino_map,
             scoring.gap.open as f64, false, false,
         )
     } else if use_fft {
@@ -852,7 +852,7 @@ fn merge_step_cached(
             num_channels: scoring.nscoredalphabets,
             property_channels,
         };
-        fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params)
+        fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params)
     } else if let Some(table) = constraints {
         // Constraint-aware progressive merge (L-INS-i / E-INS-i tbfast path).
         // Build per-cell impmtx from the localhom table over the group split,
@@ -895,7 +895,7 @@ fn merge_step_cached(
             }
         }
         mafft_align::profile_align_imp(
-            &prof1, &prof2, &scoring.substitution_matrix, gap,
+            &prof1, &prof2, &scoring.consweight_matrix, gap,
             penalize_term_gaps, penalize_term_gaps, Some(&imp),
         )
     } else {
@@ -905,7 +905,7 @@ fn merge_step_cached(
         // FFT-NS-2/L-INS-i/E-INS-i defaults), true → outgap=1
         // (G-INS-i and `--parttree`).
         profile_align(
-            &prof1, &prof2, &scoring.substitution_matrix, gap,
+            &prof1, &prof2, &scoring.consweight_matrix, gap,
             penalize_term_gaps, penalize_term_gaps,
         )
     };

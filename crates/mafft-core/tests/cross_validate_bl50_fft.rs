@@ -84,7 +84,7 @@ fn bl50_alignable_reagion_matches_c() {
     let len = prof1.length.min(prof2.length);
     let mut rust_scores = vec![0.0f64; len];
     for i in 0..len {
-        rust_scores[i] = prof1.match_score(i, &prof2, i, &scoring.substitution_matrix);
+        rust_scores[i] = prof1.match_score(i, &prof2, i, &scoring.consweight_matrix);
     }
 
     // Run Rust segment detection (matches the BL50 default protein params).
@@ -208,7 +208,7 @@ fn bl50_step24_profile_dp_matches_c_a_align() {
     // Rust DP: mirror the FFT fallback path (head_gap=false, tail_gap=false
     // — engine's FftAlignParams sets both to false).
     let rust_aln = profile_align(
-        &prof1, &prof2, &scoring.substitution_matrix, &gap, false, false,
+        &prof1, &prof2, &scoring.consweight_matrix, &gap, false, false,
     );
 
     // Materialize Rust's first-of-cluster1 aligned sequence for byte

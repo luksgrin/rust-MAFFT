@@ -43,7 +43,7 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | `--add --keeplength` (30+6 sample)         | 595     | 595        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | RNA NW  (`--nofft samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 | Q-INS-i (`--qinsi samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (verified 2026-05-10, requires `mxscarnamod` from `mafft-upstream/extensions`) |
-| `--allowshift --globalpair sample`         | 1029    | 957        | many       | partial — flag now active (746→957), see §9c |
+| `--allowshift --globalpair sample`         | 1029    | 993        | many       | partial — flag now active (746→993 after f64 DP migration), see §9c |
 
 Test suite: 257 Rust tests pass (`cargo test --workspace --exclude pymafft
 --release --test-threads=1`), 0 failed, 0 ignored. Plus 32 Python tests pass.
@@ -829,21 +829,31 @@ the script also zeroes `pgaof = pgexp = laof = lexp = 0` in
 - Topology: identical (verified through distfromtip equivalence).
 
 **Result**: `mafft --allowshift --globalpair --maxiterate 0 sample`
-Rust width 957, C width 1029. Was 746 before any work, 809 after
-per-step only.
+Rust width 993, C width 1029. Trajectory: 746 (no effect) → 809
+(per-step int) → 957 (per-step + per-pair int) → 993 (after f64 DP
+migration).
 
-**Remaining 72-col gap**: comes from int (Rust) vs double (C) precision
-in the dynamic-matrix DP. C's `makedynamicmtx` adds `offset * 600` as
-a `double`. Rust's `(off * 600).round() as i32` loses sub-integer
-precision per cell. For pair (0, 1): C's pscore_after = 43765.459,
-Rust's pscore_after = 44108.0 — a per-pair score divergence of ~0.8%.
-Accumulated through the constraint table → per-cell impmtx →
-progressive merge, this widens the final alignment by ~7%.
+**f64 DP migration (§9c, 2026-05-10)**: All DP function signatures
+across `mafft-align` migrated from `&[Vec<i32>]` to `&[Vec<f64>]`
+matrices. Per-pair `pscore_initial` and `pscore_after_dyn` now
+match C exactly to 6 decimals (181568.000000 / 43765.459030 for pair
+(0,1) on the 36-seq sample). ScoringContext.substitution_matrix kept
+as `Vec<Vec<i32>>` for canonical storage; DP callers use
+`&scoring.consweight_matrix` (auto-built f64 view, mirrors
+`n_dis_consweight_multi` in C). Touched: dp.rs, profile.rs, global.rs,
+local.rs, genaffine.rs, fft_align.rs, constraints.rs,
+constrained_align.rs (~20 sig changes + cast removals). All 257
+tests pass; all 12 byte-identity modes still match.
 
-**To close fully**: migrate `profile_align`/`global_align` to use
-`Vec<Vec<f64>>` matrices (or scaled-int fixed-point with extra
-precision bits). Significant refactor across `mafft-align/src/dp.rs`,
-`profile.rs`, `global.rs`. Out of scope for this session.
+**Remaining 36-col gap**: with `--allowshift`, the C script also
+zeroes `lexp = laof = pgaof = pgexp = 0` (`scripts/mafft:1469-1473`).
+Applying this in our Rust pair phase makes pscore match C exactly,
+*but* widens the final alignment to 1412 cols. Likely cause:
+floating-point summation-order ties in the DP that diverge when
+`gap_extend = 0` produces many score ties along long alignment
+paths. Without the lexp/laof zeroing (current state), we get 993
+with our default G-INS-i pair-phase params (gap_extend=-60). The
+trade is 36 cols off vs many more.
 
 **Priority**: Low — `--allowshift` is rarely used. The current partial
 implementation makes the flag take meaningful effect (746 → 957, vs

@@ -11,11 +11,11 @@ fn build_amino_map() -> [u8; 256] {
     map
 }
 
-fn build_simple_matrix() -> Vec<Vec<i32>> {
+fn build_simple_matrix() -> Vec<Vec<f64>> {
     let n = 26;
-    let mut m = vec![vec![-1i32; n]; n];
+    let mut m = vec![vec![-1.0f64; n]; n];
     for i in 0..20 {
-        m[i][i] = 4;
+        m[i][i] = 4.0;
     }
     m
 }

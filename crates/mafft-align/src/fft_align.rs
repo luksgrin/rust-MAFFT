@@ -79,7 +79,7 @@ pub struct Anchor {
 pub fn find_fft_anchors(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     params: &FftAlignParams,
 ) -> Option<Vec<(usize, usize)>> {
     let n = prof1.length;
@@ -208,7 +208,7 @@ pub fn find_fft_anchors(
 pub fn fft_profile_align(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     params: &FftAlignParams,
 ) -> Alignment {
     if prof1.length == 0 || prof2.length == 0 {
@@ -302,7 +302,7 @@ fn profile_to_property_channels(
 fn shift_and_score(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     lag: i32,
 ) -> Vec<f64> {
     let n = prof1.length as i32;
@@ -330,10 +330,10 @@ fn shift_and_score(
 mod tests {
     use super::*;
 
-    fn simple_setup() -> (Vec<Vec<i32>>, [u8; 256], usize) {
-        let mut mtx = vec![vec![-100i32; 5]; 5];
+    fn simple_setup() -> (Vec<Vec<f64>>, [u8; 256], usize) {
+        let mut mtx = vec![vec![-100.0f64; 5]; 5];
         for i in 0..4 {
-            mtx[i][i] = 100;
+            mtx[i][i] = 100.0;
         }
         let mut map = [0xFFu8; 256];
         map[b'A' as usize] = 0;

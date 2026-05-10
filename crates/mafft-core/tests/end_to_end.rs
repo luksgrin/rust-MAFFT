@@ -746,7 +746,7 @@ fn diagnostic_fft_anchoring() {
     let prof2 = Profile::from_aligned(&seqs2, &w, &scoring.amino_map, scoring.nalphabets);
 
     // Direct DP alignment
-    let dp_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let dp_aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
 
     // FFT-accelerated alignment
     let fft_params = FftAlignParams {
@@ -758,7 +758,7 @@ fn diagnostic_fft_anchoring() {
         num_channels: 20,
         property_channels: None,
     };
-    let fft_aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params);
+    let fft_aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params);
 
     eprintln!("Direct DP:  score={:.1}, ops={}", dp_aln.score, dp_aln.operations.len());
     eprintln!("FFT accel:  score={:.1}, ops={}", fft_aln.score, fft_aln.operations.len());
@@ -888,7 +888,7 @@ fn diagnostic_first_merge() {
     let w = vec![1.0];
     let prof1 = Profile::from_aligned(&seqs1, &w, &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&seqs2, &w, &scoring.amino_map, scoring.nalphabets);
-    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
     
     eprintln!("  Alignment score: {:.1}", aln.score);
     eprintln!("  Alignment width: {}", aln.operations.len());
@@ -956,7 +956,7 @@ fn diagnostic_merge_trace() {
 
         let prof1 = Profile::from_aligned(&seqs1, &w1n, &scoring.amino_map, scoring.nalphabets);
         let prof2 = Profile::from_aligned(&seqs2, &w2n, &scoring.amino_map, scoring.nalphabets);
-        let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+        let aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
 
         let matches = aln.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
         let deletes = aln.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
@@ -1109,14 +1109,14 @@ fn diagnostic_align11_vs_profile() {
     let s2 = &input.sequences[20].data;
 
     // Use the same boundary convention the engine uses (outgap=0 → false, false).
-    let aln11 = pairwise_align11(s1, s2, &scoring.substitution_matrix, &scoring.amino_map,
+    let aln11 = pairwise_align11(s1, s2, &scoring.consweight_matrix, &scoring.amino_map,
         scoring.gap.open as f64, false, false);
 
     let seqs1: Vec<&[u8]> = vec![s1.as_slice()];
     let seqs2: Vec<&[u8]> = vec![s2.as_slice()];
     let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
-    let aln_prof = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, false, false);
+    let aln_prof = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, false, false);
 
     let m11 = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
     let d11 = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
@@ -1176,8 +1176,8 @@ fn diagnostic_fft_anchors() {
         property_channels: None,
     };
 
-    let aln_fft = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &fft_params);
-    let aln_dp = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let aln_fft = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params);
+    let aln_dp = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
 
     let m_fft = aln_fft.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
     let m_dp = aln_dp.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
@@ -1222,10 +1222,10 @@ fn diagnostic_score_breakdown() {
     // Profile-based score
     let seqs: Vec<&[u8]> = vec![s33.as_slice()];
     let prof = Profile::from_aligned(&seqs, &[1.0], &scoring.amino_map, scoring.nalphabets);
-    let aln_prof = profile_align(&prof, &prof, &scoring.substitution_matrix, &gap, true, true);
+    let aln_prof = profile_align(&prof, &prof, &scoring.consweight_matrix, &gap, true, true);
     
     // G__align11 score
-    let aln11 = pairwise_align11(s33, s34, &scoring.substitution_matrix, &scoring.amino_map,
+    let aln11 = pairwise_align11(s33, s34, &scoring.consweight_matrix, &scoring.amino_map,
         scoring.gap.open as f64, true, true);
 
     // Manual diagonal sum
@@ -1245,7 +1245,7 @@ fn diagnostic_score_breakdown() {
     
     // Check first few sub scores
     for i in 0..3 {
-        let s = prof.match_score(i, &prof, i, &scoring.substitution_matrix);
+        let s = prof.match_score(i, &prof, i, &scoring.consweight_matrix);
         eprintln!("match_score({},{}) = {:.1} (char={})", i, i, s, s33[i] as char);
     }
 }
@@ -1279,7 +1279,7 @@ fn diagnostic_fft_pipeline() {
         num_channels: scoring.nscoredalphabets,
         property_channels: None,
     };
-    let aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &params);
+    let aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &params);
     eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());
 }
 
@@ -1302,17 +1302,17 @@ fn diagnostic_segment_align() {
     let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
 
     // Full alignment
-    let full = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let full = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
     eprintln!("Full alignment: score={} ops={}", full.score, full.operations.len());
 
     // Sub-profile alignment: positions 0..28 of each
     let sub1 = prof1.sub_profile(0, 28);
     let sub2 = prof2.sub_profile(0, 28);
-    let seg = profile_align(&sub1, &sub2, &scoring.substitution_matrix, &gap, true, false);
+    let seg = profile_align(&sub1, &sub2, &scoring.consweight_matrix, &gap, true, false);
     eprintln!("Segment 0..28: score={} ops={}", seg.score, seg.operations.len());
 
     // Same with head_gap=false (intermediate segment)
-    let seg2 = profile_align(&sub1, &sub2, &scoring.substitution_matrix, &gap, false, false);
+    let seg2 = profile_align(&sub1, &sub2, &scoring.consweight_matrix, &gap, false, false);
     eprintln!("Segment 0..28 (no head_gap): score={} ops={}", seg2.score, seg2.operations.len());
 }
 
@@ -1345,11 +1345,11 @@ fn diagnostic_step3_anchors() {
         num_channels: scoring.nscoredalphabets,
         property_channels: None,
     };
-    let aln = fft_profile_align(&prof1, &prof2, &scoring.substitution_matrix, &params);
+    let aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &params);
     eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());
 
     use mafft_align::profile_align;
-    let dp = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let dp = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
     eprintln!("DP result: score={} ops={}", dp.score, dp.operations.len());
     eprintln!("C step3 score: 108355.0");
 }
@@ -1372,7 +1372,7 @@ fn diagnostic_step3_dp() {
     let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
 
-    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
     let m_count = aln.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
     let d_count = aln.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
     let i_count = aln.operations.iter().filter(|op| matches!(op, AlignOp::Insert)).count();
@@ -1380,7 +1380,7 @@ fn diagnostic_step3_dp() {
 
     // Compute manual score: for each match position, look up what residues match
     use mafft_align::pairwise_align11;
-    let aln11 = pairwise_align11(s7, s8, &scoring.substitution_matrix, &scoring.amino_map,
+    let aln11 = pairwise_align11(s7, s8, &scoring.consweight_matrix, &scoring.amino_map,
         scoring.gap.open as f64, true, true);
     let m_count = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Match)).count();
     let d_count = aln11.operations.iter().filter(|op| matches!(op, AlignOp::Delete)).count();
@@ -1408,7 +1408,7 @@ fn diagnostic_step3_align_dump() {
     let prof1 = Profile::from_aligned(&seqs1, &[1.0], &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&seqs2, &[1.0], &scoring.amino_map, scoring.nalphabets);
 
-    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
 
     // Walk operations and dump first 30 positions
     let mut p1 = 0;
@@ -1461,7 +1461,7 @@ fn diagnostic_simple_offset() {
     
     let prof1 = Profile::from_aligned(&[s1], &[1.0], &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&[s2], &[1.0], &scoring.amino_map, scoring.nalphabets);
-    let aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
     
     let mut p1 = 0; let mut p2 = 0;
     let mut a1 = String::new();
@@ -1518,7 +1518,7 @@ fn diagnostic_dp_score_bug() {
     // Test align ACDE vs ACDE — should give max score
     let s1: &[u8] = b"ACDE";
     let prof1 = Profile::from_aligned(&[s1], &[1.0], &scoring.amino_map, scoring.nalphabets);
-    let aln = profile_align(&prof1, &prof1, &scoring.substitution_matrix, &gap, true, true);
+    let aln = profile_align(&prof1, &prof1, &scoring.consweight_matrix, &gap, true, true);
     eprintln!("ACDE vs ACDE: score={}", aln.score);
     // Expected: A-A + C-C + D-D + E-E
 }

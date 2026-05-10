@@ -18,7 +18,7 @@ use crate::dp::{AlignOp, Alignment, GapModel};
 pub fn global_align(
     seq1: &[u8],
     seq2: &[u8],
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     amino_map: &[u8; 256],
     gap: &GapModel,
     head_gap: bool,
@@ -45,7 +45,7 @@ pub fn global_align(
         let i = amino_map[c1 as usize] as usize;
         let j = amino_map[c2 as usize] as usize;
         if i < n_alpha && j < n_alpha {
-            matrix[i][j] as f64
+            matrix[i][j]
         } else {
             0.0
         }
@@ -359,12 +359,12 @@ fn empty_alignment(seq1: &[u8], seq2: &[u8]) -> Alignment {
 mod tests {
     use super::*;
 
-    fn simple_matrix() -> (Vec<Vec<i32>>, [u8; 256]) {
+    fn simple_matrix() -> (Vec<Vec<f64>>, [u8; 256]) {
         // Simple 5x5 matrix: A=0, C=1, G=2, T=3, -=4
         // Match=100, mismatch=-100
-        let mut mtx = vec![vec![-100i32; 5]; 5];
+        let mut mtx = vec![vec![-100.0f64; 5]; 5];
         for i in 0..4 {
-            mtx[i][i] = 100;
+            mtx[i][i] = 100.0;
         }
         let mut map = [0xFFu8; 256];
         map[b'A' as usize] = 0;

@@ -14,7 +14,7 @@ mod fft_align;
 mod constraints;
 mod constrained_align;
 
-pub use dp::{Alignment, AlignOp, GapModel};
+pub use dp::{Alignment, AlignOp, GapModel, matrix_i32_to_f64};
 pub use global::global_align;
 pub use local::{local_align, LocalAlignment};
 pub use genaffine::{genaffine_local_align, GenAffineGapModel};

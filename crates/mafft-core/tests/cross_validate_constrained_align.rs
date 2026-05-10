@@ -46,12 +46,12 @@ unsafe fn init_c_protein() {
     }
 }
 
-unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<i32>]) -> *mut *mut c_double {
+unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<f64>]) -> *mut *mut c_double {
     let nalpha = scoring_matrix.len() as c_int;
     let mtx = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
     for i in 0..scoring_matrix.len() {
         for j in 0..scoring_matrix[i].len() {
-            *(*mtx.add(i)).add(j) = scoring_matrix[i][j] as f64;
+            *(*mtx.add(i)).add(j) = scoring_matrix[i][j];
         }
     }
     mtx
@@ -110,7 +110,7 @@ fn constrained_align_matches_c_a_align() {
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
     let rust_aln = profile_align_imp(
         &prof1, &prof2,
-        &scoring.substitution_matrix,
+        &scoring.consweight_matrix,
         &gap, false, false,
         Some(&imp),
     );
@@ -144,7 +144,7 @@ fn constrained_align_matches_c_a_align() {
         let eff2_kozo: *mut c_double = alloc_zeroed(8) as _;
         *eff2_kozo = 0.0;
 
-        let n_dyn = build_c_dynamicmtx(&scoring.substitution_matrix);
+        let n_dyn = build_c_dynamicmtx(&scoring.consweight_matrix);
 
         // Build LocalHom*** with one entry: localhom[0][0] points to a
         // LocalHom describing the full-coverage region.
@@ -321,7 +321,7 @@ fn constrained_align_with_gaps_matches_c() {
     let prof2 = Profile::from_aligned(&g2, &[1.0], &scoring.amino_map, scoring.nalphabets);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
     let rust_aln = profile_align_imp(
-        &prof1, &prof2, &scoring.substitution_matrix,
+        &prof1, &prof2, &scoring.consweight_matrix,
         &gap, false, false, Some(&imp),
     );
 
@@ -358,7 +358,7 @@ fn constrained_align_with_gaps_matches_c() {
         let eff1_kozo: *mut c_double = alloc_zeroed(8) as _; *eff1_kozo = 0.0;
         let eff2_kozo: *mut c_double = alloc_zeroed(8) as _; *eff2_kozo = 0.0;
 
-        let n_dyn = build_c_dynamicmtx(&scoring.substitution_matrix);
+        let n_dyn = build_c_dynamicmtx(&scoring.consweight_matrix);
 
         let lh: *mut mafft_sys::LocalHom = alloc_zeroed(std::mem::size_of::<mafft_sys::LocalHom>()) as _;
         (*lh).next = std::ptr::null_mut();
@@ -485,7 +485,7 @@ fn constrained_align_multi_member_matches_c() {
     let prof2 = Profile::from_aligned(&g2, &w2, &scoring.amino_map, scoring.nalphabets);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
     let rust_aln = profile_align_imp(
-        &prof1, &prof2, &scoring.substitution_matrix,
+        &prof1, &prof2, &scoring.consweight_matrix,
         &gap, false, false, None,
     );
 
@@ -544,7 +544,7 @@ fn constrained_align_multi_member_matches_c() {
         let eff2: *mut c_double = alloc_zeroed(w2.len() * 8) as _;
         for (i, &v) in w2.iter().enumerate() { *eff2.add(i) = v; }
 
-        let n_dyn = build_c_dynamicmtx(&scoring.substitution_matrix);
+        let n_dyn = build_c_dynamicmtx(&scoring.consweight_matrix);
 
         let c_penalty = std::ptr::addr_of!(mafft_sys::penalty).read();
         let c_penalty_ex = std::ptr::addr_of!(mafft_sys::penalty_ex).read();
@@ -623,10 +623,10 @@ fn constrained_align_real_2seq_matches_c() {
     );
     let pair_offset_int = cc_scale(p_offset, scale_protein);
     let nscored = scoring.nscoredalphabets;
-    let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+    let mut shifted: Vec<Vec<f64>> = scoring.consweight_matrix.clone();
     for i in 0..nscored {
         for j in 0..nscored {
-            shifted[i][j] -= pair_offset_int;
+            shifted[i][j] -= pair_offset_int as f64;
         }
     }
     let seq_refs: Vec<&[u8]> = vec![s1, s2];
@@ -658,7 +658,7 @@ fn constrained_align_real_2seq_matches_c() {
     let prof2 = Profile::from_aligned(&g2, &[1.0], &scoring.amino_map, scoring.nalphabets);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
     let rust_aln = profile_align_imp(
-        &prof1, &prof2, &scoring.substitution_matrix,
+        &prof1, &prof2, &scoring.consweight_matrix,
         &gap, false, false, Some(&imp),
     );
 
@@ -696,7 +696,7 @@ fn constrained_align_real_2seq_matches_c() {
         let eff2: *mut c_double = alloc_zeroed(8) as _; *eff2 = 1.0;
         let eff1_kozo: *mut c_double = alloc_zeroed(8) as _;
         let eff2_kozo: *mut c_double = alloc_zeroed(8) as _;
-        let n_dyn = build_c_dynamicmtx(&scoring.substitution_matrix);
+        let n_dyn = build_c_dynamicmtx(&scoring.consweight_matrix);
 
         // Build C-side LocalHom from our table's regions.
         let regions = table.get(0, 1);
@@ -882,7 +882,7 @@ fn constrained_align_multi_member_with_constraints_matches_c() {
     let prof2 = Profile::from_aligned(&g2, &w2, &scoring.amino_map, scoring.nalphabets);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
     let rust_aln = profile_align_imp(
-        &prof1, &prof2, &scoring.substitution_matrix,
+        &prof1, &prof2, &scoring.consweight_matrix,
         &gap, false, false, Some(&imp),
     );
 
@@ -940,7 +940,7 @@ fn constrained_align_multi_member_with_constraints_matches_c() {
         let eff1_kozo: *mut c_double = alloc_zeroed(w1.len() * 8) as _;
         let eff2_kozo: *mut c_double = alloc_zeroed(w2.len() * 8) as _;
 
-        let n_dyn = build_c_dynamicmtx(&scoring.substitution_matrix);
+        let n_dyn = build_c_dynamicmtx(&scoring.consweight_matrix);
 
         // Build LocalHom*** matching our table for the group pairs.
         let mut lh_storage: Vec<*mut mafft_sys::LocalHom> = Vec::new();
@@ -1092,10 +1092,10 @@ fn rust_global_align_matches_c_g__align11() {
     let pair_offset_int = cc_scale(p_offset, scale_protein);
     // Apply matrix offset shift as C does (constants.c:798).
     let nscored = scoring.nscoredalphabets;
-    let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+    let mut shifted: Vec<Vec<f64>> = scoring.consweight_matrix.clone();
     for i in 0..nscored {
         for j in 0..nscored {
-            shifted[i][j] -= pair_offset_int;
+            shifted[i][j] -= pair_offset_int as f64;
         }
     }
 
@@ -1199,10 +1199,10 @@ fn rust_genaffine_align_matches_c_gen_l__align11() {
 
     // Apply matrix offset shift (constants.c:798).
     let nscored = scoring.nscoredalphabets;
-    let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+    let mut shifted: Vec<Vec<f64>> = scoring.consweight_matrix.clone();
     for i in 0..nscored {
         for j in 0..nscored {
-            shifted[i][j] -= pair_offset_int;
+            shifted[i][j] -= pair_offset_int as f64;
         }
     }
     let score_offset_for_local = pair_offset_int as f64 / 600.0;
@@ -1312,10 +1312,10 @@ fn rust_genaffine_align_matches_c_gen_l__align11_einsi_params() {
     };
 
     let nscored = scoring.nscoredalphabets;
-    let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+    let mut shifted: Vec<Vec<f64>> = scoring.consweight_matrix.clone();
     for i in 0..nscored {
         for j in 0..nscored {
-            shifted[i][j] -= pair_offset_int;
+            shifted[i][j] -= pair_offset_int as f64;
         }
     }
     let score_offset_for_local = pair_offset_int as f64 / 600.0;
@@ -1411,7 +1411,7 @@ fn rust_genaffine_align_matches_c_gen_l__align11_einsi_params() {
         eprintln!("  Diag entries (Rust shifted vs C amino_dis):");
         for c in [b'A', b'L', b'V', b'M', b'C', b'W', b'Y', b'P'] {
             let ri = scoring.amino_map[c as usize] as usize;
-            let r_v = if ri < n_alpha { shifted[ri][ri] } else { 0 };
+            let r_v = if ri < n_alpha { shifted[ri][ri] } else { 0.0 };
             let row_ptr = *mafft_sys::amino_dis.add(c as usize);
             let c_v = *row_ptr.add(c as usize);
             eprintln!("    {}: Rust={} C={}", c as char, r_v, c_v);

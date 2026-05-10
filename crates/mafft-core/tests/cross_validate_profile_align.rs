@@ -77,7 +77,7 @@ fn profile_align_matches_c_msalignmm() {
     let prof1 = Profile::from_aligned(&group1, &w1, &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&group2, &w2, &scoring.amino_map, scoring.nalphabets);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
-    let rust_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let rust_aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
     eprintln!("Rust: ops.len()={}, score={:.2}", rust_aln.operations.len(), rust_aln.score);
 
     // C side
@@ -240,7 +240,7 @@ fn profile_align_1_vs_many_matches_c() {
     let prof1 = Profile::from_aligned(&group1, &w1, &scoring.amino_map, scoring.nalphabets);
     let prof2 = Profile::from_aligned(&group2, &w2, &scoring.amino_map, scoring.nalphabets);
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
-    let rust_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+    let rust_aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
 
     // C side
     unsafe {

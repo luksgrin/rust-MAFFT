@@ -38,7 +38,7 @@ impl Default for ConstrainedAlignParams {
 pub fn constrained_profile_align(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     constraints: &LocalHomologyTable,
     group1_members: &[usize],
     group2_members: &[usize],
@@ -119,7 +119,7 @@ pub fn constrained_profile_align(
 pub fn partial_profile_align(
     prof1: &Profile,
     prof2: &Profile,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     gap: &GapModel,
     start1: usize,
     end1: usize,
@@ -170,9 +170,9 @@ mod tests {
     use super::*;
     use mafft_types::LocalHomologyTable;
 
-    fn simple_setup() -> (Vec<Vec<i32>>, [u8; 256], usize) {
-        let mut mtx = vec![vec![-100i32; 5]; 5];
-        for i in 0..4 { mtx[i][i] = 100; }
+    fn simple_setup() -> (Vec<Vec<f64>>, [u8; 256], usize) {
+        let mut mtx = vec![vec![-100.0f64; 5]; 5];
+        for i in 0..4 { mtx[i][i] = 100.0; }
         let mut map = [0xFFu8; 256];
         map[b'A' as usize] = 0; map[b'C' as usize] = 1;
         map[b'G' as usize] = 2; map[b'T' as usize] = 3;

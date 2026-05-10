@@ -333,7 +333,7 @@ fn trace_first_branch_vs_c() {
         let prof1 = Profile::from_aligned(&s1r, &rw1n, &scoring.amino_map, scoring.nalphabets);
         let prof2 = Profile::from_aligned(&s2r, &rw2n, &scoring.amino_map, scoring.nalphabets);
         let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
-        let rust_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+        let rust_aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
         eprintln!("Rust profile_align: ops={} score={:.2}", rust_aln.operations.len(), rust_aln.score);
 
         // C MSalignmm
@@ -628,7 +628,7 @@ fn evolving_state_profile_align_vs_msalignmm_iter0() {
 
             let prof1 = Profile::from_aligned(&s1r, &rw1n, &scoring.amino_map, scoring.nalphabets);
             let prof2 = Profile::from_aligned(&s2r, &rw2n, &scoring.amino_map, scoring.nalphabets);
-            let rust_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+            let rust_aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
 
             let mut r_g1: Vec<Vec<u8>> = vec![Vec::with_capacity(rust_aln.operations.len()); group1.len()];
             let mut r_g2: Vec<Vec<u8>> = vec![Vec::with_capacity(rust_aln.operations.len()); group2.len()];
@@ -811,7 +811,7 @@ fn full_sequence_profile_align_vs_msalignmm() {
 
                 let prof1 = Profile::from_aligned(&f1r, &rw1n, &scoring.amino_map, scoring.nalphabets);
                 let prof2 = Profile::from_aligned(&f2r, &rw2n, &scoring.amino_map, scoring.nalphabets);
-                let rust_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+                let rust_aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
 
                 let width = sequences[0].len();
                 let alloclen = width * 10;
@@ -1423,7 +1423,7 @@ fn trajectory_rust_vs_c_all_iters() {
                 let len = full_prof1.length.min(full_prof2.length);
                 let mut scores = vec![0.0f64; len];
                 for i in 0..len {
-                    scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.substitution_matrix) / totaleff;
+                    scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.consweight_matrix) / totaleff;
                 }
                 let segs = mafft_fft::alignable_segments(&scores, &mafft_fft::SegmentParams::protein().with_threshold(50.0));
                 let mut cuts: Vec<usize> = Vec::with_capacity(segs.len() + 2);
@@ -1493,7 +1493,7 @@ fn trajectory_rust_vs_c_all_iters() {
                         }
                     }
 
-                    let aln = profile_align(&p1, &p2, &scoring.substitution_matrix, &gap, true, true);
+                    let aln = profile_align(&p1, &p2, &scoring.consweight_matrix, &gap, true, true);
                     let mut i1 = 0usize; let mut i2 = 0usize;
                     for op in &aln.operations {
                         match op {
@@ -2017,7 +2017,7 @@ fn evolving_state_rust_vs_c_falign_iter0() {
             let len = full_prof1.length.min(full_prof2.length);
             let mut scores = vec![0.0f64; len];
             for i in 0..len {
-                scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.substitution_matrix) / totaleff;
+                scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.consweight_matrix) / totaleff;
             }
             let segs = mafft_fft::alignable_segments(&scores, &mafft_fft::SegmentParams::protein());
             let mut cuts: Vec<usize> = Vec::with_capacity(segs.len() + 2);
@@ -2044,7 +2044,7 @@ fn evolving_state_rust_vs_c_falign_iter0() {
                 let r2: Vec<&[u8]> = s2.iter().map(|s| s.as_slice()).collect();
                 let p1 = Profile::from_aligned(&r1, &rw1n, &scoring.amino_map, scoring.nalphabets);
                 let p2 = Profile::from_aligned(&r2, &rw2n, &scoring.amino_map, scoring.nalphabets);
-                let aln = profile_align(&p1, &p2, &scoring.substitution_matrix, &gap, true, true);
+                let aln = profile_align(&p1, &p2, &scoring.consweight_matrix, &gap, true, true);
                 let mut i1 = 0usize; let mut i2 = 0usize;
                 for op in &aln.operations {
                     match op {
@@ -2227,7 +2227,7 @@ fn compare_segmented_falign_with_c_iter0() {
             let len = full_prof1.length.min(full_prof2.length);
             let mut scores = vec![0.0f64; len];
             for i in 0..len {
-                scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.substitution_matrix) / totaleff;
+                scores[i] = full_prof1.match_score(i, &full_prof2, i, &scoring.consweight_matrix) / totaleff;
             }
             let segs = mafft_fft::alignable_segments(&scores, &mafft_fft::SegmentParams::protein());
             let mut cuts: Vec<usize> = Vec::with_capacity(segs.len() + 2);
@@ -2254,7 +2254,7 @@ fn compare_segmented_falign_with_c_iter0() {
                 let r2: Vec<&[u8]> = s2.iter().map(|s| s.as_slice()).collect();
                 let p1 = Profile::from_aligned(&r1, &rw1n, &scoring.amino_map, scoring.nalphabets);
                 let p2 = Profile::from_aligned(&r2, &rw2n, &scoring.amino_map, scoring.nalphabets);
-                let aln = profile_align(&p1, &p2, &scoring.substitution_matrix, &gap, true, true);
+                let aln = profile_align(&p1, &p2, &scoring.consweight_matrix, &gap, true, true);
                 let mut i1 = 0usize; let mut i2 = 0usize;
                 for op in &aln.operations {
                     match op {
@@ -2428,7 +2428,7 @@ fn compare_alignable_regions_with_c_iter0() {
             let len = prof1.length.min(prof2.length);
             let mut scores = vec![0.0f64; len];
             for i in 0..len {
-                scores[i] = prof1.match_score(i, &prof2, i, &scoring.substitution_matrix) / totaleff;
+                scores[i] = prof1.match_score(i, &prof2, i, &scoring.consweight_matrix) / totaleff;
             }
             let rust_segs = mafft_fft::alignable_segments(&scores, &mafft_fft::SegmentParams::protein());
             let rust_centers: Vec<usize> = rust_segs.iter().map(|s| s.center).collect();
@@ -2575,7 +2575,7 @@ fn full_iter0_profile_align_vs_msalignmm() {
             // Rust profile_align
             let prof1 = Profile::from_aligned(&s1r, &rw1n, &scoring.amino_map, scoring.nalphabets);
             let prof2 = Profile::from_aligned(&s2r, &rw2n, &scoring.amino_map, scoring.nalphabets);
-            let rust_aln = profile_align(&prof1, &prof2, &scoring.substitution_matrix, &gap, true, true);
+            let rust_aln = profile_align(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
 
             // Reconstruct rust aligned
             let mut r_g1: Vec<Vec<u8>> = vec![Vec::with_capacity(rust_aln.operations.len()); group1.len()];

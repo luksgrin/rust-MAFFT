@@ -260,7 +260,7 @@ pub enum PairAligner {
 /// unified entry point that chooses between local and global.
 pub fn build_local_homology_table(
     sequences: &[&[u8]],
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     amino_map: &[u8; 256],
     gap: &GapModel,
     score_offset: f64,
@@ -279,7 +279,7 @@ pub fn build_local_homology_table(
 /// `penalty_OP`), used only when `aligner == GeneralizedAffine`.
 pub fn build_homology_table(
     sequences: &[&[u8]],
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     amino_map: &[u8; 256],
     gap: &GapModel,
     score_offset: f64,
@@ -304,7 +304,7 @@ pub fn build_homology_table(
 /// `G__align11`'s return value back to `pscore`).
 pub fn build_homology_table_with_unalign(
     sequences: &[&[u8]],
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<f64>],
     amino_map: &[u8; 256],
     gap: &GapModel,
     score_offset: f64,
@@ -327,7 +327,7 @@ pub fn build_homology_table_with_unalign(
         for &c in *s {
             let i = amino_map[c as usize] as usize;
             if i < n_alpha {
-                sum += matrix[i][i] as f64;
+                sum += matrix[i][i];
             }
         }
         sum
@@ -345,7 +345,7 @@ pub fn build_homology_table_with_unalign(
             // Branch at the alignment call to keep the rest of the
             // chaining logic shared. For Local, we have a true offset
             // into both sequences. For Global, both offsets are 0.
-            let run_align = |mat: &[Vec<i32>]| -> (crate::dp::Alignment, usize, usize) {
+            let run_align = |mat: &[Vec<f64>]| -> (crate::dp::Alignment, usize, usize) {
                 match aligner {
                     PairAligner::Local => {
                         let r = local_align(
@@ -405,11 +405,11 @@ pub fn build_homology_table_with_unalign(
                 let off = 0.5 * dist_for_offset - unalign_level;
                 if off < 0.0 {
                     // C `mltaln9.c::makedynamicmtx` adds `offset * 600` as a
-                    // double. Our DP uses `i32` matrices, so we must round
-                    // here. Truncation toward zero would systematically
-                    // produce a less-negative delta and a different trace.
-                    let delta = (off * 600.0).round() as i32;
-                    let dyn_matrix: Vec<Vec<i32>> = matrix
+                    // double. Our DP now also operates on `Vec<Vec<f64>>`
+                    // matrices, so we can preserve full sub-integer
+                    // precision (no truncation, byte-identity vs C).
+                    let delta = off * 600.0;
+                    let dyn_matrix: Vec<Vec<f64>> = matrix
                         .iter()
                         .map(|row| row.iter().map(|&v| v + delta).collect())
                         .collect();
@@ -445,7 +445,7 @@ pub fn build_homology_table_with_unalign(
                     let i1 = amino_map[c1 as usize] as usize;
                     let i2 = amino_map[c2 as usize] as usize;
                     if i1 < n_alpha && i2 < n_alpha {
-                        s += matrix[i1][i2] as f64;
+                        s += matrix[i1][i2];
                     }
                 }
                 s
@@ -528,7 +528,7 @@ pub fn build_homology_table_with_unalign(
                     let i1 = amino_map[c1 as usize] as usize;
                     let i2 = amino_map[c2 as usize] as usize;
                     if i1 < n_alpha && i2 < n_alpha {
-                        iscore += matrix[i1][i2] as f64;
+                        iscore += matrix[i1][i2];
                     }
                 }
                 if !g1 { pos1 += 1; }
@@ -593,9 +593,9 @@ pub fn build_homology_table_with_unalign(
 mod tests {
     use super::*;
 
-    fn simple_setup() -> (Vec<Vec<i32>>, [u8; 256]) {
-        let mut mtx = vec![vec![-100i32; 5]; 5];
-        for i in 0..4 { mtx[i][i] = 100; }
+    fn simple_setup() -> (Vec<Vec<f64>>, [u8; 256]) {
+        let mut mtx = vec![vec![-100.0f64; 5]; 5];
+        for i in 0..4 { mtx[i][i] = 100.0; }
         let mut map = [0xFFu8; 256];
         map[b'A' as usize] = 0; map[b'C' as usize] = 1;
         map[b'G' as usize] = 2; map[b'T' as usize] = 3;

@@ -322,10 +322,14 @@ impl MafftEngine {
             let pair_op = cc_scale(p_op, scale_protein) as f64;
             let pair_offset_int: i32 = cc_scale(p_offset, scale_protein);
             let nscored = scoring.nscoredalphabets;
-            let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+            // The DP layer takes f64 matrices (post §9c migration). Build
+            // the shifted matrix from `consweight_matrix` (= f64 view of
+            // `substitution_matrix`) and subtract the pair offset there.
+            let pair_offset_f64 = pair_offset_int as f64;
+            let mut shifted: Vec<Vec<f64>> = scoring.consweight_matrix.clone();
             for i in 0..nscored {
                 for j in 0..nscored {
-                    shifted[i][j] -= pair_offset_int;
+                    shifted[i][j] -= pair_offset_f64;
                 }
             }
             // C's `L__align11` sets `localthr = -offset + scoreoffset * 600`
@@ -531,7 +535,7 @@ impl MafftEngine {
                     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
                     let (table, _dist) = build_local_homology_table(
                         &seq_refs,
-                        &scoring.substitution_matrix,
+                        &scoring.consweight_matrix,
                         &scoring.amino_map,
                         &gap,
                         0.0,
