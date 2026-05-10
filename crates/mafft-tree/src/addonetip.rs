@@ -216,7 +216,7 @@ pub fn addonetip(
 ///   height = parent_height_of_left_child + left_branch_length
 ///
 /// For leaves, height = 0. Each step's height = max(left_child_height, right_child_height) + branch_length.
-fn compute_distfromtip(topology: &Topology) -> Vec<f64> {
+pub fn compute_distfromtip(topology: &Topology) -> Vec<f64> {
     let nseq = topology.nseq;
     let mut heights: Vec<f64> = vec![0.0; nseq]; // height of each sequence/cluster representative
     let mut step_heights: Vec<f64> = Vec::with_capacity(topology.steps.len());

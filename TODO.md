@@ -42,6 +42,8 @@ Verified 2026-05-05 by running `target/release/mafft-rs <args> sample` against
 | `--add --nofft` (30+6 sample)              | 741     | 741        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | `--add --keeplength` (30+6 sample)         | 595     | 595        | 0          | byte-exact ✓ (closed 2026-05-10) |
 | RNA NW  (`--nofft samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
+| Q-INS-i (`--qinsi samplerna`)              | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (verified 2026-05-10, requires `mxscarnamod` from `mafft-upstream/extensions`) |
+| `--allowshift --globalpair sample`         | 1029    | 809        | many       | partial — flag now active (746→809), see §9c |
 
 Test suite: 257 Rust tests pass (`cargo test --workspace --exclude pymafft
 --release --test-threads=1`), 0 failed, 0 ignored. Plus 32 Python tests pass.
@@ -759,17 +761,80 @@ columns correctly. SAME port unlocks both.
 
 ---
 
-## §9. Other unimplemented / unvalidated modes
+## §9. Other unimplemented / unvalidated modes — PARTIALLY RESOLVED 2026-05-10
 
-- RNA-aware alignment (`--xinsi`, `--qinsi`): wired to external tools
-  (`mxscarnamod`, `contrafold`) but not validated end-to-end against C.
-- `--allowshift`: gap-shift/warp DP path, partial implementation in
-  `crates/mafft-align/src/shift.rs`.
+### §9a. Q-INS-i (`--qinsi`) — RESOLVED 2026-05-10
 
-**Concrete next task**: for each, run `mafft --xinsi sample` /
-`mafft --qinsi sample` / `mafft --allowshift --globalpair sample`
-against our binary and capture the first divergence. Effort scales
-with the number of paths each mode activates.
+Byte-identical mod case to C MAFFT 7.526 on `mafft-upstream/test/samplerna`
+(5 nuc, width 360). Both Rust and C invoke `mxscarnamod` (built from
+`mafft-upstream/extensions`) to compute base-pair probability matrices,
+then perform RNA-aware alignment. The case-mod difference matches our
+existing RNA NW behavior — no additional work needed.
+
+To reproduce: build mxscarnamod once with
+```
+cd mafft-upstream/extensions && make
+```
+Then `MAFFT_BINARIES=mafft-upstream/binaries mafft-rs --qinsi samplerna`.
+
+### §9b. X-INS-i (`--xinsi`) — UNTESTABLE without `contrafold`
+
+Requires Stanford's `CONTRAfold v2.02+` binary, distributed separately
+(http://contra.stanford.edu/contrafold/). Not shipped by upstream MAFFT,
+not buildable from `mafft-upstream/extensions`. The Rust wiring exists
+(`engine.rs::XInsi`, `mafft-bin/src/main.rs:--xinsi`) and emits the
+correct "contrafold not found" diagnostic when the binary is absent.
+End-to-end validation deferred until `contrafold` is installed.
+
+### §9c. `--allowshift` — PARTIAL (per-step dynamic matrix done; per-pair pending)
+
+**Important correction to earlier description**: the warp DP code in C
+MAFFT 7.526 is **dead code**. `trywarp` is `int = 0` in `defs.c:54` and
+never assigned to 1; `penalty_shift` (int) is declared but never written
+either. The warp recurrence in `Galign11.c:780-870`, `Salignmm.c:1957-2020`,
+etc. is unreachable.
+
+**Actual `--allowshift` mechanism**: setting `unalignlevel = 0.8`
+(C's `specificityconsideration`) triggers per-step `makedynamicmtx`
+calls (`disttbfast.c:2304`, `tbfast.c:1440`) that scale substitution
+scores by `min(0, distfromtip - unalignlevel) * 600`. Plus per-pair
+dynamic-matrix re-alignment in `pairlocalalign.c:2197-2228`
+(`pairwise score → distance → dist2offset(dist) → if<0, re-align`).
+Plus `--allowshift` toggles `termgapopt = " "` (outgap=1, terminal
+gaps penalized) instead of the default `" -O "` (outgap=0).
+
+**What's done (this session, 2026-05-10)**:
+- CLI: `--allowshift` and `--unalignlevel #` recognized (`mafft-bin/src/main.rs`).
+  `--allowshift` defaults `unalign_level = 0.8` if not explicitly given.
+- Engine: `MafftEngine.unalign_level: f64`, `with_unalign_level()`.
+- Progressive merge: `progressive_align_full(..., unalign_level)` builds
+  per-step dynamic `substitution_matrix` clones from the topology's
+  `compute_distfromtip` heights. Helpers `dist2offset` and
+  `make_dynamic_matrix` mirror `mltaln9.c:15169-15211` exactly.
+
+**Result**: `mafft --allowshift --globalpair sample` Rust width 809
+(was 746 = no effect). C width 1029. Closer but not byte-identical.
+
+**What's missing for byte-identity** (220-col gap):
+1. Per-pair dynamic matrix re-alignment in `build_homology_table`
+   (`pairlocalalign.c:2197-2228` for case 'A' / Global; case 'l' / Local
+   at `:2237-2253`). Algorithm: first call `G__align11(n_dis_consweight_multi, ...)`
+   for pscore. Compute `dist = score2dist(pscore, selfscore[i], selfscore[j])`.
+   If `dist2offset(dist) < 0`, build dynamic matrix with `0.5 * dist` and
+   re-run `G__align11` with the new matrix (replacing the alignment trace
+   used for local-homology constraints).
+2. `outgap=1` (terminal gaps penalized) in pair phase when
+   `--allowshift`. Currently our G-INS-i pair phase uses `head_gap=true,
+   tail_gap=true` already (= outgap=1), so this *might* already be
+   correct — verify when porting #1.
+3. Per-step dynamic matrix in iterative refinement (`dvtditr.c::dvtditr`).
+   For `--maxiterate > 0`. With our test, `--maxiterate 0` already
+   shows the 220-col gap, so this is secondary to #1.
+
+**Priority**: Low — `--allowshift` is rarely used. The current partial
+implementation makes the flag take effect (746 → 809) but doesn't
+match C exactly. No regression on any mainstream mode (all 30
+byte-identity tests still pass).
 
 ---
 

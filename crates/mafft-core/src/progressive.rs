@@ -7,8 +7,30 @@
 
 use std::collections::HashMap;
 use mafft_align::{profile_align, pairwise_align11, fft_profile_align, Profile, GapModel, Alignment, AlignOp, FftAlignParams};
-use mafft_tree::{Topology, sequence_weights};
+use mafft_tree::{Topology, sequence_weights, compute_distfromtip};
 use mafft_types::ScoringContext;
+
+/// C `mltaln9.c::dist2offset`: offset = min(0, dist*0.5 - specificityconsideration).
+/// `dist` is `2 * distfromtip` so the result is `min(0, distfromtip - sc)`.
+fn dist2offset(dist: f64, sc: f64) -> f64 {
+    let v = dist * 0.5 - sc;
+    if v > 0.0 { 0.0 } else { v }
+}
+
+/// C `mltaln9.c::makedynamicmtx`. Adds `offset * 600` to every substitution
+/// score where `offset = dist2offset(2 * distfromtip, sc)`. Negative for
+/// shallow merges (close-related), zero for deep merges. Pulls divergent
+/// regions apart at shallow merges → wider final alignment.
+fn make_dynamic_matrix(base: &[Vec<i32>], distfromtip: f64, unalign_level: f64) -> Vec<Vec<i32>> {
+    let offset = dist2offset(distfromtip * 2.0, unalign_level);
+    if offset == 0.0 {
+        return base.iter().map(|r| r.clone()).collect();
+    }
+    let delta = (offset * 600.0) as i32;
+    base.iter()
+        .map(|row| row.iter().map(|&v| v + delta).collect())
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct MultipleAlignment {
@@ -617,6 +639,29 @@ pub fn progressive_align_with_weights_override(
     penalize_term_gaps: bool,
     weights_override: Option<&[f64]>,
 ) -> MultipleAlignment {
+    progressive_align_full(
+        sequences, names, topology, scoring, use_fft, shift_penalty,
+        constraints, penalize_term_gaps, weights_override, 0.0,
+    )
+}
+
+/// Like `progressive_align_with_weights_override` but with `unalign_level`
+/// (C's `specificityconsideration`). When `unalign_level > 0`, builds a
+/// per-step dynamic substitution matrix that scales by `(distfromtip -
+/// unalign_level) * 600` (clamped at 0). Mirrors `disttbfast.c:2304-2307` +
+/// `mltaln9.c::makedynamicmtx`. `--allowshift` sets this to 0.8.
+pub fn progressive_align_full(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+    constraints: Option<&mafft_types::LocalHomologyTable>,
+    penalize_term_gaps: bool,
+    weights_override: Option<&[f64]>,
+    unalign_level: f64,
+) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
@@ -645,10 +690,39 @@ pub fn progressive_align_with_weights_override(
     // After each merge, the merged profile is stored so the next merge can reuse it.
     let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
 
+    // Per-step dynamic-matrix offset. `--allowshift`/`--unalignlevel`
+    // triggers `unalign_level > 0`. C builds a fresh `dynamicmtx` per
+    // step from the tree node height (`disttbfast.c:2304-2307`).
+    let distfromtip: Vec<f64> = if unalign_level > 0.0 {
+        compute_distfromtip(topology)
+    } else {
+        Vec::new()
+    };
+    // Per-step scoring contexts (only when unalign_level > 0). Each
+    // entry differs from `scoring` only in `substitution_matrix`.
+    let dyn_scoring: Vec<ScoringContext> = if unalign_level > 0.0 {
+        distfromtip
+            .iter()
+            .map(|&dft| {
+                let mut s = scoring.clone();
+                s.substitution_matrix =
+                    make_dynamic_matrix(&scoring.substitution_matrix, dft, unalign_level);
+                s
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let mut step_trace: Vec<StepTrace> = Vec::with_capacity(topology.steps.len());
     for (step_idx, step) in topology.steps.iter().enumerate() {
+        let step_scoring: &ScoringContext = if unalign_level > 0.0 {
+            &dyn_scoring[step_idx]
+        } else {
+            scoring
+        };
         last_score = merge_step_cached(
-            &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
+            &step.left, &step.right, &mut aligned, &weights, step_scoring, &gap, use_fft,
             &mut profile_cache, constraints, penalize_term_gaps,
         );
 

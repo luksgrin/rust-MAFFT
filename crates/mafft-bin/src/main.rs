@@ -45,9 +45,17 @@ struct Args {
     #[arg(long)]
     keeplength: bool,
 
-    /// Enable long-range gap shift penalty (warp)
+    /// Enable per-step dynamic matrix scaling (sets unalignlevel=0.8). Allows
+    /// divergent regions to stay unaligned at shallow merges. Requires
+    /// `--globalpair`.
     #[arg(long)]
     allowshift: bool,
+
+    /// Per-step substitution-score offset = (distfromtip - unalignlevel) * 600
+    /// when distfromtip < unalignlevel, else 0. Default 0 = no scaling.
+    /// `--allowshift` sets this to 0.8 if not explicitly given.
+    #[arg(long, value_name = "F")]
+    unalignlevel: Option<f64>,
 
     /// Maximum number of iterative refinement cycles. Unset → mode default
     /// (1000 for INS-i modes, 0 for FFT-NS-2). Explicit 0 disables refinement.
@@ -212,8 +220,18 @@ fn main() {
     if args.nofft {
         engine = engine.with_nofft(true);
     }
+    // `--allowshift` sets unalignlevel=0.8 unless `--unalignlevel` is also
+    // given (mirrors `scripts/mafft:1424-1428`).
+    let unalign_level = match (args.unalignlevel, args.allowshift) {
+        (Some(v), _) => v,
+        (None, true) => 0.8,
+        (None, false) => 0.0,
+    };
     if args.allowshift {
         engine = engine.with_allowshift(true);
+    }
+    if unalign_level > 0.0 {
+        engine = engine.with_unalign_level(unalign_level);
     }
     if args.parttree {
         engine = engine.with_parttree(true);

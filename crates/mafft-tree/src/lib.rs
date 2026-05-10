@@ -19,7 +19,7 @@ pub use distance::{DistanceMatrix, pairwise_identity_distance, ktuple_distance, 
 pub use nj::neighbor_joining;
 pub use upgma::{upgma, upgma_int};
 pub use musclesupg::{musclesupg, ClusterMethod};
-pub use addonetip::{addonetip, AddResult};
+pub use addonetip::{addonetip, compute_distfromtip, AddResult};
 pub use parttree::{parttree, PartTreeParams};
 pub use topology::{Topology, JoinStep};
 pub use weighting::{sequence_weights, BranchWeights};

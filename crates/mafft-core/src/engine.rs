@@ -54,8 +54,16 @@ pub struct MafftEngine {
     pub gap_offset: Option<f64>,
     /// Disable FFT: force pure DP for all alignment steps.
     pub nofft: bool,
-    /// Enable long-range gap shift penalty (--allowshift).
+    /// Enable long-range gap shift penalty (--allowshift). In MAFFT 7.526 the
+    /// warp DP itself is dead code (`defs.c:54 trywarp = 0` and never set);
+    /// the actual `--allowshift` effect is to set `unalign_level = 0.8` which
+    /// triggers per-step `makedynamicmtx` (`disttbfast.c:2304`). Kept as a
+    /// boolean for CLI symmetry; only `unalign_level > 0` has runtime effect.
     pub allowshift: bool,
+    /// Per-step substitution-score offset = (distfromtip - unalign_level) * 600
+    /// (clamped at 0). Mirrors C `specificityconsideration` + `dist2offset`
+    /// + `makedynamicmtx`. 0 = disabled, 0.8 = `--allowshift` default.
+    pub unalign_level: f64,
     /// Kimura R parameter for DNA distance model (--kimura).
     pub kimura_r: Option<i32>,
     /// Use PartTree for guide tree construction (--parttree).
@@ -76,6 +84,7 @@ impl Default for MafftEngine {
             gap_offset: None,
             nofft: false,
             allowshift: false,
+            unalign_level: 0.0,
             kimura_r: None,
             parttree: false,
             dpparttree: false,
@@ -86,7 +95,7 @@ impl Default for MafftEngine {
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, kimura_r: None, parttree: false, dpparttree: false, groupsize: None }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -131,9 +140,17 @@ impl MafftEngine {
         self
     }
 
-    /// Enable long-range gap shift penalty.
+    /// Enable long-range gap shift penalty (CLI symmetry only — see field
+    /// docstring; only `unalign_level > 0` has runtime effect).
     pub fn with_allowshift(mut self, allowshift: bool) -> Self {
         self.allowshift = allowshift;
+        self
+    }
+
+    /// Set per-step dynamic-matrix offset (`specificityconsideration`).
+    /// Disabled at 0.0; `--allowshift` defaults to 0.8.
+    pub fn with_unalign_level(mut self, level: f64) -> Self {
+        self.unalign_level = level;
         self
     }
 
@@ -453,10 +470,10 @@ impl MafftEngine {
             } else {
                 None
             };
-            msa = crate::progressive::progressive_align_with_weights_override(
+            msa = crate::progressive::progressive_align_full(
                 &input_seqs, &names, &topo, &scoring, use_fft, shift,
                 progress_constraints, penalize_term_gaps,
-                weights_override.as_deref(),
+                weights_override.as_deref(), self.unalign_level,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
 
