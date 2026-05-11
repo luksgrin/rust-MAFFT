@@ -9,19 +9,19 @@ This project provides:
 
 ## Status
 
-**Working implementation.** The core alignment pipeline (progressive alignment, iterative refinement, FFT-accelerated homology detection) is implemented and produces valid alignments for protein and DNA sequences. On the included 36-sequence protein test dataset, the following mode/flag combinations produce **byte-identical output to C MAFFT 7.526** (`diff rust.fa c.fa` returns 0 lines):
+**Production-ready.** On the included 36-sequence protein test dataset, the following modes produce **byte-identical output to C MAFFT 7.526** (`diff rust.fa c.fa` returns 0 lines):
 
 - FFT-NS-2 (default), NW-NS-2 (`--nofft`)
 - FFT-NS-i (`--maxiterate 100`)
-- L-INS-1 (`--localpair --maxiterate 0`) — closed 2026-05-05
-- G-INS-1 (`--globalpair --maxiterate 0`) — closed 2026-05-06
-- E-INS-1 (`--genafpair --maxiterate 0`) — closed 2026-05-06
-- BLOSUM 30 / 45 / 62 / 80 (FFT and NW)
-- JTT 200 (FFT)
-- TM 100 / 200 (NW)
-- RNA NW (case-insensitive, since we uppercase input)
+- L-INS-1, G-INS-1, E-INS-1 (`--localpair`/`--globalpair`/`--genafpair` with `--maxiterate 0`)
+- L-INS-i, G-INS-i, E-INS-i (with iterative refinement)
+- BLOSUM 30 / 45 / 50 / 62 / 80 (FFT and NW)
+- JTT 100 / 200, TM 100 / 200 (FFT and NW)
+- `--parttree`, `--dpparttree` (divide-and-conquer guide tree)
+- `--add`, `--add --nofft`, `--add --keeplength`
+- Q-INS-i (RNA, requires `mxscarnamod`)
 
-Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment for the byte-exact modes. See [Known limitations](#known-limitations) and `TODO.md` for the remaining mode/flag combinations that still diverge.
+Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
 ### Parity matrix (36-seq protein sample)
 
@@ -30,25 +30,23 @@ Every progressive merge step matches in score and width and every refinement ite
 | FFT-NS-2 (default)                          | 717     | 717        | 0    | ✓ byte-exact |
 | NW-NS-2 (`--nofft`)                         | 717     | 717        | 0    | ✓ byte-exact |
 | FFT-NS-i (`--maxiterate 100`)               | 721     | 721        | 0    | ✓ byte-exact |
-| L-INS-1 (`--localpair --maxiterate 0`)      | 719     | 719        | 0    | ✓ byte-exact (closed 2026-05-05) |
-| L-INS-i (`--localpair`)                     | 719     | 725        | 934  | ✗ refinement loop (partial fix 2026-05-06) |
-| G-INS-1 (`--globalpair --maxiterate 0`)     | 746     | 746        | 0    | ✓ byte-exact (closed 2026-05-06) |
-| G-INS-i (`--globalpair`)                    | 746     | 727        | 1000 | ✗ refinement loop (partial fix 2026-05-06) |
-| E-INS-1 (`--genafpair --maxiterate 0`)      | 729     | 729        | 0    | ✓ byte-exact (closed 2026-05-06) |
-| E-INS-i (`--genafpair`)                     | 729     | 730        | 984  | ✗ refinement loop (partial fix 2026-05-06) |
-| BLOSUM 30 / 45 / 62 / 80 (FFT)              | match   | match      | 0    | ✓ byte-exact |
+| L-INS-1 (`--localpair --maxiterate 0`)      | 719     | 719        | 0    | ✓ byte-exact |
+| L-INS-i (`linsi`)                           | 731     | 731        | 0    | ✓ byte-exact |
+| G-INS-1 (`--globalpair --maxiterate 0`)     | 746     | 746        | 0    | ✓ byte-exact |
+| G-INS-i (`ginsi`)                           | 746     | 746        | 0    | ✓ byte-exact |
+| E-INS-1 (`--genafpair --maxiterate 0`)      | 729     | 729        | 0    | ✓ byte-exact |
+| E-INS-i (`einsi`)                           | 729     | 729        | 0    | ✓ byte-exact |
+| BLOSUM 30 / 45 / 50 / 62 / 80 (FFT)         | match   | match      | 0    | ✓ byte-exact |
 | BLOSUM 80 NW (`--bl 80 --nofft`)            | 712     | 712        | 0    | ✓ byte-exact |
-| BLOSUM 50 FFT                               | 712     | 738        | 961  | ✗ FFT multi-lag tie-break |
-| JTT 200 (FFT)                               | 729     | 729        | 0    | ✓ byte-exact |
-| JTT 100 (FFT)                               | 732     | 732        | 4    | ✗ FFT tie-break (same column shift in 1 seq) |
-| TM 200 NW                                   | 765     | 765        | 0    | ✓ byte-exact |
-| TM 100 NW                                   | 767     | 767        | 0    | ✓ byte-exact |
-| TM 200 FFT                                  | 767     | 765        | 148  | ✗ FFT tie-break |
+| JTT 100 / 200 (FFT)                         | match   | match      | 0    | ✓ byte-exact |
+| TM 100 / 200 (NW + FFT)                     | match   | match      | 0    | ✓ byte-exact |
+| `--parttree`, `--dpparttree`                | 752     | 752        | 0    | ✓ byte-exact |
+| `--add`, `--add --keeplength`, `--add --nofft` | match | match     | 0    | ✓ byte-exact |
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 0†   | ✓ byte-exact (case-insensitive) |
-| `--parttree --nofft`                        | —       | —          | ~940 | ✗ subtree-grouping bug |
-| `--add --nofft`                             | —       | —          | ~900 | ✗ insertnewgaps incomplete |
+| Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0†   | ✓ byte-exact (needs `mxscarnamod`) |
+| `--allowshift --globalpair`                 | 1029    | 987        | many | ✗ partial — see `TODO.md` §A |
 
-† We uppercase residues; C preserves case. With `diff -i` the RNA path produces 0 lines.
+† We uppercase residues; C preserves case. With `diff -i` (case-insensitive) RNA produces 0 lines.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -73,16 +71,16 @@ The binary is at `target/release/mafft-rs`.
 ### Run tests
 
 ```bash
-# Full Rust suite (all crates, 223 tests)
+# Full Rust suite (all crates, 264 tests as of 2026-05-11)
 cargo test --workspace --exclude pymafft --release
 
 # Just unit tests (faster)
 cargo test --workspace --exclude pymafft --lib
 
-# End-to-end integration tests (39 tests, requires release build)
+# End-to-end integration tests (58 tests, requires release build)
 cargo test -p mafft-core --release --test end_to_end
 
-# Build and test C reference (optional)
+# Build C reference for cross-validation (optional)
 make -C mafft-upstream/core
 ```
 
@@ -134,6 +132,9 @@ mafft-rs --localpair --maxiterate 1000 sequences.fasta
 
 # E-INS-i: generalized affine (for sequences with large internal gaps)
 mafft-rs --genafpair --maxiterate 1000 sequences.fasta
+
+# PartTree: divide-and-conquer guide tree (for 10K+ sequences)
+mafft-rs --parttree sequences.fasta
 ```
 
 ### Adding sequences to an existing alignment
@@ -228,9 +229,9 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 |---------------------|--------|
 | `--maxiterate`, `--localpair`, `--globalpair`, `--genafpair` | Supported |
 | `--add`, `--addfragments`, `--keeplength` | Supported |
-| `--allowshift` | Supported |
+| `--allowshift` | Supported (partial — see `TODO.md` §A) |
 | `--nofft` | Supported |
-| `--retree N` | Supported (default 2, matching C) |
+| `--retree N` | Supported (default 2 for FFT-NS, 1 for INS-i, matching C) |
 | `--op`, `--ep`, `--bl` | Supported |
 | `--thread N` | Supported (Rayon) |
 | `--kimura N` | Supported (custom Kimura R for DNA PAM generation) |
@@ -239,6 +240,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--qinsi` (Q-INS-i) | Supported (requires `mxscarnamod` in PATH) |
 | `--xinsi` (X-INS-i) | Supported (requires `contrafold` in PATH) |
 | `--scarnalike` | Supported (requires `dash_client` in PATH) |
+| `--auto`, `--seed`, `--treein`, `--treeout`, `--memsave`, `--reorder`, `--inputorder`, `--anysymbol`, `--leavegappyregion` | **Not yet implemented** (see `TODO.md` §B.3) |
 
 ## Architecture
 
@@ -250,9 +252,9 @@ crates/
   mafft-types/     Shared Rust types (HomologyRegion, Sequence, ScoringContext, etc.)
   mafft-io/        FASTA, Clustal, PHYLIP, hat2 I/O
   mafft-scoring/   Substitution matrices (BLOSUM, JTT, TM, DNA) and gap penalties
-  mafft-fft/       FFT-based homology detection (using rustfft + num-complex)
-  mafft-align/     Pairwise and profile alignment algorithms (NW, SW, generalized affine)
-  mafft-tree/      Distance computation, NJ, UPGMA, guide tree construction
+  mafft-fft/       FFT-based homology detection (hand-ported Cooley-Tukey, bit-for-bit C-compat)
+  mafft-align/     Pairwise and profile alignment algorithms (NW, SW, generalized affine, warp DP)
+  mafft-tree/      Distance computation, NJ, UPGMA, guide tree construction, PartTree
   mafft-core/      Progressive alignment engine, iterative refinement, MafftEngine
   mafft-bin/       CLI binary (mafft-rs)
   pymafft/         Python bindings via PyO3
@@ -263,105 +265,49 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 ### Key design decisions
 
 - **No global state.** The C code uses ~400 `extern` globals. Rust modules use owned `ScoringContext`, `Topology`, `Profile` structs passed explicitly.
-- **`num_complex::Complex64`** replaces the C `Fukusosuu` struct. `rustfft` replaces the hand-rolled Cooley-Tukey FFT.
-- **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring.
+- **`num_complex::Complex64`** replaces the C `Fukusosuu` struct. A hand-ported bit-for-bit Cooley-Tukey FFT in `mafft-fft/src/fft_c_compat.rs` matches C's `fft.c` rounding exactly (replaced `rustfft` after BL50 / TM 200 FFT divergences were traced to 1-ULP correlation differences).
+- **`f64` DP matrices** (post 2026-05-10 migration). The substitution matrix is stored as `Vec<Vec<i32>>` for canonical storage and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic, preserving sub-integer precision through per-cell scoring (matches C's `n_dis_consweight_multi`).
+- **`f64::mul_add` (FMA) in DP arithmetic** — gcc `-O3` fuses `a + b * c` into a single-rounding FMA, while plain Rust `+=` produces two roundings. Rust uses `mul_add` in `match_calc_row` and gap-frequency-modulated penalties to match C bit-for-bit on flat-landscape matrices (closed the BL50 divergence).
+- **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring. Sequential float summation is preserved for accept/reject decisions to keep refinement output deterministic.
 - **SIMD-friendly inner loops**: branchless patterns in `match_score()`, `pairwise_score()`, and `pairwise_identity_distance()` that LLVM auto-vectorizes to NEON/AVX instructions.
 - **Three-way gap insertion** (matching C's `insertnewgaps()`): group1 follows cursor1, group2 follows cursor2, "other" sequences follow cursor1 with gaps at Insert positions.
 
 ### Test suite
 
-Current counts as of 2026-05-06 (`cargo test --workspace --exclude pymafft --release`: 230 passed, 0 failed, 0 ignored):
+Current counts as of 2026-05-11 (`cargo test --workspace --exclude pymafft --release`: **264 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust unit tests | ~140 | All crates, all modules (per-crate `--lib` runs) |
-| Rust integration tests (`end_to_end`) | 44 | Byte-level parity with C (FFT-NS-2, NW-NS-2, FFT-NS-i, **L-INS-1, G-INS-1, E-INS-1, L-INS-i n=9 iter=2, L-INS-i n=12 iter=5 (Falign_localhom guard)**, `--bl 30/45/80` with/without FFT, `--jtt 200`, `--tm 100/200 --nofft`, RNA `--nofft`), DP diagnostics |
-| Rust FFI cross-validation tests | 18 | Cell-by-cell matrix equality and constrained-DP equivalence vs C via FFI (BLOSUM45/50/62/80, JTT 200, JTT 100, TM 200 n_dis + n_disFFT, BL50 n_disFFT, DNA, plus 5 constrained-align tests + `rust_global_align_matches_c_g__align11` + `rust_genaffine_align_matches_c_gen_l__align11` in `cross_validate_constrained_align.rs`) |
-| C alignment tests | 8 | FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, parttree, etc. |
+| Rust unit tests | ~155 | All crates, all modules (per-crate `--lib` runs) |
+| Rust integration tests (`end_to_end`) | 58 | Byte-level parity with C across all supported modes + DP diagnostics |
+| Rust FFI cross-validation tests | ~50 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), MSalignmm profile alignment |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust** | **230** | |
+| **Total Rust** | **264** | |
 
-Regression guards for C parity (all in `crates/mafft-core/tests/end_to_end.rs`):
-
-- `nofft_byte_identical_to_c` — final alignment matches C MAFFT 7.526's `--nofft` output byte-for-byte (fixture: `tests/fixtures/sample.nwns2`).
-- `nofft_per_step_matches_c` — every per-merge `(clus1, clus2, width, score)` tuple matches C's across both retree passes (fixture: `tests/fixtures/sample.nwns2.steps`, 70 merges).
-- `fftns2_byte_identical_to_c` — FFT-NS-2 (default strategy) output matches C's `mafft-upstream/test/sample.fftns2` reference byte-for-byte, guarding the full pipeline: FFT anchoring, segment gap handling, inter-anchor DP, retree distance, and UPGMA.
-- `fftnsi_byte_identical_to_c` — FFT-NS-i (`--maxiterate 100`) output matches C's `mafft-upstream/test/sample.fftnsi` reference byte-for-byte (asserts both width equality and per-sequence equality), guarding the iterative-refinement pipeline end-to-end including the dndpre offset-shift step the mafft script applies before dvtditr.
-- `fftns2_bl80_byte_identical_to_c` — FFT-NS-2 with `--bl 80` matches C byte-for-byte (fixture: `tests/fixtures/sample.bl80.fftns2`), guarding MAFFT's variant of the BLOSUM80 substitution-matrix table.
-- `nofft_bl80_byte_identical_to_c` — NW-NS-2 with `--bl 80 --nofft` matches C byte-for-byte (fixture: `tests/fixtures/sample.bl80.nwns2`), same matrix-table guard via the non-FFT path.
-- `fftns2_jtt200_byte_identical_to_c` — FFT-NS-2 with `--jtt 200` matches C byte-for-byte (fixture: `tests/fixtures/sample.jtt200.fftns2`), guarding the JTT lower-triangle accepted-point-mutation table, the PAM matrix exponentiation loop, and the shared normalize/600-scale/offset pipeline.
-- `nofft_tm200_byte_identical_to_c` — NW-NS-2 with `--tm 200 --nofft` matches C byte-for-byte (fixture: `tests/fixtures/sample.tm200.nwns2`), guarding the TM upper-triangle table in `tm_rsr_matrix` and the TM frequency vector. Before this guard, `--tm` silently produced JTT-like output because the upper triangle was never populated.
-- `nofft_tm100_byte_identical_to_c` — `--tm 100 --nofft` exercises the same TM data at a non-default PAM, catching drift in the matrix-power path.
-
-Plus three layers of unit-level guards in `crates/mafft-scoring/`:
-
-- `blosum::blosum80_tests::blosum80_table_layout_and_diagonals` — pins all 20 diagonal entries of the raw 210-cell BLOSUM80 lower-triangle array.
-- `blosum::blosum80_tests::blosum80_mafft_variant_cells` — pins the four cells (H/R, F/M, P/R, V/I) where MAFFT's `tmpmtx80` deliberately differs from standard NCBI BLOSUM80, so a future "fix" to the NCBI standard can't slip through silently.
-- `cross_validate_blosum80_n_dis_cell_by_cell` — calls C's `constants()` via FFI with BLOSUM80 and asserts every cell of the 26×26 normalized `n_dis` matches our `substitution_matrix`, catching pipeline regressions in the average-subtract / 600-scale / offset-subtract chain that would otherwise affect every cell.
-- `nofft_op_override_byte_identical_to_c` — NW-NS-2 with `--op 2.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.op25`), guarding the gap-opening override path.
-- `nofft_ep_override_byte_identical_to_c` — NW-NS-2 with `--ep 0.5` matches C byte-for-byte (fixture: `tests/fixtures/sample.nwns2.ep05`), guarding the scoring-matrix offset override path.
-- `rna_nofft_case_insensitive_identical_to_c` — RNA NW-NS-2 output matches C byte-for-byte after case normalization (fixture: `tests/fixtures/samplerna.nwns2`), guarding the nucleotide alignment path.
-- `diagnostic_simple_offset` — the minimal `ACDE` vs `WWWWACDEWWWW` reproducer must produce the optimal `----ACDE----` alignment with 4 matches.
-- `diagnostic_align11_vs_profile` — `pairwise_align11` and `profile_align` must agree on 1×1 inputs (same operations, same score).
-
-Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
+Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 
 ## Known limitations
 
-### Iterative refinement (FFT-NS-i, L-INS-i, G-INS-i, E-INS-i)
+### `--allowshift` (partial)
 
-FFT-NS-i (`--maxiterate 100`) is byte-identical to C — see `fftnsi_byte_identical_to_c`. The fix that closed the last 1-column gap was that the mafft script's second `dndpre` invocation (which writes the hat2 file `dvtditr` reads) is called WITHOUT `-h 0`, so it uses `poffset = -123` → matrix shifted by `+73` versus the matrix DP uses. Our refinement branch in `engine.rs` builds a `+73`-shifted copy of the substitution matrix for the refinement-tree distance computation only.
+`mafft --allowshift --globalpair --maxiterate 0 sample` produces Rust width 987 vs C width 1029. The warp DP recurrence is ported and byte-identical for single-pair and single-merge tests, but the integrated pipeline shows a 42-column gap from composition. See `TODO.md` §A for the open investigation.
 
-**L-INS-i without refinement (`--localpair --maxiterate 0`) is byte-identical to C as of 2026-05-05.** The closure required three fixes:
-1. `opt` field of homology regions was stored on the pre-rescale (hat3-file) side of C's `tbfast.c:2202` rescale by `* 600 / 5.8`, producing impmtx values 100× smaller than C's. Now stored as `isumscore / sumoverlap` (post-rescale value) directly.
-2. The L-INS-i path was rounding distances to 3 decimals (mimicking the hat2 `%#6.3f` round-trip). That's correct for FFT-NS-i + dndpre but wrong for L-INS-i: `tbfast` with `callpairlocalalign=1` keeps full-precision `iscore[]` in memory. Removed the rounding for the constraint-aware path.
-3. The CLI was treating `--maxiterate 0` as "use the mode default 1000" because `args.maxiterate` was a `usize` defaulting to 0 and could not distinguish "unset" from "explicit 0". Switched to `Option<usize>`.
+### `--xinsi` (untestable)
 
-**G-INS-1 and E-INS-1 without refinement are byte-identical to C as of 2026-05-06.**
+Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not shipped by upstream MAFFT. The binary emits a "contrafold not found" diagnostic when run without the external dependency. See `TODO.md` §D.
 
-**G-INS-1** (`--globalpair --maxiterate 0`) — two combined fixes:
-1. Re-ported `global_align` to mirror C's `G__align11` (max-so-far DP with `>=` tie-break, source-cell diagonal emission in traceback) — our previous textbook 3-matrix Needleman-Wunsch produced the same total score but different gap placement on ties.
-2. Routed `outgap = 1` (head/tail gap penalised) through `progressive_align_with_constraints` for `--globalpair` only. C's `scripts/mafft:2584` omits the `$termgapopt = -O` flag for G-INS-i (so `outgap = 1`), whereas L-INS-i and E-INS-i do pass it (so `outgap = 0`). Without this, the head-gap-region tie-break placed seq1's leading 'M' at col 19 instead of col 0 against another N-terminal-shifted opsin.
+### Missing CLI flags
 
-**E-INS-1** (`--genafpair --maxiterate 0`) — three combined fixes:
-1. Re-ported `genaffine_local_align` (`crates/mafft-align/src/genaffine.rs`) to mirror C's `genL__align11` — same max-so-far DP scheme as `L__align11` plus a separate "skip" gap state with `penalty_OP` open and zero extension. The previous Rust implementation was a textbook 3-matrix DP that produced different region splits.
-2. Added `PairAligner::GeneralizedAffine` and routed `EInsi` through it.
-3. Mirrored C's E-INS-i parameter overrides (`scripts/mafft:1940-1948`): for `distance="localgenaf"`, the script resets `lexp = laof = 0.0` so the regular gap-extend and matrix-offset are zeroed out, leaving only the skip-gap (LGOP=-6.00) as the long-range penalty. Previously we used the L-INS-i values for E-INS-i pairwise.
-
-**L-INS-i / G-INS-i / E-INS-i with refinement still diverge for n ≥ 13 sequences** (small inputs match byte-exact). Partial closure landed 2026-05-06 with three fixes: the accept/reject score in `iterative_refine` now sums `impmtx[i][i]` across the alignment diagonal (matches C's `oimpmatchdouble + tmpdouble`); `Falign_localhom`'s FFT-segmented constraint DP is ported in `realign_all_constrained_fft` (per-segment impmtx slicing via `gapmap1`/`gapmap2`); and `partA__align`'s strict-`>` tie-break for the prept-vs-mi/mjpt update is selectable via `profile_align_imp_with_tiebreak`. The remaining n≥13 cascade requires cell-by-cell DP comparison vs C's `partA__align` to pin the last difference (likely a gap-frequency multiplier or boundary-gap correction detail). See `TODO.md` §3.
-
-### Non-default BLOSUM matrices (`--bl N`)
-
-`--bl 30`, `--bl 45`, `--bl 62` (default), `--bl 80` are all byte-identical to C — see `fftns2_bl30_byte_identical_to_c`, `fftns2_bl45_byte_identical_to_c`, `fftns2_bl80_byte_identical_to_c`, `nofft_bl80_byte_identical_to_c`. MAFFT's BLOSUM45 and BLOSUM80 tables differ from standard NCBI at a handful of cells (BL45: P/H = -2; BL80: H/R = 0, F/M = 0, P/R = -3, V/I = 4) — matching upstream MAFFT byte-for-byte requires keeping those variant cells. `--bl 50`'s 26×26 substitution matrix matches C cell-by-cell (`cross_validate_blosum50_n_dis_cell_by_cell`, `cross_validate_blosum50_n_dis_fft_cell_by_cell`) but its end-to-end alignment diverges from C (Rust width 738 vs C 712 on the 36-seq test); the DP is selecting a different equivalent path because our `find_fft_anchors` picks the single best lag while C's `Falign` accumulates segments from all `NKOUHO=20` candidate lags. See `TODO.md` §4.
-
-### Substitution-model flags (`--jtt`, `--tm`)
-
-`--jtt N` and `--tm N` are wired through the CLI (matching `mafft --jtt N` / `mafft --tm N`). The PAM number selects how many iterations of the JTT one-step transition matrix are multiplied together before the log-odds transform.
-
-- `--jtt 200` is byte-identical to C in FFT-NS-2 (`fftns2_jtt200_byte_identical_to_c`).
-- `--tm 100 --nofft` and `--tm 200 --nofft` are byte-identical to C (`nofft_tm100_byte_identical_to_c`, `nofft_tm200_byte_identical_to_c`).
-- `--tm` with FFT and `--jtt 100 (FFT)` produce alignments that score identically but place gaps differently in a few positions. Cell-by-cell matrix matches C exactly (FFI cross-validation tests `cross_validate_jtt_n_dis`, `cross_validate_jtt100_n_dis`, `cross_validate_tm_n_dis`, `cross_validate_tm_n_dis_fft`); the divergence is the same FFT multi-lag accumulation issue as `--bl 50`. See `TODO.md` §4-§5.
-
-### PartTree (`--parttree`, `--dpparttree`)
-
-`--parttree --nofft` diverges from C (~940-line diff). Needs investigation in `crates/mafft-tree/src/parttree.rs`.
-
-### Adding sequences (`--add`, `--addfragments`, `--keeplength`)
-
-`--add --nofft` diverges from C (~900-line diff). The add pipeline in `crates/mafft-core/src/add.rs` needs investigation against C's `addsingle`.
-
-### Per-group gap stripping (performance)
-
-The progressive alignment strips only columns that are all-gap across **all sequences globally**, instead of stripping per-group as C does. This is functionally correct (produces the same alignment) but wastes DP computation. See `TODO.md` for a detailed diagnosis and attempted approaches. The correct fix requires porting C's `insertnewgaps()` from `addfunctions.c`.
+The following flags are NOT implemented and will produce "unknown argument" errors: `--auto`, `--seed`, `--seedtable`, `--treein`, `--treeout`, `--memsave`, `--reorder`, `--inputorder`, `--anysymbol`, `--leavegappyregion`. See `TODO.md` §B.3.
 
 ### Case preservation
 
-C preserves the input case of residues (e.g., lowercase RNA). We uppercase all residues before alignment. The alignment itself (gap placement) is identical. The `rna_nofft_case_insensitive_identical_to_c` test verifies this.
+C preserves the input case of residues (e.g., lowercase RNA). We uppercase all residues before alignment. The alignment itself (gap placement) is identical — `rna_nofft_case_insensitive_identical_to_c` verifies this.
 
 ### Performance
 
+- Per-group gap stripping in progressive alignment is not implemented; we strip globally instead. Functionally correct but wastes DP work. See `TODO.md` §C.1.
 - No SIMD for the DP fill loops themselves (data dependencies prevent vectorization without anti-diagonal restructuring).
-
 
 ## Upstream MAFFT
 

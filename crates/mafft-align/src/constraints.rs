@@ -185,7 +185,16 @@ pub fn recompute_importance(
         }
     }
 
-    // Pass 2: symmetrize importance between (i,j) and (j,i)
+    // Pass 2: average importance between (i,j) and (j,i) directions to
+    // mirror C's `calcimportance_half` final averaging loop
+    // (`mltaln9.c:11928-11950`):
+    //   imp = 0.5 * (tmpptr1->importance + tmpptr1->rimportance);
+    //   tmpptr1->importance = tmpptr1->rimportance = imp;
+    // C's half-matrix struct stores both `importance` and `rimportance`
+    // for the same pair; the averaging makes them equal. In our full-matrix
+    // layout, (i,j).importance corresponds to C's `importance` and (j,i)
+    // .importance corresponds to C's `rimportance`. Averaging both back to
+    // the same value matches C's final state.
     for i in 0..nseq.saturating_sub(1) {
         for j in (i + 1)..nseq {
             let n_ij = localhom.get(i, j).len();

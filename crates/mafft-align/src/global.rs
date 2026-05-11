@@ -109,12 +109,35 @@ pub fn global_align(
     let last_j = m + 1;
 
     // ijp[i][j] traceback codes:
-    //   0          = diagonal
-    //   -k (k>0)   = horizontal gap of length k (gap in seq2): came from (i-1, j-k)
-    //   +k (k>0)   = vertical gap of length k (gap in seq1): came from (i-k, j-1)
+    //   0                  = diagonal
+    //   -k (k>0)           = horizontal gap of length k (came from (i-1, j-k))
+    //   +k (k>0)           = vertical gap of length k (came from (i-k, j-1))
+    //   >= warpbase        = warp transition (came from (warpis[v-warpbase], warpjs[v-warpbase]))
     let mut ijp = vec![vec![0i32; m + 2]; n + 2];
 
     let mut wm = 0.0f64;
+
+    // Warp DP state (C `Galign11.c:1340-1395` block; activates when
+    // `penalty_shift_factor < 10`, e.g., `--allowshift` with spfactor=2.0).
+    // `wmrecords[j]` tracks the running max of `currentw[j]` plus its
+    // best-source coordinates `warpi[j]/warpj[j]`. The recurrence allows
+    // cell (i,j) to "warp" from any previously-seen anchor (i',j') with
+    // i'<i and j'<j at cost `fpenalty_shift + fpenalty_ex * Manhattan`.
+    let try_warp = gap.shift.is_some();
+    let fpenalty_shift = gap.shift.unwrap_or(0.0);
+    let warpbase: i32 = (n + m) as i32;
+    let neg_warpbase: i32 = -warpbase;
+    let mut warpn: usize = 0;
+    let mut warpis: Vec<i32> = Vec::new();
+    let mut warpjs: Vec<i32> = Vec::new();
+    // C uses `AllocateFloatVec` (calloc) → zero-init, then explicitly sets
+    // `wmrecords[i] = 0.0` / `prevwmrecords[i] = 0.0` (Galign11.c:1316-1317).
+    let mut wmrecords: Vec<f64> = vec![0.0; m + 1];
+    let mut prevwmrecords: Vec<f64> = vec![0.0; m + 1];
+    let mut warpi: Vec<i32> = vec![neg_warpbase; m + 1];
+    let mut warpj: Vec<i32> = vec![neg_warpbase; m + 1];
+    let mut prevwarpi: Vec<i32> = vec![neg_warpbase; m + 1];
+    let mut prevwarpj: Vec<i32> = vec![neg_warpbase; m + 1];
 
     for i in 1..last_i {
         std::mem::swap(&mut previousw, &mut currentw);
@@ -179,15 +202,61 @@ pub fn global_align(
                 m_arr[j] += f_ext;
             }
 
+            // Warp candidate (C `Galign11.c:1340-1395`). Allows cell (i,j) to
+            // jump to an anchor at (warpis[k], warpjs[k]) sourced from
+            // `prevwmrecords[j-1]` with cost
+            // `fpenalty_shift + fpenalty_ex * Manhattan_distance`.
+            if try_warp {
+                let fpenalty_tmp = fpenalty_shift
+                    + f_ext * ((i as i32 - prevwarpi[j - 1]) as f64
+                             + (j as i32 - prevwarpj[j - 1]) as f64);
+                let g = prevwmrecords[j - 1] + fpenalty_tmp;
+                if g > wm {
+                    if warpn > 0
+                        && prevwarpi[j - 1] == warpis[warpn - 1]
+                        && prevwarpj[j - 1] == warpjs[warpn - 1]
+                    {
+                        ijp[i][j] = warpbase + (warpn as i32) - 1;
+                    } else {
+                        ijp[i][j] = warpbase + (warpn as i32);
+                        warpis.push(prevwarpi[j - 1]);
+                        warpjs.push(prevwarpj[j - 1]);
+                        warpn += 1;
+                    }
+                    wm = g;
+                }
+            }
+
             // currentw[j] += wm (already holds the match score, lgth2 boundary = 0).
             currentw[j] += wm;
 
-            if std::env::var_os("RUST_DP_DUMP").is_some() {
-                let target_i = std::env::var("RUST_DP_I").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(usize::MAX);
-                if i == target_i {
-                    eprintln!("[RUST_DP] i={} j={} prev[j-1]={:.2} mi={:.2} mpi={} m[j]={:.2} mp[j]={} wm={:.2} ijp={} cw[j]={:.2}",
-                        i, j, previousw[j-1], mi, mpi, m_arr[j]-f_ext, mp_arr[j], wm, ijp[i][j], currentw[j]);
+            // Update wmrecords[j] / warpi[j] / warpj[j] (running max of
+            // `currentw[j]` along the row, propagating the best source).
+            if try_warp {
+                // First: ensure wmrecords[j] >= wmrecords[j-1] (propagate
+                // running max from previous column).
+                if j >= 1 && wmrecords[j - 1] > wmrecords[j] {
+                    wmrecords[j] = wmrecords[j - 1];
+                    warpi[j] = warpi[j - 1];
+                    warpj[j] = warpj[j - 1];
                 }
+                // Then: maybe update with this cell's curm.
+                let curm = currentw[j];
+                if curm > wmrecords[j] {
+                    wmrecords[j] = curm;
+                    warpi[j] = i as i32;
+                    warpj[j] = j as i32;
+                }
+            }
+
+        }
+
+        // End of row: snapshot wmrecords/warpi/warpj for next row's warp lookup.
+        if try_warp {
+            for k in 0..=m {
+                prevwmrecords[k] = wmrecords[k];
+                prevwarpi[k] = warpi[k];
+                prevwarpj[k] = warpj[k];
             }
         }
     }
@@ -244,7 +313,64 @@ pub fn global_align(
     while iin > 0 && jin > 0 {
         let v = ijp[iin as usize][jin as usize];
 
-        if v == 0 {
+        if v >= warpbase {
+            // Warp transition (`Galign11.c:198-202`): jump from (iin, jin)
+            // back to (ifi, jfi). Emit seq1 residues at (ifi+1..iin-1)
+            // as deletes and seq2 residues at (jfi+1..jin-1) as inserts,
+            // then the diagonal at (ifi, jfi).
+            let idx = (v - warpbase) as usize;
+            let ifi = warpis[idx];
+            let jfi = warpjs[idx];
+
+            // C `Galign11.c:217-234`: if the warp source was never
+            // anchored (still sentinel -warpbase), emit all remaining
+            // seq1/seq2 residues as gap columns then exit the loop.
+            if ifi == neg_warpbase && jfi == neg_warpbase {
+                let mut ii = iin;
+                while ii > 0 {
+                    ii -= 1;
+                    a1.push(seq1[ii as usize]);
+                    a2.push(b'-');
+                    ops.push(AlignOp::Delete);
+                }
+                let mut jj = jin;
+                while jj > 0 {
+                    jj -= 1;
+                    a1.push(b'-');
+                    a2.push(seq2[jj as usize]);
+                    ops.push(AlignOp::Insert);
+                }
+                iin = 0;
+                jin = 0;
+                break;
+            }
+
+            let mut ii = iin - 1;
+            while ii > ifi {
+                a1.push(seq1[ii as usize]);
+                a2.push(b'-');
+                ops.push(AlignOp::Delete);
+                ii -= 1;
+            }
+            let mut jj = jin - 1;
+            while jj > jfi {
+                a1.push(b'-');
+                a2.push(seq2[jj as usize]);
+                ops.push(AlignOp::Insert);
+                jj -= 1;
+            }
+            // C `Galign11.c:252`: break before emitting diagonal if at boundary.
+            if iin <= 0 || jin <= 0 {
+                iin = ifi;
+                jin = jfi;
+                break;
+            }
+            a1.push(seq1[ifi as usize]);
+            a2.push(seq2[jfi as usize]);
+            ops.push(AlignOp::Match);
+            iin = ifi;
+            jin = jfi;
+        } else if v == 0 {
             // ijp=0 means C's ifi=iin-1, jfi=jin-1: emit seq1[iin-1], seq2[jin-1].
             a1.push(seq1[(iin - 1) as usize]);
             a2.push(seq2[(jin - 1) as usize]);

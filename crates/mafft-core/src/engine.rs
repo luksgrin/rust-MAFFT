@@ -315,10 +315,20 @@ impl MafftEngine {
             let p_ext = cc_int(lexp, 1000.0);
             let p_offset = cc_int(laof, 1000.0);
             let p_op = cc_int(lgop_op, 1000.0);
-            let pair_gap = GapModel::new(
+            let mut pair_gap = GapModel::new(
                 cc_scale(p_open, scale_protein) as f64,
                 cc_scale(p_ext, scale_protein) as f64,
             );
+            // C `constants.c:277-278`: `if (penalty_shift_factor < 10) trywarp = 1`.
+            // With `--allowshift`, `spfactor = 2.0` (< 10) → warp DP fires.
+            // `penalty_shift = (int)(penalty_shift_factor * penalty)`
+            // (`constants.c:318`). For pair phase: penalty = -1199, sp = 2.0,
+            // so penalty_shift = -2398.
+            if self.unalign_level > 0.0 {
+                let spfactor = 2.0f64;
+                let penalty_shift = (spfactor * pair_gap.open) as i32 as f64;
+                pair_gap.shift = Some(penalty_shift);
+            }
             let pair_op = cc_scale(p_op, scale_protein) as f64;
             let pair_offset_int: i32 = cc_scale(p_offset, scale_protein);
             let nscored = scoring.nscoredalphabets;
@@ -431,9 +441,13 @@ impl MafftEngine {
             let input_seqs = sequences.clone();
 
             // Shift penalty: penalty_shift = penalty_shift_factor * penalty
-            // Default factor = 100 (disabled). With --allowshift, factor = 0.8.
+            // (`constants.c:318`). Default factor = 100 (trywarp = 0). With
+            // `--allowshift`, `scripts/mafft:1428` sets `spfactor=2.00`, which
+            // triggers `trywarp = 1` (constants.c:277-278: `if (factor < 10)`)
+            // and gives `penalty_shift = 2.0 * penalty`. The previous "0.8"
+            // here was confused with `unalignlevel = 0.8` — different knob.
             let shift = if self.allowshift {
-                Some(0.8 * scoring.gap.open as f64)
+                Some(2.0 * scoring.gap.open as f64)
             } else {
                 None
             };

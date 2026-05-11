@@ -532,6 +532,11 @@ pub fn profile_align_imp_with_boundary(
     if head_gap {
         for i in 1..=n {
             initverticalw[i] += ogcp1[0] * hgf2 + fgcp1[i - 1] * gf2_0;
+            // C `Salignmm.c:1718`: `initverticalw[i] += fpenalty_ex * i;`
+            // Boundary extension penalty accumulates linearly with i in the
+            // first-column initialization (USE_PENALTY_EX path). With protein
+            // default `penalty_ex = 0` this is a no-op.
+            initverticalw[i] += gap.extend * i as f64;
         }
     }
 
@@ -563,6 +568,9 @@ pub fn profile_align_imp_with_boundary(
     if head_gap {
         for j in 1..=m {
             currentw[j] += ogcp2[0] * hgf1 + fgcp2[j - 1] * gf1_0;
+            // C `Salignmm.c:1727`: `currentw[j] += fpenalty_ex * j;`
+            // Same boundary extension as initverticalw above, for row 0.
+            currentw[j] += gap.extend * j as f64;
         }
     }
 
@@ -583,6 +591,27 @@ pub fn profile_align_imp_with_boundary(
     let mut previousw = vec![0.0f64; m + 1];
     let mut lastverticalw = vec![0.0f64; n + 1];
     lastverticalw[0] = currentw[m - 1];
+
+    // Warp DP state (`Salignmm.c:1255-1281,1888-2022`). Activates when
+    // `gap.shift` is `Some` (penalty_shift_factor < 10 → trywarp = 1). Mirrors
+    // the same recurrence already ported into `global.rs` for `G__align11`.
+    // Required for `--allowshift` byte-identity in the progressive merge.
+    let try_warp = gap.shift.is_some();
+    let fpenalty_shift = gap.shift.unwrap_or(0.0);
+    let f_ext = gap.extend;
+    let warpbase: i32 = (n + m) as i32;
+    let neg_warpbase: i32 = -warpbase;
+    let mut warpn: usize = 0;
+    let mut warpis: Vec<i32> = Vec::new();
+    let mut warpjs: Vec<i32> = Vec::new();
+    // C uses `AllocateFloatVec` (calloc) → zero-init, then explicitly sets
+    // `wmrecords[i] = 0.0` / `prevwmrecords[i] = 0.0` (Salignmm.c:1276-1277).
+    let mut wmrecords: Vec<f64> = vec![0.0; m + 1];
+    let mut prevwmrecords: Vec<f64> = vec![0.0; m + 1];
+    let mut warpi: Vec<i32> = vec![neg_warpbase; m + 1];
+    let mut warpj: Vec<i32> = vec![neg_warpbase; m + 1];
+    let mut prevwarpi: Vec<i32> = vec![neg_warpbase; m + 1];
+    let mut prevwarpj: Vec<i32> = vec![neg_warpbase; m + 1];
 
     // C pads gapfreq1pt[lgth1] = 1.0 and gapfreq2pt[lgth2] = 1.0 (tditeration.c's
     // `for(i=0;i<lgth+1;i++) gapfreq[i] = 1.0 - gapfreq[i];` with calloc'd 0 → 1).
@@ -643,6 +672,11 @@ pub fn profile_align_imp_with_boundary(
                 mi = g;
                 mpi = j - 1;
             }
+            // C `Salignmm.c:1933`: `mi += fpenalty_ex;` — unconditional extend
+            // increment to the row-running gap-skip tracker. With protein
+            // default `DEFAULTGEP_B = 0` this is a no-op, but `--exp`
+            // overrides or future DNA-mode tunings would surface this.
+            mi += f_ext;
 
             let g_iskip = fgcp1[i - 1].mul_add(gf2_j, mj[j]);
             if g_iskip > wm {
@@ -656,11 +690,69 @@ pub fn profile_align_imp_with_boundary(
                 mj[j] = g;
                 mpj[j] = i - 1;
             }
+            // C `Salignmm.c:1953`: `if (j < lgth2) m[j] += fpenalty_ex;` —
+            // matching guard, only extend the column tracker for non-boundary
+            // columns.
+            if j < m {
+                mj[j] += f_ext;
+            }
+
+            // Warp candidate (`Salignmm.c:1957-2003`). Allows cell (i,j) to
+            // jump back to an anchor (warpis[k], warpjs[k]) sourced from
+            // `prevwmrecords[j-1]` with cost `fpenalty_shift + fpenalty_ex
+            // * Manhattan_distance`. C uses scalar `fpenalty_ex` regardless of
+            // profile position weighting — matches our `gap.extend`.
+            if try_warp {
+                let fpenalty_tmp = fpenalty_shift
+                    + f_ext * ((i as i32 - prevwarpi[j - 1]) as f64
+                             + (j as i32 - prevwarpj[j - 1]) as f64);
+                let g = prevwmrecords[j - 1] + fpenalty_tmp;
+                if g > wm {
+                    if warpn > 0
+                        && prevwarpi[j - 1] == warpis[warpn - 1]
+                        && prevwarpj[j - 1] == warpjs[warpn - 1]
+                    {
+                        ijp[i][j] = warpbase + (warpn as i32) - 1;
+                    } else {
+                        ijp[i][j] = warpbase + (warpn as i32);
+                        warpis.push(prevwarpi[j - 1]);
+                        warpjs.push(prevwarpj[j - 1]);
+                        warpn += 1;
+                    }
+                    wm = g;
+                }
+            }
 
             currentw[j] += wm;
             h[i][j] = currentw[j];
+
+            // Update wmrecords[j] / warpi[j] / warpj[j] (`Salignmm.c:1987-1998`).
+            if try_warp {
+                if wmrecords[j - 1] > wmrecords[j] {
+                    wmrecords[j] = wmrecords[j - 1];
+                    warpi[j] = warpi[j - 1];
+                    warpj[j] = warpj[j - 1];
+                }
+                let curm = currentw[j];
+                if curm > wmrecords[j] {
+                    wmrecords[j] = curm;
+                    warpi[j] = i as i32;
+                    warpj[j] = j as i32;
+                }
+            }
         }
         lastverticalw[i] = currentw[m - 1];
+
+        // End of row: snapshot wmrecords/warpi/warpj to prev*
+        // (`Salignmm.c:2017-2022`, `fltncpy(prevwmrecords, wmrecords, lastj)`
+        // where lastj = lgth2 + 1).
+        if try_warp {
+            for k in 0..=m {
+                prevwmrecords[k] = wmrecords[k];
+                prevwarpi[k] = warpi[k];
+                prevwarpj[k] = warpj[k];
+            }
+        }
     }
 
     // Tail gap handling — exact port of C's `Atracking` in Salignmm.c:891-925.
@@ -718,7 +810,13 @@ pub fn profile_align_imp_with_boundary(
     while k <= klim {
         let (ifi, jfi): (i32, i32);
         let v = ijp[iin as usize][jin as usize];
-        if v < 0 {
+        if v >= warpbase {
+            // Warp transition (`Salignmm.c:479-482`). Jump to anchor
+            // (warpis[idx], warpjs[idx]).
+            let idx = (v - warpbase) as usize;
+            ifi = warpis[idx];
+            jfi = warpjs[idx];
+        } else if v < 0 {
             // Deletion: skip columns
             ifi = iin - 1;
             jfi = jin + v;
@@ -732,7 +830,29 @@ pub fn profile_align_imp_with_boundary(
             jfi = jin - 1;
         }
 
-        // Emit gap in prof2 for skipped rows (insertion in prof1)
+        // C `Salignmm.c:496-514`: handle uninitialized warp source by
+        // emitting all remaining iin/jin residues as gaps and exiting.
+        if v >= warpbase && ifi == neg_warpbase && jfi == neg_warpbase {
+            let mut l = iin;
+            while l > 0 {
+                l -= 1;
+                gaptable1.push(b'o');
+                gaptable2.push(b'-');
+                k += 1;
+            }
+            let mut l = jin;
+            while l > 0 {
+                l -= 1;
+                gaptable1.push(b'-');
+                gaptable2.push(b'o');
+                k += 1;
+            }
+            break;
+        }
+
+        // Emit gap in prof2 for skipped rows (insertion in prof1).
+        // For warp: emit (iin - ifi - 1) cells (no extra for first cell).
+        // For non-warp gap-k: emit (k-1) cells, with `l > 1` condition.
         let mut l = iin - ifi;
         while l > 1 {
             gaptable1.push(b'o');
