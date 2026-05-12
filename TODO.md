@@ -8,9 +8,10 @@
 
 ## Current parity matrix (36-seq protein sample, mafft-upstream/test/sample)
 
-Verified 2026-05-11 by running `target/release/mafft-rs <args> sample` against
-`mafft-upstream/scripts/mafft <args> sample` on the upstream submodule
-(MAFFT 7.526) and diffing the FASTA outputs.
+Verified 2026-05-12 by running `target/release/mafft-rs <args> sample` against
+the system `mafft <args> sample` (MAFFT 7.526) and diffing the FASTA outputs.
+Widths are taken as `length(seq[1])` (the canonical MSA width); the system
+mafft and our binary agree on every byte for every ✓ row.
 
 | Mode / flags                                | C width | Rust width | diff lines | Status |
 |---------------------------------------------|---------|------------|------------|--------|
@@ -20,23 +21,36 @@ Verified 2026-05-11 by running `target/release/mafft-rs <args> sample` against
 | L-INS-1 (`--localpair --maxiterate 0`)      | 719     | 719        | 0          | byte-exact ✓ |
 | G-INS-1 (`--globalpair --maxiterate 0`)     | 746     | 746        | 0          | byte-exact ✓ |
 | E-INS-1 (`--genafpair --maxiterate 0`)      | 729     | 729        | 0          | byte-exact ✓ |
-| L-INS-i (`linsi` / `--localpair --maxiterate 1000`) | 731 | 731 | 0       | byte-exact ✓ |
-| G-INS-i (`ginsi` / `--globalpair --maxiterate 1000`)| 746 | 746 | 0       | byte-exact ✓ |
+| L-INS-i (`linsi` / `--localpair --maxiterate 1000`) | 735 | 735 | 0       | byte-exact ✓ |
+| G-INS-i (`ginsi` / `--globalpair --maxiterate 1000`)| 737 | 737 | 0       | byte-exact ✓ |
 | E-INS-i (`einsi` / `--genafpair --maxiterate 1000`) | 729 | 729 | 0       | byte-exact ✓ |
-| BL30/45/50/62/80 FFT (`--bl N`)             | match   | match      | 0          | byte-exact ✓ |
+| BL30 FFT (`--bl 30`)                        | 773     | 773        | 0          | byte-exact ✓ |
+| BL45 FFT (`--bl 45`)                        | 729     | 729        | 0          | byte-exact ✓ |
+| BL50 FFT (`--bl 50`)                        | 712     | 712        | 0          | byte-exact ✓ |
+| BL62 FFT (`--bl 62`)                        | 717     | 717        | 0          | byte-exact ✓ |
+| BL80 FFT (`--bl 80`)                        | 712     | 712        | 0          | byte-exact ✓ |
 | BL80 NW (`--bl 80 --nofft`)                 | 712     | 712        | 0          | byte-exact ✓ |
-| JTT 100/200 FFT (`--jtt N`)                 | match   | match      | 0          | byte-exact ✓ |
-| TM 100/200 NW + FFT (`--tm N`)              | match   | match      | 0          | byte-exact ✓ |
-| PartTree (`--parttree`, `--dpparttree`)     | 752     | 752        | 0          | byte-exact ✓ |
-| `--add` / `--add --nofft` / `--add --keeplength` | match | match    | 0          | byte-exact ✓ |
+| JTT 200 FFT (`--jtt 200`)                   | 729     | 729        | 0          | byte-exact ✓ |
+| JTT 100 FFT (`--jtt 100`)                   | 732     | 732        | 0          | byte-exact ✓ |
+| TM 100 NW (`--tm 100 --nofft`)              | 767     | 767        | 0          | byte-exact ✓ |
+| TM 200 NW (`--tm 200 --nofft`)              | 765     | 765        | 0          | byte-exact ✓ |
+| TM 100 FFT (`--tm 100`)                     | 767     | 767        | 0          | byte-exact ✓ |
+| TM 200 FFT (`--tm 200`)                     | 767     | 767        | 0          | byte-exact ✓ |
+| PartTree (`--parttree`)                     | 752     | 752        | 0          | byte-exact ✓ |
+| DP-PartTree (`--dpparttree`)                | 752     | 752        | 0          | byte-exact ✓ |
+| PartTree NW (`--parttree --nofft`)          | 752     | 743        | 944        | ✗ open (predates session, no regression test) |
+| `--add` (30+6 fixture)                      | 741     | 741        | 0          | byte-exact ✓ |
+| `--add --nofft` (30+6 fixture)              | 741     | 741        | 0          | byte-exact ✓ |
+| `--add --keeplength` (30+6 fixture)         | 595     | 595        | 0          | byte-exact ✓ |
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (needs `mxscarnamod`) |
-| `--allowshift --globalpair sample`          | 1029    | 1029       | 0          | byte-exact ✓ (closed 2026-05-12) |
+| `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ (closed 2026-05-12) |
 
-Test suite as of 2026-05-12: **269 Rust tests pass, 0 ignored** (`cargo test
---workspace --exclude pymafft --release`). Plus 32 Python tests pass.
-**All tested modes are now byte-identical to C MAFFT 7.526** including
-`--allowshift --globalpair --maxiterate 0`.
+Test suite as of 2026-05-12: **269 Rust tests pass, 0 failed, 0 ignored**
+(`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
+pass. Every mainstream mode in the matrix above is byte-identical to C
+MAFFT 7.526 except `--parttree --nofft` (longstanding 944-line diff, not
+currently in the regression test suite).
 
 Resolved sections (full implementation notes in git history):
 - §1 G-INS-1 (2026-05-06) — `global_align` ported to mirror `G__align11`'s

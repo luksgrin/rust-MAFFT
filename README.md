@@ -20,10 +20,11 @@ This project provides:
 - `--parttree`, `--dpparttree` (divide-and-conquer guide tree)
 - `--add`, `--add --nofft`, `--add --keeplength`
 - Q-INS-i (RNA, requires `mxscarnamod`)
+- `--allowshift --globalpair --maxiterate 0` (closed 2026-05-12)
 
 Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
-### Parity matrix (36-seq protein sample)
+### Parity matrix (36-seq protein sample, 2026-05-12)
 
 | Mode / flags                                | C width | Rust width | diff | Status |
 |---------------------------------------------|---------|------------|------|--------|
@@ -31,9 +32,9 @@ Every progressive merge step matches in score and width and every refinement ite
 | NW-NS-2 (`--nofft`)                         | 717     | 717        | 0    | ✓ byte-exact |
 | FFT-NS-i (`--maxiterate 100`)               | 721     | 721        | 0    | ✓ byte-exact |
 | L-INS-1 (`--localpair --maxiterate 0`)      | 719     | 719        | 0    | ✓ byte-exact |
-| L-INS-i (`linsi`)                           | 731     | 731        | 0    | ✓ byte-exact |
+| L-INS-i (`linsi`)                           | 735     | 735        | 0    | ✓ byte-exact |
 | G-INS-1 (`--globalpair --maxiterate 0`)     | 746     | 746        | 0    | ✓ byte-exact |
-| G-INS-i (`ginsi`)                           | 746     | 746        | 0    | ✓ byte-exact |
+| G-INS-i (`ginsi`)                           | 737     | 737        | 0    | ✓ byte-exact |
 | E-INS-1 (`--genafpair --maxiterate 0`)      | 729     | 729        | 0    | ✓ byte-exact |
 | E-INS-i (`einsi`)                           | 729     | 729        | 0    | ✓ byte-exact |
 | BLOSUM 30 / 45 / 50 / 62 / 80 (FFT)         | match   | match      | 0    | ✓ byte-exact |
@@ -41,12 +42,19 @@ Every progressive merge step matches in score and width and every refinement ite
 | JTT 100 / 200 (FFT)                         | match   | match      | 0    | ✓ byte-exact |
 | TM 100 / 200 (NW + FFT)                     | match   | match      | 0    | ✓ byte-exact |
 | `--parttree`, `--dpparttree`                | 752     | 752        | 0    | ✓ byte-exact |
-| `--add`, `--add --keeplength`, `--add --nofft` | match | match     | 0    | ✓ byte-exact |
+| `--parttree --nofft`                        | 752     | 743        | 944  | ✗ open (predates session, no regression test) |
+| `--add` (30+6 fixture)                      | 741     | 741        | 0    | ✓ byte-exact |
+| `--add --nofft` (30+6 fixture)              | 741     | 741        | 0    | ✓ byte-exact |
+| `--add --keeplength` (30+6 fixture)         | 595     | 595        | 0    | ✓ byte-exact |
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 0†   | ✓ byte-exact (case-insensitive) |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0†   | ✓ byte-exact (needs `mxscarnamod`) |
-| `--allowshift --globalpair`                 | 1029    | 987        | many | ✗ partial — see `TODO.md` §A |
+| `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0    | ✓ byte-exact (closed 2026-05-12) |
 
 † We uppercase residues; C preserves case. With `diff -i` (case-insensitive) RNA produces 0 lines.
+
+Every mainstream mode is byte-identical to C MAFFT 7.526. The lone open
+divergence is `--parttree --nofft` (a 944-line gap that predates this work
+and isn't currently in the regression test suite); see `TODO.md` for status.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -71,7 +79,7 @@ The binary is at `target/release/mafft-rs`.
 ### Run tests
 
 ```bash
-# Full Rust suite (all crates, 264 tests as of 2026-05-11)
+# Full Rust suite (all crates, 269 tests as of 2026-05-12)
 cargo test --workspace --exclude pymafft --release
 
 # Just unit tests (faster)
@@ -229,7 +237,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 |---------------------|--------|
 | `--maxiterate`, `--localpair`, `--globalpair`, `--genafpair` | Supported |
 | `--add`, `--addfragments`, `--keeplength` | Supported |
-| `--allowshift` | Supported (partial — see `TODO.md` §A) |
+| `--allowshift` | Supported (byte-identical to C, closed 2026-05-12) |
 | `--nofft` | Supported |
 | `--retree N` | Supported (default 2 for FFT-NS, 1 for INS-i, matching C) |
 | `--op`, `--ep`, `--bl` | Supported |
@@ -274,7 +282,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-11 (`cargo test --workspace --exclude pymafft --release`: **264 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-12 (`cargo test --workspace --exclude pymafft --release`: **269 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
@@ -288,9 +296,9 @@ Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (m
 
 ## Known limitations
 
-### `--allowshift` (partial)
+### `--parttree --nofft` (open)
 
-`mafft --allowshift --globalpair --maxiterate 0 sample` produces Rust width 987 vs C width 1029. The warp DP recurrence is ported and byte-identical for single-pair and single-merge tests, but the integrated pipeline shows a 42-column gap from composition. See `TODO.md` §A for the open investigation.
+The `--parttree` + `--nofft` combination produces a 944-line diff against C MAFFT (Rust width 743 vs C 752). This divergence predates the current work and isn't covered by any regression test in the suite, so it didn't surface during the §6 PartTree byte-identity closure. `--parttree` (with FFT) and `--dpparttree` are byte-identical to C.
 
 ### `--xinsi` (untestable)
 
