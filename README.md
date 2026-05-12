@@ -17,7 +17,7 @@ This project provides:
 - L-INS-i, G-INS-i, E-INS-i (with iterative refinement)
 - BLOSUM 30 / 45 / 50 / 62 / 80 (FFT and NW)
 - JTT 100 / 200, TM 100 / 200 (FFT and NW)
-- `--parttree`, `--dpparttree` (divide-and-conquer guide tree)
+- `--parttree`, `--dpparttree`, `--parttree --nofft` (divide-and-conquer guide tree)
 - `--add`, `--add --nofft`, `--add --keeplength`
 - Q-INS-i (RNA, requires `mxscarnamod`)
 - `--allowshift --globalpair --maxiterate 0` (closed 2026-05-12)
@@ -42,7 +42,7 @@ Every progressive merge step matches in score and width and every refinement ite
 | JTT 100 / 200 (FFT)                         | match   | match      | 0    | ✓ byte-exact |
 | TM 100 / 200 (NW + FFT)                     | match   | match      | 0    | ✓ byte-exact |
 | `--parttree`, `--dpparttree`                | 752     | 752        | 0    | ✓ byte-exact |
-| `--parttree --nofft`                        | 752     | 743        | 944  | ✗ open (predates session, no regression test) |
+| `--parttree --nofft`                        | 752     | 752        | 0    | ✓ byte-exact (closed 2026-05-12) |
 | `--add` (30+6 fixture)                      | 741     | 741        | 0    | ✓ byte-exact |
 | `--add --nofft` (30+6 fixture)              | 741     | 741        | 0    | ✓ byte-exact |
 | `--add --keeplength` (30+6 fixture)         | 595     | 595        | 0    | ✓ byte-exact |
@@ -52,9 +52,9 @@ Every progressive merge step matches in score and width and every refinement ite
 
 † We uppercase residues; C preserves case. With `diff -i` (case-insensitive) RNA produces 0 lines.
 
-Every mainstream mode is byte-identical to C MAFFT 7.526. The lone open
-divergence is `--parttree --nofft` (a 944-line gap that predates this work
-and isn't currently in the regression test suite); see `TODO.md` for status.
+Every mainstream mode is byte-identical to C MAFFT 7.526. The remaining
+items in `TODO.md` are latent / coverage / performance gaps and missing
+CLI flags, not active divergences.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -295,10 +295,6 @@ Current counts as of 2026-05-12 (`cargo test --workspace --exclude pymafft --rel
 Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 
 ## Known limitations
-
-### `--parttree --nofft` (open)
-
-The `--parttree` + `--nofft` combination produces a 944-line diff against C MAFFT (Rust width 743 vs C 752). This divergence predates the current work and isn't covered by any regression test in the suite, so it didn't surface during the §6 PartTree byte-identity closure. `--parttree` (with FFT) and `--dpparttree` are byte-identical to C.
 
 ### `--xinsi` (untestable)
 

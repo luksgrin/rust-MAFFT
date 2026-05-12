@@ -38,7 +38,7 @@ mafft and our binary agree on every byte for every ✓ row.
 | TM 200 FFT (`--tm 200`)                     | 767     | 767        | 0          | byte-exact ✓ |
 | PartTree (`--parttree`)                     | 752     | 752        | 0          | byte-exact ✓ |
 | DP-PartTree (`--dpparttree`)                | 752     | 752        | 0          | byte-exact ✓ |
-| PartTree NW (`--parttree --nofft`)          | 752     | 743        | 944        | ✗ open (predates session, no regression test) |
+| PartTree NW (`--parttree --nofft`)          | 752     | 752        | 0          | byte-exact ✓ (closed 2026-05-12) |
 | `--add` (30+6 fixture)                      | 741     | 741        | 0          | byte-exact ✓ |
 | `--add --nofft` (30+6 fixture)              | 741     | 741        | 0          | byte-exact ✓ |
 | `--add --keeplength` (30+6 fixture)         | 595     | 595        | 0          | byte-exact ✓ |
@@ -49,8 +49,7 @@ mafft and our binary agree on every byte for every ✓ row.
 Test suite as of 2026-05-12: **269 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
-MAFFT 7.526 except `--parttree --nofft` (longstanding 944-line diff, not
-currently in the regression test suite).
+MAFFT 7.526.
 
 Resolved sections (full implementation notes in git history):
 - §1 G-INS-1 (2026-05-06) — `global_align` ported to mirror `G__align11`'s
@@ -80,7 +79,40 @@ Resolved sections (full implementation notes in git history):
 
 ---
 
-## §A. `--allowshift` — RESOLVED 2026-05-12 (byte-identical to C)
+## §A. `--parttree --nofft` — RESOLVED 2026-05-12 (byte-identical to C)
+
+**Mode**: `mafft --parttree --nofft sample` now produces Rust width
+**752** matching C width **752** byte-for-byte (0 diff lines).
+
+### Root cause
+
+`crates/mafft-core/src/progressive.rs::merge_step_cached` called
+`pairwise_align11` for the 1-vs-1 no-constraint case with `head_gap` and
+`tail_gap` **hardcoded to `false, false`**, ignoring the
+`penalize_term_gaps` flag set by `outgap = 1` for `--parttree`
+(`scripts/mafft:2655`). C MAFFT terminal-gap-penalizes 1-vs-1 merges
+under `--parttree`, so every PartTree NW pair-merge diverged. FFT path
+was unaffected because it routes through a different 1-vs-1 helper.
+
+### Fix
+
+`crates/mafft-core/src/progressive.rs::merge_step_cached` — pass
+`penalize_term_gaps, penalize_term_gaps` instead of `false, false`:
+
+```rust
+pairwise_align11(
+    &aligned[group1[0]], &aligned[group2[0]],
+    &scoring.consweight_matrix, &scoring.amino_map,
+    scoring.gap.open as f64, penalize_term_gaps, penalize_term_gaps,
+)
+```
+
+All other PartTree variants (`--parttree` FFT, `--dpparttree`) were
+already byte-identical; this fix touches only the NW-no-constraint path.
+
+---
+
+## §A0. `--allowshift` — RESOLVED 2026-05-12 (byte-identical to C)
 
 **Mode**: `mafft --allowshift --globalpair --maxiterate 0 sample` now
 produces Rust width **1029** matching C width **1029** byte-for-byte
@@ -308,14 +340,19 @@ End-to-end validation deferred until `contrafold` is installed.
 
 ## Recommended order of attack
 
-1. **§A `--allowshift` 42-col gap** — needs multi-pair byte-identity
-   test of constraint table + per-step trace dump comparison vs C to
-   pin the divergence source. Low priority unless someone actually uses
-   the flag.
-2. **§B.1 `penalty_ex` accumulation** — add a regression test for
-   `--ep 0.5` on the 36-seq sample, then add the missing `mi += f_ext`
-   / `mj[j] += f_ext` lines.
-3. **§B.3 missing CLI flags** — `--auto` and `--treein` / `--treeout`
-   are the highest-value additions.
-4. **§C.1 per-group gap stripping** — performance only, no behavior
+All currently-tested modes are byte-identical to C MAFFT 7.526. The
+remaining items are latent / coverage / performance gaps, not active
+divergences:
+
+1. **§B.3 missing CLI flags** — `--auto`, `--treein`/`--treeout`,
+   `--reorder`/`--inputorder`, `--anysymbol`, `--seed`,
+   `--leavegappyregion`, `--memsave`. Highest user-visible impact.
+2. **§B.1 `penalty_ex` in `pairwise_align11`** — would need an API
+   change (take `&GapModel` or add `penalty_ex` param). Currently
+   benign because the CLI doesn't expose `--exp`.
+3. **§B.2 FMA `mul_add` in {global,local,genaffine}.rs** — audit pass
+   to forestall future 1-ULP tie-break flips on flat-landscape matrices.
+4. **§B.4 `--retree N` for N ≠ 2** — add regression test.
+5. **§C.1 per-group gap stripping** — performance only, no behavior
    change.
+6. **§D X-INS-i (`--xinsi`)** — needs `contrafold` binary to validate.

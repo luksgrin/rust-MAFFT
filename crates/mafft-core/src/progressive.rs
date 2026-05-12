@@ -815,15 +815,22 @@ fn merge_step_cached(
     let aln = if !use_fft && group1.len() == 1 && group2.len() == 1
         && constraints.is_none()
     {
-        // G__align11 path: flat gap penalty, character-level scoring
+        // G__align11 path: flat gap penalty, character-level scoring.
         // Only used when FFT is disabled and no constraints. With constraints
         // (L-INS-i / E-INS-i / G-INS-i), single-vs-single merges still need
         // the impmtx contribution per cell — fall through to the constrained
         // profile DP below.
+        //
+        // `head_gap` / `tail_gap` must mirror C's `outgap` (= `penalize_term_gaps`).
+        // For `--parttree --nofft`, the script omits `-O` so `outgap=1`
+        // (`scripts/mafft:2655`, `splittbfast.c:560`), meaning every per-pair
+        // merge — including 1-vs-1 — must penalize terminal gaps. Hardcoding
+        // `false` here caused the `--parttree --nofft` 944-line divergence vs C
+        // (every 1-vs-1 merge took the wrong head/tail gap path).
         pairwise_align11(
             &aligned[group1[0]], &aligned[group2[0]],
             &scoring.consweight_matrix, &scoring.amino_map,
-            scoring.gap.open as f64, false, false,
+            scoring.gap.open as f64, penalize_term_gaps, penalize_term_gaps,
         )
     } else if use_fft {
         // C uses Falign for ALL steps when use_fft=true (ffttry = nlen > clus,
