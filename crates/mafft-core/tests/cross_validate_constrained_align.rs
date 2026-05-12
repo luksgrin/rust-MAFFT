@@ -1516,6 +1516,22 @@ fn rust_global_align_realign_matches_c_g__align11_warp_u22180_m62903() {
         mafft_sys::constants(1, seq_arr);
 
         let alloclen = (s1.len() + s2.len()) * 4;
+
+        // Mirror pipeline: call G__align11 FIRST with unshifted matrix
+        // (initial alignment), THEN with dyn_matrix (re-align). C's TLS
+        // state from the first call may affect the second.
+        let mut buf1_init = s1.to_vec(); buf1_init.resize(alloclen + 1, 0);
+        let mut buf2_init = s2.to_vec(); buf2_init.resize(alloclen + 1, 0);
+        let buf1_init_box = buf1_init.into_boxed_slice();
+        let buf2_init_box = buf2_init.into_boxed_slice();
+        let mut p1_init: *mut c_char = buf1_init_box.as_ptr() as *mut c_char;
+        let mut p2_init: *mut c_char = buf2_init_box.as_ptr() as *mut c_char;
+        let n_unshifted = build_c_dynamicmtx(&scoring.consweight_matrix);
+        let _ = mafft_sys::G__align11(
+            n_unshifted, &mut p1_init, &mut p2_init, alloclen as c_int, 1, 1,
+        );
+
+        // Now re-align with the shifted matrix (matches pipeline).
         let mut buf1 = s1.to_vec(); buf1.resize(alloclen + 1, 0);
         let mut buf2 = s2.to_vec(); buf2.resize(alloclen + 1, 0);
         let buf1_box = buf1.into_boxed_slice();

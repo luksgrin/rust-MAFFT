@@ -21,17 +21,29 @@ fn dist2offset(dist: f64, sc: f64) -> f64 {
 /// score where `offset = dist2offset(2 * distfromtip, sc)`. Negative for
 /// shallow merges (close-related), zero for deep merges. Pulls divergent
 /// regions apart at shallow merges → wider final alignment.
-fn make_dynamic_matrix(base: &[Vec<f64>], distfromtip: f64, unalign_level: f64) -> Vec<Vec<f64>> {
+///
+/// C IMPORTANT: `mltaln9.c:15197-15203` SKIPS cells where amino[i] or
+/// amino[j] is '-' (gap_idx in our alphabet). We mirror that here — for
+/// protein gap_idx = 24, for DNA gap_idx = 24 (= `b'-'` mapped). Without
+/// this skip, profile DP cell scores diverge from C on the `--allowshift`
+/// per-step path even when input has no gap characters, because the static
+/// `amino_dynamicmtx` in C is char-indexed and the unshifted '-' row/col
+/// participates in the boundary handling.
+fn make_dynamic_matrix(base: &[Vec<f64>], distfromtip: f64, unalign_level: f64, gap_idx: usize) -> Vec<Vec<f64>> {
     let offset = dist2offset(distfromtip * 2.0, unalign_level);
     if offset == 0.0 {
         return base.iter().map(|r| r.clone()).collect();
     }
-    // C's `makedynamicmtx` (mltaln9.c:15201) does `out[i][j] = in[i][j] +
-    // offset * 600` with `out` a `double **`. Now that our DP also uses
-    // f64 matrices, we can preserve the full sub-integer precision.
     let delta = offset * 600.0;
     base.iter()
-        .map(|row| row.iter().map(|&v| v + delta).collect())
+        .enumerate()
+        .map(|(i, row)| {
+            row.iter().enumerate()
+                .map(|(j, &v)| {
+                    if i == gap_idx || j == gap_idx { v } else { v + delta }
+                })
+                .collect()
+        })
         .collect()
 }
 
@@ -704,13 +716,14 @@ pub fn progressive_align_full(
     // Per-step scoring contexts (only when unalign_level > 0). Each
     // entry differs from `scoring` only in `consweight_matrix` (the
     // f64 version of the substitution matrix used by all DP routines).
+    let gap_idx = scoring.amino_map[b'-' as usize] as usize;
     let dyn_scoring: Vec<ScoringContext> = if unalign_level > 0.0 {
         distfromtip
             .iter()
             .map(|&dft| {
                 let mut s = scoring.clone();
                 s.consweight_matrix =
-                    make_dynamic_matrix(&scoring.consweight_matrix, dft, unalign_level);
+                    make_dynamic_matrix(&scoring.consweight_matrix, dft, unalign_level, gap_idx);
                 s
             })
             .collect()

@@ -413,14 +413,25 @@ pub fn build_homology_table_with_unalign(
                 };
                 let off = 0.5 * dist_for_offset - unalign_level;
                 if off < 0.0 {
-                    // C `mltaln9.c::makedynamicmtx` adds `offset * 600` as a
-                    // double. Our DP now also operates on `Vec<Vec<f64>>`
-                    // matrices, so we can preserve full sub-integer
-                    // precision (no truncation, byte-identity vs C).
+                    // C `mltaln9.c::makedynamicmtx` adds `offset * 600` to
+                    // every cell EXCEPT where amino[i] or amino[j] is '-'
+                    // (mltaln9.c:15197-15203). For protein this is index 24,
+                    // for DNA index 24. We use `amino_map[b'-']` to look it
+                    // up dynamically. Cells in the '-' row/col stay at their
+                    // un-delta values. This matters because the C profile DP
+                    // / global DP reads matrix[gap_idx][...] on certain code
+                    // paths (e.g. via amino_dynamicmtx char-indexing in C).
+                    let gap_idx = amino_map[b'-' as usize] as usize;
                     let delta = off * 600.0;
                     let dyn_matrix: Vec<Vec<f64>> = matrix
-                        .iter()
-                        .map(|row| row.iter().map(|&v| v + delta).collect())
+                        .iter().enumerate()
+                        .map(|(i, row)| {
+                            row.iter().enumerate()
+                                .map(|(j, &v)| {
+                                    if i == gap_idx || j == gap_idx { v } else { v + delta }
+                                })
+                                .collect()
+                        })
                         .collect();
                     let original_score = alignment.score;
                     let (re_aln, re_off1, re_off2) = run_align(&dyn_matrix);
