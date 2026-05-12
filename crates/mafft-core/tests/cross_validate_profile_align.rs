@@ -519,3 +519,110 @@ fn profile_align_imp_nonzero_penalty_ex_matches_c_a__align() {
                 "score mismatch: rust={} c={}", rust_aln.score, c_score);
     }
 }
+
+
+/// Profile DP with warp AND a shifted matrix (delta ≠ 0), mirroring the
+/// per-step `makedynamicmtx` shift that fires for `--allowshift` group
+/// merges (`disttbfast.c:2304`, `mltaln9.c::makedynamicmtx`). This is the
+/// configuration the actual pipeline uses for G-INS-i with `--allowshift`.
+/// Guards profile_align_imp's warp DP under shifted scoring.
+#[test]
+fn profile_align_imp_warp_shifted_matrix_matches_c_a__align() {
+    use mafft_align::profile_align_imp;
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    let group1: Vec<&[u8]> = vec![
+        b"MNGTEGPNFYVPFSNITGVVRSPFEQPQYYLAEPWQFSMLAAYMFLLIVLGFPINFLTLYVTVQHKKLRTPLNYILLNLAVADLFMVFGGFTTTLYTSLHGYFVFGPTGCNLEGFFATLGGEIGLWSLVVLAIERYVVVCKPMSNFRFGENHAIMGVAFTWVMALACAAPPLVGWSRYIPEGMQCSCGIDYYTLKPEVNNESFVIYMFVVHFTIPMIVIFFCYGQLVFTVKEAAAQQQESATTQKAEKEVTRMVIIMVIFFLICWLPYASVAMYIFTHQGSNFGPIFMTLPAFFAKTASIYNPIIYIMMNKQFRNCMLTSLCCGKNPLGDDEASATASKTETSQVAPA",
+    ];
+    let group2: Vec<&[u8]> = vec![
+        b"MAAWEAAFAARRRHEEEDTTRDSVFTYTNSNNTRGPFEGPNYHIAPRWVYNLTSVWMIFVVAASVFTNGLVLVATWKFKKLRHPLNWILVNLAVADLGETVIASTISVINQISGYFILGHPMCVVEGYTVSACGITALWSLAIISWERWFVVCKPFGNIKFDGKLAVAGILFSWLWSCAWTAPPIFGWSRYWPHGLKTSCGPDVFSGSSDPGVQSYMVVLMVTCCFFPLAIIILCYLQVWLAIRAVAAQQKESESTQKAEKEVSRMVVVMIVAYCFCWGPYTFFACFAAANPGYAFHPLAAALPAYFAKSATIYNPIIYVFMNRQFRNCILQLFGKKVDDGSEVSTSRTEVSSVSNSSVSPA",
+    ];
+    let w1 = vec![1.0];
+    let w2 = vec![1.0];
+
+    let prof1 = Profile::from_aligned(&group1, &w1, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&group2, &w2, &scoring.amino_map, scoring.nalphabets);
+
+    let scale_protein: f64 = 600.0 / 1000.0;
+    let scale = |ppen: f64| -> i32 { ((scale_protein * ppen) + 0.5) as i32 };
+    let penalty = scale(-1530.0) as f64;
+    let penalty_ex = 0.0_f64;
+    let penalty_shift = (2.0_f64 * penalty) as i32 as f64;
+    let gap = GapModel::new(penalty, penalty_ex).with_shift(penalty_shift);
+
+    // Apply a per-step delta of -161, matching the typical
+    // `makedynamicmtx` shift for a step where distfromtip < unalign_level.
+    let delta: f64 = -161.0;
+    let dyn_matrix: Vec<Vec<f64>> = scoring.consweight_matrix
+        .iter().map(|row| row.iter().map(|&v| v + delta).collect()).collect();
+
+    let rust_aln = profile_align_imp(
+        &prof1, &prof2,
+        &dyn_matrix,
+        &gap, true, true,
+        None,
+    );
+    eprintln!("Rust: ops.len()={}, score={:.2}", rust_aln.operations.len(), rust_aln.score);
+
+    unsafe {
+        init_c_protein();
+        std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
+        let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
+        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
+        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        mafft_sys::constants(1, seq_arr);
+
+        let len1 = group1[0].len();
+        let len2 = group2[0].len();
+        let alloclen = (len1 + len2) * 4;
+
+        let c_seq1_boxed: Vec<Box<[u8]>> = group1.iter().map(|s| {
+            let mut v = s.to_vec();
+            v.resize(alloclen + 1, 0);
+            v.into_boxed_slice()
+        }).collect();
+        let c_seq2_boxed: Vec<Box<[u8]>> = group2.iter().map(|s| {
+            let mut v = s.to_vec();
+            v.resize(alloclen + 1, 0);
+            v.into_boxed_slice()
+        }).collect();
+        let mut c_seq1_ptrs: Vec<*mut c_char> = c_seq1_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+        let mut c_seq2_ptrs: Vec<*mut c_char> = c_seq2_boxed.iter().map(|v| v.as_ptr() as *mut c_char).collect();
+        let eff1: *mut c_double = alloc_zeroed(w1.len() * std::mem::size_of::<c_double>()) as _;
+        for (i, &w) in w1.iter().enumerate() { *eff1.add(i) = w; }
+        let eff2: *mut c_double = alloc_zeroed(w2.len() * std::mem::size_of::<c_double>()) as _;
+        for (i, &w) in w2.iter().enumerate() { *eff2.add(i) = w; }
+
+        // Build C's dynamicmtx from the SHIFTED dyn_matrix.
+        let nalpha = dyn_matrix.len() as c_int;
+        let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
+        for i in 0..dyn_matrix.len() {
+            for j in 0..dyn_matrix[i].len() {
+                *(*n_dyn.add(i)).add(j) = dyn_matrix[i][j];
+            }
+        }
+
+        let c_score = mafft_sys::A__align(
+            n_dyn, mafft_sys::penalty, mafft_sys::penalty_ex,
+            c_seq1_ptrs.as_mut_ptr(), c_seq2_ptrs.as_mut_ptr(),
+            eff1, eff2, w1.len() as c_int, w2.len() as c_int,
+            alloclen as c_int, 0, std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+            1, 1, -1, -1,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            0.0, 0.0,
+        );
+        let c_len = { let s = c_seq1_ptrs[0]; let mut n=0; while *s.add(n) != 0 { n += 1; } n };
+        eprintln!("C    width={}, score={:.2}", c_len, c_score);
+
+        mafft_sys::freeconstants();
+
+        assert_eq!(rust_aln.operations.len(), c_len, "shifted-matrix width mismatch");
+        assert!((rust_aln.score - c_score).abs() < 1e-3,
+                "shifted-matrix score mismatch: rust={} c={}", rust_aln.score, c_score);
+    }
+}

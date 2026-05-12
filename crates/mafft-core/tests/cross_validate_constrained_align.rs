@@ -1261,6 +1261,293 @@ fn rust_global_align_matches_c_g__align11_warp() {
 }
 
 
+/// Warp-DP regression for a pair where Rust's `global_align` disagrees with
+/// C's `G__align11`: K03494 (human green-cone) vs M92036 (gecko opsin). On
+/// the 36-seq sample, this pair surfaces a warp transition that C takes but
+/// Rust currently skips, propagating into a 7-column width gap in the n=4
+/// subcluster {8,9,10,11} and ultimately the §A `--allowshift` divergence
+/// at n≥11.
+///
+/// C output (head): `MAQQW-------------------SLQRL...` — internal 19-col
+/// warp jump after MAQQW, then aligns the conserved middle TM6 region.
+/// Rust output (head): `MAQQWSLQRLAGRHPQDSYEDSTQSSI--...` — no warp,
+/// trailing gap pushes the alignment longer.
+#[test]
+fn rust_global_align_matches_c_g__align11_warp_k03494_m92036() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    // K03494 — human GCP (green-sensitive cone opsin).
+    let s1: &'static [u8] = b"MAQQWSLQRLAGRHPQDSYEDSTQSSIFTYTNSNSTRGPFEGPNYHIAPRWVYHLTSVWMIFVVIASVFTNGLVLAATMKFKKLRHPLNWILVNLAVADLAETVIASTISVVNQVYGYFVLGHPMCVLEGYTVSLCGITGLWSLAIISWERWMVVCKPFGNVRFDAKLAIVGIAFSWIWAAVWTAPPIFGWSRYWPHGLKTSCGPDVFSGSSYPGVQSYMIVLMVTCCITPLSIIVLCYLQVWLAIRAVAKQQKESESTQKAEKEVTRMVVVMVLAFCFCWGPYAFFACFAAANPGYPFHPLMAALPAFFAKSATIYNPVIYVFMNRQFRNCILQLFGKKVDDGSELSSASKTEVSSVSSVSPA";
+    // M92036 — gecko P521 cone opsin.
+    let s2: &'static [u8] = b"MTEAWNVAVFAARRSRDDDDTTRGSVFTYTNTNNTRGPFEGPNYHIAPRWVYNLVSFFMIIVVIASCFTNGLVLVATAKFKKLRHPLNWILVNLAFVDLVETLVASTISVFNQIFGYFILGHPLCVIEGYVVSSCGITGLWSLAIISWERWFVVCKPFGNIKFDSKLAIIGIVFSWVWAWGWSAPPIFGWSRYWPHGLKTSCGPDVFSGSVELGCQSFMLTLMITCCFLPLFIIIVCYLQVWMAIRAVAAQQKESESTQKAEREVSRMVVVMIVAFCICWGPYASFVSFAAANPGYAFHPLAAALPAYFAKSATIYNPVIYVFMNRQFRNCIMQLFGKKVDDGSEASTTSRTEVSSVSNSSVAPA";
+
+    let scale_protein: f64 = 600.0 / 1000.0;
+    let cc_int = |x: f64, mul: f64| -> i32 { ((x * mul) - 0.5) as i32 };
+    let cc_scale = |ppen: i32, scale: f64| -> i32 { ((scale * ppen as f64) + 0.5) as i32 };
+    let p_open = cc_int(-2.00, 1000.0);
+    let pair_open_f = cc_scale(p_open, scale_protein) as f64;
+    let pair_ext_f_unalign = 0.0;
+    let pair_offset_int_unalign: i32 = 0;
+    let penalty_shift = (2.0_f64 * pair_open_f) as i32 as f64;
+    let pair_gap = GapModel::new(pair_open_f, pair_ext_f_unalign).with_shift(penalty_shift);
+
+    let nscored = scoring.nscoredalphabets;
+    let mut shifted: Vec<Vec<f64>> = scoring.consweight_matrix.clone();
+    for i in 0..nscored {
+        for j in 0..nscored {
+            shifted[i][j] -= pair_offset_int_unalign as f64;
+        }
+    }
+
+    let r_aln = mafft_align::global_align(
+        s1, s2, &shifted, &scoring.amino_map, &pair_gap, true, true,
+    );
+
+    unsafe {
+        init_c_protein();
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::penalty).write(pair_open_f as c_int);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_ex).write(pair_ext_f_unalign as c_int);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
+        let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
+        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
+        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        mafft_sys::constants(1, seq_arr);
+
+        let alloclen = (s1.len() + s2.len()) * 4;
+        let mut buf1 = s1.to_vec(); buf1.resize(alloclen + 1, 0);
+        let mut buf2 = s2.to_vec(); buf2.resize(alloclen + 1, 0);
+        let buf1_box = buf1.into_boxed_slice();
+        let buf2_box = buf2.into_boxed_slice();
+        let mut p1: *mut c_char = buf1_box.as_ptr() as *mut c_char;
+        let mut p2: *mut c_char = buf2_box.as_ptr() as *mut c_char;
+
+        let n_dyn = build_c_dynamicmtx(&shifted);
+        let c_score = mafft_sys::G__align11(
+            n_dyn, &mut p1, &mut p2, alloclen as c_int, 1, 1,
+        );
+        let c_len = { let s = p1; let mut k = 0; while *s.add(k) != 0 { k += 1; } k };
+        let c_a1 = std::str::from_utf8(&buf1_box[..c_len]).unwrap();
+        let c_a2 = std::str::from_utf8(&buf2_box[..c_len]).unwrap();
+        eprintln!("Rust width={} score={}", r_aln.seq1.len(), r_aln.score);
+        eprintln!("C    width={} score={}", c_len, c_score);
+
+        mafft_sys::freeconstants();
+
+        let r_a1_str = std::str::from_utf8(&r_aln.seq1).unwrap();
+        let r_a2_str = std::str::from_utf8(&r_aln.seq2).unwrap();
+        if r_a1_str != c_a1 {
+            eprintln!("R s1[0..50]: {}", &r_a1_str[..r_a1_str.len().min(50)]);
+            eprintln!("C s1[0..50]: {}", &c_a1[..c_a1.len().min(50)]);
+            eprintln!("R s2[0..50]: {}", &r_a2_str[..r_a2_str.len().min(50)]);
+            eprintln!("C s2[0..50]: {}", &c_a2[..c_a2.len().min(50)]);
+        }
+        assert_eq!(r_a1_str, c_a1, "seq1 (K03494) mismatch");
+        assert_eq!(r_a2_str, c_a2, "seq2 (M92036) mismatch");
+    }
+}
+
+
+/// Warp-DP regression for pair (U22180, M62903) — rat opsin vs chicken
+/// visual pigment. C and Rust both produce same-width alignment (385 cols)
+/// but disagree on where to place a P residue around a 16-col warp gap:
+///   C:    `...TRGP----------------FEGPNYHI`
+///   Rust: `...TRG----------------PFEGPNYHI`
+/// This is a same-score tie-break inside the warp DP recurrence.
+#[test]
+fn rust_global_align_matches_c_g__align11_warp_u22180_m62903() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    // U22180 — rat opsin (length 348).
+    let s1: &'static [u8] = b"MNGTEGPNFYVPFSNITGVVRSPFEQPQYYLAEPWQFSMLAAYMFLLIVLGFPINFLTLYVTVQHKKLRTPLNYILLNLAVADLFMVFGGFTTTLYTSLHGYFVFGPTGCNLEGFFATLGGEIGLWSLVVLAIERYVVVCKPMSNFRFGENHAIMGVAFTWVMALACAAPPLVGWSRYIPEGMQCSCGIDYYTLKPEVNNESFVIYMFVVHFTIPMIVIFFCYGQLVFTVKEAAAQQQESATTQKAEKEVTRMVIIMVIFFLICWLPYASVAMYIFTHQGSNFGPIFMTLPAFFAKTASIYNPIIYIMMNKQFRNCMLTSLCCGKNPLGDDEASATASKTETSQVAPA";
+    // M62903 — chicken visual pigment (length 351).
+    let s2: &'static [u8] = b"MAAWEAAFAARRRHEEEDTTRDSVFTYTNSNNTRGPFEGPNYHIAPRWVYNLTSVWMIFVVAASVFTNGLVLVATWKFKKLRHPLNWILVNLAVADLGETVIASTISVINQISGYFILGHPMCVVEGYTVSACGITALWSLAIISWERWFVVCKPFGNIKFDGKLAVAGILFSWLWSCAWTAPPIFGWSRYWPHGLKTSCGPDVFSGSSDPGVQSYMVVLMVTCCFFPLAIIILCYLQVWLAIRAVAAQQKESESTQKAEKEVSRMVVVMIVAYCFCWGPYTFFACFAAANPGYAFHPLAAALPAYFAKSATIYNPIIYVFMNRQFRNCILQLFGKKVDDGSEVSTSRTEVSSVSNSSVSPA";
+
+    let scale_protein: f64 = 600.0 / 1000.0;
+    let cc_int = |x: f64, mul: f64| -> i32 { ((x * mul) - 0.5) as i32 };
+    let cc_scale = |ppen: i32, scale: f64| -> i32 { ((scale * ppen as f64) + 0.5) as i32 };
+    let p_open = cc_int(-2.00, 1000.0);
+    let pair_open_f = cc_scale(p_open, scale_protein) as f64;
+    let pair_ext_f_unalign = 0.0;
+    let pair_offset_int_unalign: i32 = 0;
+    let penalty_shift = (2.0_f64 * pair_open_f) as i32 as f64;
+    let pair_gap = GapModel::new(pair_open_f, pair_ext_f_unalign).with_shift(penalty_shift);
+
+    let nscored = scoring.nscoredalphabets;
+    let mut shifted: Vec<Vec<f64>> = scoring.consweight_matrix.clone();
+    for i in 0..nscored {
+        for j in 0..nscored {
+            shifted[i][j] -= pair_offset_int_unalign as f64;
+        }
+    }
+
+    let r_aln = mafft_align::global_align(
+        s1, s2, &shifted, &scoring.amino_map, &pair_gap, true, true,
+    );
+
+    unsafe {
+        init_c_protein();
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::penalty).write(pair_open_f as c_int);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_ex).write(pair_ext_f_unalign as c_int);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
+        let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
+        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
+        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        mafft_sys::constants(1, seq_arr);
+
+        let alloclen = (s1.len() + s2.len()) * 4;
+        let mut buf1 = s1.to_vec(); buf1.resize(alloclen + 1, 0);
+        let mut buf2 = s2.to_vec(); buf2.resize(alloclen + 1, 0);
+        let buf1_box = buf1.into_boxed_slice();
+        let buf2_box = buf2.into_boxed_slice();
+        let mut p1: *mut c_char = buf1_box.as_ptr() as *mut c_char;
+        let mut p2: *mut c_char = buf2_box.as_ptr() as *mut c_char;
+
+        let n_dyn = build_c_dynamicmtx(&shifted);
+        let c_score = mafft_sys::G__align11(
+            n_dyn, &mut p1, &mut p2, alloclen as c_int, 1, 1,
+        );
+        let c_len = { let s = p1; let mut k = 0; while *s.add(k) != 0 { k += 1; } k };
+        let c_a1 = std::str::from_utf8(&buf1_box[..c_len]).unwrap();
+        let c_a2 = std::str::from_utf8(&buf2_box[..c_len]).unwrap();
+        eprintln!("Rust width={} score={}", r_aln.seq1.len(), r_aln.score);
+        eprintln!("C    width={} score={}", c_len, c_score);
+
+        mafft_sys::freeconstants();
+
+        let r_a1_str = std::str::from_utf8(&r_aln.seq1).unwrap();
+        let r_a2_str = std::str::from_utf8(&r_aln.seq2).unwrap();
+        if r_a1_str != c_a1 {
+            let common = r_a1_str.chars().zip(c_a1.chars()).take_while(|(a,b)| a==b).count();
+            eprintln!("first diff col: {}", common);
+            eprintln!("R s1 [{}..]: {}", common.saturating_sub(5), &r_a1_str[common.saturating_sub(5)..r_a1_str.len().min(common+25)]);
+            eprintln!("C s1 [{}..]: {}", common.saturating_sub(5), &c_a1[common.saturating_sub(5)..c_a1.len().min(common+25)]);
+            eprintln!("R s2 [{}..]: {}", common.saturating_sub(5), &r_a2_str[common.saturating_sub(5)..r_a2_str.len().min(common+25)]);
+            eprintln!("C s2 [{}..]: {}", common.saturating_sub(5), &c_a2[common.saturating_sub(5)..c_a2.len().min(common+25)]);
+        }
+        assert_eq!(r_a1_str, c_a1, "seq1 (U22180) mismatch");
+        assert_eq!(r_a2_str, c_a2, "seq2 (M62903) mismatch");
+    }
+}
+
+
+/// Pair (U22180, M62903) RE-ALIGNMENT test (per-pair `makedynamicmtx` path,
+/// `pairlocalalign.c:2197-2215`). Mirrors `--allowshift` pipeline's re-align
+/// for this pair (delta = -161.3, fires when `0.5*dist - unalignlevel < 0`).
+/// Guards `global_align` warp DP under a shifted matrix.
+///
+/// **The earlier "bug" here was in this test's C-side setup**: `ppenalty`
+/// wasn't reset before the second `constants()` call, so C re-derived
+/// `penalty` from the default `-1530` (→ -917) rather than honoring the
+/// `pair_open_f = -1199` we'd written directly. Setting `ppenalty = -2000`
+/// before the second constants() call brings C in line and the test passes.
+#[test]
+fn rust_global_align_realign_matches_c_g__align11_warp_u22180_m62903() {
+    let _guard = C_MUTEX.lock().unwrap();
+
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    let s1: &'static [u8] = b"MNGTEGPNFYVPFSNITGVVRSPFEQPQYYLAEPWQFSMLAAYMFLLIVLGFPINFLTLYVTVQHKKLRTPLNYILLNLAVADLFMVFGGFTTTLYTSLHGYFVFGPTGCNLEGFFATLGGEIGLWSLVVLAIERYVVVCKPMSNFRFGENHAIMGVAFTWVMALACAAPPLVGWSRYIPEGMQCSCGIDYYTLKPEVNNESFVIYMFVVHFTIPMIVIFFCYGQLVFTVKEAAAQQQESATTQKAEKEVTRMVIIMVIFFLICWLPYASVAMYIFTHQGSNFGPIFMTLPAFFAKTASIYNPIIYIMMNKQFRNCMLTSLCCGKNPLGDDEASATASKTETSQVAPA";
+    let s2: &'static [u8] = b"MAAWEAAFAARRRHEEEDTTRDSVFTYTNSNNTRGPFEGPNYHIAPRWVYNLTSVWMIFVVAASVFTNGLVLVATWKFKKLRHPLNWILVNLAVADLGETVIASTISVINQISGYFILGHPMCVVEGYTVSACGITALWSLAIISWERWFVVCKPFGNIKFDGKLAVAGILFSWLWSCAWTAPPIFGWSRYWPHGLKTSCGPDVFSGSSDPGVQSYMVVLMVTCCFFPLAIIILCYLQVWLAIRAVAAQQKESESTQKAEKEVSRMVVVMIVAYCFCWGPYTFFACFAAANPGYAFHPLAAALPAYFAKSATIYNPIIYVFMNRQFRNCILQLFGKKVDDGSEVSTSRTEVSSVSNSSVSPA";
+
+    let scale_protein: f64 = 600.0 / 1000.0;
+    let cc_int = |x: f64, mul: f64| -> i32 { ((x * mul) - 0.5) as i32 };
+    let cc_scale = |ppen: i32, scale: f64| -> i32 { ((scale * ppen as f64) + 0.5) as i32 };
+    let p_open = cc_int(-2.00, 1000.0);
+    let pair_open_f = cc_scale(p_open, scale_protein) as f64;
+    let penalty_shift = (2.0_f64 * pair_open_f) as i32 as f64;
+    let pair_gap = GapModel::new(pair_open_f, 0.0).with_shift(penalty_shift);
+
+    // Use the SAME delta the pipeline applies for this pair:
+    // off = -0.268844 (from RUST_PAIR_DUMP), delta = off * 600 = -161.3064.
+    // To reproduce exactly, recompute from selfscore + initial align score.
+    // But for this test, just use a representative delta close to the real
+    // value. The pipeline's actual value is determined by the data.
+    let nscored = scoring.nscoredalphabets;
+    let selfscore = |s: &[u8]| -> f64 {
+        s.iter().map(|&c| {
+            let i = scoring.amino_map[c as usize] as usize;
+            if i < nscored { scoring.consweight_matrix[i][i] } else { 0.0 }
+        }).sum()
+    };
+    let ss1 = selfscore(s1);
+    let ss2 = selfscore(s2);
+
+    // Initial alignment to get the score → distance → delta.
+    let initial = mafft_align::global_align(
+        s1, s2, &scoring.consweight_matrix, &scoring.amino_map, &pair_gap, true, true,
+    );
+    let bunbo = ss1.min(ss2);
+    let dist = if bunbo == 0.0 { 2.0 }
+               else if bunbo < initial.score { 0.0 }
+               else { (1.0 - initial.score / bunbo) * 2.0 };
+    let unalign_level = 0.8;
+    let off = 0.5 * dist - unalign_level;
+    let delta = off * 600.0;
+    eprintln!("pair (U22180, M62903): initial_score={:.3} bunbo={:.3} dist={:.6} off={:.6} delta={:.3}",
+        initial.score, bunbo, dist, off, delta);
+
+    let dyn_matrix: Vec<Vec<f64>> = scoring.consweight_matrix
+        .iter().map(|row| row.iter().map(|&v| v + delta).collect()).collect();
+
+    let r_aln = mafft_align::global_align(
+        s1, s2, &dyn_matrix, &scoring.amino_map, &pair_gap, true, true,
+    );
+    eprintln!("Rust re-align width={} score={:.3}", r_aln.seq1.len(), r_aln.score);
+
+    unsafe {
+        init_c_protein();
+        // `ppenalty` must be set BEFORE the second `constants()` call,
+        // because constants() recomputes penalty = (int)(0.6 * ppenalty + 0.5).
+        // Without this, ppenalty defaults to DEFAULTGOP_B = -1530, giving
+        // penalty = -917 (vs our intended -1199 from `--op 2.00` scaled).
+        std::ptr::addr_of_mut!(mafft_sys::ppenalty).write(-2000);
+        std::ptr::addr_of_mut!(mafft_sys::ppenalty_ex).write(0);
+        std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
+        std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
+        let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
+        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
+        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        mafft_sys::constants(1, seq_arr);
+
+        let alloclen = (s1.len() + s2.len()) * 4;
+        let mut buf1 = s1.to_vec(); buf1.resize(alloclen + 1, 0);
+        let mut buf2 = s2.to_vec(); buf2.resize(alloclen + 1, 0);
+        let buf1_box = buf1.into_boxed_slice();
+        let buf2_box = buf2.into_boxed_slice();
+        let mut p1: *mut c_char = buf1_box.as_ptr() as *mut c_char;
+        let mut p2: *mut c_char = buf2_box.as_ptr() as *mut c_char;
+
+        let n_dyn = build_c_dynamicmtx(&dyn_matrix);
+        let c_score = mafft_sys::G__align11(
+            n_dyn, &mut p1, &mut p2, alloclen as c_int, 1, 1,
+        );
+        let c_len = { let s = p1; let mut k = 0; while *s.add(k) != 0 { k += 1; } k };
+        let c_a1 = std::str::from_utf8(&buf1_box[..c_len]).unwrap();
+        let c_a2 = std::str::from_utf8(&buf2_box[..c_len]).unwrap();
+        eprintln!("C re-align width={} score={:.3}", c_len, c_score);
+
+        mafft_sys::freeconstants();
+
+        let r_a1_str = std::str::from_utf8(&r_aln.seq1).unwrap();
+        let r_a2_str = std::str::from_utf8(&r_aln.seq2).unwrap();
+        if r_a1_str != c_a1 {
+            let common = r_a1_str.chars().zip(c_a1.chars()).take_while(|(a,b)| a==b).count();
+            eprintln!("first diff col: {}", common);
+            eprintln!("R s1 [{}..]: {}", common.saturating_sub(5), &r_a1_str[common.saturating_sub(5)..r_a1_str.len().min(common+25)]);
+            eprintln!("C s1 [{}..]: {}", common.saturating_sub(5), &c_a1[common.saturating_sub(5)..c_a1.len().min(common+25)]);
+        }
+        assert_eq!(r_a1_str, c_a1, "seq1 re-align mismatch");
+        assert_eq!(r_a2_str, c_a2, "seq2 re-align mismatch");
+    }
+}
+
+
 /// Direct comparison: our genaffine_local_align vs C's genL__align11 on the
 /// real 36-seq sample's first 2 sequences. Guards the E-INS-i pairwise port.
 #[test]

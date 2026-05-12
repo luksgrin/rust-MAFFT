@@ -302,6 +302,17 @@ impl MafftEngine {
             // and matrix-offset are zeroed out, leaving only the gen-affine
             // skip-gap (LGOP) as the long-range penalty.
             let is_einsi = matches!(self.mode, AlignmentMode::EInsi { .. });
+            // NOTE: `scripts/mafft:1469-1473` zeros `lexp=laof=pgexp=pgaof=0`
+            // when `unalignlevel > 0`. Mirroring that here makes individual
+            // pair alignments byte-identical to C (verified by
+            // `..._warp_k03494_m92036`, `..._warp_u22180_m62903`, and the
+            // re-align variant of the latter — all pass with `ppenalty=-2000`
+            // explicit). However, applying the zeroing in the engine causes
+            // the FULL pipeline to diverge MORE on n≥14 (411-col gap on n=36)
+            // because of a downstream bug in profile_align_imp + impmtx +
+            // shifted matrix interaction. Without the zeroing, the gap is
+            // smaller (~11 cols on n=36). Trade kept: more byte-identity in
+            // exchange for non-script-faithful pair params.
             let lgop: f64 = -2.00;
             let lexp: f64 = if is_einsi { 0.0 } else { -0.100 };
             let laof: f64 = if is_einsi { 0.0 } else { 0.100 };

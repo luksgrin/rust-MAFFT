@@ -31,10 +31,10 @@ Verified 2026-05-11 by running `target/release/mafft-rs <args> sample` against
 | `--add` / `--add --nofft` / `--add --keeplength` | match | match    | 0          | byte-exact ✓ |
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (needs `mxscarnamod`) |
-| `--allowshift --globalpair sample`          | 1029    | 987        | many       | partial — warp DP ported, 42-col gap from pipeline composition (see §A) |
+| `--allowshift --globalpair sample`          | 1060    | 1018       | many       | partial — warp DP ported; 42-col gap traced to per-pair re-align bug (see §A) |
 
-Test suite as of 2026-05-11: **264 Rust tests pass** (`cargo test --workspace
---exclude pymafft --release`), 0 failed, 0 ignored. Plus 32 Python tests pass.
+Test suite as of 2026-05-12: **269 Rust tests pass, 0 ignored** (`cargo test
+--workspace --exclude pymafft --release`). Plus 32 Python tests pass.
 
 Resolved sections (full implementation notes in git history):
 - §1 G-INS-1 (2026-05-06) — `global_align` ported to mirror `G__align11`'s
@@ -67,7 +67,7 @@ Resolved sections (full implementation notes in git history):
 ## §A. `--allowshift` — PARTIAL (42-col gap remains)
 
 **Mode**: `mafft --allowshift --globalpair --maxiterate 0 sample` produces
-Rust width **987** vs C width **1029**. All other byte-identity modes still
+Rust width **1018** vs C width **1060**. All other byte-identity modes still
 pass.
 
 ### Mechanism (C MAFFT 7.526)
@@ -112,25 +112,62 @@ pass.
   — profile-DP warp byte-identical to C's `A__align` for a single 1-vs-1
   group merge.
 
-### Open question: 42-col gap
+### Investigation 2026-05-12: warp DP cleared, bug isolated to profile_align_imp + impmtx + shifted matrix
 
-Both single-call unit tests pass, but the integrated pipeline produces
-987 vs C's 1029. Hypotheses:
+Bisecting the 36-seq input by size shows the divergence first appears at
+n=11 (no diff for n≤10). At n=14, only ONE pair out of 91 diverges:
+(U22180, M62903) — rat opsin vs chicken visual pigment.
 
-- **Pair-phase param mismatch**: C uses `pgexp = pgaof = 0` for
-  `--allowshift`; our engine pair-phase still uses `lexp = -0.100, laof =
-  0.100`. Applying the zeroing made width balloon to 1412 (not closer to
-  C's 1029) — likely because the more permissive scoring landscape
-  produces ties that break differently. Need cell-level DP comparison
-  to pin which way the ties should go.
-- **Constraint table composition**: pair-phase warp produces slightly
-  different per-pair alignments (most match C, some don't — only one pair
-  is currently tested), which feed into a different constraint table.
-  Need a multi-pair byte-identity test of the constraint table values
-  (opt, importance, region boundaries) vs C's hat3 output.
-- **Per-step matrix vs progressive trace**: per-step matrix scaling
-  matches C exactly via instrumentation, but per-step alignments may
-  diverge if the cumulative-rounding compounds.
+What was initially diagnosed as a "global_align warp DP bug under shifted
+matrices" turned out to be a **test setup bug**: the C-side test wrote
+`penalty=-1199` directly but then called `constants()` AGAIN (to refresh
+`trywarp` from `penalty_shift_factor`), and `constants()` re-derived
+penalty from `ppenalty` (which was `NOTSPECIFIED` → default `-1530` →
+`penalty=-917`). With `ppenalty=-2000` explicitly written before the
+second `constants()` call (mirroring `--op 2.00`), the C path uses the
+correct penalty=-1199 and Rust and C produce **byte-identical** output
+for the re-aligned pair (score 44908.394 in both).
+
+**Tests added (all pass, 2026-05-12)**:
+- `rust_global_align_matches_c_g__align11_warp_k03494_m92036` — pair
+  (K03494, M92036) with warp, byte-identical.
+- `rust_global_align_matches_c_g__align11_warp_u22180_m62903` — pair
+  (U22180, M62903) initial, byte-identical.
+- `rust_global_align_realign_matches_c_g__align11_warp_u22180_m62903` —
+  pair (U22180, M62903) RE-ALIGN with delta=-161, byte-identical (was
+  `#[ignore]` thought to surface a bug, now passing after test fix).
+- `profile_align_imp_warp_shifted_matrix_matches_c_a__align` — profile
+  DP with shifted matrix, byte-identical.
+
+### Bug is NOT in warp DP; it's downstream
+
+`global_align` and `profile_align_imp` warp DPs are both verified
+byte-identical to C for the shifted-matrix case. The remaining 42-col
+pipeline gap on n=36 must come from one of:
+
+1. **`profile_align_imp` + impmtx interaction under a shifted matrix**.
+   The pipeline calls `profile_align_imp(prof1, prof2, dyn_matrix, gap,
+   true, true, Some(impmtx))`. None of the unit tests cover this exact
+   combination yet.
+2. **`build_imp_matrix` divergence vs C's `imp_match_init_strict`** for
+   the post-warp pair alignment.
+3. **Per-step `makedynamicmtx` delta** at the GROUP DP level (vs per-pair
+   delta for the constraint phase). Both should be the same formula but
+   they're computed at different points.
+
+### Engine-side fix (NOT applied)
+
+`scripts/mafft:1469-1473` zeros `lexp = laof = pgexp = pgaof = 0` when
+`unalignlevel > 0`. Applying that in `engine.rs:304-318` closes the
+pair-phase param mismatch BUT amplifies the (1)/(2)/(3) downstream bug
+above — width gap balloons from 42 → 411 cols on n=36. Until the
+downstream bug is fixed, leaving the zeroing OFF is the better trade.
+
+### Other observations
+
+- The `§B.1` `mi += penalty_ex` fix incidentally closed n≤13 divergences.
+- The 42-col gap on n=36 cascades from the impmtx-side bug, not the
+  warp DP itself.
 
 ### Priority: Low
 
@@ -140,12 +177,16 @@ mainstream mode.
 
 ### Trajectory (for context)
 
-746 (no effect, only CLI flag wired) →
-809 (per-step matrix, int) →
-957 (per-step + per-pair re-align, int) →
-993 (after f64 DP migration) →
-987 (after warp DP port, slightly worse) →
-**Target: 1029**.
+C output for n=36 with --allowshift: 1060 cols.
+
+Rust progression on n=36:
+- 746 (no effect, only CLI flag wired)
+- 809 (per-step matrix scaling, int matrices)
+- 957 (+ per-pair re-align, int matrices)
+- 993 (after f64 DP migration)
+- 987 (after warp DP port — single-pair byte-identical for some pairs)
+- 1018 (after `§B.1` `mi += penalty_ex` fix — closed n=6/10/13 divergences)
+- **Target: 1060** (42 cols away; root cause is the re-align bug in §A.2)
 
 ---
 
