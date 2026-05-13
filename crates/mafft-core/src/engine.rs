@@ -439,7 +439,7 @@ impl MafftEngine {
             sequences: sequences.clone(),
             names: names.clone(),
             score: 0.0,
-            step_trace: Vec::new(),
+            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
         };
         let mut accumulated_trace = Vec::new();
         let penalty_dist = scoring.gap.open;
@@ -660,12 +660,31 @@ impl MafftEngine {
                         }
                     }
                     let penalty_dist = scoring.gap.open;
-                    compute_distance_matrix_scoring(
+                    let raw = compute_distance_matrix_scoring(
                         &msa.sequences, &shifted_matrix,
                         &scoring.amino_map, penalty_dist,
-                    )
+                    );
+                    // C's dndpre writes hat2 with `%.3f` precision
+                    // (`io.c::write_hat2`). dvtditr then reads back these
+                    // 3-decimal values. Round here so musclesupg sees the
+                    // same distances dvtditr sees — needed for `--treeout`
+                    // branch-length parity with C.
+                    let n = raw.nseq;
+                    let mut rounded = DistanceMatrix::new(n);
+                    for i in 0..n {
+                        for j in (i + 1)..n {
+                            let d = (raw.get(i, j) * 1000.0).round() / 1000.0;
+                            rounded.set(i, j, d);
+                        }
+                    }
+                    rounded
                 };
                 let topo = musclesupg(&dm, ClusterMethod::default());
+                // C's `--treeout` writes the refinement tree built inside
+                // `dvtditr` (not the progressive tbfast tree). Override
+                // `final_progressive_topo` so the Newick we emit for
+                // FFT-NS-i / *-INS-i modes matches what C writes.
+                final_progressive_topo = Some(topo.clone());
                 // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)
                 // parallelization strategy (scripts/mafft line ~1515). This matters
                 // because more iterations doesn't always improve — it can over-refine.
@@ -742,6 +761,14 @@ impl MafftEngine {
             }
         }
 
+        // Expose the final progressive guide tree to callers (used for
+        // `--treeout` Newick serialization by the CLI binary).
+        msa.guide_tree = final_progressive_topo;
+        // Expose the first-pass alignment too — `--parttree --treeout`
+        // and `--parttree --reorder` both need C MAFFT's `pre_1` to
+        // reproduce CALL 2's tree / order generation.
+        msa.first_pass_sequences = first_pass_msa;
+
         msa
     }
 
@@ -798,7 +825,7 @@ impl MafftEngine {
             sequences: existing_input.sequences.iter().map(|s| s.data.clone()).collect(),
             names: existing_input.sequences.iter().map(|s| s.name.clone()).collect(),
             score: 0.0,
-            step_trace: Vec::new(),
+            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
         };
 
         let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();

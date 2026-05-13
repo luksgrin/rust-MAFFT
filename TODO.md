@@ -47,11 +47,14 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ (closed 2026-05-12) |
 | `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 | `--parttree --reorder`                      | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
+| `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree) | match | match | 0 | byte-exact ✓ (closed 2026-05-13) |
+| `--dpparttree --treeout`                    | match   | match      | 65         | residual gap — dpparttree CALL 1 distances differ from C |
 
-Test suite as of 2026-05-13: **272 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-13: **280 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
-MAFFT 7.526 — including `--parttree --reorder` (closed 2026-05-13).
+MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
+modes except `--dpparttree`.
 
 Resolved sections (full implementation notes in git history):
 - §1 G-INS-1 (2026-05-06) — `global_align` ported to mirror `G__align11`'s
@@ -78,6 +81,59 @@ Resolved sections (full implementation notes in git history):
   NewRight/NewLeft merge types.
 - §9a Q-INS-i (2026-05-10) — works when `mxscarnamod` is built from
   `mafft-upstream/extensions`.
+
+---
+
+## §AB. `--treeout` — RESOLVED 2026-05-13 (byte-identical to C for all modes except `--dpparttree`)
+
+**Mode**: `mafft <flags> --treeout sample` now writes `<sample>.tree` in
+Newick format byte-identical to C MAFFT 7.526 for FFT-NS-2, FFT-NS-i,
+NW-NS-2, L/G/E-INS-i, BL/JTT scoring variants, and `--parttree`.
+`--dpparttree --treeout` is the one residual gap (see end of this section).
+
+### Implementation
+
+1. **`crates/mafft-tree/src/newick.rs::topology_to_newick`** — port of
+   C's standard guide-tree serialization (`mltaln9.c:6190-6491` in
+   `fixed_musclesupg_double_realloc_nobk_halfmtx_treeout_memsave`).
+   Leaf format `\n<i+1>_<sanitized_name>\n`, sanitize-mask matches C
+   (alnum + `/=-{}` kept, everything else → `_`). Branch lengths emit
+   via Rust `{:7.5}` to mirror C's `%7.5f`. Final string terminated
+   with `;\n`.
+2. **`crates/mafft-core/src/progressive.rs::MultipleAlignment`** — two
+   new fields:
+   - `guide_tree: Option<Topology>` — populated by the engine with
+     either the final progressive guide tree (FFT-NS-2 / `--parttree`
+     / `--nofft`) or the refinement-pass tree built inside `dvtditr`
+     (FFT-NS-i / *-INS-i). Refinement-tree branch lengths require
+     rounding distances to `%.3f` to match `dndpre`'s hat2 precision
+     (`engine.rs:670-680`).
+   - `first_pass_sequences: Option<Vec<Vec<u8>>>` — C's `pre_1` cache,
+     needed by both `--parttree --reorder` and `--parttree --treeout`
+     because CALL 2 reads the FIRST-pass alignment.
+3. **`crates/mafft-tree/src/parttree_split.rs::compute_parttree_newick_fromaln`**
+   — parttree-specific tree builder mirroring `splittbfast.c:1275-1301`
+   (leaf format: numeric leaves, no branches, no names) +
+   `splittbfast.c:2532-2553` (per-merge `(child1,child2)` concat). Shares
+   the CALL 2 pivot pipeline with `compute_parttree_order_fromaln` via
+   the new `run_parttree_fromaln_pipeline` helper.
+4. **`crates/mafft-bin/src/main.rs`** — `--treeout` CLI flag; writes
+   `<input>.tree` after alignment finishes. For PartTree, calls the
+   `_fromaln` variant on `msa.first_pass_sequences`; for everything
+   else, calls `topology_to_newick(msa.guide_tree, msa.names)`.
+
+### `--dpparttree --treeout` residual gap
+
+`--dpparttree` uses a DP-derived distance for CALL 1's pivot pipeline
+instead of the 6-mer composition distance, and our pass-0 topology is
+built by the legacy `parttree::parttree` function rather than
+`build_parttree_topology`. The first-pass MSA produced under
+`--dpparttree` therefore differs subtly from C's, and our CALL 2 tree
+diverges (65-line diff, only positional reordering within yukos — same
+leaves, same overall tree shape). Closing this requires either
+re-porting `dpparttree` through `build_parttree_topology` or
+implementing a fromaln tree path that uses the actual `--dpparttree`
+CALL 1 first_pass_msa cell-by-cell.
 
 ---
 
@@ -314,17 +370,18 @@ flatter score distributions.
 **Fix**: Replace `a + b * c` with `b.mul_add(c, a)` wherever it appears
 in DP arithmetic. Audit-pass + selective FMA.
 
-### §B.3. `--auto`, `--seed`, `--treein`, `--treeout`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
+### §B.3. `--auto`, `--seed`, `--treein`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
 
 **Location**: `crates/mafft-bin/src/main.rs` — these flags are absent;
-the CLI rejects them with "unknown argument". (`--reorder`/`--inputorder`
-landed 2026-05-13 — see §AA above.)
+the CLI rejects them with "unknown argument".
+(`--reorder`/`--inputorder` landed 2026-05-13 — see §AA. `--treeout`
+landed 2026-05-13 — see §AB.)
 
 **C reference**: `scripts/mafft:237-238` (`--seed`/`--seedtable`),
-`scripts/mafft:330-343` (`--anysymbol`), `scripts/mafft:399-403`
-(`--treeout`), `scripts/mafft:543-545` (`--memsave`), `scripts/mafft:650`
-(`--leavegappyregion`), `scripts/mafft:753-757` (`--treein`),
-`scripts/mafft:1290-1340` (`--auto`).
+`scripts/mafft:330-343` (`--anysymbol`), `scripts/mafft:543-545`
+(`--memsave`), `scripts/mafft:650` (`--leavegappyregion`),
+`scripts/mafft:753-757` (`--treein`), `scripts/mafft:1290-1340`
+(`--auto`).
 
 **Severity**: HIGH for feature coverage (users running with these flags
 get errors), but does not affect byte-parity of any currently-tested

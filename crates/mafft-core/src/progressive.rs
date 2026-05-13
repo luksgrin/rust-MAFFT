@@ -58,6 +58,19 @@ pub struct MultipleAlignment {
     /// tests that assert byte-level parity with C on a per-step basis;
     /// harmless to ignore.
     pub step_trace: Vec<StepTrace>,
+    /// Final progressive guide tree, kept around so callers can serialize
+    /// it for `--treeout` (`mltaln9.c::loadtree` and the various
+    /// `fixed_musclesupg_*_treeout` variants). Populated by the engine
+    /// when alignment completes; `None` for paths that don't track it
+    /// (e.g. tests building an `MultipleAlignment` directly).
+    pub guide_tree: Option<mafft_tree::Topology>,
+    /// Aligned MSA after the FIRST retree pass, BEFORE the final pass
+    /// rebuilds the guide tree and re-aligns. C MAFFT's `--parttree`
+    /// runs `splittbfast` twice and feeds CALL 1's output (`pre_1`) to
+    /// CALL 2 — both for `--reorder` and `--treeout`. We stash `pre_1`
+    /// here so the CLI can replay CALL 2's tree generation on the right
+    /// input.
+    pub first_pass_sequences: Option<Vec<Vec<u8>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -190,12 +203,12 @@ pub fn progressive_align_with_mergeoralign_n(
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
-            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(),
+            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
         };
     }
     if nseq == 1 {
         return MultipleAlignment {
-            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(),
+            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
         };
     }
 
@@ -430,6 +443,7 @@ pub fn progressive_align_with_mergeoralign_n(
 
     MultipleAlignment {
         sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
+        guide_tree: None, first_pass_sequences: None,
     }
 }
 
@@ -680,12 +694,12 @@ pub fn progressive_align_full(
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
-            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(),
+            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
         };
     }
     if nseq == 1 {
         return MultipleAlignment {
-            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(),
+            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
         };
     }
 
@@ -767,6 +781,7 @@ pub fn progressive_align_full(
 
     MultipleAlignment {
         sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
+        guide_tree: None, first_pass_sequences: None,
     }
 }
 

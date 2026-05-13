@@ -368,6 +368,8 @@ dependencies = [
  "clap",
  "mafft-core",
  "mafft-io",
+ "mafft-scoring",
+ "mafft-tree",
  "mafft-types",
  "rayon",
 ]

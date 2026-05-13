@@ -15,6 +15,7 @@ pub mod parttree_split;
 mod topology;
 mod weighting;
 pub mod bsd_qsort;
+pub mod newick;
 
 pub use distance::{DistanceMatrix, pairwise_identity_distance, ktuple_distance, scoring_matrix_distance};
 pub use nj::neighbor_joining;
@@ -24,3 +25,4 @@ pub use addonetip::{addonetip, compute_distfromtip, AddResult};
 pub use parttree::{parttree, PartTreeParams};
 pub use topology::{Topology, JoinStep};
 pub use weighting::{sequence_weights, BranchWeights};
+pub use newick::topology_to_newick;

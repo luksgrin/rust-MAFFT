@@ -2002,3 +2002,31 @@ fn reorder_parttree_matches_c() {
         );
     }
 }
+
+/// `--treeout` Newick serialization of the post-progressive guide tree.
+/// Smoke-test that:
+/// 1. The engine populates `msa.guide_tree`.
+/// 2. `topology_to_newick` produces a well-formed Newick string ending
+///    in `;\n` with the expected number of leaf labels.
+/// The end-to-end byte-identity test (Rust `.tree` vs C MAFFT `.tree`)
+/// is exercised at the shell level — `diff sample.tree sample.tree == 0`
+/// is verified during release sweeps; replicating it here would require
+/// invoking the CLI binary as a subprocess.
+#[test]
+fn treeout_engine_populates_guide_tree() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let topo = msa.guide_tree.as_ref()
+        .expect("engine should populate guide_tree after align()");
+    assert_eq!(topo.nseq, input.nseq());
+    assert!(topo.is_complete(), "guide tree should be complete after align()");
+
+    let nw = mafft_tree::topology_to_newick(topo, &msa.names);
+    assert!(nw.ends_with(";\n"), "Newick should terminate with `;\\n`");
+    // Each leaf appears as `<i+1>_<sanitized_name>` — count leaf-position
+    // separators (each leaf is wrapped in `\n` per C's leaf format).
+    let leaf_count = (1..=input.nseq())
+        .filter(|i| nw.contains(&format!("\n{}_", i))).count();
+    assert_eq!(leaf_count, input.nseq(),
+        "all {} leaves should appear in Newick output", input.nseq());
+}

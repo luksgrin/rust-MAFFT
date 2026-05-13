@@ -142,6 +142,11 @@ struct Args {
     /// Output sequences in input order (default; matches C MAFFT `--inputorder`).
     #[arg(long)]
     inputorder: bool,
+
+    /// Write the guide tree to `<INPUT>.tree` in Newick format (matches
+    /// C MAFFT `--treeout`). Ignored when input is read from stdin.
+    #[arg(long)]
+    treeout: bool,
 }
 
 fn main() {
@@ -271,6 +276,68 @@ fn main() {
 
     if !args.quiet {
         eprintln!("Alignment: {} columns", msa.width());
+    }
+
+    // --treeout: write the guide tree to `<INPUT>.tree` in Newick format,
+    // mirroring C MAFFT's `cp $TMPFILE/infile.tree $infilename.tree`
+    // (`scripts/mafft:2817-2819`). Requires a file-backed input — when
+    // reading from stdin we have no path to derive the output name.
+    //
+    // PartTree uses a distinct tree format: numeric leaves only, no
+    // branch lengths (`splittbfast.c:1275-1301,2532-2553`).
+    if args.treeout {
+        if let Some(input_path) = &args.input {
+            let tree_path = {
+                let mut p = input_path.clone();
+                p.as_mut_os_string().push(".tree");
+                p
+            };
+            let newick_opt: Option<String> = if args.parttree || args.dpparttree {
+                // PartTree: C overwrites `infile.tree` with CALL 2's
+                // (`fromaln=1`) tree, so we use the same fromaln scoring
+                // on the aligned MSA. Reuse the alignment-phase scoring
+                // context that was active during progressive alignment.
+                let seq_type = input.seq_type;
+                let scoring_model = if seq_type.is_nucleotide() {
+                    mafft_types::ScoringModel::Dna
+                } else {
+                    match args.bl {
+                        Some(n) => mafft_types::ScoringModel::Blosum(n),
+                        None => match args.jtt {
+                            Some(p) => mafft_types::ScoringModel::Jtt(p),
+                            None => match args.tm {
+                                Some(p) => mafft_types::ScoringModel::Tm(p),
+                                None => mafft_types::ScoringModel::Blosum(62),
+                            },
+                        },
+                    }
+                };
+                let scoring = mafft_scoring::build_context(scoring_model, seq_type);
+                // CALL 2 reads CALL 1's pre (`first_pass_sequences`), NOT
+                // the final aligned MSA. Fall back to `msa.sequences` only
+                // when first_pass capture failed.
+                let source_msa: &Vec<Vec<u8>> = msa.first_pass_sequences
+                    .as_ref().unwrap_or(&msa.sequences);
+                Some(mafft_tree::parttree_split::compute_parttree_newick_fromaln(
+                    source_msa,
+                    &scoring.consweight_matrix,
+                    &scoring.amino_map,
+                    scoring.gap.open as f64,
+                ))
+            } else {
+                msa.guide_tree.as_ref().map(|t|
+                    mafft_tree::topology_to_newick(t, &msa.names))
+            };
+            if let Some(newick) = newick_opt {
+                match std::fs::write(&tree_path, newick) {
+                    Ok(_) if !args.quiet => eprintln!("Wrote guide tree to {}", tree_path.display()),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("Warning: could not write {}: {e}", tree_path.display()),
+                }
+            }
+        } else {
+            eprintln!("Warning: --treeout requires a file input (stdin not supported)");
+        }
     }
 
     // Build output SequenceSet (with gaps)

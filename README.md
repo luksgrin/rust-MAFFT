@@ -22,6 +22,7 @@ This project provides:
 - Q-INS-i (RNA, requires `mxscarnamod`)
 - `--allowshift --globalpair --maxiterate 0` (closed 2026-05-12)
 - `--reorder` / `--inputorder` for all modes including PartTree (closed 2026-05-13)
+- `--treeout` for FFT-NS-2, FFT-NS-i, NW-NS-2, L/G/E-INS-i, BL/JTT, and `--parttree` (closed 2026-05-13)
 
 Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
@@ -252,7 +253,8 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--xinsi` (X-INS-i) | Supported (requires `contrafold` in PATH) |
 | `--scarnalike` | Supported (requires `dash_client` in PATH) |
 | `--reorder` / `--inputorder` | Supported for non-PartTree modes (byte-identical to C MAFFT 7.526) |
-| `--auto`, `--seed`, `--treein`, `--treeout`, `--memsave`, `--anysymbol`, `--leavegappyregion` | **Not yet implemented** (see `TODO.md` §B.3) |
+| `--treeout` | Supported for all modes except `--dpparttree` (byte-identical to C MAFFT 7.526) |
+| `--auto`, `--seed`, `--treein`, `--memsave`, `--anysymbol`, `--leavegappyregion` | **Not yet implemented** (see `TODO.md` §B.3) |
 
 ## Architecture
 
@@ -287,7 +289,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **276 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **280 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
@@ -307,7 +309,7 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 
 ### Missing CLI flags
 
-The following flags are NOT implemented and will produce "unknown argument" errors: `--auto`, `--seed`, `--seedtable`, `--treein`, `--treeout`, `--memsave`, `--anysymbol`, `--leavegappyregion`. See `TODO.md` §B.3.
+The following flags are NOT implemented and will produce "unknown argument" errors: `--auto`, `--seed`, `--seedtable`, `--treein`, `--memsave`, `--anysymbol`, `--leavegappyregion`. See `TODO.md` §B.3.
 
 `--reorder` / `--inputorder` are supported for all modes — FFT-NS-2, FFT-NS-i, NW-NS-2, L/G/E-INS-1, L/G/E-INS-i, and PartTree — all byte-identical to C MAFFT 7.526. PartTree's two-pass reorder (`splittbfast` CALL 1 with raw 6-mer distances, CALL 2 with `naivepairscore11` on the first-pass alignment) is composed as `final_order[k] = call1_order[call2_order[k]]`. See `TODO.md` §AA.
 
