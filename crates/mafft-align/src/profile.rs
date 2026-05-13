@@ -507,19 +507,24 @@ pub fn profile_align_imp_with_boundary(
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
     // C fills initverticalw[0..lgth1-1] (0-based), then adds gap to [1..lgth1].
     // Result: [0] = pure match score (no gap), [1..n-1] = match + gap, [n] = 0 + gap.
+    //
+    // NOTE: uses `mul_add` for the same FMA-rounding reason as
+    // `match_calc_row` above. Without this, --tm 200 / flat-landscape
+    // matrices accumulate 1-ULP boundary differences that flip DP
+    // tie-breaks in the first retree pass (§B.2).
     let mut initverticalw = vec![0.0f64; n + 1];
     {
         let mut scarr = vec![0.0f64; nalpha];
         for l in 0..nalpha {
             scarr[l] = 0.0;
             for j in 0..nalpha {
-                scarr[l] += matrix[j][l] * prof2.freqs[0][j];
+                scarr[l] = matrix[j][l].mul_add(prof2.freqs[0][j], scarr[l]);
             }
         }
         for i in 0..n {
             initverticalw[i] = 0.0;
             for &(k, v) in &cpmx1_sparse[i] {
-                initverticalw[i] += scarr[k] * v;
+                initverticalw[i] = scarr[k].mul_add(v, initverticalw[i]);
             }
         }
     }
@@ -531,12 +536,15 @@ pub fn profile_align_imp_with_boundary(
     }
     if head_gap {
         for i in 1..=n {
-            initverticalw[i] += ogcp1[0] * hgf2 + fgcp1[i - 1] * gf2_0;
+            // FMA throughout: matches C's `gcc -O3` fusion of `a + b*c`.
+            // Without FMA the boundary gap-init drifts by 1-ULP, which
+            // flips DP tie-breaks for flat-landscape matrices (e.g. TM).
+            initverticalw[i] = fgcp1[i - 1].mul_add(
+                gf2_0,
+                ogcp1[0].mul_add(hgf2, initverticalw[i]),
+            );
             // C `Salignmm.c:1718`: `initverticalw[i] += fpenalty_ex * i;`
-            // Boundary extension penalty accumulates linearly with i in the
-            // first-column initialization (USE_PENALTY_EX path). With protein
-            // default `penalty_ex = 0` this is a no-op.
-            initverticalw[i] += gap.extend * i as f64;
+            initverticalw[i] = gap.extend.mul_add(i as f64, initverticalw[i]);
         }
     }
 
@@ -549,13 +557,13 @@ pub fn profile_align_imp_with_boundary(
         for l in 0..nalpha {
             scarr[l] = 0.0;
             for j in 0..nalpha {
-                scarr[l] += matrix[j][l] * prof1.freqs[0][j];
+                scarr[l] = matrix[j][l].mul_add(prof1.freqs[0][j], scarr[l]);
             }
         }
         for j in 0..m {
             currentw[j] = 0.0;
             for &(k, v) in &cpmx2_sparse[j] {
-                currentw[j] += scarr[k] * v;
+                currentw[j] = scarr[k].mul_add(v, currentw[j]);
             }
         }
     }
@@ -567,10 +575,12 @@ pub fn profile_align_imp_with_boundary(
     }
     if head_gap {
         for j in 1..=m {
-            currentw[j] += ogcp2[0] * hgf1 + fgcp2[j - 1] * gf1_0;
+            currentw[j] = fgcp2[j - 1].mul_add(
+                gf1_0,
+                ogcp2[0].mul_add(hgf1, currentw[j]),
+            );
             // C `Salignmm.c:1727`: `currentw[j] += fpenalty_ex * j;`
-            // Same boundary extension as initverticalw above, for row 0.
-            currentw[j] += gap.extend * j as f64;
+            currentw[j] = gap.extend.mul_add(j as f64, currentw[j]);
         }
     }
 

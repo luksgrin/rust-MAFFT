@@ -49,7 +49,7 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--parttree --reorder`                      | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 | `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree) | match | match | 0 | byte-exact ✓ (closed 2026-05-13) |
 | `--dpparttree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
-| `--tm 200 --treeout` (and other TM variants)| match   | match      | 20         | residual gap — TM substitution matrix retree-2 distances drift by ≤0.003 vs C |
+| `--tm 200 --treeout`                        | match   | match      | 20         | residual gap — see §B.2: pass-0 TM alignment drift propagates into tree branch lengths |
 
 Test suite as of 2026-05-13: **281 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
@@ -367,25 +367,47 @@ non-FFT no-constraint 1-vs-1 merges (NW-NS-2 only), and the CLI does
 not expose `--exp` (which would set ppenalty_ex). All NW-NS-2 modes
 remain byte-identical to C.
 
-### §B.2. Missing FMA `mul_add` outside `match_calc_row`
+### §B.2. Missing FMA `mul_add` outside `match_calc_row` — PARTIAL FIX
 
 **Location**: `crates/mafft-align/src/{global,local,genaffine}.rs` —
 inner DP loops use plain `a + b` instead of `f64::mul_add`. `profile.rs`
 already uses `mul_add` in match_calc_row and in the position-specific
-gap candidates (§4 fix).
+gap candidates (§4 fix). Boundary inits in `profile.rs` (header
+initverticalw / currentw + head_gap loops) now use `mul_add` as well
+(landed 2026-05-13) — defensive measure, doesn't fix TM but doesn't
+regress anything.
 
 **C reference**: gcc `-O3 -mfma` (or auto-FMA on `arm64`/`aarch64`) fuses
 `a + b * c` into a single-rounding FMA. Two-step Rust arithmetic
 produces 1-ULP differences that can flip tie-breaks on flat-landscape
 matrices (§4 BL50 root cause).
 
-**Why latent**: All currently-tested matrices have wide enough score
-landscapes that the 1-ULP differences don't tip tie-breaks. Will surface
-if a future scoring model or substitution-matrix combination produces
-flatter score distributions.
+**Confirmed active for TM scoring (2026-05-13)**:
+`mafft --tm 200 --retree 1 sample` vs `mafft-rs --tm 200 --retree 1 sample`
+differs by 8 lines — 4 single-char shifts in residue placement. The
+TM PAM 200 substitution matrix has a flatter score distribution than
+BLOSUM62 / JTT, so 1-ULP differences from somewhere in the DP flip
+tie-breaks. The default `--tm 200` (retree=2) converges to C's output
+because the second pass re-aligns from the rebuilt tree, but the
+first-pass divergence cascades into `--tm 200 --treeout` branch-length
+drift (~3e-3, 20-line diff).
 
-**Fix**: Replace `a + b * c` with `b.mul_add(c, a)` wherever it appears
-in DP arithmetic. Audit-pass + selective FMA.
+Investigated 2026-05-13: matrices are bit-identical to C (the cell-
+by-cell cross-validate tests pass with 0 mismatches). The boundary
+init code in `profile.rs` was rewritten to use `mul_add` consistently
+with the inner-loop FMA, but that didn't close the gap — the
+divergence must be in a third path. Worth a deeper audit when next
+touching `profile.rs` DP arithmetic.
+
+All other modes (BLOSUM62 / BL80 / JTT 200 / DNA / `--add` /
+`--allowshift`) are byte-identical even at retree=1, so the FMA gap is
+currently TM-specific.
+
+**Fix path**: continue replacing `a + b * c` with `b.mul_add(c, a)` in
+`global.rs`, `local.rs`, `genaffine.rs`, plus any remaining
+gap-candidate computations in `profile.rs`. Useful diagnostic:
+`diff <(mafft-rs --tm 200 --retree 1 sample) <(mafft --tm 200 --retree 1 sample)` —
+currently 8 lines; should converge to 0 once the right FMA is added.
 
 ### §B.3. `--auto`, `--seed`, `--treein`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
 
