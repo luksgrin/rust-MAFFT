@@ -21,7 +21,7 @@ This project provides:
 - `--add`, `--add --nofft`, `--add --keeplength`
 - Q-INS-i (RNA, requires `mxscarnamod`)
 - `--allowshift --globalpair --maxiterate 0` (closed 2026-05-12)
-- `--reorder` / `--inputorder` for all non-PartTree modes (closed 2026-05-13)
+- `--reorder` / `--inputorder` for all modes including PartTree (closed 2026-05-13)
 
 Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
@@ -44,6 +44,7 @@ Every progressive merge step matches in score and width and every refinement ite
 | TM 100 / 200 (NW + FFT)                     | match   | match      | 0    | ✓ byte-exact |
 | `--parttree`, `--dpparttree`                | 752     | 752        | 0    | ✓ byte-exact |
 | `--parttree --nofft`                        | 752     | 752        | 0    | ✓ byte-exact (closed 2026-05-12) |
+| `--parttree --reorder`                      | 752     | 752        | 0    | ✓ byte-exact (closed 2026-05-13) |
 | `--add` (30+6 fixture)                      | 741     | 741        | 0    | ✓ byte-exact |
 | `--add --nofft` (30+6 fixture)              | 741     | 741        | 0    | ✓ byte-exact |
 | `--add --keeplength` (30+6 fixture)         | 595     | 595        | 0    | ✓ byte-exact |
@@ -285,7 +286,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **271 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **272 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
@@ -307,7 +308,7 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 
 The following flags are NOT implemented and will produce "unknown argument" errors: `--auto`, `--seed`, `--seedtable`, `--treein`, `--treeout`, `--memsave`, `--anysymbol`, `--leavegappyregion`. See `TODO.md` §B.3.
 
-`--reorder` / `--inputorder` are supported for FFT-NS-2, FFT-NS-i, NW-NS-2 and L/G/E-INS-1 / L/G/E-INS-i (byte-identical to C). `--parttree --reorder` produces a valid tree-DFS ordering with the same set of aligned sequences (alignment is byte-identical) but does not yet byte-match C. The first parttree pass now matches C exactly cell-by-cell (after a libc `qsort` fix for tie-breaking); the remaining diff is from C's second `splittbfast` pass (`fromaln=1`, `G__align11_noalign` distances), which we have not yet ported. See `TODO.md` §AA.
+`--reorder` / `--inputorder` are supported for all modes — FFT-NS-2, FFT-NS-i, NW-NS-2, L/G/E-INS-1, L/G/E-INS-i, and PartTree — all byte-identical to C MAFFT 7.526. PartTree's two-pass reorder (`splittbfast` CALL 1 with raw 6-mer distances, CALL 2 with `naivepairscore11` on the first-pass alignment) is composed as `final_order[k] = call1_order[call2_order[k]]`. See `TODO.md` §AA.
 
 ### Case preservation
 

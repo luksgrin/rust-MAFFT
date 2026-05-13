@@ -1963,3 +1963,42 @@ fn reorder_fftns2_matches_c() {
         );
     }
 }
+
+/// `--parttree --reorder` must produce byte-identical output to C MAFFT
+/// 7.526. The two passes (CALL 1 with raw 6-mer distances, CALL 2 with
+/// `naivepairscore11` on the first-pass alignment) compose as
+/// `final_order[k] = call1_order[call2_order[k]]`. This guards that
+/// composition end-to-end against a regression in either pass.
+#[test]
+fn reorder_parttree_matches_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let default_msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_parttree(true)
+        .align(&input);
+    let reordered_msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_parttree(true)
+        .with_reorder(true)
+        .align(&input);
+    assert_eq!(default_msa.nseq(), reordered_msa.nseq());
+
+    // C MAFFT 7.526 `mafft --parttree --reorder sample` order (0-indexed),
+    // verified end-to-end by `diff <(mafft-rs --parttree --reorder sample)
+    // <(mafft --parttree --reorder sample) == 0`.
+    let expected_order: [usize; 36] = [
+        34, 33, 31, 32, 35, 30, 29, 28,  7,  8,
+         9, 11, 10, 12,  1,  0,  3,  4,  2,  5,
+         6, 17, 18, 25, 24, 22, 23, 20, 19, 21,
+        26, 27, 16, 15, 14, 13,
+    ];
+    for (out_pos, &input_pos) in expected_order.iter().enumerate() {
+        assert_eq!(
+            reordered_msa.sequences[out_pos], default_msa.sequences[input_pos],
+            "parttree reorder seq at output {out_pos} should equal default \
+             alignment of input seq {input_pos}",
+        );
+        assert_eq!(
+            reordered_msa.names[out_pos], default_msa.names[input_pos],
+            "parttree reorder name at output {out_pos} should match input {input_pos}",
+        );
+    }
+}

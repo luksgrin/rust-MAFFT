@@ -46,12 +46,12 @@ mafft and our binary agree on every byte for every ✓ row.
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (needs `mxscarnamod`) |
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ (closed 2026-05-12) |
 | `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
-| `--parttree --reorder`                      | match   | match      | 446        | CALL 1 tree-shape now matches C exactly (libc qsort fix). Residual diff from C's second `splittbfast` pass (`fromaln=1`) not yet ported — see §AA |
+| `--parttree --reorder`                      | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 
-Test suite as of 2026-05-13: **271 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-13: **272 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
-MAFFT 7.526.
+MAFFT 7.526 — including `--parttree --reorder` (closed 2026-05-13).
 
 Resolved sections (full implementation notes in git history):
 - §1 G-INS-1 (2026-05-06) — `global_align` ported to mirror `G__align11`'s
@@ -121,45 +121,48 @@ within each `topol[step][i]` array.
 reduction). Same alignment content (sequences match by sort), just in
 a different order at the upper levels of the yuko tree.
 
-### PartTree partial improvement (2026-05-13, continued)
+### PartTree full closure (2026-05-13)
 
-Instrumented C MAFFT to dump `yukomtx`, `outs[]`, and `topol[step]`
-during `splitseq_mq` to pinpoint the divergence. Findings:
+C `--parttree` runs `splittbfast` TWICE (`scripts/mafft:2655` and `:2681`):
 
-1. **`musclesupg(yukomtx)` does NOT diverge**. Once the scores sort
-   uses libc `qsort` (matching macOS BSD `qsort` tie-break on truly
-   tied entries like the serotonin pair seqs 33/34), Rust's
-   `pivots.scores`, `outs[]`, and the `yuko_topo` `topol[step]`
-   arrays match C's first-pass output cell-by-cell.
-2. **C does TWO `splittbfast` passes for `--parttree`** (script
-   lines 2655 and 2681). The first pass uses raw 6-mer distances; the
-   second pass passes `-Z` (`fromaln=1`) so distances are recomputed
-   via `G__align11_noalign` with `-1200 / -60` gap penalties against
-   the just-aligned sequences. CALL 2 produces a structurally
-   different yuko UPGMA tree (lopsided 8/27 vs CALL 1's 20/15 split
-   for the n=36 sample), and the final `--reorder` output is the
-   composition of CALL 1's order with CALL 2's order
-   (`final[k] = call1_order[call2_order[k]]`).
+1. **CALL 1**: builds the parttree from raw 6-mer distances, does
+   progressive alignment → `pre_1` (intermediate aligned FASTA).
+2. **CALL 2**: re-reads `pre_1` with `-Z` (`fromaln=1`) and recomputes
+   distances via `naivepairscore11(orialn_a, orialn_b, penalty)` on the
+   first-pass aligned rows (NOT the final-pass alignment). Selfscore is
+   the diagonal sum of the substitution matrix
+   (`splittbfast.c:3011-3017`). This produces a STRUCTURALLY DIFFERENT
+   yuko UPGMA tree from CALL 1 (lopsided 8/27 vs CALL 1's 20/15 split
+   for the n=36 sample).
 
-### Implementation status
+The final `--reorder` output is the **composition** of both passes:
+`final_order[k] = call1_order[call2_order[k]]`.
 
-- libc `qsort` for `dcompare_sort` (`parttree_pivot.rs:178-217`) +
-  matching tie-break fix in the cross-validation test reduce the
-  diff from **944 → 446 lines**.
-- CALL 2 is **not yet ported**. Implementing it would need:
-  1. Pairwise `G__align11_noalign` distance computation (uses
-     existing `pairwise_align11` with `gap_open=-1200`,
-     `gap_extend=-60` on raw sequences).
-  2. New selfscore via diagonal sum of substitution matrix
-     (`splittbfast.c:3040-3046`).
-  3. A second `compute_parttree_order` invocation with these
-     `G__align11`-derived distances on the aligned-then-gap-stripped
-     sequences.
-  4. Compose with first-pass order.
+**Implementation:**
 
-  Cost estimate: ~200 lines + ~630 pairwise alignments at runtime
-  for the n=36 fixture (~1-2s). Tracked as residual work; output
-  ordering is otherwise structurally valid.
+1. **`naivepairscore11_aligned`** (`parttree_split.rs:280-321`) —
+   port of `mltaln9.c:13801-13851`. Strips common gaps inline (no
+   allocation), then walks the alignment adding the substitution
+   matrix value or a single gap penalty per gap RUN.
+2. **`selfscore_aligned`** (`parttree_split.rs:328-344`) — diagonal
+   sum of the substitution matrix over non-gap residues.
+3. **`compute_parttree_order_fromaln`** (`parttree_split.rs:402-518`) —
+   full CALL 2 pipeline: pick reference, dcompare_sort via libc qsort,
+   pivot selection with shimon-style dedupe on aligned content,
+   `pickmtx` / `dfromc` via `naivepairscore11_aligned`, yuko
+   assignment, UPGMA on yukomtx, c-normalized DFS traversal.
+4. **`first_pass_msa`** capture in `engine.rs:447-452` — stashes the
+   intermediate MSA after pass 0 of the retree loop. CALL 2 must see
+   this `pre_1`, NOT the final `pre_2`, because the second pass
+   produces a subtly different alignment that yields different
+   pair scores.
+5. **Composition** in `engine.rs:678-688` —
+   `final_order[k] = call1_order[call2_order[k]]`.
+
+**Result**: `--parttree --reorder` is now **byte-identical to C** on the
+36-seq protein sample (0-line diff). Regression test
+`reorder_parttree_matches_c` in `crates/mafft-core/tests/end_to_end.rs`
+pins the exact 36-element output permutation.
 
 ---
 

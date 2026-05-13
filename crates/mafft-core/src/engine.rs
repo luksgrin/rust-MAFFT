@@ -447,6 +447,13 @@ impl MafftEngine {
         // (mirrors C `tbfast.c:2928` writing the order file from the
         // post-UPGMA topology, BEFORE any iterative refinement).
         let mut final_progressive_topo: Option<mafft_tree::Topology> = None;
+        // Intermediate alignment after pass 0 of the retree loop. C's
+        // `--parttree` script runs `splittbfast` TWICE: CALL 1 produces
+        // `pre_1` (this is what we want to capture here) and CALL 2 reads
+        // `pre_1` as `orialn` for its `naivepairscore11`-based distance
+        // computation. Without this we'd feed CALL 2 the FINAL alignment
+        // (`pre_2`) and the scores would diverge.
+        let mut first_pass_msa: Option<Vec<Vec<u8>>> = None;
 
         for pass in 0..retree {
             let topo = if pass == 0 && use_parttree {
@@ -514,6 +521,9 @@ impl MafftEngine {
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
             final_progressive_topo = Some(topo.clone());
+            if pass == 0 && first_pass_msa.is_none() {
+                first_pass_msa = Some(msa.sequences.clone());
+            }
 
             // For the next retree pass, recompute distances from the now-aligned
             // sequences (matching C's disttbfast behavior in the second iteration
@@ -682,10 +692,13 @@ impl MafftEngine {
         //
         // - Non-PartTree: tree-DFS over the final progressive guide tree
         //   (`tbfast.c:2928` calls `topolorderz` on the post-UPGMA topology).
-        // - PartTree (`--parttree` / `--dpparttree`): partition-discovery
-        //   order from `splittbfast.c::splitseq_mq` (`splittbfast.c:2351-2378`
-        //   + `:1305-1309`). Reconstructed via `compute_parttree_order`,
-        //   which re-runs the pivot pipeline (cheap relative to alignment).
+        // - PartTree (`--parttree` / `--dpparttree`): C runs `splittbfast`
+        //   TWICE (`scripts/mafft:2655` and `:2681`). CALL 1 uses raw 6-mer
+        //   distances; CALL 2 passes `-Z` (`fromaln=1`) and recomputes
+        //   distances via `naivepairscore11` on the aligned sequences. The
+        //   final output order is the COMPOSITION:
+        //     `final_order[k] = call1_order[call2_order[k]]`
+        //   We mirror both passes to reach byte-identity.
         if self.reorder_output {
             let order: Option<Vec<usize>> = if use_parttree {
                 let kind = if scoring.seq_type.is_nucleotide() {
@@ -693,9 +706,31 @@ impl MafftEngine {
                 } else {
                     PtSeqKind::Protein
                 };
-                Some(mafft_tree::parttree_split::compute_parttree_order(
+                // CALL 1: parttree pivot pipeline on raw sequences.
+                let call1_order = mafft_tree::parttree_split::compute_parttree_order(
                     &sequences, kind, 50,
-                ))
+                );
+                // Reorder the FIRST-PASS aligned MSA into CALL 1's order so
+                // CALL 2 sees `pre_1` (C's intermediate alignment), not the
+                // final `pre_2`. Without using `first_pass_msa` here, our
+                // CALL 2 distances would diverge from C's because the two
+                // passes produce subtly different alignments.
+                let source_msa: &Vec<Vec<u8>> = first_pass_msa
+                    .as_ref().unwrap_or(&msa.sequences);
+                let aligned_reordered: Vec<Vec<u8>> = call1_order
+                    .iter().map(|&i| source_msa[i].clone()).collect();
+                // CALL 2: parttree pivot pipeline with `fromaln=1` scoring
+                // on the reordered aligned MSA. Uses the progressive-phase
+                // substitution matrix and gap penalty (matches C's `penalty`
+                // global set by `constants()`).
+                let call2_order = mafft_tree::parttree_split::compute_parttree_order_fromaln(
+                    &aligned_reordered,
+                    &scoring.consweight_matrix,
+                    &scoring.amino_map,
+                    scoring.gap.open as f64,
+                );
+                // Compose: final_order[k] = call1_order[call2_order[k]].
+                Some(call2_order.iter().map(|&k| call1_order[k]).collect())
             } else {
                 final_progressive_topo.as_ref().map(|t| t.dfs_order())
             };

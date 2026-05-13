@@ -271,3 +271,299 @@ pub fn compute_parttree_order(
     debug_assert_eq!(order.len(), nseq, "parttree order missing sequences");
     order
 }
+
+// =============================================================================
+// CALL 2 — second-pass `splittbfast` with `fromaln=1` (`-Z`) scoring.
+//
+// C MAFFT runs `splittbfast` twice for `--parttree` (`scripts/mafft:2655`
+// and `:2681`). The second call uses `-Z` so distances are computed via
+// `naivepairscore11` on the already-aligned sequences instead of via
+// 6-mer composition. We mirror that pipeline here so `--parttree --reorder`
+// reaches byte-identity with C.
+// =============================================================================
+
+/// `naivepairscore11` for aligned sequences. Mirrors
+/// `mltaln9.c:13801-13851`:
+///   1. Strip columns where both rows are gaps (`commongappickpair`,
+///      `mltaln9.c:13377-13397`).
+///   2. Walk the result: for each gap RUN in either row, add `penalty`
+///      once (gap-open style, single hit per run); otherwise add
+///      `matrix[amino_map[c1]][amino_map[c2]]`.
+fn naivepairscore11_aligned(
+    aligned1: &[u8],
+    aligned2: &[u8],
+    matrix: &[Vec<f64>],
+    amino_map: &[u8; 256],
+    penalty: f64,
+) -> f64 {
+    debug_assert_eq!(aligned1.len(), aligned2.len());
+    let n = aligned1.len();
+    let nalpha = matrix.len();
+    let mut score = 0.0f64;
+    let mut k = 0usize;
+    while k < n {
+        let c1 = aligned1[k];
+        let c2 = aligned2[k];
+        if c1 == b'-' && c2 == b'-' {
+            // Common gap — strip (`commongappickpair`).
+            k += 1;
+            continue;
+        }
+        if c1 == b'-' {
+            score += penalty;
+            // Skip all consecutive '-' in row 1 (`naivepairscore11:13824-13828`).
+            while k < n && aligned1[k] == b'-' {
+                k += 1;
+            }
+            continue;
+        }
+        if c2 == b'-' {
+            score += penalty;
+            while k < n && aligned2[k] == b'-' {
+                k += 1;
+            }
+            continue;
+        }
+        let i = amino_map[c1 as usize] as usize;
+        let j = amino_map[c2 as usize] as usize;
+        if i < nalpha && j < nalpha {
+            score += matrix[i][j];
+        }
+        k += 1;
+    }
+    score
+}
+
+/// Diagonal self-score for an aligned sequence, mirroring
+/// `splittbfast.c:3011-3017`: `pscore = sum amino_dis[c][c]` over every
+/// non-gap character `c`. Gaps contribute 0 (C reads through gap chars
+/// but `amino_dis['-']['-'] == 0` in `constants.c`'s table).
+fn selfscore_aligned(
+    aligned: &[u8],
+    matrix: &[Vec<f64>],
+    amino_map: &[u8; 256],
+) -> i64 {
+    let nalpha = matrix.len();
+    let mut s = 0.0f64;
+    for &c in aligned {
+        if c == b'-' { continue; }
+        let i = amino_map[c as usize] as usize;
+        if i < nalpha {
+            s += matrix[i][i];
+        }
+    }
+    s as i64
+}
+
+/// Apply C's `pick_reference_max_selfscore` then `compute_initial_scores`
+/// for the `fromaln=1` path, mirroring `splittbfast.c:1316-1448` with
+/// `doalign && fromaln`. Returns the sorted scores entries and the
+/// index permutation we applied.
+fn compute_initial_scores_fromaln(
+    aligned_seqs: &[Vec<u8>],
+    matrix: &[Vec<f64>],
+    amino_map: &[u8; 256],
+    penalty: f64,
+) -> Vec<crate::parttree_pivot::ScoreEntry> {
+    use crate::parttree_pivot::ScoreEntry;
+    let nin = aligned_seqs.len();
+    let mut entries: Vec<ScoreEntry> = (0..nin).map(|i| {
+        ScoreEntry {
+            numinseq: i,
+            selfscore: selfscore_aligned(&aligned_seqs[i], matrix, amino_map),
+            // orilen = strlen post-gappick (i.e., non-gap residue count).
+            orilen: aligned_seqs[i].iter().filter(|&&c| c != b'-').count(),
+            score: 0.0,
+            points: Vec::new(), // unused in fromaln path
+        }
+    }).collect();
+
+    // pick_reference: scan for max selfscore (strict `>` → first wins).
+    let mut best = 0usize;
+    let mut best_score = entries[0].selfscore;
+    for i in 1..nin {
+        if entries[i].selfscore > best_score {
+            best_score = entries[i].selfscore;
+            best = i;
+        }
+    }
+    if best != 0 {
+        entries.swap(0, best);
+    }
+
+    // compute scores against entries[0] using naivepairscore11.
+    let ref_aligned = aligned_seqs[entries[0].numinseq].clone();
+    let ref_selfscore = entries[0].selfscore as f64;
+    for i in 0..nin {
+        let pair = naivepairscore11_aligned(
+            &ref_aligned, &aligned_seqs[entries[i].numinseq],
+            matrix, amino_map, penalty,
+        );
+        let bunbo = ref_selfscore.min(entries[i].selfscore as f64);
+        entries[i].score = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
+        // C clamps score < 0 to 0 in `pickmtx` (`splittbfast.c:1687`), but
+        // for the initial `scores[i].score` no clamp is applied.
+    }
+
+    // dcompare_sort via libc qsort (matches BSD `qsort` tie-break).
+    crate::parttree_pivot::dcompare_sort(&mut entries);
+    entries
+}
+
+/// Compute the C-equivalent `--reorder` ordering for the SECOND
+/// `splittbfast` pass (CALL 2, `fromaln=1`). Takes the aligned MSA
+/// (with gaps) and the substitution matrix + gap penalty used during
+/// progressive alignment. Mirrors the `doalign && fromaln` branches of
+/// `splittbfast.c::splitseq_mq`.
+///
+/// Single-recursion-level only (`nin <= picksize`). For the n=36
+/// fixture this is the entire algorithm.
+pub fn compute_parttree_order_fromaln(
+    aligned_seqs: &[Vec<u8>],
+    matrix: &[Vec<f64>],
+    amino_map: &[u8; 256],
+    penalty: f64,
+) -> Vec<usize> {
+    let nseq = aligned_seqs.len();
+    if nseq <= 1 {
+        return (0..nseq).collect();
+    }
+
+    // 1. Build sorted scores (with selfscore, score) for all sequences.
+    let scores = compute_initial_scores_fromaln(aligned_seqs, matrix, amino_map, penalty);
+
+    // 2. Pivot selection. For `nin <= picksize` (=50), all distinct
+    //    sequences become picks, just like `compute_parttree_order`.
+    //    Uses scores order; dedupe identical sequences via the shimon-style
+    //    check (here: same selfscore + same aligned content).
+    let nin = scores.len();
+    let mut picks: Vec<usize> = vec![0]; // position 0 is always picked
+    // Helper: scores at positions a and b refer to the same sequence content?
+    let same_seq = |a: usize, b: usize| -> bool {
+        let na = scores[a].numinseq;
+        let nb = scores[b].numinseq;
+        scores[a].selfscore == scores[b].selfscore
+            && scores[a].orilen == scores[b].orilen
+            && aligned_seqs[na] == aligned_seqs[nb]
+    };
+    // C: pickkouho = [1, 2, ..., nin-1]; take the MOST distant first
+    // (`splittbfast.c:1508`: picktmp = pickkouho[nkouho-1]).
+    let mut pickkouho: Vec<usize> = (1..nin).collect();
+    let mut nkouho = pickkouho.len();
+    if nkouho > 0 {
+        let picktmp = pickkouho[nkouho - 1];
+        nkouho -= 1;
+        if !same_seq(0, picktmp) {
+            picks.push(picktmp);
+        }
+    }
+    let mut i_alt = 1;
+    while picks.len() < 50 && nkouho > 0 {
+        let rn = if i_alt == 1 {
+            i_alt = 0;
+            (nkouho as f64 * 0.5) as usize
+        } else {
+            nkouho - 1
+        };
+        let picktmp = pickkouho[rn];
+        nkouho -= 1;
+        pickkouho[rn] = pickkouho[nkouho];
+        if !picks.iter().any(|&p| same_seq(p, picktmp)) {
+            picks.push(picktmp);
+        }
+    }
+    picks.sort_unstable();
+
+    // 3. Build pickmtx via naivepairscore11.
+    let npick = picks.len();
+    let mut pickmtx: Vec<Vec<f64>> = (0..npick).map(|i| vec![0.0f64; npick - i]).collect();
+    // pickmtx[0][k] = scores[picks[k]].score (already computed against ref).
+    for k in 1..npick {
+        pickmtx[0][k] = scores[picks[k]].score;
+    }
+    for j in 1..npick {
+        let pj_self = scores[picks[j]].selfscore as f64;
+        let aligned_j = &aligned_seqs[scores[picks[j]].numinseq];
+        for i in (j + 1)..npick {
+            let pair = naivepairscore11_aligned(
+                aligned_j, &aligned_seqs[scores[picks[i]].numinseq],
+                matrix, amino_map, penalty,
+            );
+            let bunbo = pj_self.min(scores[picks[i]].selfscore as f64);
+            let dist = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
+            pickmtx[j][i - j] = if dist < 0.0 { 0.0 } else { dist };
+        }
+    }
+
+    // 4. yukos. With `picksize=50 > nin=36`, `tokyoripara = 0`
+    //    (`splittbfast.c:2760-2761`), so the redundancy filter is a no-op
+    //    and every pick becomes a yuko.
+    let nyuko = npick;
+    let yukos: Vec<usize> = picks.clone();
+
+    // 5. dfromc[i][j] = distance from yuko i's pivot to scores[j].
+    let mut dfromc: Vec<Vec<f64>> = vec![vec![0.0f64; nin]; nyuko];
+    // Row 0: from yukos[0] (= picks[0]) to all j. We already have these
+    // as `scores[j].score` (which is the distance from the reference =
+    // scores[0] = picks[0] to each j).
+    for j in 0..nin {
+        dfromc[0][j] = scores[j].score;
+    }
+    for i in 1..nyuko {
+        let yuko_aligned = &aligned_seqs[scores[yukos[i]].numinseq];
+        let yuko_self = scores[yukos[i]].selfscore as f64;
+        for j in 0..nin {
+            // C reuses pickmtx values when both i and j are picks
+            // (`splittbfast.c:2178-2230`). Equivalent path:
+            if j == yukos[i] {
+                dfromc[i][j] = 0.0;
+                continue;
+            }
+            let pair = naivepairscore11_aligned(
+                yuko_aligned, &aligned_seqs[scores[j].numinseq],
+                matrix, amino_map, penalty,
+            );
+            let bunbo = yuko_self.min(scores[j].selfscore as f64);
+            let dist = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
+            dfromc[i][j] = if dist < 0.0 { 0.0 } else { dist };
+        }
+    }
+
+    // 6. assign each seq to its closest yuko (strict `<`, first wins).
+    let mut outs: Vec<Vec<usize>> = vec![Vec::new(); nyuko];
+    for j in 0..nin {
+        let mut belongto = 0usize;
+        let mut min_d = f64::INFINITY;
+        for yi in 0..nyuko {
+            if dfromc[yi][j] < min_d {
+                min_d = dfromc[yi][j];
+                belongto = yi;
+            }
+        }
+        outs[belongto].push(scores[j].numinseq);
+    }
+
+    // 7. yukomtx = pickmtx (since every pick survives → npick == nyuko).
+    let yukomtx = pickmtx;
+    let mut yuko_dm = DistanceMatrix::new(nyuko);
+    for i in 0..nyuko {
+        for j in (i + 1)..nyuko {
+            yuko_dm.set(i, j, yukomtx[i][j - i]);
+        }
+    }
+
+    // 8. UPGMA + c-normalized DFS.
+    let yuko_topo = musclesupg(&yuko_dm, ClusterMethod::Mix { sueff: 0.1 });
+    let mut order = Vec::with_capacity(nseq);
+    if let Some(root) = yuko_topo.steps.last() {
+        let l_yukos = c_normalized_subtree(&yuko_topo.steps, &root.left);
+        let r_yukos = c_normalized_subtree(&yuko_topo.steps, &root.right);
+        for &yi in l_yukos.iter().chain(r_yukos.iter()) {
+            order.extend_from_slice(&outs[yi]);
+        }
+    } else {
+        order.extend_from_slice(&outs[0]);
+    }
+    debug_assert_eq!(order.len(), nseq, "fromaln parttree order missing sequences");
+    order
+}
