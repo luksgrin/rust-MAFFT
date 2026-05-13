@@ -20,5 +20,6 @@ mafft-io = { path = "../mafft-io", version = "0.1.0" }
 mafft-types = { path = "../mafft-types", version = "0.1.0" }
 mafft-tree = { path = "../mafft-tree", version = "0.1.0" }
 mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+mafft-align = { path = "../mafft-align", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 rayon = "1"

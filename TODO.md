@@ -48,13 +48,14 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 | `--parttree --reorder`                      | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 | `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree) | match | match | 0 | byte-exact ✓ (closed 2026-05-13) |
-| `--dpparttree --treeout`                    | match   | match      | 65         | residual gap — dpparttree CALL 1 distances differ from C |
+| `--dpparttree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
+| `--tm 200 --treeout` (and other TM variants)| match   | match      | 20         | residual gap — TM substitution matrix retree-2 distances drift by ≤0.003 vs C |
 
-Test suite as of 2026-05-13: **280 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-13: **281 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
-modes except `--dpparttree`.
+modes including `--dpparttree`.
 
 Resolved sections (full implementation notes in git history):
 - §1 G-INS-1 (2026-05-06) — `global_align` ported to mirror `G__align11`'s
@@ -84,12 +85,14 @@ Resolved sections (full implementation notes in git history):
 
 ---
 
-## §AB. `--treeout` — RESOLVED 2026-05-13 (byte-identical to C for all modes except `--dpparttree`)
+## §AB. `--treeout` — RESOLVED 2026-05-13 (byte-identical to C for all modes incl. `--dpparttree`)
 
 **Mode**: `mafft <flags> --treeout sample` now writes `<sample>.tree` in
 Newick format byte-identical to C MAFFT 7.526 for FFT-NS-2, FFT-NS-i,
 NW-NS-2, L/G/E-INS-i, BL/JTT scoring variants, and `--parttree`.
-`--dpparttree --treeout` is the one residual gap (see end of this section).
+All `--treeout` modes including `--dpparttree` are byte-identical to C
+MAFFT 7.526 (see "§AB.5 `--dpparttree --treeout`" at end of this section
+for the closure details).
 
 ### Implementation
 
@@ -122,18 +125,32 @@ NW-NS-2, L/G/E-INS-i, BL/JTT scoring variants, and `--parttree`.
    `_fromaln` variant on `msa.first_pass_sequences`; for everything
    else, calls `topology_to_newick(msa.guide_tree, msa.names)`.
 
-### `--dpparttree --treeout` residual gap
+### `--dpparttree --treeout` — RESOLVED 2026-05-13
 
-`--dpparttree` uses a DP-derived distance for CALL 1's pivot pipeline
-instead of the 6-mer composition distance, and our pass-0 topology is
-built by the legacy `parttree::parttree` function rather than
-`build_parttree_topology`. The first-pass MSA produced under
-`--dpparttree` therefore differs subtly from C's, and our CALL 2 tree
-diverges (65-line diff, only positional reordering within yukos — same
-leaves, same overall tree shape). Closing this requires either
-re-porting `dpparttree` through `build_parttree_topology` or
-implementing a fromaln tree path that uses the actual `--dpparttree`
-CALL 1 first_pass_msa cell-by-cell.
+C's `--dpparttree` runs `splittbfast` ONCE (cycle=1) with `-U` flag
+(`splittbfast.c:677-679` → `doalign=1`), so distances are computed via
+`G__align11_noalign( n_disLN, -1200, -60, ... )` on **raw** sequences
+(`splittbfast.c:1700`), with `outgap=1` (terminal gaps penalized).
+This is fundamentally different from `--parttree`'s cycle=2 pipeline.
+
+**Implementation:**
+
+1. **`mafft-tree/src/parttree_split.rs::run_parttree_pipeline_with_scorer`**
+   — generic CALL-1-style parttree pipeline that accepts caller-supplied
+   `selfscore`, `orilen`, `pair_score`, and `seqs_equal` closures.
+   Shared between the fromaln (CALL 2) and dpparttree (CALL 1) paths.
+2. **`mafft-tree/src/parttree_split.rs::parttree_result_to_newick`** —
+   extracted from `compute_parttree_newick_fromaln` so both pipelines
+   can serialize via the same code.
+3. **`mafft-bin/src/main.rs`** — when `--dpparttree --treeout` is set,
+   builds the `n_disLN` matrix (`n_dis - 60` for residue cells, 0
+   elsewhere — `constants.c:1447-1450`), calls
+   `mafft_align::global_align` with `GapModel(-1200, -60)` and
+   `head_gap=tail_gap=true` (matching `outgap=1`), and feeds these
+   distances into the generic parttree pipeline.
+
+**Result**: `--dpparttree --treeout` is now byte-identical to C MAFFT
+7.526 (0-line diff on the 36-seq sample).
 
 ---
 

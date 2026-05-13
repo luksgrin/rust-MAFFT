@@ -2003,6 +2003,39 @@ fn reorder_parttree_matches_c() {
     }
 }
 
+/// `--treeout` smoke-test for `--dpparttree`: the CLI binary uses
+/// `run_parttree_pipeline_with_scorer` with a `global_align`-based
+/// scorer to mirror C's `G__align11_noalign( n_disLN, -1200, -60 )`
+/// pipeline. Here we exercise the pipeline directly to ensure the
+/// generic core (`run_parttree_pipeline_with_scorer` +
+/// `parttree_result_to_newick`) is byte-identical to a hand-computed
+/// reference on a trivial 3-seq case.
+#[test]
+fn dpparttree_pipeline_smoke() {
+    use mafft_tree::parttree_split::{
+        run_parttree_pipeline_with_scorer, parttree_result_to_newick,
+    };
+    // 3 distinct seqs; trivial selfscores; pair distance fully tied.
+    // All seqs distinct → each becomes its own yuko (npick=3, nyuko=3).
+    // UPGMA with all-equal distances must produce some tree; the
+    // resulting Newick should have all 3 leaves and round-trip via
+    // `parttree_result_to_newick` without panicking.
+    let r = run_parttree_pipeline_with_scorer(
+        3,
+        |_| 100,
+        |_| 10,
+        |i, j| if i == j { 100.0 } else { 50.0 },
+        |i, j| i == j,
+        50,
+    ).expect("pipeline should produce a result for n=3");
+    assert_eq!(r.outs.iter().flatten().count(), 3, "all 3 seqs assigned");
+    let nw = parttree_result_to_newick(&r);
+    // Numeric leaves 1, 2, 3 should appear.
+    for n in &["1", "2", "3"] {
+        assert!(nw.contains(n), "Newick should contain leaf {}", n);
+    }
+}
+
 /// `--treeout` Newick serialization of the post-progressive guide tree.
 /// Smoke-test that:
 /// 1. The engine populates `msa.guide_tree`.

@@ -292,30 +292,89 @@ fn main() {
                 p.as_mut_os_string().push(".tree");
                 p
             };
-            let newick_opt: Option<String> = if args.parttree || args.dpparttree {
-                // PartTree: C overwrites `infile.tree` with CALL 2's
-                // (`fromaln=1`) tree, so we use the same fromaln scoring
-                // on the aligned MSA. Reuse the alignment-phase scoring
-                // context that was active during progressive alignment.
-                let seq_type = input.seq_type;
-                let scoring_model = if seq_type.is_nucleotide() {
-                    mafft_types::ScoringModel::Dna
-                } else {
-                    match args.bl {
-                        Some(n) => mafft_types::ScoringModel::Blosum(n),
-                        None => match args.jtt {
-                            Some(p) => mafft_types::ScoringModel::Jtt(p),
-                            None => match args.tm {
-                                Some(p) => mafft_types::ScoringModel::Tm(p),
-                                None => mafft_types::ScoringModel::Blosum(62),
-                            },
+            let seq_type = input.seq_type;
+            let scoring_model = if seq_type.is_nucleotide() {
+                mafft_types::ScoringModel::Dna
+            } else {
+                match args.bl {
+                    Some(n) => mafft_types::ScoringModel::Blosum(n),
+                    None => match args.jtt {
+                        Some(p) => mafft_types::ScoringModel::Jtt(p),
+                        None => match args.tm {
+                            Some(p) => mafft_types::ScoringModel::Tm(p),
+                            None => mafft_types::ScoringModel::Blosum(62),
                         },
+                    },
+                }
+            };
+            let scoring = mafft_scoring::build_context(scoring_model, seq_type);
+
+            let newick_opt: Option<String> = if args.dpparttree {
+                // `--dpparttree` uses cycle=1 (one `splittbfast` call) with
+                // `-U` (`doalign=1`) so distances are computed via
+                // `G__align11_noalign( n_disLN, -1200, -60, ... )` on the
+                // RAW sequences (`splittbfast.c:1700`). `n_disLN` is the
+                // base substitution matrix shifted by `offset - offsetLN`
+                // (`constants.c:1431-1437`): for protein default with
+                // `poffset = 0` this is `n_dis - 60` (offsetLN = 60).
+                //
+                // Selfscore uses the BASE matrix diagonal (no offsetLN shift)
+                // per `splittbfast.c:3011-3017`.
+                let raw_seqs: Vec<Vec<u8>> = input.sequences.iter()
+                    .map(|s| s.data.clone()).collect();
+                let base_matrix = &scoring.consweight_matrix;
+                let amino_map = &scoring.amino_map;
+                let nalpha = base_matrix.len();
+                let offset_ln = 60.0f64;
+                // n_disLN-equivalent: shift residue×residue cells by
+                // `-offsetLN`. Cells involving non-residue indices stay 0.
+                let nscored = scoring.nscoredalphabets;
+                let mut dist_matrix: Vec<Vec<f64>> = (0..nalpha).map(|i| (0..nalpha).map(|j| {
+                    if i < nscored && j < nscored {
+                        base_matrix[i][j] - offset_ln
+                    } else {
+                        0.0
                     }
+                }).collect()).collect();
+                // Mirror C's `makedynamicmtx` '−' row/col skip
+                // (`mltaln9.c:15197-15203`): the gap-index row/col is NOT
+                // shifted so it stays zero, matching C's amino_dynamicmtx.
+                let gap_idx = amino_map[b'-' as usize] as usize;
+                if gap_idx < nalpha {
+                    for j in 0..nalpha { dist_matrix[gap_idx][j] = 0.0; }
+                    for i in 0..nalpha { dist_matrix[i][gap_idx] = 0.0; }
+                }
+                let selfscore_diag = |i: usize| -> i64 {
+                    let mut s = 0.0f64;
+                    for &c in &raw_seqs[i] {
+                        let idx = amino_map[c as usize] as usize;
+                        if idx < nalpha { s += base_matrix[idx][idx]; }
+                    }
+                    s as i64
                 };
-                let scoring = mafft_scoring::build_context(scoring_model, seq_type);
-                // CALL 2 reads CALL 1's pre (`first_pass_sequences`), NOT
-                // the final aligned MSA. Fall back to `msa.sequences` only
-                // when first_pass capture failed.
+                let gap = mafft_align::GapModel::new(-1200.0, -60.0);
+                let dist_matrix_ref = &dist_matrix;
+                // `splittbfast.c:560` sets `outgap = 1` by default, so
+                // `G__align11_noalign` penalizes BOTH terminal gaps —
+                // equivalent to head_gap=true, tail_gap=true.
+                let pair_dp = |i: usize, j: usize| -> f64 {
+                    if i == j { return selfscore_diag(i) as f64; }
+                    let aln = mafft_align::global_align(
+                        &raw_seqs[i], &raw_seqs[j], dist_matrix_ref, amino_map, &gap, true, true,
+                    );
+                    aln.score
+                };
+                let seqs_equal = |i: usize, j: usize| -> bool {
+                    raw_seqs[i] == raw_seqs[j]
+                };
+                let orilen = |i: usize| -> usize { raw_seqs[i].len() };
+                mafft_tree::parttree_split::run_parttree_pipeline_with_scorer(
+                    raw_seqs.len(), selfscore_diag, orilen, pair_dp, seqs_equal, 50,
+                ).map(|r| mafft_tree::parttree_split::parttree_result_to_newick(&r))
+            } else if args.parttree {
+                // PartTree (cycle=2): C overwrites `infile.tree` with CALL 2's
+                // (`fromaln=1`) tree, so we use the same fromaln scoring
+                // on the FIRST-pass aligned MSA.
                 let source_msa: &Vec<Vec<u8>> = msa.first_pass_sequences
                     .as_ref().unwrap_or(&msa.sequences);
                 Some(mafft_tree::parttree_split::compute_parttree_newick_fromaln(

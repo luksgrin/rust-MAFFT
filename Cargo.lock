@@ -366,6 +366,7 @@ name = "mafft-bin"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "mafft-align",
  "mafft-core",
  "mafft-io",
  "mafft-scoring",

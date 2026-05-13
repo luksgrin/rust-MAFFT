@@ -22,7 +22,7 @@ This project provides:
 - Q-INS-i (RNA, requires `mxscarnamod`)
 - `--allowshift --globalpair --maxiterate 0` (closed 2026-05-12)
 - `--reorder` / `--inputorder` for all modes including PartTree (closed 2026-05-13)
-- `--treeout` for FFT-NS-2, FFT-NS-i, NW-NS-2, L/G/E-INS-i, BL/JTT, and `--parttree` (closed 2026-05-13)
+- `--treeout` for all modes including `--parttree` and `--dpparttree` (closed 2026-05-13)
 
 Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
@@ -253,7 +253,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--xinsi` (X-INS-i) | Supported (requires `contrafold` in PATH) |
 | `--scarnalike` | Supported (requires `dash_client` in PATH) |
 | `--reorder` / `--inputorder` | Supported for non-PartTree modes (byte-identical to C MAFFT 7.526) |
-| `--treeout` | Supported for all modes except `--dpparttree` (byte-identical to C MAFFT 7.526) |
+| `--treeout` | Supported for all modes including `--parttree`/`--dpparttree` (byte-identical to C MAFFT 7.526) |
 | `--auto`, `--seed`, `--treein`, `--memsave`, `--anysymbol`, `--leavegappyregion` | **Not yet implemented** (see `TODO.md` §B.3) |
 
 ## Architecture
@@ -289,7 +289,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **280 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **281 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|

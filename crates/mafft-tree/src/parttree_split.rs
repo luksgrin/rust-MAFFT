@@ -489,6 +489,189 @@ pub struct PartTreeFromalnResult {
     pub yuko_topo: crate::topology::Topology,
 }
 
+/// Run the splittbfast pivot/yuko/UPGMA pipeline using caller-supplied
+/// scoring callbacks. This is the generic core shared by the
+/// `fromaln=1` (CALL 2) path and the `--dpparttree` CALL 1 path.
+///
+/// Callbacks operate on the original input indices (0..nseq):
+/// - `selfscore`: returns the self-vs-self score for sequence `i`.
+/// - `orilen`: returns the ungapped length of sequence `i`.
+/// - `pair_score`: returns the pairwise score for `(i, j)`. Implementations
+///   compute this however they like (e.g. `naivepairscore11_aligned` or
+///   `G__align11_noalign`). For `i == j`, returns the selfscore.
+/// - `seqs_equal`: returns `true` when `i` and `j` refer to byte-identical
+///   sequences (used by the shimon-style dedupe in pivot selection).
+pub fn run_parttree_pipeline_with_scorer<S, L, P, E>(
+    nseq: usize,
+    selfscore: S,
+    orilen: L,
+    pair_score: P,
+    seqs_equal: E,
+    picksize: usize,
+) -> Option<PartTreeFromalnResult>
+where
+    S: Fn(usize) -> i64,
+    L: Fn(usize) -> usize,
+    P: Fn(usize, usize) -> f64,
+    E: Fn(usize, usize) -> bool,
+{
+    use crate::parttree_pivot::ScoreEntry;
+    if nseq <= 1 { return None; }
+
+    // 1) Build initial `entries` with numinseq=0..nseq.
+    let mut entries: Vec<ScoreEntry> = (0..nseq).map(|i| {
+        ScoreEntry {
+            numinseq: i,
+            selfscore: selfscore(i),
+            orilen: orilen(i),
+            score: 0.0,
+            points: Vec::new(),
+        }
+    }).collect();
+
+    // 2) pick_reference: scan for max selfscore (strict `>`, first wins),
+    //    swap winner to position 0.
+    let mut best = 0usize;
+    let mut best_self = entries[0].selfscore;
+    for i in 1..nseq {
+        if entries[i].selfscore > best_self {
+            best_self = entries[i].selfscore;
+            best = i;
+        }
+    }
+    if best != 0 { entries.swap(0, best); }
+
+    // 3) Compute scores against entries[0].
+    let ref_num = entries[0].numinseq;
+    let ref_self = entries[0].selfscore as f64;
+    for i in 0..nseq {
+        let pair = pair_score(ref_num, entries[i].numinseq);
+        let bunbo = ref_self.min(entries[i].selfscore as f64);
+        entries[i].score = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
+    }
+    crate::parttree_pivot::dcompare_sort(&mut entries);
+
+    // 4) Pivot selection (same algorithm as `compute_parttree_order_fromaln`).
+    let nin = entries.len();
+    let mut picks: Vec<usize> = vec![0];
+    let same_seq_at = |a: usize, b: usize| -> bool {
+        entries[a].selfscore == entries[b].selfscore
+            && entries[a].orilen == entries[b].orilen
+            && seqs_equal(entries[a].numinseq, entries[b].numinseq)
+    };
+    let mut pickkouho: Vec<usize> = (1..nin).collect();
+    let mut nkouho = pickkouho.len();
+    if nkouho > 0 {
+        let picktmp = pickkouho[nkouho - 1];
+        nkouho -= 1;
+        if !same_seq_at(0, picktmp) { picks.push(picktmp); }
+    }
+    let mut i_alt = 1;
+    while picks.len() < picksize && nkouho > 0 {
+        let rn = if i_alt == 1 { i_alt = 0; (nkouho as f64 * 0.5) as usize } else { nkouho - 1 };
+        let picktmp = pickkouho[rn];
+        nkouho -= 1;
+        pickkouho[rn] = pickkouho[nkouho];
+        if !picks.iter().any(|&p| same_seq_at(p, picktmp)) {
+            picks.push(picktmp);
+        }
+    }
+    picks.sort_unstable();
+
+    // 5) pickmtx via pair_score (same formula as fromaln pipeline).
+    let npick = picks.len();
+    let mut pickmtx: Vec<Vec<f64>> = (0..npick).map(|i| vec![0.0f64; npick - i]).collect();
+    for k in 1..npick {
+        pickmtx[0][k] = entries[picks[k]].score;
+    }
+    for j in 1..npick {
+        let pj_self = entries[picks[j]].selfscore as f64;
+        let pj_num = entries[picks[j]].numinseq;
+        for i in (j + 1)..npick {
+            let pair = pair_score(pj_num, entries[picks[i]].numinseq);
+            let bunbo = pj_self.min(entries[picks[i]].selfscore as f64);
+            let dist = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
+            pickmtx[j][i - j] = if dist < 0.0 { 0.0 } else { dist };
+        }
+    }
+
+    // 6) dfromc[yuko][seq].
+    let nyuko = npick;
+    let yukos: Vec<usize> = picks.clone();
+    let mut dfromc: Vec<Vec<f64>> = vec![vec![0.0f64; nin]; nyuko];
+    for j in 0..nin { dfromc[0][j] = entries[j].score; }
+    for i in 1..nyuko {
+        let yi_num = entries[yukos[i]].numinseq;
+        let yi_self = entries[yukos[i]].selfscore as f64;
+        for j in 0..nin {
+            if j == yukos[i] { dfromc[i][j] = 0.0; continue; }
+            let pair = pair_score(yi_num, entries[j].numinseq);
+            let bunbo = yi_self.min(entries[j].selfscore as f64);
+            let dist = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
+            dfromc[i][j] = if dist < 0.0 { 0.0 } else { dist };
+        }
+    }
+
+    // 7) Yuko assignment.
+    let mut outs: Vec<Vec<usize>> = vec![Vec::new(); nyuko];
+    for j in 0..nin {
+        let mut belongto = 0usize;
+        let mut min_d = f64::INFINITY;
+        for yi in 0..nyuko {
+            if dfromc[yi][j] < min_d {
+                min_d = dfromc[yi][j];
+                belongto = yi;
+            }
+        }
+        outs[belongto].push(entries[j].numinseq);
+    }
+
+    // 8) UPGMA on yukomtx (= pickmtx since every pick survived).
+    let mut yuko_dm = DistanceMatrix::new(nyuko);
+    for i in 0..nyuko {
+        for j in (i + 1)..nyuko {
+            yuko_dm.set(i, j, pickmtx[i][j - i]);
+        }
+    }
+    let yuko_topo = musclesupg(&yuko_dm, ClusterMethod::Mix { sueff: 0.1 });
+
+    Some(PartTreeFromalnResult { scores: entries, outs, yuko_topo })
+}
+
+/// Given a precomputed parttree pipeline result, build the `--treeout`
+/// Newick string (numeric leaves, no branch lengths) — the format C's
+/// `splittbfast.c::splitseq_mq` emits via `splittbfast.c:1275-1301`
+/// (leaf) and `:2532-2553` (per-merge concat).
+pub fn parttree_result_to_newick(result: &PartTreeFromalnResult) -> String {
+    let nyuko = result.outs.len();
+    let mut parttree: Vec<Option<String>> = (0..nyuko).map(|yi| {
+        let members = &result.outs[yi];
+        if members.is_empty() {
+            None
+        } else if members.len() == 1 {
+            Some(format!("\n{}\n", members[0] + 1))
+        } else {
+            let inner: Vec<String> = members.iter().map(|&m| (m + 1).to_string()).collect();
+            Some(format!("\n({})\n", inner.join(",")))
+        }
+    }).collect();
+
+    let mut last_v1 = 0usize;
+    for step in &result.yuko_topo.steps {
+        let l_norm = c_normalized_subtree(&result.yuko_topo.steps, &step.left);
+        let r_norm = c_normalized_subtree(&result.yuko_topo.steps, &step.right);
+        let (mut v1, mut v2) = (l_norm[0], r_norm[0]);
+        if v1 > v2 { std::mem::swap(&mut v1, &mut v2); }
+        let s1 = parttree[v1].take().expect("missing parttree[v1]");
+        let s2 = parttree[v2].take().expect("missing parttree[v2]");
+        parttree[v1] = Some(format!("({},{})", s1, s2));
+        last_v1 = v1;
+    }
+    let mut out = parttree[last_v1].take().expect("missing root parttree");
+    out.push('\n');
+    out
+}
+
 fn run_parttree_fromaln_pipeline(
     aligned_seqs: &[Vec<u8>],
     matrix: &[Vec<f64>],
