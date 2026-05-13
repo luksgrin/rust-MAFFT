@@ -72,6 +72,9 @@ pub struct MafftEngine {
     pub dpparttree: bool,
     /// Group size for PartTree partitioning (--groupsize).
     pub groupsize: Option<usize>,
+    /// Reorder output sequences in guide-tree DFS order (--reorder). Default
+    /// is input order (--inputorder), matching C MAFFT 7.526.
+    pub reorder_output: bool,
 }
 
 impl Default for MafftEngine {
@@ -89,13 +92,14 @@ impl Default for MafftEngine {
             parttree: false,
             dpparttree: false,
             groupsize: None,
+            reorder_output: false,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -157,6 +161,13 @@ impl MafftEngine {
     /// Disable FFT: force pure DP for all alignment steps.
     pub fn with_nofft(mut self, nofft: bool) -> Self {
         self.nofft = nofft;
+        self
+    }
+
+    /// Emit output sequences in guide-tree DFS order (`--reorder`). When
+    /// `false` (default), output stays in input order (`--inputorder`).
+    pub fn with_reorder(mut self, reorder: bool) -> Self {
+        self.reorder_output = reorder;
         self
     }
 
@@ -432,6 +443,10 @@ impl MafftEngine {
         };
         let mut accumulated_trace = Vec::new();
         let penalty_dist = scoring.gap.open;
+        // Final progressive guide tree — used for `--reorder` output ordering
+        // (mirrors C `tbfast.c:2928` writing the order file from the
+        // post-UPGMA topology, BEFORE any iterative refinement).
+        let mut final_progressive_topo: Option<mafft_tree::Topology> = None;
 
         for pass in 0..retree {
             let topo = if pass == 0 && use_parttree {
@@ -498,6 +513,7 @@ impl MafftEngine {
                 weights_override.as_deref(), self.unalign_level,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
+            final_progressive_topo = Some(topo.clone());
 
             // For the next retree pass, recompute distances from the now-aligned
             // sequences (matching C's disttbfast behavior in the second iteration
@@ -659,6 +675,23 @@ impl MafftEngine {
                     &params,
                     local_hom.as_ref(),
                 );
+            }
+        }
+
+        // `--reorder`: permute output to guide-tree DFS order. C MAFFT writes
+        // the order file from the post-UPGMA topology in `tbfast.c:2928`; we
+        // capture the equivalent topology from the final retree pass.
+        // PartTree intentionally skipped: C's `splittbfast` uses a partition-
+        // discovery order (`splittbfast.c:3049`), not a tree DFS, and our
+        // `assemble_topology` sorts leaves at each step (parttree_split.rs:161)
+        // so the topology can't reconstruct the DFS order anyway.
+        if self.reorder_output && !use_parttree {
+            if let Some(ref topo) = final_progressive_topo {
+                let order = topo.dfs_order();
+                if order.len() == msa.sequences.len() {
+                    msa.sequences = order.iter().map(|&i| msa.sequences[i].clone()).collect();
+                    msa.names = order.iter().map(|&i| msa.names[i].clone()).collect();
+                }
             }
         }
 

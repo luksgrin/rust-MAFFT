@@ -134,6 +134,14 @@ struct Args {
     /// Quiet mode: suppress progress messages
     #[arg(long, short)]
     quiet: bool,
+
+    /// Output sequences in guide-tree DFS order (matching C MAFFT `--reorder`).
+    #[arg(long, conflicts_with = "inputorder")]
+    reorder: bool,
+
+    /// Output sequences in input order (default; matches C MAFFT `--inputorder`).
+    #[arg(long)]
+    inputorder: bool,
 }
 
 fn main() {
@@ -241,6 +249,9 @@ fn main() {
     }
     if let Some(gs) = args.groupsize {
         engine = engine.with_groupsize(gs);
+    }
+    if args.reorder {
+        engine = engine.with_reorder(true);
     }
 
     // Handle --add / --addfragments

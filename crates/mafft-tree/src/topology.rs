@@ -48,6 +48,22 @@ impl Topology {
     pub fn is_complete(&self) -> bool {
         self.steps.len() + 1 == self.nseq
     }
+
+    /// Sequence indices in tree-DFS order, mirroring C's `topolorderz`
+    /// (`mltaln9.c:1928`). Each merge step's accumulated `left` / `right`
+    /// vectors are already in subtree DFS order, so the root step's
+    /// `left ++ right` is the full leaf order. For `nseq <= 1`, returns
+    /// `[0]` / `[]` accordingly.
+    pub fn dfs_order(&self) -> Vec<usize> {
+        if self.nseq <= 1 {
+            return (0..self.nseq).collect();
+        }
+        let last = self.steps.last().expect("complete topology");
+        let mut order = Vec::with_capacity(self.nseq);
+        order.extend_from_slice(&last.left);
+        order.extend_from_slice(&last.right);
+        order
+    }
 }
 
 #[cfg(test)]
@@ -77,5 +93,24 @@ mod tests {
             right_length: 0.4,
         });
         assert!(t.is_complete());
+    }
+
+    #[test]
+    fn dfs_order_simple() {
+        let mut t = Topology::new(4);
+        // Tree: ((0,2), (1,3)) — left ++ right gives DFS order.
+        t.steps.push(JoinStep {
+            left: vec![0], right: vec![2],
+            left_length: 0.0, right_length: 0.0,
+        });
+        t.steps.push(JoinStep {
+            left: vec![1], right: vec![3],
+            left_length: 0.0, right_length: 0.0,
+        });
+        t.steps.push(JoinStep {
+            left: vec![0, 2], right: vec![1, 3],
+            left_length: 0.0, right_length: 0.0,
+        });
+        assert_eq!(t.dfs_order(), vec![0, 2, 1, 3]);
     }
 }

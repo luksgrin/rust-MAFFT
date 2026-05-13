@@ -21,6 +21,7 @@ This project provides:
 - `--add`, `--add --nofft`, `--add --keeplength`
 - Q-INS-i (RNA, requires `mxscarnamod`)
 - `--allowshift --globalpair --maxiterate 0` (closed 2026-05-12)
+- `--reorder` / `--inputorder` for all non-PartTree modes (closed 2026-05-13)
 
 Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
@@ -49,6 +50,7 @@ Every progressive merge step matches in score and width and every refinement ite
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 0†   | ✓ byte-exact (case-insensitive) |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0†   | ✓ byte-exact (needs `mxscarnamod`) |
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0    | ✓ byte-exact (closed 2026-05-12) |
+| `--reorder` (non-PartTree modes)            | match   | match      | 0    | ✓ byte-exact (closed 2026-05-13) |
 
 † We uppercase residues; C preserves case. With `diff -i` (case-insensitive) RNA produces 0 lines.
 
@@ -248,7 +250,8 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--qinsi` (Q-INS-i) | Supported (requires `mxscarnamod` in PATH) |
 | `--xinsi` (X-INS-i) | Supported (requires `contrafold` in PATH) |
 | `--scarnalike` | Supported (requires `dash_client` in PATH) |
-| `--auto`, `--seed`, `--treein`, `--treeout`, `--memsave`, `--reorder`, `--inputorder`, `--anysymbol`, `--leavegappyregion` | **Not yet implemented** (see `TODO.md` §B.3) |
+| `--reorder` / `--inputorder` | Supported for non-PartTree modes (byte-identical to C MAFFT 7.526) |
+| `--auto`, `--seed`, `--treein`, `--treeout`, `--memsave`, `--anysymbol`, `--leavegappyregion` | **Not yet implemented** (see `TODO.md` §B.3) |
 
 ## Architecture
 
@@ -282,7 +285,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-12 (`cargo test --workspace --exclude pymafft --release`: **269 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **271 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
@@ -302,7 +305,9 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 
 ### Missing CLI flags
 
-The following flags are NOT implemented and will produce "unknown argument" errors: `--auto`, `--seed`, `--seedtable`, `--treein`, `--treeout`, `--memsave`, `--reorder`, `--inputorder`, `--anysymbol`, `--leavegappyregion`. See `TODO.md` §B.3.
+The following flags are NOT implemented and will produce "unknown argument" errors: `--auto`, `--seed`, `--seedtable`, `--treein`, `--treeout`, `--memsave`, `--anysymbol`, `--leavegappyregion`. See `TODO.md` §B.3.
+
+`--reorder` / `--inputorder` are supported for FFT-NS-2, FFT-NS-i, NW-NS-2 and L/G/E-INS-1 / L/G/E-INS-i. `--parttree --reorder` falls back to input order — C MAFFT's PartTree uses a partition-discovery order from splittbfast that isn't reconstructable from the final guide tree.
 
 ### Case preservation
 

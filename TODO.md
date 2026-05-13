@@ -45,8 +45,9 @@ mafft and our binary agree on every byte for every ✓ row.
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (needs `mxscarnamod`) |
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ (closed 2026-05-12) |
+| `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 
-Test suite as of 2026-05-12: **269 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-13: **271 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526.
@@ -76,6 +77,44 @@ Resolved sections (full implementation notes in git history):
   NewRight/NewLeft merge types.
 - §9a Q-INS-i (2026-05-10) — works when `mxscarnamod` is built from
   `mafft-upstream/extensions`.
+
+---
+
+## §AA. `--reorder` — RESOLVED 2026-05-13 (byte-identical to C, except PartTree)
+
+**Mode**: `mafft --reorder sample` now produces Rust output byte-identical
+to C MAFFT 7.526 across all non-PartTree modes (FFT-NS-2, FFT-NS-i,
+NW-NS-2, L/G/E-INS-1, L/G/E-INS-i). Verified 2026-05-13 on the 36-seq
+sample.
+
+### Implementation
+
+1. **`crates/mafft-tree/src/topology.rs::Topology::dfs_order`** — returns
+   leaves in tree-DFS order. Mirrors C's `topolorderz` (`mltaln9.c:1928`):
+   each merge step's `left` / `right` vectors already accumulate subtree
+   leaves in DFS order, so the root step's `left ++ right` is the full
+   ordering.
+2. **`crates/mafft-core/src/engine.rs`** — new `reorder_output` field +
+   `with_reorder()` setter. Captures the final progressive guide tree
+   (`final_progressive_topo`) on each retree pass; after refinement,
+   permutes `msa.sequences` and `msa.names` via `topo.dfs_order()`.
+3. **`crates/mafft-bin/src/main.rs`** — adds `--reorder` and
+   `--inputorder` CLI flags (mutually exclusive). `--inputorder` is the
+   default and is a CLI-only flag (no engine effect).
+
+### PartTree caveat (not addressed)
+
+PartTree skipped via `if self.reorder_output && !use_parttree`. Two
+reasons:
+1. C's `splittbfast` emits the order from its initial recursive
+   partition tree (`splittbfast.c:3049`), not from any global UPGMA
+   DFS — partition-discovery order, not tree-DFS order.
+2. Our `parttree_split::assemble_topology` sorts leaves at each step
+   (`parttree_split.rs:161`), so even the topology DFS would not
+   reconstruct the discovery order.
+
+Closing this would require either tracking discovery order separately
+or reordering inside `assemble_topology`. Listed as residual gap.
 
 ---
 
@@ -227,17 +266,17 @@ flatter score distributions.
 **Fix**: Replace `a + b * c` with `b.mul_add(c, a)` wherever it appears
 in DP arithmetic. Audit-pass + selective FMA.
 
-### §B.3. `--auto`, `--seed`, `--treein`, `--treeout`, `--memsave`, `--reorder`, `--inputorder`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
+### §B.3. `--auto`, `--seed`, `--treein`, `--treeout`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
 
 **Location**: `crates/mafft-bin/src/main.rs` — these flags are absent;
-the CLI rejects them with "unknown argument".
+the CLI rejects them with "unknown argument". (`--reorder`/`--inputorder`
+landed 2026-05-13 — see §AA above.)
 
 **C reference**: `scripts/mafft:237-238` (`--seed`/`--seedtable`),
-`scripts/mafft:330-343` (`--reorder`, `--inputorder`, `--anysymbol`),
-`scripts/mafft:399-403` (`--treeout`), `scripts/mafft:543-545`
-(`--memsave`), `scripts/mafft:650` (`--leavegappyregion`),
-`scripts/mafft:753-757` (`--treein`), `scripts/mafft:1290-1340`
-(`--auto`).
+`scripts/mafft:330-343` (`--anysymbol`), `scripts/mafft:399-403`
+(`--treeout`), `scripts/mafft:543-545` (`--memsave`), `scripts/mafft:650`
+(`--leavegappyregion`), `scripts/mafft:753-757` (`--treein`),
+`scripts/mafft:1290-1340` (`--auto`).
 
 **Severity**: HIGH for feature coverage (users running with these flags
 get errors), but does not affect byte-parity of any currently-tested
@@ -345,8 +384,8 @@ remaining items are latent / coverage / performance gaps, not active
 divergences:
 
 1. **§B.3 missing CLI flags** — `--auto`, `--treein`/`--treeout`,
-   `--reorder`/`--inputorder`, `--anysymbol`, `--seed`,
-   `--leavegappyregion`, `--memsave`. Highest user-visible impact.
+   `--anysymbol`, `--seed`, `--leavegappyregion`, `--memsave`. Highest
+   user-visible impact.
 2. **§B.1 `penalty_ex` in `pairwise_align11`** — would need an API
    change (take `&GapModel` or add `penalty_ex` param). Currently
    benign because the CLI doesn't expose `--exp`.

@@ -1929,3 +1929,37 @@ fn assert_linsi_byte_identical(input_fixture: &str, c_ref_fixture: &str, iterati
     }
     assert_eq!(mismatches, 0, "{mismatches} sequences differ from C ({input_fixture})");
 }
+
+/// `--reorder` must produce the same aligned content as `--inputorder` but
+/// permuted into guide-tree DFS order. Asserts the FFT-NS-2 default-mode
+/// reorder permutation matches what C MAFFT 7.526 emits — for the 36-seq
+/// sample, indices 10 and 11 swap (1-indexed: seqs 11 ↔ 12).
+#[test]
+fn reorder_fftns2_matches_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let default_msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let reordered_msa = MafftEngine::new(AlignmentMode::FftNs2)
+        .with_reorder(true)
+        .align(&input);
+
+    assert_eq!(default_msa.nseq(), reordered_msa.nseq());
+
+    // C MAFFT 7.526 `mafft --reorder mafft-upstream/test/sample` permutes
+    // the 36-seq sample so that input positions 10 and 11 (0-indexed) swap.
+    // All other positions remain identity (this dataset's tree happens to
+    // align almost identically with input order).
+    let mut expected_order: Vec<usize> = (0..default_msa.nseq()).collect();
+    expected_order.swap(10, 11);
+
+    for (out_pos, &input_pos) in expected_order.iter().enumerate() {
+        assert_eq!(
+            reordered_msa.sequences[out_pos], default_msa.sequences[input_pos],
+            "reorder seq at output position {out_pos} should equal default \
+             alignment of input seq {input_pos}",
+        );
+        assert_eq!(
+            reordered_msa.names[out_pos], default_msa.names[input_pos],
+            "reorder name at output position {out_pos} should match input {input_pos}",
+        );
+    }
+}
