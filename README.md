@@ -283,10 +283,11 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 - **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring. Sequential float summation is preserved for accept/reject decisions to keep refinement output deterministic.
 - **SIMD-friendly inner loops**: branchless patterns in `match_score()`, `pairwise_score()`, and `pairwise_identity_distance()` that LLVM auto-vectorizes to NEON/AVX instructions.
 - **Three-way gap insertion** (matching C's `insertnewgaps()`): group1 follows cursor1, group2 follows cursor2, "other" sequences follow cursor1 with gaps at Insert positions.
+- **Platform-independent sort tie-break.** C MAFFT calls `qsort()` directly inside `splitseq_mq` to sort sequences by their distance to the pivot. `qsort` is part of the host C library — BSD on macOS, glibc on Linux, MSVC on Windows — and its three implementations disagree on the relative order of *truly tied* elements (same distance, same selfscore, same length, which only happens when the input contains exactly-duplicate sequences). That makes C MAFFT's `--parttree --reorder` output platform-dependent: the same C source compiled on macOS vs Linux produces different orderings for duplicates. Our Rust port ships a hand-written BSD-qsort algorithm (`mafft-tree/src/bsd_qsort.rs`, Bentley-McIlroy) and uses it everywhere `dcompare_sort` is called, so the `mafft-rs` binary produces the **same output on every platform it's built for**, matching macOS C MAFFT 7.526 byte-for-byte.
 
 ### Test suite
 
-Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **272 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **276 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|

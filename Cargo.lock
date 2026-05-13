@@ -426,7 +426,6 @@ dependencies = [
 name = "mafft-tree"
 version = "0.1.0"
 dependencies = [
- "libc",
  "mafft-io",
  "mafft-scoring",
  "mafft-sys",

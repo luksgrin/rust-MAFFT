@@ -174,41 +174,31 @@ pub fn compute_initial_scores(scores: &mut [ScoreEntry], kind: PtSeqKind) {
 /// `a < b → 1` for selfscore, so smaller selfscore sorts AFTER larger);
 /// further tie-break by `orilen` DESCENDING (same convention).
 ///
-/// Uses libc's `qsort` directly to match C MAFFT's tie-break behavior
-/// for *truly* tied entries (same score / selfscore / orilen). When
-/// such ties exist (e.g., identical sequences), Rust's `sort_by` is
-/// stable and preserves input order, whereas BSD `qsort` (macOS) and
-/// glibc `qsort` reorder them via their internal partitioning. Matching
-/// the platform `qsort` is what makes `--parttree --reorder` byte-
-/// identical to C MAFFT on the same platform.
+/// Uses our in-tree port of FreeBSD's `qsort` (`bsd_qsort`) rather than
+/// `libc::qsort`, because `libc::qsort` delegates to the host C library
+/// (BSD qsort on macOS, glibc qsort on Linux, MSVC qsort on Windows) and
+/// these implementations disagree on the relative order of *truly tied*
+/// elements (same score / selfscore / orilen — only occurs when the
+/// input contains exactly-duplicate sequences). C MAFFT 7.526 inherits
+/// the same platform-dependence; our Rust port deliberately pins the
+/// behavior to BSD/macOS qsort so the binary produces consistent output
+/// on every platform it's built for.
 pub fn dcompare_sort(scores: &mut [ScoreEntry]) {
     if scores.len() < 2 {
         return;
     }
-    let len = scores.len();
-    let elem_size = std::mem::size_of::<ScoreEntry>();
-    unsafe extern "C" fn dcompare_libc(a: *const std::ffi::c_void, b: *const std::ffi::c_void) -> std::ffi::c_int {
-        let a = unsafe { &*(a as *const ScoreEntry) };
-        let b = unsafe { &*(b as *const ScoreEntry) };
+    crate::bsd_qsort::bsd_qsort(scores, |a, b| {
         // Primary: score ASC (`dcompare:74-76`).
-        if a.score > b.score { return 1; }
-        if a.score < b.score { return -1; }
+        if a.score > b.score { return std::cmp::Ordering::Greater; }
+        if a.score < b.score { return std::cmp::Ordering::Less; }
         // Tie: selfscore DESC (`dcompare:78-79` returns 1 when a < b).
-        if a.selfscore < b.selfscore { return 1; }
-        if a.selfscore > b.selfscore { return -1; }
+        if a.selfscore < b.selfscore { return std::cmp::Ordering::Greater; }
+        if a.selfscore > b.selfscore { return std::cmp::Ordering::Less; }
         // Tie: orilen DESC (`dcompare:82-83` returns 1 when a < b).
-        if a.orilen < b.orilen { return 1; }
-        if a.orilen > b.orilen { return -1; }
-        0
-    }
-    unsafe {
-        libc::qsort(
-            scores.as_mut_ptr() as *mut std::ffi::c_void,
-            len,
-            elem_size,
-            Some(dcompare_libc),
-        );
-    }
+        if a.orilen < b.orilen { return std::cmp::Ordering::Greater; }
+        if a.orilen > b.orilen { return std::cmp::Ordering::Less; }
+        std::cmp::Ordering::Equal
+    });
 }
 
 /// Pivot selection — mirrors `splittbfast.c::1495-1574`.

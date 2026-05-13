@@ -14,6 +14,7 @@ pub mod parttree_pivot;
 pub mod parttree_split;
 mod topology;
 mod weighting;
+pub mod bsd_qsort;
 
 pub use distance::{DistanceMatrix, pairwise_identity_distance, ktuple_distance, scoring_matrix_distance};
 pub use nj::neighbor_joining;

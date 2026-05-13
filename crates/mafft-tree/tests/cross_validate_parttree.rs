@@ -431,33 +431,22 @@ fn parttree_pivot_scores_match_c_pipeline() {
     }
 
     // 5) Sort `c_order` by C's `dcompare` (`splittbfast.c:72-87`): score ASC,
-    //    selfscore DESC, orilen DESC. We pair each c_order[k] with its key
-    //    tuple. For truly-tied entries (same score / selfscore / orilen),
-    //    we delegate to libc `qsort` so the tie-break mirrors C MAFFT.
-    use std::ffi::c_void;
+    //    selfscore DESC, orilen DESC. Use our in-tree BSD qsort port so the
+    //    tie-break for truly-tied entries (same score / selfscore / orilen)
+    //    matches macOS C MAFFT 7.526 on every platform.
     let mut tuples: Vec<(f64, i64, usize, usize)> = (0..nseq).map(|k| {
         let i = c_order[k];
         (c_score[k], c_selfscore[i], raw_seqs[i].len(), i)
     }).collect();
-    unsafe extern "C" fn cmp(a: *const c_void, b: *const c_void) -> std::ffi::c_int {
-        let a = unsafe { &*(a as *const (f64, i64, usize, usize)) };
-        let b = unsafe { &*(b as *const (f64, i64, usize, usize)) };
-        if a.0 > b.0 { return 1; }
-        if a.0 < b.0 { return -1; }
-        if a.1 < b.1 { return 1; }  // selfscore DESC
-        if a.1 > b.1 { return -1; }
-        if a.2 < b.2 { return 1; }  // orilen DESC
-        if a.2 > b.2 { return -1; }
-        0
-    }
-    unsafe {
-        libc::qsort(
-            tuples.as_mut_ptr() as *mut c_void,
-            tuples.len(),
-            std::mem::size_of::<(f64, i64, usize, usize)>(),
-            Some(cmp),
-        );
-    }
+    mafft_tree::bsd_qsort::bsd_qsort(&mut tuples, |a, b| {
+        if a.0 > b.0 { return std::cmp::Ordering::Greater; }
+        if a.0 < b.0 { return std::cmp::Ordering::Less; }
+        if a.1 < b.1 { return std::cmp::Ordering::Greater; }  // selfscore DESC
+        if a.1 > b.1 { return std::cmp::Ordering::Less; }
+        if a.2 < b.2 { return std::cmp::Ordering::Greater; }  // orilen DESC
+        if a.2 > b.2 { return std::cmp::Ordering::Less; }
+        std::cmp::Ordering::Equal
+    });
 
     unsafe { cleanup_c(); }
 
