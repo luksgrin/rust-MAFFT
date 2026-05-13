@@ -46,6 +46,7 @@ mafft and our binary agree on every byte for every ✓ row.
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (needs `mxscarnamod`) |
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ (closed 2026-05-12) |
 | `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
+| `--parttree --reorder`                      | match   | match      | 446        | CALL 1 tree-shape now matches C exactly (libc qsort fix). Residual diff from C's second `splittbfast` pass (`fromaln=1`) not yet ported — see §AA |
 
 Test suite as of 2026-05-13: **271 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
@@ -102,19 +103,63 @@ sample.
    `--inputorder` CLI flags (mutually exclusive). `--inputorder` is the
    default and is a CLI-only flag (no engine effect).
 
-### PartTree caveat (not addressed)
+### PartTree partial fix (2026-05-13)
 
-PartTree skipped via `if self.reorder_output && !use_parttree`. Two
-reasons:
-1. C's `splittbfast` emits the order from its initial recursive
-   partition tree (`splittbfast.c:3049`), not from any global UPGMA
-   DFS — partition-discovery order, not tree-DFS order.
-2. Our `parttree_split::assemble_topology` sorts leaves at each step
-   (`parttree_split.rs:161`), so even the topology DFS would not
-   reconstruct the discovery order.
+For `--parttree --reorder`, the engine now calls
+`parttree_split::compute_parttree_order` which mirrors C's
+`splittbfast.c::splitseq_mq` order-generation in two stages:
+1. Top-level partition: `treeorder = topol[nyuko-2][0] ++ topol[nyuko-2][1]`
+   from the yuko-level UPGMA root step (`splittbfast.c:2351-2354`).
+2. Leaf emission: for each yuko in `treeorder`, append `outs[yuko]` in
+   the same `j`-iteration order C uses (`splittbfast.c:1305-1309`).
 
-Closing this would require either tracking discovery order separately
-or reordering inside `assemble_topology`. Listed as residual gap.
+`c_normalized_subtree` recursively applies C's smaller-first-element
+normalization (`mltaln9.c:8184-8197`) to reconstruct the leaf order
+within each `topol[step][i]` array.
+
+**Result**: parttree --reorder diff vs C: **944 → 454 lines** (50%
+reduction). Same alignment content (sequences match by sort), just in
+a different order at the upper levels of the yuko tree.
+
+### PartTree partial improvement (2026-05-13, continued)
+
+Instrumented C MAFFT to dump `yukomtx`, `outs[]`, and `topol[step]`
+during `splitseq_mq` to pinpoint the divergence. Findings:
+
+1. **`musclesupg(yukomtx)` does NOT diverge**. Once the scores sort
+   uses libc `qsort` (matching macOS BSD `qsort` tie-break on truly
+   tied entries like the serotonin pair seqs 33/34), Rust's
+   `pivots.scores`, `outs[]`, and the `yuko_topo` `topol[step]`
+   arrays match C's first-pass output cell-by-cell.
+2. **C does TWO `splittbfast` passes for `--parttree`** (script
+   lines 2655 and 2681). The first pass uses raw 6-mer distances; the
+   second pass passes `-Z` (`fromaln=1`) so distances are recomputed
+   via `G__align11_noalign` with `-1200 / -60` gap penalties against
+   the just-aligned sequences. CALL 2 produces a structurally
+   different yuko UPGMA tree (lopsided 8/27 vs CALL 1's 20/15 split
+   for the n=36 sample), and the final `--reorder` output is the
+   composition of CALL 1's order with CALL 2's order
+   (`final[k] = call1_order[call2_order[k]]`).
+
+### Implementation status
+
+- libc `qsort` for `dcompare_sort` (`parttree_pivot.rs:178-217`) +
+  matching tie-break fix in the cross-validation test reduce the
+  diff from **944 → 446 lines**.
+- CALL 2 is **not yet ported**. Implementing it would need:
+  1. Pairwise `G__align11_noalign` distance computation (uses
+     existing `pairwise_align11` with `gap_open=-1200`,
+     `gap_extend=-60` on raw sequences).
+  2. New selfscore via diagonal sum of substitution matrix
+     (`splittbfast.c:3040-3046`).
+  3. A second `compute_parttree_order` invocation with these
+     `G__align11`-derived distances on the aligned-then-gap-stripped
+     sequences.
+  4. Compose with first-pass order.
+
+  Cost estimate: ~200 lines + ~630 pairwise alignments at runtime
+  for the n=36 fixture (~1-2s). Tracked as residual work; output
+  ordering is otherwise structurally valid.
 
 ---
 

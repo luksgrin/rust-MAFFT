@@ -169,18 +169,46 @@ pub fn compute_initial_scores(scores: &mut [ScoreEntry], kind: PtSeqKind) {
     }
 }
 
-/// Sort `scores[]` by C's `dcompare`: primary `score` ascending; tie
-/// break by `selfscore` ascending; tie break by `orilen` ascending.
-/// Stable sort (Rust default) retains insertion order on full ties,
-/// matching C `qsort` on already-sorted equal keys reasonably (qsort
-/// is *not* guaranteed stable, but for our test fixture there are no
-/// triple-ties in practice).
+/// Sort `scores[]` by C's `dcompare` (`splittbfast.c:72-87`): primary
+/// `score` ASCENDING; tie-break by `selfscore` DESCENDING (C returns
+/// `a < b → 1` for selfscore, so smaller selfscore sorts AFTER larger);
+/// further tie-break by `orilen` DESCENDING (same convention).
+///
+/// Uses libc's `qsort` directly to match C MAFFT's tie-break behavior
+/// for *truly* tied entries (same score / selfscore / orilen). When
+/// such ties exist (e.g., identical sequences), Rust's `sort_by` is
+/// stable and preserves input order, whereas BSD `qsort` (macOS) and
+/// glibc `qsort` reorder them via their internal partitioning. Matching
+/// the platform `qsort` is what makes `--parttree --reorder` byte-
+/// identical to C MAFFT on the same platform.
 pub fn dcompare_sort(scores: &mut [ScoreEntry]) {
-    scores.sort_by(|a, b| {
-        a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.selfscore.cmp(&b.selfscore))
-            .then(a.orilen.cmp(&b.orilen))
-    });
+    if scores.len() < 2 {
+        return;
+    }
+    let len = scores.len();
+    let elem_size = std::mem::size_of::<ScoreEntry>();
+    unsafe extern "C" fn dcompare_libc(a: *const std::ffi::c_void, b: *const std::ffi::c_void) -> std::ffi::c_int {
+        let a = unsafe { &*(a as *const ScoreEntry) };
+        let b = unsafe { &*(b as *const ScoreEntry) };
+        // Primary: score ASC (`dcompare:74-76`).
+        if a.score > b.score { return 1; }
+        if a.score < b.score { return -1; }
+        // Tie: selfscore DESC (`dcompare:78-79` returns 1 when a < b).
+        if a.selfscore < b.selfscore { return 1; }
+        if a.selfscore > b.selfscore { return -1; }
+        // Tie: orilen DESC (`dcompare:82-83` returns 1 when a < b).
+        if a.orilen < b.orilen { return 1; }
+        if a.orilen > b.orilen { return -1; }
+        0
+    }
+    unsafe {
+        libc::qsort(
+            scores.as_mut_ptr() as *mut std::ffi::c_void,
+            len,
+            elem_size,
+            Some(dcompare_libc),
+        );
+    }
 }
 
 /// Pivot selection — mirrors `splittbfast.c::1495-1574`.

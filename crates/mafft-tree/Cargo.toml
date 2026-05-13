@@ -14,7 +14,9 @@ readme = "../../README.md"
 [dependencies]
 mafft-types = { path = "../mafft-types", version = "0.1.0" }
 mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+libc = "0.2"
 
 [dev-dependencies]
 mafft-sys = { path = "../mafft-sys" }
 mafft-io = { path = "../mafft-io" }
+libc = "0.2"

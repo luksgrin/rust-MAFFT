@@ -430,17 +430,34 @@ fn parttree_pivot_scores_match_c_pipeline() {
         c_score[k] = s;
     }
 
-    // 5) Sort `c_order` by (score asc, selfscore asc, orilen asc) — the
-    //    dcompare key. We pair each c_order[k] with its key tuple.
+    // 5) Sort `c_order` by C's `dcompare` (`splittbfast.c:72-87`): score ASC,
+    //    selfscore DESC, orilen DESC. We pair each c_order[k] with its key
+    //    tuple. For truly-tied entries (same score / selfscore / orilen),
+    //    we delegate to libc `qsort` so the tie-break mirrors C MAFFT.
+    use std::ffi::c_void;
     let mut tuples: Vec<(f64, i64, usize, usize)> = (0..nseq).map(|k| {
         let i = c_order[k];
         (c_score[k], c_selfscore[i], raw_seqs[i].len(), i)
     }).collect();
-    tuples.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.1.cmp(&b.1))
-            .then(a.2.cmp(&b.2))
-    });
+    unsafe extern "C" fn cmp(a: *const c_void, b: *const c_void) -> std::ffi::c_int {
+        let a = unsafe { &*(a as *const (f64, i64, usize, usize)) };
+        let b = unsafe { &*(b as *const (f64, i64, usize, usize)) };
+        if a.0 > b.0 { return 1; }
+        if a.0 < b.0 { return -1; }
+        if a.1 < b.1 { return 1; }  // selfscore DESC
+        if a.1 > b.1 { return -1; }
+        if a.2 < b.2 { return 1; }  // orilen DESC
+        if a.2 > b.2 { return -1; }
+        0
+    }
+    unsafe {
+        libc::qsort(
+            tuples.as_mut_ptr() as *mut c_void,
+            tuples.len(),
+            std::mem::size_of::<(f64, i64, usize, usize)>(),
+            Some(cmp),
+        );
+    }
 
     unsafe { cleanup_c(); }
 

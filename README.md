@@ -307,7 +307,7 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 
 The following flags are NOT implemented and will produce "unknown argument" errors: `--auto`, `--seed`, `--seedtable`, `--treein`, `--treeout`, `--memsave`, `--anysymbol`, `--leavegappyregion`. See `TODO.md` §B.3.
 
-`--reorder` / `--inputorder` are supported for FFT-NS-2, FFT-NS-i, NW-NS-2 and L/G/E-INS-1 / L/G/E-INS-i. `--parttree --reorder` falls back to input order — C MAFFT's PartTree uses a partition-discovery order from splittbfast that isn't reconstructable from the final guide tree.
+`--reorder` / `--inputorder` are supported for FFT-NS-2, FFT-NS-i, NW-NS-2 and L/G/E-INS-1 / L/G/E-INS-i (byte-identical to C). `--parttree --reorder` produces a valid tree-DFS ordering with the same set of aligned sequences (alignment is byte-identical) but does not yet byte-match C. The first parttree pass now matches C exactly cell-by-cell (after a libc `qsort` fix for tie-breaking); the remaining diff is from C's second `splittbfast` pass (`fromaln=1`, `G__align11_noalign` distances), which we have not yet ported. See `TODO.md` §AA.
 
 ### Case preservation
 

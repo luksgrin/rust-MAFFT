@@ -678,16 +678,28 @@ impl MafftEngine {
             }
         }
 
-        // `--reorder`: permute output to guide-tree DFS order. C MAFFT writes
-        // the order file from the post-UPGMA topology in `tbfast.c:2928`; we
-        // capture the equivalent topology from the final retree pass.
-        // PartTree intentionally skipped: C's `splittbfast` uses a partition-
-        // discovery order (`splittbfast.c:3049`), not a tree DFS, and our
-        // `assemble_topology` sorts leaves at each step (parttree_split.rs:161)
-        // so the topology can't reconstruct the DFS order anyway.
-        if self.reorder_output && !use_parttree {
-            if let Some(ref topo) = final_progressive_topo {
-                let order = topo.dfs_order();
+        // `--reorder`: permute output to the C-equivalent reorder ordering.
+        //
+        // - Non-PartTree: tree-DFS over the final progressive guide tree
+        //   (`tbfast.c:2928` calls `topolorderz` on the post-UPGMA topology).
+        // - PartTree (`--parttree` / `--dpparttree`): partition-discovery
+        //   order from `splittbfast.c::splitseq_mq` (`splittbfast.c:2351-2378`
+        //   + `:1305-1309`). Reconstructed via `compute_parttree_order`,
+        //   which re-runs the pivot pipeline (cheap relative to alignment).
+        if self.reorder_output {
+            let order: Option<Vec<usize>> = if use_parttree {
+                let kind = if scoring.seq_type.is_nucleotide() {
+                    PtSeqKind::Dna
+                } else {
+                    PtSeqKind::Protein
+                };
+                Some(mafft_tree::parttree_split::compute_parttree_order(
+                    &sequences, kind, 50,
+                ))
+            } else {
+                final_progressive_topo.as_ref().map(|t| t.dfs_order())
+            };
+            if let Some(order) = order {
                 if order.len() == msa.sequences.len() {
                     msa.sequences = order.iter().map(|&i| msa.sequences[i].clone()).collect();
                     msa.names = order.iter().map(|&i| msa.names[i].clone()).collect();
