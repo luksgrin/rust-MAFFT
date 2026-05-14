@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use mafft_core::{MafftEngine, AlignmentMode};
-use mafft_io::read_fasta;
+use mafft_io::{read_fasta, read_fasta_casepreserve};
+use mafft_types::Sequence;
 
 fn test_data_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2233,4 +2234,139 @@ fn treeout_engine_populates_guide_tree() {
         .filter(|i| nw.contains(&format!("\n{}_", i))).count();
     assert_eq!(leaf_count, input.nseq(),
         "all {} leaves should appear in Newick output", input.nseq());
+}
+
+/// Helper used by all `--seed` byte-identity tests: mirror the CLI's
+/// `--seed` preprocessing. Prepends gap-stripped seed sequences (with
+/// `_seed_` name prefix) to the user input, builds a seed-only
+/// `LocalHomologyTable` over the combined dimension, and returns
+/// `(combined_input, seed_table)` ready for `engine.seed_homology =
+/// Some(seed_table)`.
+fn prepare_seed_input(
+    seed_file: &std::path::Path,
+    user_file: &std::path::Path,
+) -> (mafft_types::SequenceSet, mafft_types::LocalHomologyTable) {
+    let user_input = read_fasta(user_file).expect("read user input");
+    let seed_set = read_fasta_casepreserve(seed_file).expect("read seed file");
+    let user_nseq = user_input.nseq();
+    let aligned: Vec<Vec<u8>> = seed_set.sequences.iter().map(|s| s.data.clone()).collect();
+
+    let mut combined = user_input.clone();
+    let mut idx = 0usize;
+    for s in &seed_set.sequences {
+        let ungapped: Vec<u8> = s.data.iter().copied()
+            .filter(|&c| c != b'-' && c != b'.').collect();
+        combined.sequences.insert(idx, Sequence {
+            name: format!("_seed_{}", s.name),
+            data: ungapped,
+        });
+        idx += 1;
+    }
+    let scoring = mafft_scoring::build_context(
+        mafft_types::ScoringModel::Blosum(62),
+        combined.seq_type,
+    );
+    let seed_group = mafft_align::SeedGroup {
+        aligned: aligned.iter().map(|s| s.as_slice()).collect(),
+        global_indices: (0..aligned.len()).collect(),
+    };
+    let table = mafft_align::build_seed_homology_table(
+        std::slice::from_ref(&seed_group),
+        combined.nseq(),
+        user_nseq,
+        &scoring.consweight_matrix,
+        &scoring.amino_map,
+    );
+    (combined, table)
+}
+
+/// `--seed` + L-INS-i must reproduce C MAFFT byte-for-byte. Exercises:
+/// - `multi2hat3s`-style `putlocalhom2` extraction over each seed pair
+///   with `korh = 'k'`.
+/// - `tsuyosa = user_nseq² * 100` importance boost.
+/// - Merging seed entries into the pairwise homology table BEFORE
+///   `recompute_importance` (so the position-vote pass weighs both).
+/// - Forcing `iterate ≥ 2` (C `scripts/mafft:1911-1923`).
+#[test]
+fn seed_linsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.seed.linsi.iter2"))
+        .expect("missing fixtures/sample.seed.linsi.iter2");
+    let (combined, seed_table) = prepare_seed_input(
+        &fixture_path("sample.seed3.aln"),
+        &fixture_path("sample.seed_input5.fa"),
+    );
+    let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 });
+    engine.seed_homology = Some(seed_table);
+    let msa = engine.align(&combined);
+
+    assert_eq!(msa.nseq(), c_ref.nseq(), "nseq mismatch");
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --seed L-INS-i: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len());
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --seed L-INS-i output");
+    }
+}
+
+/// `--seed` + G-INS-i: same flow as L-INS-i but with `--globalpair`
+/// pairwise alignment driving the initial homology table.
+#[test]
+fn seed_ginsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.seed.ginsi.iter2"))
+        .expect("missing fixtures/sample.seed.ginsi.iter2");
+    let (combined, seed_table) = prepare_seed_input(
+        &fixture_path("sample.seed3.aln"),
+        &fixture_path("sample.seed_input5.fa"),
+    );
+    let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 2 });
+    engine.seed_homology = Some(seed_table);
+    let msa = engine.align(&combined);
+
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --seed G-INS-i output");
+    }
+}
+
+/// `--seed` + E-INS-i: `--genafpair` (generalized affine) drives the
+/// pairwise step; seed entries merge in identically.
+#[test]
+fn seed_einsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.seed.einsi.iter2"))
+        .expect("missing fixtures/sample.seed.einsi.iter2");
+    let (combined, seed_table) = prepare_seed_input(
+        &fixture_path("sample.seed3.aln"),
+        &fixture_path("sample.seed_input5.fa"),
+    );
+    let mut engine = MafftEngine::new(AlignmentMode::EInsi { iterations: 2 });
+    engine.seed_homology = Some(seed_table);
+    let msa = engine.align(&combined);
+
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --seed E-INS-i output");
+    }
+}
+
+/// `--seed` with the default FFT-NS pipeline: C promotes `iterate=0`
+/// to `iterate=2` so the seed constraints actually drive refinement
+/// (`scripts/mafft:1911-1923`). Verifies that the seed-only constraint
+/// table works without a pairwise homology step.
+#[test]
+fn seed_fftnsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.seed.fftnsi.iter2"))
+        .expect("missing fixtures/sample.seed.fftnsi.iter2");
+    let (combined, seed_table) = prepare_seed_input(
+        &fixture_path("sample.seed3.aln"),
+        &fixture_path("sample.seed_input5.fa"),
+    );
+    let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 });
+    engine.seed_homology = Some(seed_table);
+    let msa = engine.align(&combined);
+
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --seed FFT-NS-i output");
+    }
 }

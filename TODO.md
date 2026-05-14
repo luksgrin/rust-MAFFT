@@ -57,8 +57,9 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--memsavetree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
 | `--anysymbol` / `--preservecase` (protein + DNA, non-standard chars, mixed case) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--leavegappyregion` / `--legacygappenalty` (FFT-NS-2/-i, NW, L/G/E-INS-i, BL/JTT, --anysymbol/--reorder/--treein/--memsavetree/--auto combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
+| `--seed FILE` (L/G/E-INS-i + FFT-NS-i, single + multiple seed files) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 
-Test suite as of 2026-05-14: **313 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-14: **317 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -89,6 +90,66 @@ Resolved sections (full implementation notes in git history):
   NewRight/NewLeft merge types.
 - §9a Q-INS-i (2026-05-10) — works when `mxscarnamod` is built from
   `mafft-upstream/extensions`.
+
+---
+
+## §AH. `--seed` — RESOLVED 2026-05-14 (byte-identical for L/G/E-INS-i and FFT-NS-i)
+
+**Mode**: `mafft --seed FILE [--seed FILE ...]` (repeatable). Each seed
+file is a pre-aligned FASTA; its sequences are prepended (gap-stripped)
+to the user input with a `_seed_` name prefix, and all in-group seed
+pairs generate `korh = 'k'` local-homology entries with `opt` boosted
+by `tsuyosa = user_nseq² * 100`. The seed-derived entries are merged
+into the pairwise homology table BEFORE `recompute_importance` so the
+position-vote pass weighs seed and pairwise regions together. Forces
+`maxiterate ≥ 2` (`scripts/mafft:1911-1923`) — the seed constraints
+only fire during refinement.
+
+**Reference**: `scripts/mafft:1025-1028` (CLI), `:1174-1196` (concat
+seed files), `:2400-2436` (seed pipeline), `multi2hat3s.c` (LH entry
+generation), `io.c:723` (`putlocalhom2`).
+
+### Implementation
+
+1. **`crates/mafft-align/src/constraints.rs`** —
+   - `extract_putlocalhom2_regions(al1, al2, matrix, amino_map, off1,
+     off2, korh) -> Vec<HomologyRegion>` — extracted from the inline
+     putlocalhom2 logic in `build_homology_table_with_unalign`. Works
+     on any pair of pre-aligned (gapped) sequences.
+   - `build_seed_homology_table(seed_groups, total_nseq, user_nseq,
+     matrix, amino_map) -> LocalHomologyTable` — applies
+     `tsuyosa = user_nseq² * 100` to each region's `opt` (mirroring
+     C `multi2hat3s.c:149`) and writes (i,j) + (j,i) entries into a
+     table sized for the full combined input.
+   - `merge_homology_tables(into, extra)` — folds the seed LH table
+     into the pairwise LH table before `recompute_importance`.
+2. **`crates/mafft-core/src/engine.rs::MafftEngine`** — new
+   `seed_homology: Option<LocalHomologyTable>` field. When set:
+   - Merged into `pairwise_for_constraints` before
+     `recompute_importance` runs (L/G/E-INS-i path).
+   - Used directly with `recompute_importance` on the post-progressive
+     guide tree's weights when no pairwise homology was built
+     (FFT-NS-i + `--seed`).
+3. **`crates/mafft-bin/src/main.rs`** — `--seed FILE` (repeatable).
+   Reads each file with `read_fasta_casepreserve` (gaps preserved),
+   prepends gap-stripped renamed sequences (`>_seed_<name>`) to the
+   user input, builds the seed homology table via
+   `build_seed_homology_table`, sets `engine.seed_homology`, and
+   forces `iterate ≥ 2` for the chosen mode (`FftNs2` becomes
+   `FftNsi{iterations: 2}`).
+
+### Tests
+
+`crates/mafft-core/tests/end_to_end.rs`:
+
+- `seed_linsi_byte_identical_to_c`
+- `seed_ginsi_byte_identical_to_c`
+- `seed_einsi_byte_identical_to_c`
+- `seed_fftnsi_byte_identical_to_c`
+
+Each test uses a 3-seq L-INS-i-aligned seed (`sample.seed3.aln`) and
+a 5-seq user input (`sample.seed_input5.fa`) drawn from
+`sample.first9.fa`. All four are byte-identical to C MAFFT 7.526.
 
 ---
 
@@ -644,27 +705,25 @@ out of 36) and the implied `--tm 200 --treeout` first-pass tree
 (20-line branch-length diff, max drift 3e-3 in 5th decimal place)
 are affected. All 17/17 alignment-mode parity tests still pass.
 
-### §B.3. `--seed`, `--memsave` — UNIMPLEMENTED
+### §B.3. `--memsave` — UNIMPLEMENTED
 
-**Location**: `crates/mafft-bin/src/main.rs` — these flags are absent;
-the CLI rejects them with "unknown argument".
+**Location**: `crates/mafft-bin/src/main.rs` — flag is absent; the CLI
+rejects it with "unknown argument".
 (`--reorder`/`--inputorder` landed 2026-05-13 — see §AA. `--treeout`
 landed 2026-05-13 — see §AB. `--treein` landed 2026-05-14 — see §AC.
 `--auto` landed 2026-05-14 — see §AD. `--memsavetree` landed
 2026-05-14 — see §AE. `--anysymbol`/`--preservecase` landed
 2026-05-14 — see §AF. `--leavegappyregion`/`--legacygappenalty`
-landed 2026-05-14 — see §AG.)
+landed 2026-05-14 — see §AG. `--seed` landed 2026-05-14 — see §AH.)
 
-**C reference**: `scripts/mafft:237-238` (`--seed`/`--seedtable`),
-`scripts/mafft:543-545` (`--memsave`).
+**C reference**: `scripts/mafft:543-545` (`--memsave`).
 
-**Severity**: HIGH for feature coverage (users running with these flags
+**Severity**: HIGH for feature coverage (users running with this flag
 get errors), but does not affect byte-parity of any currently-tested
 mode.
 
-**Effort**: Mostly CLI plumbing. `--seed`/`--treein` need engine support
-for external guide-tree / seed-alignment input. `--auto` needs a
-strategy-selection heuristic mirroring `scripts/mafft:1290-1340`.
+**Effort**: Largest remaining item — `--memsave` switches the DP to
+Hirschberg-style linear-space divide-and-conquer; new alignment kernel.
 
 ### §B.4. `--retree N` for N ≠ 2 byte-untested for INS-i modes
 
@@ -916,9 +975,10 @@ All currently-tested modes are byte-identical to C MAFFT 7.526. The
 remaining items are latent / coverage / performance gaps, not active
 divergences:
 
-1. **§B.3 missing CLI flags** — `--auto`, `--treein`/`--treeout`,
-   `--anysymbol`, `--seed`, `--leavegappyregion`, `--memsave`. Highest
-   user-visible impact.
+1. **§B.3 missing CLI flags** — only `--memsave` remains. Highest
+   user-visible impact (`--auto`, `--treein`/`--treeout`,
+   `--anysymbol`, `--seed`, `--leavegappyregion`, `--memsavetree` all
+   landed 2026-05-13/14).
 2. **§B.1 `penalty_ex` in `pairwise_align11`** — would need an API
    change (take `&GapModel` or add `penalty_ex` param). Currently
    benign because the CLI doesn't expose `--exp`.

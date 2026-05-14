@@ -106,6 +106,196 @@ pub fn build_imp_matrix(
     imp
 }
 
+/// Extract local-homology regions from a pair of pre-aligned sequences,
+/// mirroring C `putlocalhom2` (`io.c:723`). The two slices must be the
+/// same length (gap-aligned). Whenever a gap appears in either column
+/// the current match region is closed; a residue-residue column starts
+/// a new one.
+///
+/// `offset1`/`offset2` are the starting raw-residue positions (matching
+/// C's `off1`/`off2`); the returned `start1`/`end1`/`start2`/`end2`
+/// values are raw-residue indices on top of those offsets.
+///
+/// `korh` is stamped on every region (`b'h'` for pairwise alignment,
+/// `b'k'` for `--seed` constraints).
+///
+/// The function matches the non-`divpairscore` branch of C
+/// (`io.c:855-866`) + `tbfast.c:2202` rescale: all regions share a
+/// combined `opt = isumscore / sumoverlap` and `overlapaa = sumoverlap`.
+pub fn extract_putlocalhom2_regions(
+    al1: &[u8],
+    al2: &[u8],
+    matrix: &[Vec<f64>],
+    amino_map: &[u8; 256],
+    offset1: i32,
+    offset2: i32,
+    korh: u8,
+) -> Vec<HomologyRegion> {
+    let len = al1.len().min(al2.len());
+    let n_alpha = matrix.len();
+    let mut regions: Vec<HomologyRegion> = Vec::new();
+    let mut isumscore: f64 = 0.0;
+    let mut sumoverlap: i32 = 0;
+    let mut pos1 = offset1;
+    let mut pos2 = offset2;
+    let mut st = false;
+    let mut start1 = 0i32;
+    let mut start2 = 0i32;
+    let mut iscore: f64 = 0.0;
+    for k in 0..len {
+        let c1 = al1[k];
+        let c2 = al2[k];
+        let g1 = c1 == b'-';
+        let g2 = c2 == b'-';
+        if st && (g1 || g2) {
+            let end1 = pos1 - 1;
+            let end2 = pos2 - 1;
+            regions.push(HomologyRegion {
+                start1, end1, start2, end2,
+                opt: 0.0,
+                overlapaa: end2 - start2 + 1,
+                korh,
+                ..Default::default()
+            });
+            isumscore += iscore;
+            sumoverlap += end2 - start2 + 1;
+            iscore = 0.0;
+            st = false;
+        } else if !g1 && !g2 {
+            if !st {
+                start1 = pos1;
+                start2 = pos2;
+                st = true;
+            }
+            let i1 = amino_map[c1 as usize] as usize;
+            let i2 = amino_map[c2 as usize] as usize;
+            if i1 < n_alpha && i2 < n_alpha {
+                iscore += matrix[i1][i2];
+            }
+        }
+        if !g1 { pos1 += 1; }
+        if !g2 { pos2 += 1; }
+    }
+    if st {
+        let end1 = pos1 - 1;
+        let end2 = pos2 - 1;
+        regions.push(HomologyRegion {
+            start1, end1, start2, end2,
+            opt: 0.0,
+            overlapaa: end2 - start2 + 1,
+            korh,
+            ..Default::default()
+        });
+        isumscore += iscore;
+        sumoverlap += end2 - start2 + 1;
+    }
+
+    let opt = if sumoverlap > 0 {
+        isumscore / sumoverlap as f64
+    } else { 0.0 };
+    let provisional_importance =
+        if sumoverlap > 0 { opt / sumoverlap as f64 } else { 0.0 };
+    for r in regions.iter_mut() {
+        r.opt = opt;
+        r.overlapaa = sumoverlap;
+        r.importance = provisional_importance;
+    }
+    regions
+}
+
+/// One pre-aligned seed file: gapped sequences plus their indices in the
+/// final (seeds + user input) sequence list. All pairs within the group
+/// generate `korh = 'k'` homology regions.
+pub struct SeedGroup<'a> {
+    /// Aligned sequences (gaps preserved) from this seed file.
+    pub aligned: Vec<&'a [u8]>,
+    /// Indices into the combined sequence list (seeds + user input)
+    /// where these seed sequences live.
+    pub global_indices: Vec<usize>,
+}
+
+/// Build a `LocalHomologyTable` of dimension `total_nseq` from one or
+/// more pre-aligned seed groups. Mirrors C `multi2hat3s` (`multi2hat3s.c`)
+/// + `tbfast.c:2202` rescale:
+///
+/// 1. For every (i, j) pair WITHIN a seed group, run
+///    `extract_putlocalhom2_regions` on the two gapped strings to obtain
+///    chained match regions.
+/// 2. Multiply each region's `opt` (already in `tbfast.c:2202`-post-scale
+///    form, i.e. `isumscore / sumoverlap`) by `tsuyosa = user_nseq² *
+///    TSUYOSAFACTOR (100)`. This boosts seed importance over regular
+///    pairwise homology by a factor proportional to N².
+/// 3. Recompute the provisional importance (`opt / sumoverlap`) so the
+///    boosted `opt` is reflected before `recompute_importance` runs.
+/// 4. Mirror the entry symmetrically: `(i, j)` AND `(j, i)` (`j, i` with
+///    `start1/start2` swapped) — matching how `build_local_homology_table`
+///    already populates both directions.
+///
+/// Different seed groups do not share homology entries (the C script
+/// invokes `multi2hat3s` separately per seed file, with disjoint
+/// `seedoffset` ranges).
+pub fn build_seed_homology_table(
+    seed_groups: &[SeedGroup<'_>],
+    total_nseq: usize,
+    user_nseq: usize,
+    matrix: &[Vec<f64>],
+    amino_map: &[u8; 256],
+) -> LocalHomologyTable {
+    /// Matches C `multi2hat3s.c::TSUYOSAFACTOR`.
+    const TSUYOSAFACTOR: f64 = 100.0;
+    let tsuyosa = (user_nseq as f64) * (user_nseq as f64) * TSUYOSAFACTOR;
+    let mut table = LocalHomologyTable::new(total_nseq);
+
+    for group in seed_groups {
+        let n = group.aligned.len();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let gi = group.global_indices[i];
+                let gj = group.global_indices[j];
+                let regions = extract_putlocalhom2_regions(
+                    group.aligned[i], group.aligned[j],
+                    matrix, amino_map, 0, 0, b'k',
+                );
+                if regions.is_empty() { continue; }
+                let overlapaa = regions[0].overlapaa;
+                let boosted_importance = if overlapaa > 0 {
+                    (regions[0].opt * tsuyosa) / overlapaa as f64
+                } else { 0.0 };
+                for r in &regions {
+                    let mut fwd = r.clone();
+                    fwd.opt = r.opt * tsuyosa;
+                    fwd.importance = boosted_importance;
+                    let rev = HomologyRegion {
+                        start1: fwd.start2,
+                        end1: fwd.end2,
+                        start2: fwd.start1,
+                        end2: fwd.end1,
+                        ..fwd.clone()
+                    };
+                    table.push(gi, gj, fwd);
+                    table.push(gj, gi, rev);
+                }
+            }
+        }
+    }
+    table
+}
+
+/// Merge `extra` entries into `into`. Both tables must have the same
+/// `nseq`. Used to fold a seed-derived homology table into the pairwise
+/// homology table built by L-INS-i / G-INS-i / E-INS-i.
+pub fn merge_homology_tables(into: &mut LocalHomologyTable, extra: &LocalHomologyTable) {
+    if into.nseq != extra.nseq { return; }
+    for i in 0..into.nseq {
+        for j in 0..into.nseq {
+            if i == j { continue; }
+            for r in extra.get(i, j) {
+                into.push(i, j, r.clone());
+            }
+        }
+    }
+}
+
 /// Recompute homology-region `importance` values using C's
 /// position-vote algorithm in `calcimportance` (`mltaln9.c:11984`).
 ///
@@ -473,7 +663,6 @@ pub fn build_homology_table_with_unalign(
                 alignment.score
             };
 
-            let score = alignment.score;
             if score_for_dist <= 0.0 {
                 return PairResult { i, j, distance: 2.0, regions: Vec::new() };
             }
@@ -492,95 +681,15 @@ pub fn build_homology_table_with_unalign(
                 (1.0 - score_for_dist / bunbo) * 2.0
             };
 
-            // Port of C's `putlocalhom2` (`io.c:723`): split the alignment
-            // into maximal gap-free regions. Whenever a gap appears in
-            // either aligned sequence we close the current region; a
-            // residue-residue column starts a new one. Each region
-            // records its (start1, end1, start2, end2) span and its
-            // contribution `iscore` to `sumoverlap` / `isumscore`.
-            //
-            // Since L-INS-i runs with `divpairscore = 0` (no `-y`), every
-            // region in the chain gets the same combined opt. C's
-            // `putlocalhom2` stores `isumscore * 5.8 / (600 * sumoverlap)`
-            // (normalized for hat3 file output), then `tbfast.c:2202`
-            // immediately rescales it back via `opt * 600 / 5.8` before
-            // calling `calcimportance_half`. We bypass that round-trip and
-            // store the post-scale value `isumscore / sumoverlap`
-            // directly, which matches the value C's calcimportance/fillimp
-            // actually consume.
-            let n_alpha = matrix.len();
-            let a1 = &alignment.seq1;
-            let a2 = &alignment.seq2;
-            let mut regions: Vec<HomologyRegion> = Vec::new();
-            let mut isumscore: f64 = 0.0;
-            let mut sumoverlap: i32 = 0;
-            let mut pos1 = offset1 as i32;
-            let mut pos2 = offset2 as i32;
-            let mut st = false;
-            let mut start1 = 0i32;
-            let mut start2 = 0i32;
-            let mut iscore: f64 = 0.0;
-            for k in 0..a1.len() {
-                let c1 = a1[k];
-                let c2 = a2[k];
-                let g1 = c1 == b'-';
-                let g2 = c2 == b'-';
-                if st && (g1 || g2) {
-                    let end1 = pos1 - 1;
-                    let end2 = pos2 - 1;
-                    regions.push(HomologyRegion {
-                        start1, end1, start2, end2,
-                        opt: 0.0,                       // filled below
-                        overlapaa: end2 - start2 + 1,
-                        korh: b'h',
-                        ..Default::default()
-                    });
-                    isumscore += iscore;
-                    sumoverlap += end2 - start2 + 1;
-                    iscore = 0.0;
-                    st = false;
-                } else if !g1 && !g2 {
-                    if !st {
-                        start1 = pos1;
-                        start2 = pos2;
-                        st = true;
-                    }
-                    let i1 = amino_map[c1 as usize] as usize;
-                    let i2 = amino_map[c2 as usize] as usize;
-                    if i1 < n_alpha && i2 < n_alpha {
-                        iscore += matrix[i1][i2];
-                    }
-                }
-                if !g1 { pos1 += 1; }
-                if !g2 { pos2 += 1; }
-            }
-            // Close trailing region if alignment ends inside a match span.
-            if st {
-                let end1 = pos1 - 1;
-                let end2 = pos2 - 1;
-                regions.push(HomologyRegion {
-                    start1, end1, start2, end2,
-                    opt: 0.0,
-                    overlapaa: end2 - start2 + 1,
-                    korh: b'h',
-                    ..Default::default()
-                });
-                isumscore += iscore;
-                sumoverlap += end2 - start2 + 1;
-            }
-
-            // !divpairscore branch (`io.c:855-866` + `tbfast.c:2202` rescale):
-            // all regions share a single combined opt and overlapaa.
-            let opt = if sumoverlap > 0 {
-                isumscore / sumoverlap as f64
-            } else { 0.0 };
-            let provisional_importance =
-                if sumoverlap > 0 { opt / sumoverlap as f64 } else { 0.0 };
-            for r in regions.iter_mut() {
-                r.opt = opt;
-                r.overlapaa = sumoverlap;
-                r.importance = provisional_importance;
-            }
+            // Port of C's `putlocalhom2` (`io.c:723`) via the shared
+            // helper. We bypass C's `* 5.8/600` hat3-normalization round-
+            // trip and store the post-`tbfast.c:2202`-scale value
+            // (`isumscore / sumoverlap`) directly — what
+            // `calcimportance`/`fillimp` actually consume.
+            let regions = extract_putlocalhom2_regions(
+                &alignment.seq1, &alignment.seq2,
+                matrix, amino_map, offset1 as i32, offset2 as i32, b'h',
+            );
 
             PairResult { i, j, distance: d, regions }
         })

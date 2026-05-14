@@ -289,15 +289,17 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-13 (`cargo test --workspace --exclude pymafft --release`: **281 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-14 (`cargo test --workspace --exclude pymafft --release`: **317 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust unit tests | ~155 | All crates, all modules (per-crate `--lib` runs) |
-| Rust integration tests (`end_to_end`) | 58 | Byte-level parity with C across all supported modes + DP diagnostics |
-| Rust FFI cross-validation tests | ~50 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), MSalignmm profile alignment |
+| Rust unit tests (`--lib`) | 147 | All crates, all modules |
+| Rust binary tests (`mafft-rs`) | 10 | CLI helper functions (`decide_auto`, `replace_unusual`, etc.) |
+| Rust integration tests (`end_to_end`) | 74 | Byte-level parity with C across all supported modes + DP diagnostics |
+| Rust FFI cross-validation tests | 61 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), memsavetree (4 tests), MSalignmm profile alignment |
+| Rust other integration tests | 25 | `trace_refinement` (15), `integration` mafft-io (7), `imp_*` (3) |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust** | **264** | |
+| **Total Rust** | **317** | |
 
 Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 
@@ -309,9 +311,9 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 
 ### Missing CLI flags
 
-The following flags are NOT implemented and will produce "unknown argument" errors: `--auto`, `--seed`, `--seedtable`, `--treein`, `--memsave`, `--anysymbol`, `--leavegappyregion`. See `TODO.md` §B.3.
+Only `--memsave` (Hirschberg-style linear-space DP) and `--seedtable` remain unimplemented — they produce "unknown argument" errors. See `TODO.md` §B.3.
 
-`--reorder` / `--inputorder` are supported for all modes — FFT-NS-2, FFT-NS-i, NW-NS-2, L/G/E-INS-1, L/G/E-INS-i, and PartTree — all byte-identical to C MAFFT 7.526. PartTree's two-pass reorder (`splittbfast` CALL 1 with raw 6-mer distances, CALL 2 with `naivepairscore11` on the first-pass alignment) is composed as `final_order[k] = call1_order[call2_order[k]]`. See `TODO.md` §AA.
+Closed since 2026-05-13: `--reorder`/`--inputorder` (§AA), `--treeout` (§AB), `--treein` (§AC), `--auto` (§AD), `--memsavetree` (§AE), `--anysymbol`/`--preservecase` (§AF), `--leavegappyregion`/`--legacygappenalty` (§AG), and `--seed` (§AH) — all byte-identical to C MAFFT 7.526. PartTree's two-pass reorder (`splittbfast` CALL 1 with raw 6-mer distances, CALL 2 with `naivepairscore11` on the first-pass alignment) is composed as `final_order[k] = call1_order[call2_order[k]]`.
 
 ### Case preservation
 

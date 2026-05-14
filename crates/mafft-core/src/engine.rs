@@ -91,6 +91,16 @@ pub struct MafftEngine {
     /// `Salignmm.c:1604-1610`). Restores pre-7.110 behaviour where
     /// gappy columns are scored as if fully nongap.
     pub legacy_gap_cost: bool,
+    /// Seed local-homology table (`--seed FILE` constraints). Mirrors
+    /// C MAFFT's `hat3.seed` produced by `multi2hat3s` — pairwise
+    /// `korh = 'k'` regions between seed sequences with `opt`
+    /// pre-multiplied by `tsuyosa = user_nseq² * 100`. The table is
+    /// sized to the full (seeds + user input) `nseq`. When `Some`,
+    /// the engine folds these entries into its pairwise homology
+    /// table (or uses them directly for non-INS-i modes) and forces
+    /// `iterate ≥ 2` so the refinement step picks them up
+    /// (`scripts/mafft:1911-1923`).
+    pub seed_homology: Option<LocalHomologyTable>,
 }
 
 impl Default for MafftEngine {
@@ -112,13 +122,14 @@ impl Default for MafftEngine {
             treein_path: None,
             memsavetree: false,
             legacy_gap_cost: false,
+            seed_homology: None,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false, legacy_gap_cost: false }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false, legacy_gap_cost: false, seed_homology: None }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -426,6 +437,23 @@ impl MafftEngine {
             })
         });
 
+        // `--seed`: fold seed-derived `hat3.seed` entries into the
+        // pairwise homology table BEFORE `recompute_importance`, so the
+        // position-vote pass weighs seed regions together with pairwise
+        // ones. Mirrors C MAFFT's `cat hat3.seed hat3 > hat3`
+        // (`scripts/mafft:2523-2540`) — tbfast then reads the merged
+        // file before calling `calcimportance_half`.
+        //
+        // When the mode doesn't run pairwise homology (FFT-NS-i with
+        // `--seed`), promote the seed table to be the constraint table
+        // outright; the pairwise distance matrix is left alone (FFT-NS-i
+        // uses ktuple distances by default — same as without `--seed`).
+        if let Some(ref seed_lh) = self.seed_homology {
+            if let Some((ref mut table, _)) = pairwise_for_constraints {
+                mafft_align::merge_homology_tables(table, seed_lh);
+            }
+        }
+
         // C's `tbfast` calls `calcimportance_half` (mltaln9.c:11756) AFTER
         // the initial tree to replace each region's provisional importance
         // with `mean(position-vote support over region) * region.opt`,
@@ -671,6 +699,22 @@ impl MafftEngine {
             // written by initial pairlocalalign instead of recomputing from
             // the progressive alignment).
             pairwise_for_constraints.as_ref().map(|(t, _)| t.clone())
+        } else if let Some(ref seed_lh) = self.seed_homology {
+            // `--seed` with a non-INS-i mode (e.g. FFT-NS-i + `--seed`):
+            // no pairwise homology was built, but seed entries still
+            // need to drive refinement. Run `recompute_importance` on
+            // the seed-only table here (using a sequence-weight vector
+            // derived from the final progressive guide tree, mirroring
+            // `tbfast.c:2967` calling `calcimportance` after the post-
+            // progressive tree is in hand).
+            let mut table = seed_lh.clone();
+            let seq_refs: Vec<&[u8]> = msa.sequences.iter()
+                .map(|s| s.as_slice()).collect();
+            let weights = final_progressive_topo.as_ref()
+                .map(mafft_tree::sequence_weights)
+                .unwrap_or_else(|| vec![1.0; nseq]);
+            mafft_align::recompute_importance(&mut table, &seq_refs, &weights);
+            Some(table)
         } else {
             None
         };

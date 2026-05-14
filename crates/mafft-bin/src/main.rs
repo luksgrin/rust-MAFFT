@@ -193,6 +193,17 @@ struct Args {
     /// inserting more gaps to align around them.
     #[arg(long, alias = "legacygappenalty")]
     leavegappyregion: bool,
+
+    /// Use a pre-aligned seed alignment as a strong-importance
+    /// constraint (matches C MAFFT `--seed FILE`). The flag is
+    /// repeatable — every seed file's sequences are prepended to the
+    /// user input with a `_seed_` name prefix, and all in-group
+    /// pairs are written to a `hat3.seed`-style local-homology table
+    /// with `opt` multiplied by `tsuyosa = user_nseq² * 100` so the
+    /// refinement DP follows them tightly. Forces
+    /// `maxiterate ≥ 2` (`scripts/mafft:1911-1923`).
+    #[arg(long = "seed", value_name = "FILE")]
+    seed_files: Vec<PathBuf>,
 }
 
 fn main() {
@@ -239,10 +250,55 @@ fn main() {
         }
     };
 
-    let nseq = input.nseq();
-    if nseq == 0 {
+    let user_nseq = input.nseq();
+    if user_nseq == 0 {
         eprintln!("Error: no sequences found in input");
         std::process::exit(1);
+    }
+
+    // `--seed FILE` (repeatable): read each pre-aligned seed file with
+    // gaps preserved (the seed-pair LH extraction needs the gap
+    // pattern), prepend the gap-stripped seed sequences to the user
+    // input with `_seed_` name prefixes, and build the seed local-
+    // homology table. Mirrors C MAFFT `scripts/mafft:2400-2436` +
+    // `multi2hat3s.c`.
+    //
+    // The combined sequence list (seeds then user input) is what the
+    // engine sees; the original user_nseq is preserved here so we can
+    // restore the input subset and report mode names accurately.
+    let mut input = input;
+    let seed_groups_aligned: Vec<Vec<Vec<u8>>>;
+    let mut seed_seq_count: usize = 0;
+    if !args.seed_files.is_empty() {
+        let mut groups: Vec<Vec<Vec<u8>>> = Vec::with_capacity(args.seed_files.len());
+        for path in &args.seed_files {
+            let seed_set = read_fasta_casepreserve(path).unwrap_or_else(|e| {
+                eprintln!("Error reading {}: {e}", path.display());
+                std::process::exit(1);
+            });
+            groups.push(seed_set.sequences.iter().map(|s| s.data.clone()).collect());
+            // Prepend renamed (gap-stripped) seed sequences to the input
+            // ahead of the user data — matching C's `multi2hat3s` output
+            // followed by `cat infile2 >> infile` (`scripts/mafft:2435`).
+            for s in &seed_set.sequences {
+                let ungapped: Vec<u8> = s.data.iter().copied()
+                    .filter(|&c| c != b'-' && c != b'.').collect();
+                let renamed = Sequence {
+                    name: format!("_seed_{}", s.name),
+                    data: ungapped,
+                };
+                input.sequences.insert(seed_seq_count, renamed);
+                seed_seq_count += 1;
+            }
+        }
+        seed_groups_aligned = groups;
+    } else {
+        seed_groups_aligned = Vec::new();
+    }
+    let total_nseq = input.nseq();
+    if !args.quiet && seed_seq_count > 0 {
+        eprintln!("--seed: {} seed sequences across {} file(s)",
+                  seed_seq_count, args.seed_files.len());
     }
 
     // `--anysymbol` / `--preservecase`: snapshot the originals (case and
@@ -252,7 +308,6 @@ fn main() {
     // characters via name-keyed lookup. Mirrors C `replaceu` +
     // `restoreu` (`mafft-upstream/core/replaceu.c`, `restoreu.c`).
     let anysymbol = args.anysymbol || args.preservecase;
-    let mut input = input;
     let originals: Option<std::collections::HashMap<String, Vec<u8>>> = if anysymbol {
         let is_dna = input.seq_type.is_nucleotide();
         let map: std::collections::HashMap<String, Vec<u8>> = input.sequences.iter()
@@ -278,17 +333,46 @@ fn main() {
     // --genafpair / --parttree / --dpparttree / --maxiterate / --retree.
     let auto_choice = if args.auto {
         let nlen = input.sequences.iter().map(|s| s.data.len()).max().unwrap_or(0);
-        Some(decide_auto(nseq, nlen))
+        Some(decide_auto(total_nseq, nlen))
     } else {
         None
     };
 
     // Determine alignment mode
-    let mode = if let Some(ref a) = auto_choice {
+    let mut mode = if let Some(ref a) = auto_choice {
         a.mode.clone()
     } else {
         determine_mode(&args)
     };
+
+    // `--seed`: C MAFFT forces `iterate ≥ 2` when seed alignments are
+    // present (`scripts/mafft:1911-1923`) — the seed-pair `hat3.seed`
+    // constraints only fire during refinement. Lift `0`/`1` iteration
+    // counts to 2, and promote progressive-only FFT-NS-2 to FFT-NS-i
+    // with 2 iterations.
+    if !args.seed_files.is_empty() {
+        mode = match mode {
+            AlignmentMode::FftNs2 => AlignmentMode::FftNsi { iterations: 2 },
+            AlignmentMode::FftNsi { iterations } => {
+                AlignmentMode::FftNsi { iterations: iterations.max(2) }
+            }
+            AlignmentMode::LInsi { iterations } => {
+                AlignmentMode::LInsi { iterations: iterations.max(2) }
+            }
+            AlignmentMode::GInsi { iterations } => {
+                AlignmentMode::GInsi { iterations: iterations.max(2) }
+            }
+            AlignmentMode::EInsi { iterations } => {
+                AlignmentMode::EInsi { iterations: iterations.max(2) }
+            }
+            AlignmentMode::QInsi { iterations } => {
+                AlignmentMode::QInsi { iterations: iterations.max(2) }
+            }
+            AlignmentMode::XInsi { iterations } => {
+                AlignmentMode::XInsi { iterations: iterations.max(2) }
+            }
+        };
+    }
 
     if !args.quiet {
         let mode_name = match &mode {
@@ -302,7 +386,7 @@ fn main() {
         };
         let seq_type = if input.seq_type.is_nucleotide() { "nuc" } else { "aa" };
         eprintln!("mafft-rs v{}", env!("CARGO_PKG_VERSION"));
-        eprintln!("{nseq} sequences ({seq_type}), strategy: {mode_name}");
+        eprintln!("{total_nseq} sequences ({seq_type}), strategy: {mode_name}");
     }
 
     // Build engine. With `--auto`, the retree count comes from the size
@@ -375,6 +459,38 @@ fn main() {
         || auto_choice.as_ref().map(|a| a.memsavetree).unwrap_or(false);
     if memsavetree_active {
         engine.memsavetree = true;
+    }
+
+    // `--seed`: build the seed local-homology table. The engine will
+    // (a) merge it into the L-INS-i/G-INS-i/E-INS-i pairwise table
+    //     before `recompute_importance`, or
+    // (b) use it directly when the chosen mode has no pairwise step
+    //     (FFT-NS-i with `--seed`).
+    if seed_seq_count > 0 {
+        let scoring_model = if input.seq_type.is_nucleotide() {
+            ScoringModel::Dna
+        } else {
+            engine.scoring_model
+        };
+        let scoring = mafft_scoring::build_context(scoring_model, input.seq_type);
+        let mut seed_groups: Vec<mafft_align::SeedGroup> = Vec::new();
+        let mut next_idx = 0usize;
+        for group in &seed_groups_aligned {
+            let n = group.len();
+            seed_groups.push(mafft_align::SeedGroup {
+                aligned: group.iter().map(|s| s.as_slice()).collect(),
+                global_indices: (next_idx..next_idx + n).collect(),
+            });
+            next_idx += n;
+        }
+        let seed_table = mafft_align::build_seed_homology_table(
+            &seed_groups,
+            total_nseq,
+            user_nseq,
+            &scoring.consweight_matrix,
+            &scoring.amino_map,
+        );
+        engine.seed_homology = Some(seed_table);
     }
 
     // Handle --add / --addfragments

@@ -27,6 +27,8 @@ pub use constraints::{
     build_local_homology_table, build_homology_table,
     build_homology_table_with_unalign, build_imp_matrix,
     recompute_importance, PairAligner, FASTATHRESHOLD_DEFAULT,
+    extract_putlocalhom2_regions, build_seed_homology_table,
+    merge_homology_tables, SeedGroup,
 };
 pub use constrained_align::{
     constrained_profile_align, partial_profile_align, ConstrainedAlignParams,
