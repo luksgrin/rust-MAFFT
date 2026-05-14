@@ -52,7 +52,8 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--tm 200 --treeout`                        | match   | match      | 20         | residual gap — see §B.2: pass-0 TM alignment drift propagates into tree branch lengths |
 | `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G/E-INS-i, FFT-NS-i, all non-parttree modes) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--treein --treeout`                        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) — appends `#by loadtree\n` like C `mltaln9.c:2818` |
-| `--auto` (small/medium/large brackets covered by size heuristic) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) — 100k+ bracket may diverge (no memsavetree) |
+| `--auto` (small/medium/large brackets covered by size heuristic) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
+| `--memsavetree` (k-mer + MSA two-pass tree)  | match   | match      | ~930       | PARTIAL — algorithm structure ported, first-merge branch lengths match C; later merges drift (see §B.9) |
 
 Test suite as of 2026-05-14: **300 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
@@ -595,6 +596,60 @@ tied max.
 `parttree_split::build_parttree_topology` (the resolved §6 path), not
 this old `parttree::parttree` function. Reachable only via the deprecated
 re-export at `mafft-tree/src/lib.rs:23`. Consider deleting.
+
+### §B.9. `--memsavetree` — algorithm ported, residual merge-order drift after step 2
+
+**Location**: `crates/mafft-tree/src/memsavetree.rs` — ports
+`mltaln9.c::compacttree_memsaveselectable` with `howcompact=2`,
+`memsave=1` (the algorithm `--memsavetree` and `--auto` 100k+ brackets
+use). Wired into `engine.rs` for both pass 0 (k-mer distance) and
+pass 1+ (MSA distance via `distcompact_msa`).
+
+**Current state**:
+- **Algorithm structure correct**: the C reference's
+  `compactdisthalfmtxthread` (initial scan) + main loop
+  (`mltaln9.c:5639-6097`) + per-step distance recomputation
+  (`verycompactkmerdistarrthreadjoblist` / `verycompactmsadistarrthreadjoblist`)
+  is faithfully ported with cluster_mix linkage (`SUEFF=0.1`),
+  `preferenceval` tie-break, and full member-list reconstruction for
+  the progressive-alignment consumer.
+- **First-merge parity**: on the 36-seq sample, the FIRST merge after
+  the MSA-distance rebuild matches C MAFFT 7.526 byte-for-byte —
+  branch length 0.13869 (vs the standard musclesupg branch 0.35002),
+  confirming the MSA `distcompact_msa` path is bit-correct.
+- **Residual drift starting at merge step ≥ 2**:
+  - k-mer-only tree (`--memsavetree --retree 1 --treeout`): 76-line
+    diff vs C (different topology starting at step 3).
+  - Full two-pass output (`--memsavetree`): 930-line diff vs C, all
+    propagated from the pass 0 k-mer tree topology drift.
+- **Tests**: 4 unit tests in `memsavetree::tests::*` cover algorithm
+  invariants (`im < jm` swap, 2-seq merge, identical-seq merge, etc.).
+  No fixture cross-validation yet because outputs don't match.
+
+**Suspected cause**: tie-break ordering in the `find min mindist[i]`
+scan, or a 1-ULP drift in `cluster_mix_double` that pushes the
+nearest-neighbor pick onto a different `j` for some merge step. The
+initial pairwise mindist[]/nearest[] looks correct (since the first
+merge picks the same pair); the divergence emerges in the second-merge
+selection.
+
+**Fix path**:
+- Add `mafft-sys` FFI binding for `compacttree_memsaveselectable` (or
+  call `compactdisthalfmtxthread` directly) to cross-validate
+  intermediate mindist[]/nearest[] arrays cell-by-cell.
+- Audit `nearest[i] == jm` handling: when the merge updates `nearest`
+  without updating `mindist`, this preserves the OLD `mindist`
+  reference to a (now-merged) cluster. Verify our behavior matches C's
+  exactly here.
+- Once the k-mer tree matches, the MSA tree should follow since the
+  per-step pipeline is the same code.
+
+**Severity**: MEDIUM. `--memsavetree` is essentially "extra-large
+input" territory; `--auto` falls back to it only at nseq ≥ 100k.
+For 36 seqs our output is functional (valid alignment) but not
+byte-identical to C's.
+
+---
 
 ### §B.8. ~~`--treein --genafpair --maxiterate >1` (E-INS-i refinement w/ user tree)~~ — RESOLVED 2026-05-14
 

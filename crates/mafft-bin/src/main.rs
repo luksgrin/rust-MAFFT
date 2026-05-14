@@ -162,6 +162,14 @@ struct Args {
     /// other algorithm-selection flag.
     #[arg(long)]
     auto: bool,
+
+    /// Use the memory-saving guide-tree algorithm (matches C MAFFT
+    /// `--memsavetree`). Builds a UPGMA-like tree using k-mer distances
+    /// computed on the fly, avoiding the O(N²) memory cost of a full
+    /// distance matrix. Recommended for very large inputs (100k+ seqs);
+    /// also enabled automatically by `--auto` in that bracket.
+    #[arg(long)]
+    memsavetree: bool,
 }
 
 fn main() {
@@ -298,6 +306,14 @@ fn main() {
             std::process::exit(1);
         }
         engine.treein_path = Some(tree_path.clone());
+    }
+    // `--memsavetree` overrides distance-based UPGMA tree construction with
+    // C MAFFT's compacttree_memsaveselectable algorithm. `--auto` may also
+    // request memsavetree in the 100k+ bracket — pass that through too.
+    let memsavetree_active = args.memsavetree
+        || auto_choice.as_ref().map(|a| a.memsavetree).unwrap_or(false);
+    if memsavetree_active {
+        engine.memsavetree = true;
     }
 
     // Handle --add / --addfragments
@@ -488,6 +504,10 @@ struct AutoChoice {
     retree: usize,
     parttree: bool,
     dpparttree: bool,
+    /// C MAFFT sets `treeext="memsavetree"` (and thus `compacttree=2`) for
+    /// the 100k-200k brackets — see `scripts/mafft:1319-1328`. Surface it
+    /// so the CLI can flip on `engine.memsavetree`.
+    memsavetree: bool,
 }
 
 /// Mirror C `scripts/mafft:1290-1343` `--auto` heuristic. Picks mode and
@@ -500,25 +520,25 @@ struct AutoChoice {
 /// construction differs). Output for those sizes may diverge from C.
 fn decide_auto(nseq: usize, nlen: usize) -> AutoChoice {
     if nlen < 3000 && nseq < 100 {
-        AutoChoice { mode: AlignmentMode::LInsi { iterations: 1000 }, retree: 1, parttree: false, dpparttree: false }
+        AutoChoice { mode: AlignmentMode::LInsi { iterations: 1000 }, retree: 1, parttree: false, dpparttree: false, memsavetree: false }
     } else if nlen < 1000 && nseq < 200 {
-        AutoChoice { mode: AlignmentMode::LInsi { iterations: 2 }, retree: 1, parttree: false, dpparttree: false }
+        AutoChoice { mode: AlignmentMode::LInsi { iterations: 2 }, retree: 1, parttree: false, dpparttree: false, memsavetree: false }
     } else if nlen < 10000 && nseq < 500 {
-        AutoChoice { mode: AlignmentMode::FftNsi { iterations: 2 }, retree: 2, parttree: false, dpparttree: false }
+        AutoChoice { mode: AlignmentMode::FftNsi { iterations: 2 }, retree: 2, parttree: false, dpparttree: false, memsavetree: false }
     } else if nseq < 20000 {
-        AutoChoice { mode: AlignmentMode::FftNs2, retree: 2, parttree: false, dpparttree: false }
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 2, parttree: false, dpparttree: false, memsavetree: false }
     } else if nseq < 100000 {
-        // C uses memsavetree here; we approximate with FFT-NS-2.
-        AutoChoice { mode: AlignmentMode::FftNs2, retree: 2, parttree: false, dpparttree: false }
+        // C: cycle=2, memsavetree on. See `scripts/mafft:1315-1321`.
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 2, parttree: false, dpparttree: false, memsavetree: true }
     } else if nseq < 200000 {
-        // C uses memsavetree + cycle=1; we approximate with FFT-NS-2 retree=1.
-        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: false, dpparttree: false }
+        // C: cycle=1, memsavetree on. See `scripts/mafft:1322-1328`.
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: false, dpparttree: false, memsavetree: true }
     } else if nlen < 3000 {
         // PartTree + localalign distance (= --dpparttree).
-        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: true, dpparttree: true }
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: true, dpparttree: true, memsavetree: false }
     } else {
         // PartTree + ktuple distance.
-        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: true, dpparttree: false }
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: true, dpparttree: false, memsavetree: false }
     }
 }
 

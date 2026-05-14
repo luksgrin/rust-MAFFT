@@ -17,6 +17,7 @@ mod weighting;
 pub mod bsd_qsort;
 pub mod newick;
 pub mod treein;
+pub mod memsavetree;
 
 pub use distance::{DistanceMatrix, pairwise_identity_distance, ktuple_distance, scoring_matrix_distance};
 pub use nj::neighbor_joining;

@@ -81,6 +81,11 @@ pub struct MafftEngine {
     /// computation and tree building are skipped — the loaded tree is
     /// used for every progressive pass (mirrors C `tbfast.c:2072-2078`).
     pub treein_path: Option<std::path::PathBuf>,
+    /// Use the memory-saving guide-tree algorithm (`--memsavetree`).
+    /// Mirrors C MAFFT `compacttree_memsaveselectable` with `howcompact=2`
+    /// (`mltaln9.c:5491`) — k-mer-based distances computed on the fly with
+    /// no full distance matrix. Enabled by `--auto` for the 100k+ bracket.
+    pub memsavetree: bool,
 }
 
 impl Default for MafftEngine {
@@ -100,13 +105,14 @@ impl Default for MafftEngine {
             groupsize: None,
             reorder_output: false,
             treein_path: None,
+            memsavetree: false,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -482,9 +488,41 @@ impl MafftEngine {
         // the SAME topology — matching C's `tbfast.c:2072` (loadtree) +
         // `tbfast.c:2967` (counteff_simple from loaded topol) sequencing.
 
+        // `--memsavetree`: build the guide tree with the C MAFFT
+        // `compacttree_memsaveselectable` algorithm. C uses k-mer-based
+        // `distcompact` in disttbfast (pass 0, raw sequences) and switches
+        // to MSA-based `distcompact_msa` in tbfast (pass 1+, aligned
+        // sequences). Mirrors `disttbfast.c:4018` then
+        // `tbfast.c:2538`.
+        //
+        // Pass 0 uses k-mer; pass 1+ uses MSA. The MSA tree is rebuilt
+        // INSIDE the retree loop from `msa.sequences` after each pass.
+        let memsavetree_kmer_topo: Option<mafft_tree::Topology> = if self.memsavetree {
+            let seq_refs: Vec<&[u8]> = input.sequences.iter()
+                .map(|s| s.data.as_slice()).collect();
+            let is_dna = scoring.seq_type.is_nucleotide();
+            Some(mafft_tree::memsavetree::memsavetree(&seq_refs, is_dna))
+        } else {
+            None
+        };
+
         for pass in 0..retree {
             let topo = if let Some(ref t) = user_topo {
                 t.clone()
+            } else if self.memsavetree {
+                if pass == 0 {
+                    memsavetree_kmer_topo.clone().expect("memsavetree topology must be cached")
+                } else {
+                    // MSA-based rebuild from the prior pass's alignment.
+                    let aligned_refs: Vec<&[u8]> = msa.sequences.iter()
+                        .map(|s| s.as_slice()).collect();
+                    mafft_tree::memsavetree::memsavetree_msa(
+                        &aligned_refs,
+                        &scoring.consweight_matrix,
+                        &scoring.amino_map,
+                        scoring.gap.open as f64,
+                    )
+                }
             } else if pass == 0 && use_parttree {
                 parttree_topo.clone().unwrap()
             } else {
