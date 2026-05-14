@@ -2113,6 +2113,27 @@ fn treein_ginsi_byte_identical_to_c() {
     }
 }
 
+/// `--memsavetree` must reproduce C MAFFT byte-for-byte on the 36-seq
+/// sample (covers both pass 0 k-mer-distance tree-build via
+/// `compacttreegivendist` and pass 1 MSA-distance rebuild).
+#[test]
+fn memsavetree_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.memsavetree"))
+        .expect("missing fixtures/sample.memsavetree");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.memsavetree = true;
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --memsavetree: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len());
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --memsavetree output");
+    }
+}
+
 /// `--auto` on the 36-seq sample must select L-INS-i with `iterate=1000`
 /// (nseq=36 < 100, nlen ~360 < 3000) per `scripts/mafft:1295-1299` and
 /// then produce output byte-identical to C MAFFT 7.526's `--auto`.

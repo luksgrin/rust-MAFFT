@@ -234,6 +234,58 @@ unsafe extern "C" {
     pub fn seq_grp(grp: *mut c_int, seq: *const c_char) -> c_int;
     pub fn seq_grp_nuc(grp: *mut c_int, seq: *const c_char) -> c_int;
 
+    // -- distcompact / memsavetree --
+    /// `mltaln9.c::distcompact` — 6-mer based distance with the
+    /// disttbfast convention (`* 2.0` factor and `lenfac` adjustment).
+    pub fn distcompact(
+        len1: c_int, len2: c_int,
+        table1: *mut c_int, point2: *mut c_int,
+        ss1: c_int, ss2: c_int,
+    ) -> c_double;
+
+    /// FFI wrapper for `disttbfast.c::compactdisthalfmtxthread` (static).
+    /// Fills `mindist[nseq]` / `mindistfrom[nseq]` with the smallest-pair
+    /// distance from each i to any j < i (one-sided sweep). Body copied
+    /// in `wrappers/parttree_helpers.c::rs_compact_initial_mindist`.
+    pub fn rs_compact_initial_mindist(
+        nseq: c_int,
+        pointt: *mut *mut c_int,
+        nogaplen: *mut c_int,
+        selfscore: *mut c_int,
+        mindist: *mut c_double,
+        mindistfrom: *mut c_int,
+    );
+
+    /// Drive C's `compacttreegivendist` (`mltaln9.c:5221`) — the
+    /// algorithm `--memsavetree` actually uses. Takes precomputed
+    /// `mindist`/`nearest` and builds a tree via stepwise insertion.
+    /// Returns per-step `(rep0, rep1, len0, len1)` via the `out_*` buffers.
+    pub fn rs_compacttreegivendist(
+        nseq: c_int,
+        mindist_in: *const c_double,
+        nearest_in: *const c_int,
+        out_topol0: *mut c_int,
+        out_topol1: *mut c_int,
+        out_len0: *mut c_double,
+        out_len1: *mut c_double,
+    );
+
+    /// Drive C's `compacttree_memsaveselectable` with `howcompact=2`,
+    /// `memsave=1`, `seq=NULL` (k-mer distance path). Kept for reference
+    /// but NOT the algorithm `--memsavetree` actually uses.
+    pub fn rs_compacttree_memsaveselectable_kmer(
+        nseq: c_int,
+        pointt: *mut *mut c_int,
+        nogaplen: *mut c_int,
+        selfscore: *mut c_int,
+        mindist_in: *const c_double,
+        nearest_in: *const c_int,
+        out_topol0: *mut c_int,
+        out_topol1: *mut c_int,
+        out_len0: *mut c_double,
+        out_len1: *mut c_double,
+    );
+
     // -- Pairwise alignment --
     pub fn G__align11(
         scoringmtx: *mut *mut c_double,

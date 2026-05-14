@@ -180,10 +180,19 @@ where
 
     for k in 0..(nseq - 1) {
         // Find the active cluster with smallest mindist.
+        //
+        // C `mltaln9.c:5647` iterates `for( acpti=ac; acpti->next!=NULL; ...)`
+        // — the condition `acpti->next != NULL` EXCLUDES the last node in
+        // the chain. That looks like a bug at first glance (the last
+        // active sequence is never considered as `im`), but it's C MAFFT's
+        // intentional behaviour and we must mirror it bit-for-bit, or the
+        // tree topology diverges starting at the first step where the
+        // last-active happens to have the smallest mindist.
+        let last_active = (0..nseq).rev().find(|&i| active[i]).expect("at least one active");
         let mut im: usize = 0;
         let mut minscore = f64::INFINITY;
         for i in 0..nseq {
-            if active[i] && mindist[i] < minscore {
+            if active[i] && i != last_active && mindist[i] < minscore {
                 im = i;
                 minscore = mindist[i];
             }
@@ -237,6 +246,189 @@ where
     topo
 }
 
+/// Port of C MAFFT `mltaln9.c::compacttreegivendist` (lines 5221-5331).
+///
+/// Builds a guide tree from a precomputed `mindist[i]` / `nearest[i]`
+/// array (the initial 1-sided pairwise scan from
+/// `compactdisthalfmtxthread`). The algorithm is fundamentally different
+/// from the cluster-mix UPGMA in `compacttree_memsaveselectable`:
+///
+/// 1. Initial step: link leaves 0 and 1 at `mindist[1]/2`.
+/// 2. For each subsequent leaf `i` (2..nseq):
+///    - Start at `treept[neighbors[i]]` and walk UP the parent chain
+///      until a parent's height exceeds `mindist[i]/2`.
+///    - Insert `treept[i]` as a sibling of `b` (the last node before
+///      the chosen parent) under a new internal node at height
+///      `mindist[i]/2`.
+///
+/// 3. DFS post-order traversal extracts the `(left_rep, right_rep,
+///    len0, len1)` per merge step.
+///
+/// The final Newick (via `reformat_rec_newick`) swaps the children
+/// so that the subtree with smaller `rep` is printed first
+/// (`mltaln9.c:4239-4242`).
+fn compacttree_givendist(
+    nseq: usize,
+    mindist: &[f64],
+    nearest: &[i32],
+) -> Topology {
+    if nseq <= 1 {
+        return Topology::new(nseq);
+    }
+
+    // Each Treept lives in a Vec; we use indices instead of pointers.
+    // Indices 0..nseq are leaves; indices nseq..2*nseq-1 are internal
+    // nodes (added as the algorithm progresses).
+    #[derive(Clone)]
+    struct Treept {
+        parent: Option<usize>,
+        child0: Option<usize>,
+        child1: Option<usize>,
+        height: f64,
+        len0: f64,
+        len1: f64,
+        rep0: i32,
+        rep1: i32,
+    }
+    let mut nodes: Vec<Treept> = (0..2 * nseq).map(|i| Treept {
+        parent: None,
+        child0: None,
+        child1: None,
+        height: 0.0,
+        len0: 0.0,
+        len1: 0.0,
+        rep0: if i < nseq { i as i32 } else { -1 },
+        rep1: -1,
+    }).collect();
+
+    // Initial step: link leaves 0 and 1 at the first internal node `n=nseq`.
+    let mut n = nseq;
+    let first_dist = mindist[1];
+    nodes[0].parent = Some(n);
+    nodes[1].parent = Some(n);
+    nodes[n].child0 = Some(0);
+    nodes[n].child1 = Some(1);
+    nodes[n].height = first_dist * 0.5;
+    nodes[n].len0 = first_dist * 0.5;
+    nodes[n].len1 = first_dist * 0.5;
+    nodes[n].parent = None;
+    nodes[n].rep0 = 0;
+    nodes[n].rep1 = 1;
+    let mut root = n;
+
+    for i in 2..nseq {
+        n += 1;
+        let neighbor = nearest[i] as usize;
+        let mindist_i = mindist[i];
+
+        // Walk up from `treept[neighbor]` until a parent's height > mindist_i/2.
+        let mut b = neighbor;
+        let mut p = nodes[b].parent;
+        while let Some(pp) = p {
+            if nodes[pp].height > mindist_i * 0.5 {
+                break;
+            }
+            b = pp;
+            p = nodes[pp].parent;
+        }
+
+        match p {
+            None => {
+                // mindist/2 > current root height — new root above.
+                nodes[n].parent = None;
+                root = n;
+            }
+            Some(pp) => {
+                if nodes[pp].child0 == Some(b) {
+                    nodes[pp].child0 = Some(n);
+                    nodes[pp].len0 = nodes[pp].height - mindist_i * 0.5;
+                    nodes[n].parent = Some(pp);
+                } else if nodes[pp].child1 == Some(b) {
+                    nodes[pp].child1 = Some(n);
+                    nodes[pp].len1 = nodes[pp].height - mindist_i * 0.5;
+                    nodes[n].parent = Some(pp);
+                } else {
+                    panic!("compacttree_givendist: malformed tree state");
+                }
+            }
+        }
+
+        nodes[i].parent = Some(n);
+        nodes[b].parent = Some(n);
+
+        let b_height = nodes[b].height;
+        let b_rep0 = nodes[b].rep0;
+        nodes[n].child0 = Some(b);
+        nodes[n].child1 = Some(i);
+        nodes[n].height = mindist_i * 0.5;
+        nodes[n].rep0 = b_rep0;
+        nodes[n].rep1 = i as i32;
+        nodes[n].len0 = mindist_i * 0.5 - b_height;
+        nodes[n].len1 = mindist_i * 0.5;
+    }
+
+    // Reformat into our `Topology` via DFS post-order traversal —
+    // mirrors C `reformat_rec` (mltaln9.c:4201). Each visit yields one
+    // merge step with (rep0, rep1, len0, len1).
+    let mut topo = Topology::new(nseq);
+    // `lastappear[rep] = step_idx where rep was last involved`, used to
+    // reconstruct full member lists by linking back to prior steps.
+    let mut lastappear: Vec<i32> = vec![-1; nseq];
+    // DFS iterative; emit each internal node post-order.
+    let mut stack: Vec<(usize, bool)> = vec![(root, false)];
+    while let Some((idx, visited)) = stack.pop() {
+        if nodes[idx].rep1 == -1 {
+            // Leaf — nothing to emit.
+            continue;
+        }
+        if visited {
+            // Emit this internal node.
+            let rep0 = nodes[idx].rep0 as usize;
+            let rep1 = nodes[idx].rep1 as usize;
+            let left = flatten_members_for_givendist(&topo, rep0, &lastappear);
+            let right = flatten_members_for_givendist(&topo, rep1, &lastappear);
+            let step_idx = topo.steps.len();
+            topo.steps.push(JoinStep {
+                left,
+                right,
+                left_length: nodes[idx].len0,
+                right_length: nodes[idx].len1,
+            });
+            lastappear[rep0] = step_idx as i32;
+            lastappear[rep1] = step_idx as i32;
+        } else {
+            stack.push((idx, true));
+            if let Some(c) = nodes[idx].child1 {
+                stack.push((c, false));
+            }
+            if let Some(c) = nodes[idx].child0 {
+                stack.push((c, false));
+            }
+        }
+    }
+
+    topo
+}
+
+/// Like `flatten_members` but uses `lastappear[rep]` (the step index
+/// where `rep` was last merged in the reformatted topology) rather than
+/// the hist-array bookkeeping of the cluster-mix path.
+fn flatten_members_for_givendist(
+    topo: &Topology,
+    rep: usize,
+    lastappear: &[i32],
+) -> Vec<usize> {
+    let step = lastappear[rep];
+    if step < 0 {
+        return vec![rep];
+    }
+    let s = &topo.steps[step as usize];
+    let mut v = Vec::with_capacity(s.left.len() + s.right.len());
+    v.extend_from_slice(&s.left);
+    v.extend_from_slice(&s.right);
+    v
+}
+
 /// Build a guide tree using the memsavetree algorithm.
 ///
 /// Inputs are the raw input sequences (gaps will be stripped internally).
@@ -272,23 +464,13 @@ pub fn memsavetree(seqs: &[&[u8]], is_dna: bool) -> Topology {
         &pointt, &nogaplen, &selfscore, tsize, lf_a, lf_b, lf_c, lf_d,
     );
 
-    // 3. Generic main loop — per-step distances via k-mer `distcompact`.
-    //
-    // C caches `composition_table(pointt[im])` per merge step (a small
-    // win when many `i` see the same `im`). Hoist the same cache here.
-    let mut table_cache: std::collections::HashMap<usize, Vec<i32>> =
-        std::collections::HashMap::new();
-    memsavetree_with_distance(nseq, mindist, nearest, |a, b| {
-        let table_a = table_cache.entry(a)
-            .or_insert_with(|| composition_table(&pointt[a], tsize));
-        let d = distcompact(
-            nogaplen[a], nogaplen[b],
-            table_a, &pointt[b],
-            selfscore[a], selfscore[b],
-            tsize, lf_a, lf_b, lf_c, lf_d,
-        );
-        d
-    })
+    // 3. Build the tree via `compacttree_givendist` (the algorithm C MAFFT
+    //    actually invokes for `--memsavetree` — `mltaln9.c:5221`). This
+    //    is a stepwise-insertion algorithm that uses the INITIAL mindist
+    //    values directly to place each leaf in the tree, walking up from
+    //    its initial nearest neighbor until finding a parent at greater
+    //    height. NO per-step cluster distance recomputation.
+    compacttree_givendist(nseq, &mindist, &nearest)
 }
 
 /// MSA-based memsavetree (C MAFFT `tbfast.c:2538` "Making a compact
@@ -323,6 +505,7 @@ pub fn memsavetree_msa(
         .collect();
 
     // 2. Initial mindist[]/nearest[] scan — O(N²) pairs.
+    //    Mirrors `disttbfast.c::msacompactdisthalfmtxthread`.
     let mut mindist = vec![999.9_f64; nseq];
     let mut nearest = vec![-1_i32; nseq];
     for i in (0..nseq).rev() {
@@ -346,14 +529,9 @@ pub fn memsavetree_msa(
         }
     }
 
-    // 3. Main loop with MSA-based distance closure.
-    memsavetree_with_distance(nseq, mindist, nearest, |a, b| {
-        distcompact_msa(
-            aligned[a], aligned[b],
-            selfscore[a], selfscore[b],
-            matrix, amino_map, penalty,
-        )
-    })
+    // 3. Build tree via compacttree_givendist (same algorithm as pass 0,
+    //    different distance function feeds into the initial mindist).
+    compacttree_givendist(nseq, &mindist, &nearest)
 }
 
 /// `mltaln9.c:15423` `distcompact_msa` — MSA-based distance derived
@@ -484,14 +662,22 @@ mod tests {
     #[test]
     fn merge_pair_im_lt_jm() {
         // Verify the swap that ensures im < jm in the recorded step.
-        let s1 = b"AAAAAAAAAA".to_vec();
-        let s2 = b"AAAAAAAAAA".to_vec();
-        let seqs = vec![s1.as_slice(), s2.as_slice()];
+        // Memsavetree's main loop relies on every active i (except the
+        // last) having a valid `mindist`/`nearest` from the 1-sided
+        // initial scan — which means at least 3 sequences (so that
+        // `nearest[1]` is populated by `dist(1, 0)`).
+        let s1 = b"MNGTEGDNFYVPF".to_vec();
+        let s2 = b"MAAWEAAFAARR".to_vec();
+        let s3 = b"MSSNSSQAPPNG".to_vec();
+        let seqs = vec![s1.as_slice(), s2.as_slice(), s3.as_slice()];
         let topo = memsavetree(&seqs, false);
-        assert_eq!(topo.num_steps(), 1);
-        let step = &topo.steps[0];
-        // For two seqs, the merge must be (0, 1) with left=[0], right=[1].
-        assert_eq!(step.left, vec![0]);
-        assert_eq!(step.right, vec![1]);
+        assert_eq!(topo.num_steps(), 2);
+        for step in &topo.steps {
+            // im < jm is enforced by the swap, so left's smallest leaf
+            // is < right's smallest leaf.
+            let l_min = step.left.iter().min().unwrap();
+            let r_min = step.right.iter().min().unwrap();
+            assert!(l_min < r_min, "left.min ({l_min}) should be < right.min ({r_min})");
+        }
     }
 }

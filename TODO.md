@@ -53,9 +53,10 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G/E-INS-i, FFT-NS-i, all non-parttree modes) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--treein --treeout`                        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) — appends `#by loadtree\n` like C `mltaln9.c:2818` |
 | `--auto` (small/medium/large brackets covered by size heuristic) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
-| `--memsavetree` (k-mer + MSA two-pass tree)  | match   | match      | ~930       | PARTIAL — algorithm structure ported, first-merge branch lengths match C; later merges drift (see §B.9) |
+| `--memsavetree` (k-mer + MSA two-pass tree)  | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
+| `--memsavetree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
 
-Test suite as of 2026-05-14: **300 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-14: **309 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -597,7 +598,71 @@ tied max.
 this old `parttree::parttree` function. Reachable only via the deprecated
 re-export at `mafft-tree/src/lib.rs:23`. Consider deleting.
 
-### §B.9. `--memsavetree` — algorithm ported, residual merge-order drift after step 2
+### §B.9. ~~`--memsavetree` — algorithm ported, residual height drift~~ — RESOLVED 2026-05-14
+
+**Root cause**: I was porting the WRONG C function.
+`compacttree_memsaveselectable` (`mltaln9.c:5491`) is what
+`--youngestlinkage` uses (compacttree=4), NOT `--memsavetree`. For
+`--memsavetree` (compacttree=2), C MAFFT calls
+`compacttreegivendist` (`mltaln9.c:5221`) — a completely different
+stepwise-insertion algorithm.
+
+**Discovery path**: FFI wrapper `rs_compacttree_memsaveselectable_kmer`
+(after fixing the `njob` global SIGSEGV — C uses GLOBAL `njob` for
+`joblist = calloc(njob, sizeof(int))`, not the function param)
+showed our memsavetree matched `compacttree_memsaveselectable`
+bit-exact. Yet C's `--memsavetree --treeout` output differed by 76
+lines. Tracing through `disttbfast.c:4017` revealed
+`if (compacttree == 4) compacttree_memsaveselectable(...) else
+compacttreegivendist(...)` — and for `compacttree == 2`, it's the
+ELSE branch.
+
+**Fix**: Ported `compacttreegivendist` (`mltaln9.c:5221-5331`) into
+`crates/mafft-tree/src/memsavetree.rs::compacttree_givendist`. The
+algorithm:
+1. Initial step: leaves 0 and 1 link at `mindist[1]/2`.
+2. For each subsequent leaf `i ∈ [2, nseq)`: walk UP the tree from
+   `treept[nearest[i]]` until a parent's height exceeds
+   `mindist[i]/2`, then insert leaf `i` as a sibling under a new
+   internal node at height `mindist[i]/2`.
+3. DFS post-order traversal reformats into our `Topology` struct
+   (mirrors C `reformat_rec`).
+
+The pass-1 MSA tree uses the SAME algorithm with MSA-derived
+`mindist`/`nearest` (from `distcompact_msa` via `naivepairscorefast`).
+This is what `tbfast.c:2538 "Making a compact tree from msa, step 1"`
+does after pass 0 progressive alignment.
+
+**Result**: `--memsavetree` (both `--retree 1` and default
+`retree=2`) now byte-identical to C MAFFT 7.526 on the 36-seq sample.
+`--memsavetree --treeout` also byte-identical.
+
+**Tests**: 4 cross-validate tests
+(`crates/mafft-tree/tests/cross_validate_memsavetree.rs`) + 1 e2e
+fixture test (`memsavetree_byte_identical_to_c`). All pass.
+
+---
+
+### §B.9.legacy. Old notes — algorithm ported, residual height drift after merge step 7
+
+**Investigation update 2026-05-14**:
+
+Added FFI cross-validation infrastructure (`mafft-sys::wrappers/parttree_helpers.c::rs_compact_initial_mindist` + `mafft-sys::distcompact`) and three new tests in `crates/mafft-tree/tests/cross_validate_memsavetree.rs`:
+- `distcompact_matches_c_for_every_pair` ✓ (per-pair distance bit-exact)
+- `initial_mindist_matches_c` ✓ (initial pairwise scan + nearest array bit-exact)
+- `cluster_mix_for_first_divergent_step` ✓ (cluster_mix for the specific (28→{29,30}) merge matches C exactly: d(29,28)=0.194214, d(30,28)=0.165792, mix=0.167213)
+
+**Key finding**: All per-pair primitives MATCH C bit-for-bit. The algorithm structure matches C (we even mirror C's `for(acpti=ac; acpti->next!=NULL; ...)` last-active-skip quirk at `mltaln9.c:5647`). The first 6 merges (33,34), (19,20), (29,30), (7,8), (9→cluster), (21→cluster) match C exactly with the same branch lengths.
+
+**The divergence appears at merge step 7**: leaf 28 (0-indexed) attaches to cluster {29, 30}. Our mindist[28] = 0.167213 (= cluster_mix value); C's effective merge distance for the same pair = 0.19422 (twice the tree-output branch length 0.09711). Yet cluster_mix(d(29,28), d(30,28)) provably equals 0.167213 in BOTH C and Rust.
+
+Hypothesis: C's mindist[28] somehow stays at a larger value (~0.194) despite the cluster_mix at step k=2 computing 0.167. Possible mechanisms: (a) some prior step's `nearest[i] == jm` update path skips the `if(tmpdouble < mindist[i])` guard; (b) the "antei sei no tame" loop after distance recomputation overwrites in a way we miss; (c) we're misreading which pair C actually picks at step 7.
+
+**Outstanding FFI work**: `rs_compacttree_memsaveselectable_kmer` (wraps C's full algorithm) currently SEGFAULTs inside compacttree — likely missing global setup (TLS, distarrarg state). Test marked `#[ignore]` for now. Fixing that wrapper would directly capture C's `topol[k][0][0]` / `len[k]` per step and pinpoint the first divergent decision.
+
+**Earlier state preserved below**:
+
+### §B.9.old. `--memsavetree` — algorithm ported, residual merge-order drift after step 2
 
 **Location**: `crates/mafft-tree/src/memsavetree.rs` — ports
 `mltaln9.c::compacttree_memsaveselectable` with `howcompact=2`,
