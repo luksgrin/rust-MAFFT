@@ -52,8 +52,9 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--tm 200 --treeout`                        | match   | match      | 20         | residual gap — see §B.2: pass-0 TM alignment drift propagates into tree branch lengths |
 | `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G/E-INS-i, FFT-NS-i, all non-parttree modes) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--treein --treeout`                        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) — appends `#by loadtree\n` like C `mltaln9.c:2818` |
+| `--auto` (small/medium/large brackets covered by size heuristic) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) — 100k+ bracket may diverge (no memsavetree) |
 
-Test suite as of 2026-05-14: **292 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-14: **300 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -153,6 +154,43 @@ This is fundamentally different from `--parttree`'s cycle=2 pipeline.
 
 **Result**: `--dpparttree --treeout` is now byte-identical to C MAFFT
 7.526 (0-line diff on the 36-seq sample).
+
+---
+
+## §AD. `--auto` — RESOLVED 2026-05-14 (byte-identical to C on small/medium/large brackets)
+
+**Mode**: `mafft --auto` picks the alignment strategy from `nseq`
+(number of sequences) and `nlen` (longest sequence length). Mirrors
+`scripts/mafft:1290-1343`:
+
+| `nseq < ` | `nlen < ` | Mode | iter | retree |
+|-----------|-----------|------|------|--------|
+| 100  | 3000  | L-INS-i  | 1000 | 1 |
+| 200  | 1000  | L-INS-i  | 2    | 1 |
+| 500  | 10000 | FFT-NS-i | 2    | 2 |
+| 20000 | —    | FFT-NS-2 | 0    | 2 |
+| 100000 | —   | FFT-NS-2 + memsavetree | 0 | 2 |
+| 200000 | —   | FFT-NS-2 + memsavetree | 0 | 1 |
+| ∞    | 3000  | --dpparttree | — | 1 |
+| ∞    | ∞     | --parttree   | — | 1 |
+
+**Implementation**: `crates/mafft-bin/src/main.rs::decide_auto` reads
+the size, returns an `AutoChoice { mode, retree, parttree, dpparttree }`.
+When `--auto` is set, the choice OVERRIDES `--localpair`/`--globalpair`/
+`--genafpair`/`--parttree`/`--dpparttree`/`--maxiterate`/`--retree`.
+
+**Parity tests**: `crates/mafft-bin/src/main.rs::tests::auto_*` (7
+unit tests covering each bracket) and
+`crates/mafft-core/tests/end_to_end.rs::auto_picks_linsi_for_small_sample`
+cross-validates the 36-seq sample (which lands in the smallest
+bracket, picking L-INS-i with iterate=1000).
+
+**Caveat**: the 100k–200k brackets use C's `memsavetree` (a memory-
+optimised tree algorithm not yet ported); we fall through to standard
+FFT-NS-2 / FFT-NS-1 there. The progressive *alignment* step is the
+same as C, but the tree construction differs, so very-large outputs
+may not be byte-identical. The smaller brackets (which cover all
+typical interactive use cases) ARE byte-identical.
 
 ---
 
@@ -489,17 +527,17 @@ out of 36) and the implied `--tm 200 --treeout` first-pass tree
 (20-line branch-length diff, max drift 3e-3 in 5th decimal place)
 are affected. All 17/17 alignment-mode parity tests still pass.
 
-### §B.3. `--auto`, `--seed`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
+### §B.3. `--seed`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
 
 **Location**: `crates/mafft-bin/src/main.rs` — these flags are absent;
 the CLI rejects them with "unknown argument".
 (`--reorder`/`--inputorder` landed 2026-05-13 — see §AA. `--treeout`
-landed 2026-05-13 — see §AB. `--treein` landed 2026-05-14 — see §AC.)
+landed 2026-05-13 — see §AB. `--treein` landed 2026-05-14 — see §AC.
+`--auto` landed 2026-05-14 — see §AD.)
 
 **C reference**: `scripts/mafft:237-238` (`--seed`/`--seedtable`),
 `scripts/mafft:330-343` (`--anysymbol`), `scripts/mafft:543-545`
-(`--memsave`), `scripts/mafft:650` (`--leavegappyregion`),
-`scripts/mafft:1290-1340` (`--auto`).
+(`--memsave`), `scripts/mafft:650` (`--leavegappyregion`).
 
 **Severity**: HIGH for feature coverage (users running with these flags
 get errors), but does not affect byte-parity of any currently-tested

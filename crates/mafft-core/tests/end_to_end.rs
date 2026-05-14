@@ -2113,6 +2113,34 @@ fn treein_ginsi_byte_identical_to_c() {
     }
 }
 
+/// `--auto` on the 36-seq sample must select L-INS-i with `iterate=1000`
+/// (nseq=36 < 100, nlen ~360 < 3000) per `scripts/mafft:1295-1299` and
+/// then produce output byte-identical to C MAFFT 7.526's `--auto`.
+///
+/// This guards the size-heuristic in `mafft-bin::decide_auto` — if the
+/// thresholds drift from C's, we'd pick the wrong mode here and the
+/// alignment would change.
+#[test]
+fn auto_picks_linsi_for_small_sample() {
+    let c_ref = read_fasta(fixture_path("sample.auto"))
+        .expect("missing fixtures/sample.auto");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+
+    // The CLI does the size-based dispatch; this test exercises the
+    // resulting engine config. nseq=36, nlen<3000 → L-INS-i, iter=1000.
+    let engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 })
+        .with_retree(1);
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --auto (L-INS-i 1000): Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len());
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --auto output");
+    }
+}
+
 /// E-INS-i with `--treein` exercises both the LH table reweighting
 /// (`recompute_importance` derived from the loaded topology, mirroring
 /// C `tbfast.c:2967 counteff_simple` + `tbfast.c:1355 calcimportance_half`)

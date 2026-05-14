@@ -154,6 +154,14 @@ struct Args {
     /// a standard Newick file with `mafft-upstream/core/newick2mafft.rb`.
     #[arg(long, value_name = "FILE")]
     treein: Option<std::path::PathBuf>,
+
+    /// Automatically select alignment strategy based on input size, matching
+    /// C MAFFT `--auto` (`scripts/mafft:1290-1343`). Picks L-INS-i, FFT-NS-i,
+    /// FFT-NS-2, FFT-NS-1, --dpparttree, or --parttree depending on the
+    /// number of sequences and the longest sequence length. Overrides any
+    /// other algorithm-selection flag.
+    #[arg(long)]
+    auto: bool,
 }
 
 fn main() {
@@ -199,8 +207,22 @@ fn main() {
         std::process::exit(1);
     }
 
+    // `--auto`: pick mode + retree based on input size, mirroring
+    // `scripts/mafft:1290-1343`. Overrides --localpair / --globalpair /
+    // --genafpair / --parttree / --dpparttree / --maxiterate / --retree.
+    let auto_choice = if args.auto {
+        let nlen = input.sequences.iter().map(|s| s.data.len()).max().unwrap_or(0);
+        Some(decide_auto(nseq, nlen))
+    } else {
+        None
+    };
+
     // Determine alignment mode
-    let mode = determine_mode(&args);
+    let mode = if let Some(ref a) = auto_choice {
+        a.mode.clone()
+    } else {
+        determine_mode(&args)
+    };
 
     if !args.quiet {
         let mode_name = match &mode {
@@ -217,8 +239,10 @@ fn main() {
         eprintln!("{nseq} sequences ({seq_type}), strategy: {mode_name}");
     }
 
-    // Build engine
-    let mut engine = MafftEngine::new(mode).with_retree(args.retree);
+    // Build engine. With `--auto`, the retree count comes from the size
+    // heuristic; otherwise the CLI `--retree` value (default 2) wins.
+    let retree = auto_choice.as_ref().map(|a| a.retree).unwrap_or(args.retree);
+    let mut engine = MafftEngine::new(mode).with_retree(retree);
     if let Some(op) = args.op {
         engine = engine.with_gap_open(op);
     }
@@ -253,10 +277,13 @@ fn main() {
     if unalign_level > 0.0 {
         engine = engine.with_unalign_level(unalign_level);
     }
-    if args.parttree {
+    // `--auto` may override parttree/dpparttree based on the size heuristic.
+    let parttree = auto_choice.as_ref().map(|a| a.parttree).unwrap_or(args.parttree);
+    let dpparttree = auto_choice.as_ref().map(|a| a.dpparttree).unwrap_or(args.dpparttree);
+    if parttree {
         engine = engine.with_parttree(true);
     }
-    if args.dpparttree {
+    if dpparttree {
         engine = engine.with_dpparttree(true);
     }
     if let Some(gs) = args.groupsize {
@@ -454,6 +481,47 @@ fn main() {
     }
 }
 
+/// Resolved alignment strategy for `--auto`.
+#[derive(Debug, Clone)]
+struct AutoChoice {
+    mode: AlignmentMode,
+    retree: usize,
+    parttree: bool,
+    dpparttree: bool,
+}
+
+/// Mirror C `scripts/mafft:1290-1343` `--auto` heuristic. Picks mode and
+/// retree count from `nseq` (sequence count) and `nlen` (longest input
+/// sequence length, ungapped).
+///
+/// C uses `memsavetree` (large-N tree algorithm) at nseq ≥ 100k; we
+/// don't have that yet, so for the 100k-200k bracket we fall through to
+/// FFT-NS-2 / FFT-NS-1 (the alignment phase is the same; only the tree
+/// construction differs). Output for those sizes may diverge from C.
+fn decide_auto(nseq: usize, nlen: usize) -> AutoChoice {
+    if nlen < 3000 && nseq < 100 {
+        AutoChoice { mode: AlignmentMode::LInsi { iterations: 1000 }, retree: 1, parttree: false, dpparttree: false }
+    } else if nlen < 1000 && nseq < 200 {
+        AutoChoice { mode: AlignmentMode::LInsi { iterations: 2 }, retree: 1, parttree: false, dpparttree: false }
+    } else if nlen < 10000 && nseq < 500 {
+        AutoChoice { mode: AlignmentMode::FftNsi { iterations: 2 }, retree: 2, parttree: false, dpparttree: false }
+    } else if nseq < 20000 {
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 2, parttree: false, dpparttree: false }
+    } else if nseq < 100000 {
+        // C uses memsavetree here; we approximate with FFT-NS-2.
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 2, parttree: false, dpparttree: false }
+    } else if nseq < 200000 {
+        // C uses memsavetree + cycle=1; we approximate with FFT-NS-2 retree=1.
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: false, dpparttree: false }
+    } else if nlen < 3000 {
+        // PartTree + localalign distance (= --dpparttree).
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: true, dpparttree: true }
+    } else {
+        // PartTree + ktuple distance.
+        AutoChoice { mode: AlignmentMode::FftNs2, retree: 1, parttree: true, dpparttree: false }
+    }
+}
+
 fn determine_mode(args: &Args) -> AlignmentMode {
     // C's `defaultiterate` (`scripts/mafft:86`) is 0 when invoked as
     // `mafft` — the bare flags `--localpair`/`--globalpair`/`--genafpair`
@@ -497,5 +565,89 @@ fn write_output<W: Write>(
         _ => {
             mafft_io::write_fasta_to_writer_with_width(seqs, writer, args.linewidth)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mode_name(m: &AlignmentMode) -> &'static str {
+        match m {
+            AlignmentMode::FftNs2 => "FFT-NS-2",
+            AlignmentMode::FftNsi { .. } => "FFT-NS-i",
+            AlignmentMode::LInsi { .. } => "L-INS-i",
+            AlignmentMode::GInsi { .. } => "G-INS-i",
+            AlignmentMode::EInsi { .. } => "E-INS-i",
+            AlignmentMode::QInsi { .. } => "Q-INS-i",
+            AlignmentMode::XInsi { .. } => "X-INS-i",
+        }
+    }
+
+    #[test]
+    fn auto_small_picks_linsi_1000() {
+        let a = decide_auto(50, 500);
+        assert_eq!(mode_name(&a.mode), "L-INS-i");
+        if let AlignmentMode::LInsi { iterations } = a.mode {
+            assert_eq!(iterations, 1000);
+        }
+        assert_eq!(a.retree, 1);
+        assert!(!a.parttree && !a.dpparttree);
+    }
+
+    #[test]
+    fn auto_medium_picks_linsi_2() {
+        // nlen<1000, nseq<200 but not <100 → L-INS-i iterate=2.
+        let a = decide_auto(150, 800);
+        assert_eq!(mode_name(&a.mode), "L-INS-i");
+        if let AlignmentMode::LInsi { iterations } = a.mode {
+            assert_eq!(iterations, 2);
+        }
+    }
+
+    #[test]
+    fn auto_large_picks_fft_nsi() {
+        // nlen<10000, nseq<500 but not the LInsi brackets → FFT-NS-i iter=2.
+        let a = decide_auto(300, 5000);
+        assert_eq!(mode_name(&a.mode), "FFT-NS-i");
+        if let AlignmentMode::FftNsi { iterations } = a.mode {
+            assert_eq!(iterations, 2);
+        }
+        assert_eq!(a.retree, 2);
+    }
+
+    #[test]
+    fn auto_xlarge_picks_fft_ns2() {
+        // nseq<20000 → FFT-NS-2 retree=2.
+        let a = decide_auto(5000, 5000);
+        assert_eq!(mode_name(&a.mode), "FFT-NS-2");
+        assert_eq!(a.retree, 2);
+        assert!(!a.parttree);
+    }
+
+    #[test]
+    fn auto_huge_picks_fft_ns1() {
+        // nseq>=100000 (but <200000) → FFT-NS-2 retree=1.
+        let a = decide_auto(150_000, 500);
+        assert_eq!(mode_name(&a.mode), "FFT-NS-2");
+        assert_eq!(a.retree, 1);
+    }
+
+    #[test]
+    fn auto_giant_short_picks_dpparttree() {
+        // nseq>=200000, nlen<3000 → --parttree --dpparttree retree=1.
+        let a = decide_auto(250_000, 500);
+        assert!(a.parttree);
+        assert!(a.dpparttree);
+        assert_eq!(a.retree, 1);
+    }
+
+    #[test]
+    fn auto_giant_long_picks_parttree() {
+        // nseq>=200000, nlen>=3000 → --parttree (ktuple) retree=1.
+        let a = decide_auto(250_000, 5000);
+        assert!(a.parttree);
+        assert!(!a.dpparttree);
+        assert_eq!(a.retree, 1);
     }
 }
