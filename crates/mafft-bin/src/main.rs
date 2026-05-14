@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use mafft_core::{MafftEngine, AlignmentMode};
-use mafft_io::{read_fasta, read_fasta_from_reader};
+use mafft_io::{read_fasta, read_fasta_from_reader, read_fasta_casepreserve, read_fasta_from_reader_casepreserve};
 use mafft_types::{Sequence, SequenceSet, ScoringModel};
 
 /// MAFFT-rs: Multiple sequence alignment (Rust implementation)
@@ -170,6 +170,20 @@ struct Args {
     /// also enabled automatically by `--auto` in that bracket.
     #[arg(long)]
     memsavetree: bool,
+
+    /// Allow any non-standard characters in input (matches C MAFFT
+    /// `--anysymbol`). Before alignment, non-standard residues are
+    /// replaced with `X` (protein) or `n` (DNA) so the alignment DP
+    /// can score them; the alignment is then post-processed to
+    /// restore the original characters (and case). Mirrors C's
+    /// `replaceu` + `restoreu` external steps.
+    #[arg(long)]
+    anysymbol: bool,
+
+    /// Alias for `--anysymbol` (matches C MAFFT `--preservecase`).
+    /// C maps both flags to the same internal `anysymbol=1` variable.
+    #[arg(long)]
+    preservecase: bool,
 }
 
 fn main() {
@@ -183,10 +197,20 @@ fn main() {
             .ok(); // ignore error if pool already initialized
     }
 
-    // Read input
+    // Read input. `--anysymbol`/`--preservecase` need every original
+    // character preserved (case + non-standard residues) so the
+    // post-alignment restore pass can put them back; the default
+    // reader normalizes (`* → -`, drops non-alpha) which would lose
+    // exactly the chars we need.
+    let anysymbol_read = args.anysymbol || args.preservecase;
     let input = match &args.input {
         Some(path) => {
-            read_fasta(path).unwrap_or_else(|e| {
+            let result = if anysymbol_read {
+                read_fasta_casepreserve(path)
+            } else {
+                read_fasta(path)
+            };
+            result.unwrap_or_else(|e| {
                 eprintln!("Error reading {}: {e}", path.display());
                 std::process::exit(1);
             })
@@ -194,7 +218,12 @@ fn main() {
         None => {
             let stdin = io::stdin();
             let reader = BufReader::new(stdin.lock());
-            read_fasta_from_reader(reader).unwrap_or_else(|e| {
+            let result = if anysymbol_read {
+                read_fasta_from_reader_casepreserve(reader)
+            } else {
+                read_fasta_from_reader(reader)
+            };
+            result.unwrap_or_else(|e| {
                 eprintln!("Error reading stdin: {e}");
                 std::process::exit(1);
             })
@@ -206,6 +235,26 @@ fn main() {
         eprintln!("Error: no sequences found in input");
         std::process::exit(1);
     }
+
+    // `--anysymbol` / `--preservecase`: snapshot the originals (case and
+    // non-standard chars intact) and substitute X (protein) / n (DNA)
+    // for any character outside the alignment alphabet before passing
+    // the sequences to the DP. After alignment we restore the original
+    // characters via name-keyed lookup. Mirrors C `replaceu` +
+    // `restoreu` (`mafft-upstream/core/replaceu.c`, `restoreu.c`).
+    let anysymbol = args.anysymbol || args.preservecase;
+    let mut input = input;
+    let originals: Option<std::collections::HashMap<String, Vec<u8>>> = if anysymbol {
+        let is_dna = input.seq_type.is_nucleotide();
+        let map: std::collections::HashMap<String, Vec<u8>> = input.sequences.iter()
+            .map(|s| (s.name.clone(), s.data.clone())).collect();
+        for s in input.sequences.iter_mut() {
+            replace_unusual(&mut s.data, is_dna);
+        }
+        Some(map)
+    } else {
+        None
+    };
 
     // Check SCARNA-like mode (requires DASH client — network service)
     if args.scarnalike {
@@ -318,7 +367,7 @@ fn main() {
 
     // Handle --add / --addfragments
     let add_file = args.add.as_ref().or(args.addfragments.as_ref());
-    let msa = if let Some(add_path) = add_file {
+    let mut msa = if let Some(add_path) = add_file {
         let new_input = read_fasta(add_path).unwrap_or_else(|e| {
             eprintln!("Error reading {}: {e}", add_path.display());
             std::process::exit(1);
@@ -330,6 +379,26 @@ fn main() {
     } else {
         engine.align(&input)
     };
+
+    // `--anysymbol`: restore each aligned row to its original characters
+    // (case and non-standard residues intact). Mirrors C `restoreu`
+    // (`mafft-upstream/core/restoreu.c::fillorichar`): for each aligned
+    // sequence, walk every non-gap position and copy the next character
+    // from the gap-stripped original.
+    if let Some(orig_map) = originals {
+        for i in 0..msa.sequences.len() {
+            let Some(orig) = orig_map.get(&msa.names[i]) else { continue };
+            let orig_no_gaps: Vec<u8> = orig.iter().copied()
+                .filter(|c| *c != b'-' && *c != b'.').collect();
+            let mut k = 0;
+            for c in msa.sequences[i].iter_mut() {
+                if *c != b'-' && *c != b'.' && k < orig_no_gaps.len() {
+                    *c = orig_no_gaps[k];
+                    k += 1;
+                }
+            }
+        }
+    }
 
     if !args.quiet {
         eprintln!("Alignment: {} columns", msa.width());
@@ -494,6 +563,32 @@ fn main() {
     if let Err(e) = write_result {
         eprintln!("Error writing output: {e}");
         std::process::exit(1);
+    }
+}
+
+/// `--anysymbol` preprocessor — substitute every character outside
+/// the alignment alphabet with the appropriate "unknown" symbol, then
+/// canonicalize case to match `replaceu.c::replace_unusual`:
+/// - Protein: usual = "ARNDCQEGHILKMFPSTWYVarndcqeghilkmfpstwyv-.";
+///   unknown = 'X', case = `toupper`.
+/// - DNA:     usual = "ATGCUatgcuBDHKMNRSVWYXbdhkmnrsvwyx-";
+///   unknown = 'n', case = `tolower`.
+fn replace_unusual(seq: &mut [u8], is_dna: bool) {
+    let usual_protein: &[u8] = b"ARNDCQEGHILKMFPSTWYVarndcqeghilkmfpstwyv-.";
+    let usual_dna: &[u8] = b"ATGCUatgcuBDHKMNRSVWYXbdhkmnrsvwyx-";
+    let (usual, unknown) = if is_dna {
+        (usual_dna, b'n')
+    } else {
+        (usual_protein, b'X')
+    };
+    for c in seq.iter_mut() {
+        if !usual.contains(c) {
+            *c = unknown;
+        } else if is_dna {
+            *c = c.to_ascii_lowercase();
+        } else {
+            *c = c.to_ascii_uppercase();
+        }
     }
 }
 
@@ -669,5 +764,39 @@ mod tests {
         assert!(a.parttree);
         assert!(!a.dpparttree);
         assert_eq!(a.retree, 1);
+    }
+
+    #[test]
+    fn replace_unusual_protein_canonicalizes() {
+        // Protein usual set: 20 AA + lowercase + '-' '.'.
+        // Lowercase gets uppercased; '*', '@', 'U' (selenocys), 'x',
+        // 'B', 'J', 'Z' (extended set absent from `usual_protein`) →
+        // 'X'.
+        let mut seq = b"MKAUlsgVPxxBJL@&*fkdgna-.".to_vec();
+        replace_unusual(&mut seq, false);
+        assert_eq!(&seq, b"MKAXLSGVPXXXXLXXXFKDGNA-.");
+    }
+
+    #[test]
+    fn replace_unusual_dna_canonicalizes() {
+        // DNA usual set: ATGCU + lowercase + IUPAC ambig + 'X' + '-'.
+        // Uppercase ATGC gets lowercased; '@' / '*' / digits-equivalents
+        // → 'n'. IUPAC `R`, `Y`, `N` stay (lowercased).
+        let mut seq = b"ATGCUNnxx@*RYBDHKMSVW-".to_vec();
+        replace_unusual(&mut seq, true);
+        // Every alphabetic char in `usual_dna` lowercased; unknowns → 'n'.
+        assert_eq!(&seq, b"atgcunnxxnnrybdhkmsvw-");
+    }
+
+    #[test]
+    fn replace_unusual_preserves_length() {
+        // The function operates in place and must not change length.
+        let original = b"AaBbCc@*xx.-".to_vec();
+        let mut seq = original.clone();
+        replace_unusual(&mut seq, false);
+        assert_eq!(seq.len(), original.len());
+        let mut seq2 = original.clone();
+        replace_unusual(&mut seq2, true);
+        assert_eq!(seq2.len(), original.len());
     }
 }

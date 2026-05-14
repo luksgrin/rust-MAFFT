@@ -55,8 +55,9 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--auto` (small/medium/large brackets covered by size heuristic) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--memsavetree` (k-mer + MSA two-pass tree)  | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
 | `--memsavetree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
+| `--anysymbol` / `--preservecase` (protein + DNA, non-standard chars, mixed case) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 
-Test suite as of 2026-05-14: **309 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-14: **312 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -156,6 +157,82 @@ This is fundamentally different from `--parttree`'s cycle=2 pipeline.
 
 **Result**: `--dpparttree --treeout` is now byte-identical to C MAFFT
 7.526 (0-line diff on the 36-seq sample).
+
+---
+
+## §AF. `--anysymbol` / `--preservecase` — RESOLVED 2026-05-14
+
+**Mode**: `mafft --anysymbol` (alias `--preservecase`) allows arbitrary
+characters in input. Mirrors C MAFFT `scripts/mafft:330-343`'s
+external `replaceu` + `restoreu` pipeline as in-process pre/post
+steps.
+
+**Implementation** (`crates/mafft-bin/src/main.rs`):
+1. CLI flags `--anysymbol` and `--preservecase`.
+2. New `read_fasta_casepreserve` / `read_fasta_from_reader_casepreserve`
+   in `mafft-io` — strip only whitespace and ASCII digits; everything
+   else (case, `*`, `@`, IUPAC, etc.) is preserved. Mirrors C's
+   `readData_pointer_casepreserve`.
+3. `replace_unusual()` substitutes non-standard chars with `X`
+   (protein) / `n` (DNA), then canonicalizes case
+   (`toupper` for protein, `tolower` for DNA). Mirrors C
+   `replaceu.c::replace_unusual`.
+4. Pre-align: snapshot originals into a name-keyed map, then apply
+   `replace_unusual` to `input.sequences`.
+5. Post-align: for each aligned row, walk every non-gap position and
+   copy the next character from the gap-stripped original (name
+   lookup; works correctly even when `--reorder` permutes the output).
+   Mirrors C `restoreu.c::fillorichar`.
+
+**Parity verified** on the 36-seq protein sample and a custom test
+input with non-standard chars (`@`, `&`, `*`, `U`, `B`, `J`, `Z`,
+lowercase). Byte-identical across `--anysymbol`, `--preservecase`,
+`--anysymbol --localpair --maxiterate 1000`, and DNA `--anysymbol`
+on a synthetic test.
+
+**Tests**: 3 unit tests for `replace_unusual` covering protein
+canonicalization, DNA canonicalization, and length preservation.
+
+---
+
+## §AE. `--memsavetree` — RESOLVED 2026-05-14 (byte-identical to C MAFFT)
+
+**Mode**: `mafft --memsavetree` uses C MAFFT's `compacttreegivendist`
+algorithm (`mltaln9.c:5221`) instead of the standard musclesupg UPGMA.
+Recommended for very large inputs (100k+ seqs) where the O(N²)
+distance matrix wouldn't fit in RAM; `--auto` enables it
+automatically for that bracket.
+
+Algorithm: stepwise tree insertion driven by the initial
+nearest-neighbor scan `compactdisthalfmtxthread`. Each leaf
+attaches to the existing tree at the height implied by its
+precomputed `mindist`. No per-step cluster-distance recomputation
+(unlike the cluster-mix UPGMA in `compacttree_memsaveselectable`).
+
+**Implementation** (`crates/mafft-tree/src/memsavetree.rs`):
+- `compacttree_givendist` — generic algorithm driver
+- `memsavetree` — k-mer-distance entry (pass 0; `disttbfast.c` flow)
+- `memsavetree_msa` — MSA-distance entry (pass 1; `tbfast.c:2538`
+  "Making a compact tree from msa, step 1")
+
+**Engine wiring** (`engine.rs:500-528`): pass 0 uses k-mer
+`memsavetree`; pass 1+ rebuilds from `msa.sequences` via
+`memsavetree_msa`. Mirrors C's two-pass disttbfast/tbfast structure.
+
+**Parity verified**: `--memsavetree --retree 1`, default
+(`retree=2`), `--memsavetree --treeout` all byte-identical on the
+36-seq sample.
+
+**Cross-validation tests** (`crates/mafft-tree/tests/cross_validate_memsavetree.rs`):
+- `distcompact_matches_c_for_every_pair`
+- `initial_mindist_matches_c`
+- `cluster_mix_for_first_divergent_step`
+- `memsavetree_topol_matches_c_step_by_step`
+
+**FFI helper** (`mafft-sys::rs_compacttreegivendist`): wraps C's
+`compacttreegivendist`. The wrapper had to also set the global `njob`
+(C uses GLOBAL `njob` for `joblist = calloc(njob, ...)`, not the
+function arg) — forgetting that was a SIGSEGV.
 
 ---
 
@@ -529,17 +606,19 @@ out of 36) and the implied `--tm 200 --treeout` first-pass tree
 (20-line branch-length diff, max drift 3e-3 in 5th decimal place)
 are affected. All 17/17 alignment-mode parity tests still pass.
 
-### §B.3. `--seed`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
+### §B.3. `--seed`, `--memsave`, `--leavegappyregion` — UNIMPLEMENTED
 
 **Location**: `crates/mafft-bin/src/main.rs` — these flags are absent;
 the CLI rejects them with "unknown argument".
 (`--reorder`/`--inputorder` landed 2026-05-13 — see §AA. `--treeout`
 landed 2026-05-13 — see §AB. `--treein` landed 2026-05-14 — see §AC.
-`--auto` landed 2026-05-14 — see §AD.)
+`--auto` landed 2026-05-14 — see §AD. `--memsavetree` landed
+2026-05-14 — see §AE. `--anysymbol`/`--preservecase` landed
+2026-05-14 — see §AF.)
 
 **C reference**: `scripts/mafft:237-238` (`--seed`/`--seedtable`),
-`scripts/mafft:330-343` (`--anysymbol`), `scripts/mafft:543-545`
-(`--memsave`), `scripts/mafft:650` (`--leavegappyregion`).
+`scripts/mafft:543-545` (`--memsave`), `scripts/mafft:650`
+(`--leavegappyregion`).
 
 **Severity**: HIGH for feature coverage (users running with these flags
 get errors), but does not affect byte-parity of any currently-tested

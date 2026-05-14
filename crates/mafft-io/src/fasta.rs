@@ -28,6 +28,66 @@ pub fn read_fasta(path: impl AsRef<Path>) -> Result<SequenceSet, IoError> {
     read_fasta_from_reader(reader)
 }
 
+/// Read a FASTA file preserving case and non-standard residues — used
+/// by `--anysymbol`/`--preservecase`. Strips only whitespace and
+/// digits (matching C MAFFT's `readData_pointer_casepreserve`); any
+/// other character is kept verbatim so the post-alignment restore
+/// pass can put the originals back.
+pub fn read_fasta_casepreserve(path: impl AsRef<Path>) -> Result<SequenceSet, IoError> {
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    read_fasta_from_reader_casepreserve(reader)
+}
+
+/// Like `read_fasta_from_reader` but preserves case and non-standard
+/// residues (see `read_fasta_casepreserve`).
+pub fn read_fasta_from_reader_casepreserve<R: BufRead>(reader: R) -> Result<SequenceSet, IoError> {
+    let mut sequences = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut current_seq = Vec::new();
+
+    for line_result in reader.lines() {
+        let line = line_result?;
+        if let Some(header) = line.strip_prefix('>') {
+            if let Some(name) = current_name.take() {
+                sequences.push(Sequence {
+                    name,
+                    data: normalize_sequence_casepreserve(&current_seq),
+                });
+                current_seq.clear();
+            }
+            current_name = Some(header.to_string());
+        } else if current_name.is_some() {
+            current_seq.extend_from_slice(line.as_bytes());
+        }
+    }
+    if let Some(name) = current_name.take() {
+        sequences.push(Sequence {
+            name,
+            data: normalize_sequence_casepreserve(&current_seq),
+        });
+    }
+    if sequences.is_empty() {
+        return Err(IoError::EmptyInput);
+    }
+    let seq_type = detect_seq_type(
+        &sequences.iter().map(|s| s.data.clone()).collect::<Vec<_>>(),
+    );
+    Ok(SequenceSet { sequences, seq_type })
+}
+
+/// Case-preserving sequence normaliser — strips only whitespace and
+/// ASCII digits; all other characters (including `*`, `@`, lowercase,
+/// IUPAC) are kept so `--anysymbol`/`--preservecase` can replace then
+/// restore them. Mirrors C `readData_pointer_casepreserve` reading
+/// rules.
+fn normalize_sequence_casepreserve(raw: &[u8]) -> Vec<u8> {
+    raw.iter()
+        .copied()
+        .filter(|&c| !c.is_ascii_whitespace() && !c.is_ascii_digit())
+        .collect()
+}
+
 /// Read FASTA from any buffered reader.
 ///
 /// Handles non-standard headers with leading whitespace that strict parsers
