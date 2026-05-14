@@ -346,6 +346,17 @@ impl Default for BoundaryFreqs {
     }
 }
 
+/// Clone a profile with `nongap_freq` overridden to all 1.0 and
+/// `gap_freq` to all 0.0 — what C's `legacygapcost = 1` branch
+/// (`Salignmm.c:1604-1610`) produces when computing the per-column
+/// gap-frequency arrays for the profile DP.
+fn legacy_gap_profile(p: &Profile) -> Profile {
+    let mut clone = p.clone();
+    clone.nongap_freq = vec![1.0; p.length];
+    clone.gap_freq = vec![0.0; p.length];
+    clone
+}
+
 /// Like `profile_align_imp` but with control over the prept-vs-mi/mjpt
 /// tie-break rule. When `strict_part_tiebreak == false`, uses C's
 /// `A__align` semantics (`>=`, ties update mi/mjpt — Salignmm.c:1926,1946).
@@ -398,6 +409,24 @@ pub fn profile_align_imp_with_boundary(
             score: 0.0,
             operations: Vec::new(),
         };
+    }
+
+    // `--leavegappyregion` / `--legacygappenalty` (`legacygapcost = 1`,
+    // `Salignmm.c:1592-1610`): force every column to be treated as fully
+    // nongap (`gapfreq[i] = 1.0`, head/tail nongap = 1.0). The cleanest
+    // way to localise this is to clone the inputs with overridden
+    // nongap-freq / gap-freq vectors and recurse with the legacy flag
+    // cleared, so the rest of the DP body stays unchanged.
+    if gap.legacy_gap_cost {
+        let p1 = legacy_gap_profile(prof1);
+        let p2 = legacy_gap_profile(prof2);
+        let mut gap_clean = gap.clone();
+        gap_clean.legacy_gap_cost = false;
+        return profile_align_imp_with_boundary(
+            &p1, &p2, matrix, &gap_clean,
+            head_gap, tail_gap, impmtx, strict_part_tiebreak,
+            BoundaryFreqs::default(),
+        );
     }
 
     // Compute position-specific gap cost profiles matching C's formula:

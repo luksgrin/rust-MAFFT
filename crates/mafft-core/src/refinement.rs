@@ -42,6 +42,10 @@ pub struct RefinementParams {
     pub cut: f64,
     /// Whether to use FFT-accelerated alignment during refinement.
     pub use_fft: bool,
+    /// `--leavegappyregion` / `--legacygappenalty` — propagated into
+    /// the inner `GapModel` so the profile DP treats every column as
+    /// fully nongap (`legacygapcost = 1`, `Salignmm.c:1604-1610`).
+    pub legacy_gap_cost: bool,
 }
 
 impl Default for RefinementParams {
@@ -50,6 +54,7 @@ impl Default for RefinementParams {
             max_iterations: 100,
             cut: 0.0,
             use_fft: false,
+            legacy_gap_cost: false,
         }
     }
 }
@@ -126,7 +131,8 @@ pub fn iterative_refine(
     let branch_weights = BranchWeights::new(topology);
     let global_weights = mafft_tree::sequence_weights(topology);
     let use_global_weights = std::env::var("RUST_MAFFT_GLOBAL_WEIGHTS").is_ok();
-    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64)
+        .with_legacy_gap_cost(params.legacy_gap_cost);
 
 
     let mut converged_count = 0usize;

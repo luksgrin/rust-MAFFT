@@ -69,16 +69,27 @@ pub struct GapModel {
     /// Shift/warp penalty for long-range gap jumps (--allowshift).
     /// None = disabled (default). Some(penalty) = enabled.
     pub shift: Option<f64>,
+    /// `--leavegappyregion` / `--legacygappenalty` (C `legacygapcost = 1`).
+    /// When true, the profile-DP treats every column as fully nongap
+    /// (`gapfreq[i] = 1.0`), disabling the gap-aware reweighting
+    /// introduced in MAFFT 7.110. Mirrors `Salignmm.c:1592-1610`.
+    pub legacy_gap_cost: bool,
 }
 
 impl GapModel {
     pub fn new(open: f64, extend: f64) -> Self {
-        Self { open, extend, shift: None }
+        Self { open, extend, shift: None, legacy_gap_cost: false }
     }
 
     /// Create with shift/warp enabled.
     pub fn with_shift(mut self, shift_penalty: f64) -> Self {
         self.shift = Some(shift_penalty);
+        self
+    }
+
+    /// Create with legacy (pre-7.110) gap-cost behaviour.
+    pub fn with_legacy_gap_cost(mut self, legacy: bool) -> Self {
+        self.legacy_gap_cost = legacy;
         self
     }
 }
@@ -89,6 +100,7 @@ impl Default for GapModel {
             open: -918.0,  // MAFFT default: (int)(600/1000 * -1530 + 0.5)
             extend: 0.0,   // MAFFT default
             shift: None,
+            legacy_gap_cost: false,
         }
     }
 }

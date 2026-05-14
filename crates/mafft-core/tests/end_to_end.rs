@@ -2113,6 +2113,28 @@ fn treein_ginsi_byte_identical_to_c() {
     }
 }
 
+/// `--leavegappyregion` / `--legacygappenalty` (`legacygapcost = 1`,
+/// `Salignmm.c:1604-1610`) must reproduce C MAFFT byte-for-byte. With
+/// the flag set, the profile DP treats every column as fully nongap,
+/// disabling the 7.110 gap-aware reweighting.
+#[test]
+fn leavegappyregion_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.leavegappyregion"))
+        .expect("missing fixtures/sample.leavegappyregion");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.legacy_gap_cost = true;
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --leavegappyregion: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len());
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --leavegappyregion output");
+    }
+}
+
 /// `--memsavetree` must reproduce C MAFFT byte-for-byte on the 36-seq
 /// sample (covers both pass 0 k-mer-distance tree-build via
 /// `compacttreegivendist` and pass 1 MSA-distance rebuild).

@@ -86,6 +86,11 @@ pub struct MafftEngine {
     /// (`mltaln9.c:5491`) — k-mer-based distances computed on the fly with
     /// no full distance matrix. Enabled by `--auto` for the 100k+ bracket.
     pub memsavetree: bool,
+    /// `--leavegappyregion` / `--legacygappenalty` — disable the
+    /// gap-aware DP reweighting (`legacygapcost = 1`,
+    /// `Salignmm.c:1604-1610`). Restores pre-7.110 behaviour where
+    /// gappy columns are scored as if fully nongap.
+    pub legacy_gap_cost: bool,
 }
 
 impl Default for MafftEngine {
@@ -106,13 +111,14 @@ impl Default for MafftEngine {
             reorder_output: false,
             treein_path: None,
             memsavetree: false,
+            legacy_gap_cost: false,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false, legacy_gap_cost: false }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -585,6 +591,7 @@ impl MafftEngine {
                 &input_seqs, &names, &topo, &scoring, use_fft, shift,
                 progress_constraints, penalize_term_gaps,
                 weights_override.as_deref(), self.unalign_level,
+                self.legacy_gap_cost,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
             final_progressive_topo = Some(topo.clone());
@@ -771,6 +778,7 @@ impl MafftEngine {
                 let params = RefinementParams {
                     max_iterations: capped_iterations,
                     use_fft: true,
+                    legacy_gap_cost: self.legacy_gap_cost,
                     ..Default::default()
                 };
                 iterative_refine(

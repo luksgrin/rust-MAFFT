@@ -56,8 +56,9 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--memsavetree` (k-mer + MSA two-pass tree)  | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
 | `--memsavetree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
 | `--anysymbol` / `--preservecase` (protein + DNA, non-standard chars, mixed case) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
+| `--leavegappyregion` / `--legacygappenalty` (FFT-NS-2/-i, NW, L/G/E-INS-i, BL/JTT, --anysymbol/--reorder/--treein/--memsavetree/--auto combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 
-Test suite as of 2026-05-14: **312 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-14: **313 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -157,6 +158,43 @@ This is fundamentally different from `--parttree`'s cycle=2 pipeline.
 
 **Result**: `--dpparttree --treeout` is now byte-identical to C MAFFT
 7.526 (0-line diff on the 36-seq sample).
+
+---
+
+## §AG. `--leavegappyregion` / `--legacygappenalty` — RESOLVED 2026-05-14
+
+**Mode**: `mafft --leavegappyregion` (alias `--legacygappenalty`) sets
+`legacygapcost = 1` — the pre-7.110 gap-cost behaviour where the
+profile DP treats every column as fully nongap, disabling the
+gap-aware reweighting introduced in MAFFT 7.110. Useful when the
+input already has trustworthy gap structure that the new heuristic
+would erode.
+
+**Implementation**:
+- `GapModel::legacy_gap_cost` field + `with_legacy_gap_cost(bool)`
+  builder (`crates/mafft-align/src/dp.rs`).
+- `profile_align_imp_with_boundary` (`crates/mafft-align/src/profile.rs`)
+  early-returns into a recursive call with the legacy flag cleared,
+  after substituting clones whose `nongap_freq = [1.0; len]` /
+  `gap_freq = [0.0; len]` and a default `BoundaryFreqs`. Mirrors
+  `Salignmm.c:1604-1610`.
+- `MafftEngine::legacy_gap_cost` + `RefinementParams::legacy_gap_cost`
+  thread the flag from CLI through both `progressive_align_full` and
+  `iterative_refine` into the inner `GapModel` constructions.
+- CLI flag `--leavegappyregion` with `--legacygappenalty` as a clap
+  alias.
+
+**Parity verified** on the 36-seq protein sample across:
+- FFT-NS-2 default
+- NW-NS-2 (`--nofft`)
+- FFT-NS-i (`--maxiterate 100`)
+- L/G/E-INS-i (`--localpair`/`--globalpair`/`--genafpair --maxiterate 1000`)
+- BLOSUM80 (`--bl 80`)
+- Combos with `--anysymbol`, `--reorder`, `--treein`, `--memsavetree`,
+  `--auto` — all byte-identical.
+
+**Tests**: `leavegappyregion_byte_identical_to_c` end-to-end fixture
+test (`crates/mafft-core/tests/end_to_end.rs`).
 
 ---
 
@@ -606,7 +644,7 @@ out of 36) and the implied `--tm 200 --treeout` first-pass tree
 (20-line branch-length diff, max drift 3e-3 in 5th decimal place)
 are affected. All 17/17 alignment-mode parity tests still pass.
 
-### §B.3. `--seed`, `--memsave`, `--leavegappyregion` — UNIMPLEMENTED
+### §B.3. `--seed`, `--memsave` — UNIMPLEMENTED
 
 **Location**: `crates/mafft-bin/src/main.rs` — these flags are absent;
 the CLI rejects them with "unknown argument".
@@ -614,11 +652,11 @@ the CLI rejects them with "unknown argument".
 landed 2026-05-13 — see §AB. `--treein` landed 2026-05-14 — see §AC.
 `--auto` landed 2026-05-14 — see §AD. `--memsavetree` landed
 2026-05-14 — see §AE. `--anysymbol`/`--preservecase` landed
-2026-05-14 — see §AF.)
+2026-05-14 — see §AF. `--leavegappyregion`/`--legacygappenalty`
+landed 2026-05-14 — see §AG.)
 
 **C reference**: `scripts/mafft:237-238` (`--seed`/`--seedtable`),
-`scripts/mafft:543-545` (`--memsave`), `scripts/mafft:650`
-(`--leavegappyregion`).
+`scripts/mafft:543-545` (`--memsave`).
 
 **Severity**: HIGH for feature coverage (users running with these flags
 get errors), but does not affect byte-parity of any currently-tested

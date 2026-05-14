@@ -184,6 +184,15 @@ struct Args {
     /// C maps both flags to the same internal `anysymbol=1` variable.
     #[arg(long)]
     preservecase: bool,
+
+    /// Restore the pre-7.110 gap-cost behaviour (matches C MAFFT
+    /// `--leavegappyregion` / `--legacygappenalty`). The profile DP
+    /// stops down-weighting columns by their gap fraction
+    /// (`legacygapcost = 1` — `Salignmm.c:1604-1610`), which lets
+    /// alignments leave heavily-gapped regions untouched instead of
+    /// inserting more gaps to align around them.
+    #[arg(long, alias = "legacygappenalty")]
+    leavegappyregion: bool,
 }
 
 fn main() {
@@ -355,6 +364,9 @@ fn main() {
             std::process::exit(1);
         }
         engine.treein_path = Some(tree_path.clone());
+    }
+    if args.leavegappyregion {
+        engine.legacy_gap_cost = true;
     }
     // `--memsavetree` overrides distance-based UPGMA tree construction with
     // C MAFFT's compacttree_memsaveselectable algorithm. `--auto` may also

@@ -670,7 +670,7 @@ pub fn progressive_align_with_weights_override(
 ) -> MultipleAlignment {
     progressive_align_full(
         sequences, names, topology, scoring, use_fft, shift_penalty,
-        constraints, penalize_term_gaps, weights_override, 0.0,
+        constraints, penalize_term_gaps, weights_override, 0.0, false,
     )
 }
 
@@ -690,6 +690,7 @@ pub fn progressive_align_full(
     penalize_term_gaps: bool,
     weights_override: Option<&[f64]>,
     unalign_level: f64,
+    legacy_gap_cost: bool,
 ) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
@@ -710,7 +711,8 @@ pub fn progressive_align_full(
     let mut aligned: Vec<Vec<u8>> = sequences.to_vec();
 
     let mut last_score = 0.0;
-    let mut gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let mut gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64)
+        .with_legacy_gap_cost(legacy_gap_cost);
     if let Some(shift) = shift_penalty {
         gap = gap.with_shift(shift);
     }
