@@ -75,6 +75,12 @@ pub struct MafftEngine {
     /// Reorder output sequences in guide-tree DFS order (--reorder). Default
     /// is input order (--inputorder), matching C MAFFT 7.526.
     pub reorder_output: bool,
+    /// Use a user-supplied guide tree (`--treein FILE`). Format matches C
+    /// MAFFT's `_guidetree`: nseq-1 lines of `im jm len0 len1` (1-indexed,
+    /// im < jm), as produced by `newick2mafft.rb`. When `Some`, distance
+    /// computation and tree building are skipped — the loaded tree is
+    /// used for every progressive pass (mirrors C `tbfast.c:2072-2078`).
+    pub treein_path: Option<std::path::PathBuf>,
 }
 
 impl Default for MafftEngine {
@@ -93,13 +99,14 @@ impl Default for MafftEngine {
             dpparttree: false,
             groupsize: None,
             reorder_output: false,
+            treein_path: None,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -455,8 +462,24 @@ impl MafftEngine {
         // (`pre_2`) and the scores would diverge.
         let mut first_pass_msa: Option<Vec<Vec<u8>>> = None;
 
+        // User-supplied guide tree (`--treein FILE`). Loaded once outside the
+        // retree loop and reused for every pass — mirrors C `tbfast.c:2072`
+        // where `loadtree()` runs before the progressive alignment and the
+        // shell script invokes the binary the same way on each cycle, so
+        // every pass reads the same `_guidetree`. The CLI validates path
+        // existence before invoking `align`; bad format errors here are a
+        // hard failure with a user-readable message.
+        let user_topo: Option<mafft_tree::Topology> = self.treein_path.as_ref().map(|path| {
+            mafft_tree::parse_mafft_tree(path, nseq).unwrap_or_else(|e| {
+                eprintln!("--treein: {e}");
+                std::process::exit(1);
+            })
+        });
+
         for pass in 0..retree {
-            let topo = if pass == 0 && use_parttree {
+            let topo = if let Some(ref t) = user_topo {
+                t.clone()
+            } else if pass == 0 && use_parttree {
                 parttree_topo.clone().unwrap()
             } else {
                 musclesupg(&dm, ClusterMethod::default())
@@ -679,7 +702,16 @@ impl MafftEngine {
                     }
                     rounded
                 };
-                let topo = musclesupg(&dm, ClusterMethod::default());
+                // With `--treein`, C's dvtditr also loads the user tree
+                // (`dvtditr.c:766-768` if(intree) ...
+                // veryfastsupg_double_loadtree). Override the distance-based
+                // rebuild so refinement runs against the same user-supplied
+                // topology as the progressive pass.
+                let topo = if let Some(ref t) = user_topo {
+                    t.clone()
+                } else {
+                    musclesupg(&dm, ClusterMethod::default())
+                };
                 // C's `--treeout` writes the refinement tree built inside
                 // `dvtditr` (not the progressive tbfast tree). Override
                 // `final_progressive_topo` so the Newick we emit for

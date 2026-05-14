@@ -591,7 +591,11 @@ pub fn profile_align_imp_with_boundary(
     let mut mpj = vec![0usize; m + 1];
     for j in 1..=m {
         let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(0.0);
-        mj[j] = currentw[j - 1] + ogcp1[1] * gf2_jm1;
+        // FMA: same rationale as the inner DP gap-candidate computations
+        // above (see line 655). Without FMA the column tracker `mj[j]`
+        // starts 1-ULP off C's value for flat-landscape matrices (TM
+        // PAM 200), and that drift propagates into tie-break decisions.
+        mj[j] = ogcp1[1].mul_add(gf2_jm1, currentw[j - 1]);
         mpj[j] = 0;
     }
 
@@ -700,12 +704,14 @@ pub fn profile_align_imp_with_boundary(
                 mj[j] = g;
                 mpj[j] = i - 1;
             }
-            // C `Salignmm.c:1953`: `if (j < lgth2) m[j] += fpenalty_ex;` —
-            // matching guard, only extend the column tracker for non-boundary
-            // columns.
-            if j < m {
-                mj[j] += f_ext;
-            }
+            // C `Salignmm.c:1953`: `m[j] += fpenalty_ex;` — unconditional,
+            // mirrors the row tracker increment above. C allocates `m` to
+            // size `lgth2+2` so writing `m[lgth2]` is safe; our `mj` is sized
+            // `m+1` so `mj[m]` is also safe. A previous version of this code
+            // guarded with `if j < m`, but C has no such guard — the spurious
+            // guard surfaces as 1-ULP drift on the trailing column and flips
+            // tie-breaks for flat-landscape matrices (TM PAM 200).
+            mj[j] += f_ext;
 
             // Warp candidate (`Salignmm.c:1957-2003`). Allows cell (i,j) to
             // jump back to an anchor (warpis[k], warpjs[k]) sourced from

@@ -276,8 +276,9 @@ fn profile_to_property_channels(
         for a in 0..nalpha {
             let f = prof.freqs[pos][a];
             if f != 0.0 {
-                p_val += f * polarity[a];
-                v_val += f * volume[a];
+                // FMA matches gcc -O3's fusion of `a + b*c` (`Falign.c:seq_vec_2`).
+                p_val = f.mul_add(polarity[a], p_val);
+                v_val = f.mul_add(volume[a], v_val);
             }
         }
         channels[0][pos].re = p_val;

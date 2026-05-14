@@ -50,8 +50,11 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree) | match | match | 0 | byte-exact ✓ (closed 2026-05-13) |
 | `--dpparttree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 | `--tm 200 --treeout`                        | match   | match      | 20         | residual gap — see §B.2: pass-0 TM alignment drift propagates into tree branch lengths |
+| `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G-INS-i, FFT-NS-i, parttree-free modes) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
+| `--treein --genafpair --maxiterate >1` (E-INS-i refinement) | match | match | 36 | residual gap — see §B.5: E-INS-i iterative refinement diverges only when user tree provided |
+| `--treein --treeout`                        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) — appends `#by loadtree\n` like C `mltaln9.c:2818` |
 
-Test suite as of 2026-05-13: **281 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-14: **291 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -151,6 +154,43 @@ This is fundamentally different from `--parttree`'s cycle=2 pipeline.
 
 **Result**: `--dpparttree --treeout` is now byte-identical to C MAFFT
 7.526 (0-line diff on the 36-seq sample).
+
+---
+
+## §AC. `--treein` — RESOLVED 2026-05-14 (byte-identical to C across all non-E-INS-i modes)
+
+**Mode**: `mafft --treein FILE` lets the user supply a custom guide tree
+in MAFFT's internal format (4 columns per line: `im jm len0 len1`,
+1-indexed, `im < jm`). C reads this file via
+`mltaln9.c::loadtree`/`loadtreeoneline`; users typically convert their
+Newick tree using `mafft-upstream/core/newick2mafft.rb`.
+
+**Implementation**:
+- `crates/mafft-tree/src/treein.rs` — parser
+  (`parse_mafft_tree`/`parse_mafft_tree_str`) reading the 4-column
+  format and rebuilding a `Topology` with `JoinStep` lefts/rights set
+  to the cluster member lists in C's `min(member)`-keeps-rep order
+  (mirrors `loadtree`'s `Bchain` linked-list reduction).
+- `crates/mafft-core/src/engine.rs::MafftEngine.treein_path` — new
+  `Option<PathBuf>` field. When set, `align()` loads the tree once
+  before the retree loop and overrides BOTH the progressive
+  `musclesupg` call AND the post-progressive refinement
+  `musclesupg(&dm)` (`engine.rs:705-714`). This mirrors C's
+  `tbfast.c:2072` (`if(treein) loadtree`) and
+  `dvtditr.c:766-768` (`if(intree) veryfastsupg_double_loadtree`) —
+  both progressive and iterative refinement honor the same loaded
+  topology.
+- `crates/mafft-bin/src/main.rs` — `--treein FILE` CLI flag,
+  pre-`align` file-existence check, and a `#by loadtree\n` trailer on
+  `--treeout` output matching C `mltaln9.c:2818`.
+
+**Parity tests**: `crates/mafft-core/tests/end_to_end.rs::treein_*`
+cross-validates FFT-NS-2, NW-NS-2, L-INS-i, G-INS-i against C MAFFT
+7.526 with the same `_guidetree` file.
+
+**Result**: All `--treein` modes byte-identical to C except E-INS-i
+refinement with `--maxiterate > 1` (the iter-1 alignment matches; the
+divergence emerges at iter 2). Tracked as §B.8.
 
 ---
 
@@ -367,15 +407,15 @@ non-FFT no-constraint 1-vs-1 merges (NW-NS-2 only), and the CLI does
 not expose `--exp` (which would set ppenalty_ex). All NW-NS-2 modes
 remain byte-identical to C.
 
-### §B.2. Missing FMA `mul_add` outside `match_calc_row` — PARTIAL FIX
+### §B.2. Missing FMA `mul_add` outside `match_calc_row` — DEFENSIVE FIXES LANDED, TM SCORING STILL DIVERGES
 
 **Location**: `crates/mafft-align/src/{global,local,genaffine}.rs` —
 inner DP loops use plain `a + b` instead of `f64::mul_add`. `profile.rs`
-already uses `mul_add` in match_calc_row and in the position-specific
-gap candidates (§4 fix). Boundary inits in `profile.rs` (header
-initverticalw / currentw + head_gap loops) now use `mul_add` as well
-(landed 2026-05-13) — defensive measure, doesn't fix TM but doesn't
-regress anything.
+DP inner loop and gap candidates already use `mul_add` (§4 fix).
+Boundary inits and the `mj[j]` row-init in `profile.rs`, plus the
+FFT polarity/volume channel build in `fft_align.rs`, now use
+`mul_add` consistently (landed 2026-05-13). Defensive — preserves
+byte-identity for all 17 alignment modes, no regressions.
 
 **C reference**: gcc `-O3 -mfma` (or auto-FMA on `arm64`/`aarch64`) fuses
 `a + b * c` into a single-rounding FMA. Two-step Rust arithmetic
@@ -384,43 +424,84 @@ matrices (§4 BL50 root cause).
 
 **Confirmed active for TM scoring (2026-05-13)**:
 `mafft --tm 200 --retree 1 sample` vs `mafft-rs --tm 200 --retree 1 sample`
-differs by 8 lines — 4 single-char shifts in residue placement. The
-TM PAM 200 substitution matrix has a flatter score distribution than
-BLOSUM62 / JTT, so 1-ULP differences from somewhere in the DP flip
-tie-breaks. The default `--tm 200` (retree=2) converges to C's output
-because the second pass re-aligns from the rebuilt tree, but the
-first-pass divergence cascades into `--tm 200 --treeout` branch-length
-drift (~3e-3, 20-line diff).
+differs by 8 lines — 4 single-char shifts at output FASTA lines 156
+and 170 (M62903 and S75720, chicken opsins). The default `--tm 200`
+(retree=2) converges to C's output because the second pass re-aligns
+from the rebuilt tree, but the first-pass divergence cascades into
+`--tm 200 --treeout` branch-length drift (~3e-3, 20-line diff).
 
-Investigated 2026-05-13: matrices are bit-identical to C (the cell-
-by-cell cross-validate tests pass with 0 mismatches). The boundary
-init code in `profile.rs` was rewritten to use `mul_add` consistently
-with the inner-loop FMA, but that didn't close the gap — the
-divergence must be in a third path. Worth a deeper audit when next
-touching `profile.rs` DP arithmetic.
+**Investigated 2026-05-13** (partial):
+1. Matrices are bit-identical to C (cell-by-cell cross-validate
+   tests pass with 0 mismatches for BL/JTT/TM/DNA).
+2. `--tm 200 --retree 1 --nofft` shows the SAME 8-line diff, so FFT is
+   not the source.
+3. Pairwise_align11 (1-vs-1) and profile_align (multi-vs-anything)
+   are both invoked — diff persists. No naive `+= *` patterns remain
+   in either function.
+4. Boundary init FMA + `mj[j]` init FMA + FFT-channel polarity/volume
+   FMA all landed; none closed the gap.
+
+**Further investigated 2026-05-14**:
+5. Guide tree is **byte-identical** between C and Rust even on the
+   minimal repro — so the merge order matches; the divergence is
+   purely in the per-step DP, not in tree construction.
+6. Tried MUL+FMA+ADD reshape in boundary init (closer to gcc's
+   left-to-right contraction emission for `a*b + c*d` parenthesized
+   subexpressions); no change. Reverted.
+7. Confirmed C's `Salignmm.c:1953` increments `m[j] += fpenalty_ex`
+   UNCONDITIONALLY (no `j < lgth2` guard). Our prior code had a
+   spurious `if j < m` guard; removed (literal C match, no observable
+   change for protein default `fpenalty_ex = 0`).
+8. Minimal repro: `{seqs 1..29, 30, 33, 36}` (32 of 36 seqs) — adding
+   seq 30 to `{1..29, 33, 36}` flips the tie-break. Removing 30 → 0
+   diff; adding 30 → 8-line diff. seq 30 (rat 5HT-7 serotonin receptor)
+   affects the alignment of seqs 12 (M62903 chicken visual pigment) and
+   13 (S75720 chicken P-opsin) at their leading boundary, even though
+   30 is in a different subtree.
+9. Trees match exactly in the minimal repro, so this is NOT a tree-
+   topology issue — it's a DP precision divergence at a specific merge
+   step (most likely the merges that introduce 12 and 13).
+
+The remaining 1-ULP drift is in a code path we haven't pinned. Possible
+candidates: `global.rs` / `local.rs` / `genaffine.rs` inner DP (used by
+pairwise paths we haven't audited), the per-cell impmtx or cpmx
+construction in `cpmx_calc_new`-equivalent code, or a subtle ordering
+difference in the FFT cross-correlation.
 
 All other modes (BLOSUM62 / BL80 / JTT 200 / DNA / `--add` /
 `--allowshift`) are byte-identical even at retree=1, so the FMA gap is
-currently TM-specific.
+currently TM-specific (TM PAM 200 has the flattest score distribution).
 
-**Fix path**: continue replacing `a + b * c` with `b.mul_add(c, a)` in
-`global.rs`, `local.rs`, `genaffine.rs`, plus any remaining
-gap-candidate computations in `profile.rs`. Useful diagnostic:
-`diff <(mafft-rs --tm 200 --retree 1 sample) <(mafft --tm 200 --retree 1 sample)` —
-currently 8 lines; should converge to 0 once the right FMA is added.
+**Fix path** (deferred — see severity note below):
+- 8-line diagnostic test: `mafft-rs --tm 200 --retree 1 sample` vs
+  `mafft --tm 200 --retree 1 sample` should converge to 0 once the
+  right FMA is added.
+- Audit `global.rs` / `local.rs` / `genaffine.rs` inner DP loops.
+- Add a per-step alignment-trace dump (similar to `CDBG_PT_STEPS` in
+  splittbfast) to pin the FIRST diverging merge step.
+- Use the cross_validate_profile_align FFI harness to do a focused
+  1-vs-3 alignment with the exact profile that occurs in the seq 12
+  merge step, and diff DP cell values numerically. The minimal repro
+  in finding (8) means the divergent merge can be isolated to a
+  single profile-vs-single-seq DP call.
 
-### §B.3. `--auto`, `--seed`, `--treein`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
+**Severity**: LOW. Default `--tm 200` (retree=2) output is byte-
+identical. Only `--retree 1 --tm 200` output (8-line diff in 2 seqs
+out of 36) and the implied `--tm 200 --treeout` first-pass tree
+(20-line branch-length diff, max drift 3e-3 in 5th decimal place)
+are affected. All 17/17 alignment-mode parity tests still pass.
+
+### §B.3. `--auto`, `--seed`, `--memsave`, `--anysymbol`, `--leavegappyregion` — UNIMPLEMENTED
 
 **Location**: `crates/mafft-bin/src/main.rs` — these flags are absent;
 the CLI rejects them with "unknown argument".
 (`--reorder`/`--inputorder` landed 2026-05-13 — see §AA. `--treeout`
-landed 2026-05-13 — see §AB.)
+landed 2026-05-13 — see §AB. `--treein` landed 2026-05-14 — see §AC.)
 
 **C reference**: `scripts/mafft:237-238` (`--seed`/`--seedtable`),
 `scripts/mafft:330-343` (`--anysymbol`), `scripts/mafft:543-545`
 (`--memsave`), `scripts/mafft:650` (`--leavegappyregion`),
-`scripts/mafft:753-757` (`--treein`), `scripts/mafft:1290-1340`
-(`--auto`).
+`scripts/mafft:1290-1340` (`--auto`).
 
 **Severity**: HIGH for feature coverage (users running with these flags
 get errors), but does not affect byte-parity of any currently-tested
@@ -478,6 +559,44 @@ tied max.
 `parttree_split::build_parttree_topology` (the resolved §6 path), not
 this old `parttree::parttree` function. Reachable only via the deprecated
 re-export at `mafft-tree/src/lib.rs:23`. Consider deleting.
+
+### §B.8. `--treein --genafpair --maxiterate >1` (E-INS-i refinement w/ user tree) — RESIDUAL
+
+**Location**: `crates/mafft-core/src/engine.rs:705-714` — refinement
+path overrides the rebuilt `musclesupg(&dm)` topology with the user
+tree (`user_topo`) when `--treein` is provided. That fix closes the
+FFT-NS-i / L-INS-i / G-INS-i refinement cases (all byte-identical to
+C). E-INS-i refinement, however, still diverges starting at the
+SECOND iteration of `dvtditr`: iter 1 matches, iter 2 differs by 4
+lines, iter 1000 differs by 36 lines (10 sequences with leading-gap
+shifts; cumulative drift).
+
+**Confirmed 2026-05-14**:
+- `--treein --genafpair --maxiterate 0`: 0-line diff (progressive only)
+- `--treein --genafpair --maxiterate 1`: 0-line diff
+- `--treein --genafpair --maxiterate 2`: 4-line diff
+- `--treein --genafpair --maxiterate 1000`: 36-line diff
+- `--genafpair --maxiterate 1000` (no --treein): 0-line diff (default
+  flow byte-identical, so the regression is purely user-tree-induced)
+- Other modes (`--treein --localpair`, `--treein --globalpair`,
+  `--treein --maxiterate 100` for FFT-NS-i): all 0-line diff
+
+The fact that E-INS-i diverges only with `--treein` (and only after
+iter 1) implies some refinement-specific state — branch weights,
+distance-from-tip used in `--allowshift`, or iteration-counter logic —
+is being recomputed from `iscore` / `dm` somewhere instead of being
+derived purely from the user topology. Suspected callsites:
+`refinement.rs::iterative_refine` (`BranchWeights::new(topology)` is
+topology-derived but the GENAFFINE local-homology table may carry
+stale state); `engine.rs::initial_pairwise_dm` (still computed from
+the C `hat2` flow regardless of user tree — for E-INS-i this gets
+rounded and passed as `dm` for `musclesupg`, but we now override the
+output topology, so the `dm` itself is just dead state — UNLESS some
+downstream code re-reads it).
+
+**Severity**: LOW. Affects only `--treein --genafpair --maxiterate >1`;
+all other `--treein` combos byte-identical (closed). The 4 cross-
+validate tests cover the happy paths.
 
 ---
 

@@ -2036,6 +2036,83 @@ fn dpparttree_pipeline_smoke() {
     }
 }
 
+/// `--treein FILE` must reproduce C MAFFT byte-for-byte across multiple
+/// scoring/iteration modes. The fixture tree
+/// `tests/fixtures/sample.treein.tree` is the result of running
+/// `mafft --treeout` on `test/sample` and converting the Newick output
+/// with `newick2mafft.rb`. Each fixture pairs the same tree with a
+/// different `mafft <mode> --treein <tree>` invocation.
+///
+/// Reference: `tests/fixtures/sample.treein.*` (`mafft --treein <tree>`).
+#[test]
+fn treein_fftns2_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.treein.fftns2"))
+        .expect("missing fixtures/sample.treein.fftns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.treein_path = Some(fixture_path("sample.treein.tree"));
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --treein FFT-NS-2");
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --treein FFT-NS-2 output");
+    }
+}
+
+#[test]
+fn treein_nwns2_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.treein.nwns2"))
+        .expect("missing fixtures/sample.treein.nwns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2).with_nofft(true);
+    engine.treein_path = Some(fixture_path("sample.treein.tree"));
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --treein --nofft");
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --treein --nofft output");
+    }
+}
+
+#[test]
+fn treein_linsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.treein.linsi"))
+        .expect("missing fixtures/sample.treein.linsi");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 });
+    engine.treein_path = Some(fixture_path("sample.treein.tree"));
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --treein L-INS-i");
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --treein L-INS-i output");
+    }
+}
+
+#[test]
+fn treein_ginsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.treein.ginsi"))
+        .expect("missing fixtures/sample.treein.ginsi");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 1000 });
+    engine.treein_path = Some(fixture_path("sample.treein.tree"));
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --treein G-INS-i");
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --treein G-INS-i output");
+    }
+}
+
 /// `--treeout` Newick serialization of the post-progressive guide tree.
 /// Smoke-test that:
 /// 1. The engine populates `msa.guide_tree`.

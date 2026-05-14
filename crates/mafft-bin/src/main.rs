@@ -147,6 +147,13 @@ struct Args {
     /// C MAFFT `--treeout`). Ignored when input is read from stdin.
     #[arg(long)]
     treeout: bool,
+
+    /// Use a user-supplied guide tree (matches C MAFFT `--treein FILE`).
+    /// FILE must be in MAFFT's internal tree format: nseq-1 lines of
+    /// `im jm len0 len1` (1-indexed sequence numbers, im < jm). Convert
+    /// a standard Newick file with `mafft-upstream/core/newick2mafft.rb`.
+    #[arg(long, value_name = "FILE")]
+    treein: Option<std::path::PathBuf>,
 }
 
 fn main() {
@@ -257,6 +264,13 @@ fn main() {
     }
     if args.reorder {
         engine = engine.with_reorder(true);
+    }
+    if let Some(ref tree_path) = args.treein {
+        if !tree_path.exists() {
+            eprintln!("Cannot open {}", tree_path.display());
+            std::process::exit(1);
+        }
+        engine.treein_path = Some(tree_path.clone());
     }
 
     // Handle --add / --addfragments
@@ -387,7 +401,14 @@ fn main() {
                 msa.guide_tree.as_ref().map(|t|
                     mafft_tree::topology_to_newick(t, &msa.names))
             };
-            if let Some(newick) = newick_opt {
+            if let Some(mut newick) = newick_opt {
+                // C `mltaln9.c:2818` appends `#by loadtree\n` to the
+                // tree file when `--treein` was used. This is a comment
+                // line (not part of the Newick string itself) but we
+                // mirror it for byte-identical `--treeout` parity.
+                if args.treein.is_some() {
+                    newick.push_str("#by loadtree\n");
+                }
                 match std::fs::write(&tree_path, newick) {
                     Ok(_) if !args.quiet => eprintln!("Wrote guide tree to {}", tree_path.display()),
                     Ok(_) => {}
