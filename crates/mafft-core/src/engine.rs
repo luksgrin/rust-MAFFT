@@ -403,6 +403,17 @@ impl MafftEngine {
             compute_distance_matrix_from_seqs(&sequences)
         };
 
+        // Load user-supplied guide tree early (`--treein`), so the
+        // importance-recomputation below uses the same topology C does
+        // (`tbfast.c:2967 counteff_simple_double_nostatic_memsave( njob, topol, len, dep, eff )`
+        // where `topol`/`len` come from `loadtree` when `treein=1`).
+        let user_topo: Option<mafft_tree::Topology> = self.treein_path.as_ref().map(|path| {
+            mafft_tree::parse_mafft_tree(path, nseq).unwrap_or_else(|e| {
+                eprintln!("--treein: {e}");
+                std::process::exit(1);
+            })
+        });
+
         // C's `tbfast` calls `calcimportance_half` (mltaln9.c:11756) AFTER
         // the initial tree to replace each region's provisional importance
         // with `mean(position-vote support over region) * region.opt`,
@@ -410,7 +421,11 @@ impl MafftEngine {
         // C's post-`tbfast.c:2202` scale (`isumscore / sumoverlap`), so
         // the impmtx contributions match C's numerically.
         if pairwise_for_constraints.is_some() && !use_parttree {
-            let initial_topo = musclesupg(&dm, ClusterMethod::default());
+            // With `--treein`, C uses the loaded user tree's branch lengths
+            // for `counteff_simple` weights (tbfast.c:2967). Without it, the
+            // pairwise-distance UPGMA tree is used. Mirror that branch.
+            let initial_topo = user_topo.clone()
+                .unwrap_or_else(|| musclesupg(&dm, ClusterMethod::default()));
             let weights = mafft_tree::sequence_weights(&initial_topo);
             let seq_refs: Vec<&[u8]> = input.sequences.iter()
                 .map(|s| s.data.as_slice()).collect();
@@ -462,19 +477,10 @@ impl MafftEngine {
         // (`pre_2`) and the scores would diverge.
         let mut first_pass_msa: Option<Vec<Vec<u8>>> = None;
 
-        // User-supplied guide tree (`--treein FILE`). Loaded once outside the
-        // retree loop and reused for every pass — mirrors C `tbfast.c:2072`
-        // where `loadtree()` runs before the progressive alignment and the
-        // shell script invokes the binary the same way on each cycle, so
-        // every pass reads the same `_guidetree`. The CLI validates path
-        // existence before invoking `align`; bad format errors here are a
-        // hard failure with a user-readable message.
-        let user_topo: Option<mafft_tree::Topology> = self.treein_path.as_ref().map(|path| {
-            mafft_tree::parse_mafft_tree(path, nseq).unwrap_or_else(|e| {
-                eprintln!("--treein: {e}");
-                std::process::exit(1);
-            })
-        });
+        // `user_topo` was loaded above (before recompute_importance) so the
+        // LH table weights and the progressive merge tree are derived from
+        // the SAME topology — matching C's `tbfast.c:2072` (loadtree) +
+        // `tbfast.c:2967` (counteff_simple from loaded topol) sequencing.
 
         for pass in 0..retree {
             let topo = if let Some(ref t) = user_topo {

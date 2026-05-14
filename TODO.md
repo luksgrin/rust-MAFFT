@@ -50,11 +50,10 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree) | match | match | 0 | byte-exact ✓ (closed 2026-05-13) |
 | `--dpparttree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 | `--tm 200 --treeout`                        | match   | match      | 20         | residual gap — see §B.2: pass-0 TM alignment drift propagates into tree branch lengths |
-| `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G-INS-i, FFT-NS-i, parttree-free modes) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
-| `--treein --genafpair --maxiterate >1` (E-INS-i refinement) | match | match | 36 | residual gap — see §B.5: E-INS-i iterative refinement diverges only when user tree provided |
+| `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G/E-INS-i, FFT-NS-i, all non-parttree modes) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--treein --treeout`                        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) — appends `#by loadtree\n` like C `mltaln9.c:2818` |
 
-Test suite as of 2026-05-14: **291 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-14: **292 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -173,24 +172,23 @@ Newick tree using `mafft-upstream/core/newick2mafft.rb`.
   (mirrors `loadtree`'s `Bchain` linked-list reduction).
 - `crates/mafft-core/src/engine.rs::MafftEngine.treein_path` — new
   `Option<PathBuf>` field. When set, `align()` loads the tree once
-  before the retree loop and overrides BOTH the progressive
-  `musclesupg` call AND the post-progressive refinement
-  `musclesupg(&dm)` (`engine.rs:705-714`). This mirrors C's
-  `tbfast.c:2072` (`if(treein) loadtree`) and
-  `dvtditr.c:766-768` (`if(intree) veryfastsupg_double_loadtree`) —
-  both progressive and iterative refinement honor the same loaded
-  topology.
+  and overrides THREE places C also overrides:
+  1. **Progressive merge tree** (`tbfast.c:2072` `if(treein) loadtree`).
+  2. **LH-table importance reweighting** (`tbfast.c:2967
+     counteff_simple_double_nostatic_memsave` + `tbfast.c:1355
+     calcimportance_half`) — the topology drives the per-sequence
+     weights used to recompute `region.opt` for the LH constraints.
+  3. **Refinement tree rebuild** (`dvtditr.c:766-768` `if(intree)
+     veryfastsupg_double_loadtree`).
 - `crates/mafft-bin/src/main.rs` — `--treein FILE` CLI flag,
   pre-`align` file-existence check, and a `#by loadtree\n` trailer on
   `--treeout` output matching C `mltaln9.c:2818`.
 
 **Parity tests**: `crates/mafft-core/tests/end_to_end.rs::treein_*`
-cross-validates FFT-NS-2, NW-NS-2, L-INS-i, G-INS-i against C MAFFT
-7.526 with the same `_guidetree` file.
+cross-validates FFT-NS-2, NW-NS-2, L-INS-i, G-INS-i, E-INS-i against
+C MAFFT 7.526 with the same `_guidetree` file.
 
-**Result**: All `--treein` modes byte-identical to C except E-INS-i
-refinement with `--maxiterate > 1` (the iter-1 alignment matches; the
-divergence emerges at iter 2). Tracked as §B.8.
+**Result**: All `--treein` modes byte-identical to C MAFFT 7.526.
 
 ---
 
@@ -560,43 +558,40 @@ tied max.
 this old `parttree::parttree` function. Reachable only via the deprecated
 re-export at `mafft-tree/src/lib.rs:23`. Consider deleting.
 
-### §B.8. `--treein --genafpair --maxiterate >1` (E-INS-i refinement w/ user tree) — RESIDUAL
+### §B.8. ~~`--treein --genafpair --maxiterate >1` (E-INS-i refinement w/ user tree)~~ — RESOLVED 2026-05-14
 
-**Location**: `crates/mafft-core/src/engine.rs:705-714` — refinement
-path overrides the rebuilt `musclesupg(&dm)` topology with the user
-tree (`user_topo`) when `--treein` is provided. That fix closes the
-FFT-NS-i / L-INS-i / G-INS-i refinement cases (all byte-identical to
-C). E-INS-i refinement, however, still diverges starting at the
-SECOND iteration of `dvtditr`: iter 1 matches, iter 2 differs by 4
-lines, iter 1000 differs by 36 lines (10 sequences with leading-gap
-shifts; cumulative drift).
+**Root cause**: `engine.rs::recompute_importance` was deriving the
+sequence weights for the LH table importance recomputation from
+`musclesupg(&dm)` — the UPGMA tree built from pairwise distances.
+C MAFFT does this same step (`tbfast.c:2967 counteff_simple_double_
+nostatic_memsave( njob, topol, len, dep, eff )` followed by
+`tbfast.c:1355 calcimportance_half( njob, effarr, aseq, ... )`)
+using `topol`/`len` from `loadtree`'s loaded user tree. With
+`--treein` the two topologies differ on branch lengths, so the
+weights differ → the LH table's per-region `region.opt` (importance)
+differs → E-INS-i refinement makes different tie-break decisions
+starting at iter 2 (iter 1 happens to match because the first round
+of refinement reads the same starting alignment).
 
-**Confirmed 2026-05-14**:
-- `--treein --genafpair --maxiterate 0`: 0-line diff (progressive only)
-- `--treein --genafpair --maxiterate 1`: 0-line diff
-- `--treein --genafpair --maxiterate 2`: 4-line diff
-- `--treein --genafpair --maxiterate 1000`: 36-line diff
-- `--genafpair --maxiterate 1000` (no --treein): 0-line diff (default
-  flow byte-identical, so the regression is purely user-tree-induced)
-- Other modes (`--treein --localpair`, `--treein --globalpair`,
-  `--treein --maxiterate 100` for FFT-NS-i): all 0-line diff
+L-INS-i / G-INS-i / FFT-NS-i all use the same code path; they
+happened to converge to the same final alignment regardless of
+weights on the 36-seq test sample (less sensitive tie-breaks). The
+fix unifies behavior across all four modes.
 
-The fact that E-INS-i diverges only with `--treein` (and only after
-iter 1) implies some refinement-specific state — branch weights,
-distance-from-tip used in `--allowshift`, or iteration-counter logic —
-is being recomputed from `iscore` / `dm` somewhere instead of being
-derived purely from the user topology. Suspected callsites:
-`refinement.rs::iterative_refine` (`BranchWeights::new(topology)` is
-topology-derived but the GENAFFINE local-homology table may carry
-stale state); `engine.rs::initial_pairwise_dm` (still computed from
-the C `hat2` flow regardless of user tree — for E-INS-i this gets
-rounded and passed as `dm` for `musclesupg`, but we now override the
-output topology, so the `dm` itself is just dead state — UNLESS some
-downstream code re-reads it).
+**Fix**: `engine.rs:412-426` now loads `user_topo` BEFORE the
+importance-recomputation block and prefers it over
+`musclesupg(&dm)`:
+```rust
+let initial_topo = user_topo.clone()
+    .unwrap_or_else(|| musclesupg(&dm, ClusterMethod::default()));
+let weights = mafft_tree::sequence_weights(&initial_topo);
+```
 
-**Severity**: LOW. Affects only `--treein --genafpair --maxiterate >1`;
-all other `--treein` combos byte-identical (closed). The 4 cross-
-validate tests cover the happy paths.
+**Regression test**: `crates/mafft-core/tests/end_to_end.rs::
+treein_einsi_byte_identical_to_c` cross-validates `--treein
+--genafpair --maxiterate 1000` against the fixture
+`sample.treein.einsi` (generated from C MAFFT 7.526 with the same
+user tree).
 
 ---
 

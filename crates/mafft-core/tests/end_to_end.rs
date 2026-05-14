@@ -2113,6 +2113,29 @@ fn treein_ginsi_byte_identical_to_c() {
     }
 }
 
+/// E-INS-i with `--treein` exercises both the LH table reweighting
+/// (`recompute_importance` derived from the loaded topology, mirroring
+/// C `tbfast.c:2967 counteff_simple` + `tbfast.c:1355 calcimportance_half`)
+/// AND the refinement loop's user-tree override. Without the
+/// reweighting fix, iter 1 matched but iter 2+ diverged because the LH
+/// table was importance-weighted using a different tree than C's.
+#[test]
+fn treein_einsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.treein.einsi"))
+        .expect("missing fixtures/sample.treein.einsi");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::EInsi { iterations: 1000 });
+    engine.treein_path = Some(fixture_path("sample.treein.tree"));
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --treein E-INS-i");
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --treein E-INS-i output");
+    }
+}
+
 /// `--treeout` Newick serialization of the post-progressive guide tree.
 /// Smoke-test that:
 /// 1. The engine populates `msa.guide_tree`.
