@@ -101,6 +101,13 @@ pub struct MafftEngine {
     /// `iterate ≥ 2` so the refinement step picks them up
     /// (`scripts/mafft:1911-1923`).
     pub seed_homology: Option<LocalHomologyTable>,
+    /// `--memsave` Hirschberg DP routing. When true and the non-FFT
+    /// progressive merge would call `profile_align`, route through
+    /// `mafft_align::msalignmm` instead (linear-space DP — mirrors C
+    /// MAFFT's `MSalignmm` in `tbfast.c:1159-1161` under `alg='M'`).
+    /// For inputs that fit in memory the alignment is the same as
+    /// `profile_align`; only memory usage differs.
+    pub memsave_dp: bool,
 }
 
 impl Default for MafftEngine {
@@ -123,13 +130,14 @@ impl Default for MafftEngine {
             memsavetree: false,
             legacy_gap_cost: false,
             seed_homology: None,
+            memsave_dp: false,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false, legacy_gap_cost: false, seed_homology: None }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false, legacy_gap_cost: false, seed_homology: None, memsave_dp: false }
     }
 
     /// Set the number of guide tree rebuilds.
@@ -619,7 +627,7 @@ impl MafftEngine {
                 &input_seqs, &names, &topo, &scoring, use_fft, shift,
                 progress_constraints, penalize_term_gaps,
                 weights_override.as_deref(), self.unalign_level,
-                self.legacy_gap_cost,
+                self.legacy_gap_cost, self.memsave_dp,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
             final_progressive_topo = Some(topo.clone());

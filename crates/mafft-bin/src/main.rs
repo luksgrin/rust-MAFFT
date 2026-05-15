@@ -497,6 +497,19 @@ fn main() {
     if args.leavegappyregion {
         engine.legacy_gap_cost = true;
     }
+    // `--memsave`: in principle we'd route the non-FFT progressive
+    // merge through `mafft_align::msalignmm` (Hirschberg DP). The
+    // library function exists and is verified byte-identical to C
+    // `MSalignmm` on 4 of 5 cross-validation inputs, but the
+    // asymmetric-length case (m-split) still diverges by a few
+    // columns, and that divergence cascades through real progressive
+    // merges. Until the m-split residual is closed (tracked in
+    // TODO §B.3 — needs an FFI hook into C `MSalignmm_rec` row state
+    // to cell-by-cell-verify the midpoint capture and the
+    // jumpforwi/jumpforwj writes at i==jumpi), keep `--memsave`
+    // routed through the full DP, which IS byte-identical to C
+    // `MSalignmm` for inputs ≤ 30000 in length.
+    let _ = args.memsave;
     // `--memsavetree` overrides distance-based UPGMA tree construction with
     // C MAFFT's compacttree_memsaveselectable algorithm. `--auto` may also
     // request memsavetree in the 100k+ bracket — pass that through too.

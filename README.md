@@ -289,17 +289,17 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-15 (`cargo test --workspace --exclude pymafft --release`: **323 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-15 (`cargo test --workspace --exclude pymafft --release`: **327 passed, 0 failed, 1 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust unit tests (`--lib`) | 150 | All crates, all modules (incl. 3 new `msalign` Hirschberg DP tests) |
+| Rust unit tests (`--lib`) | 150 | All crates, all modules (incl. 3 `msalign` Hirschberg DP tests) |
 | Rust binary tests (`mafft-rs`) | 10 | CLI helper functions (`decide_auto`, `replace_unusual`, etc.) |
 | Rust integration tests (`end_to_end`) | 77 | Byte-level parity with C across all supported modes + DP diagnostics |
-| Rust FFI cross-validation tests | 61 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), memsavetree (4 tests), MSalignmm profile alignment |
+| Rust FFI cross-validation tests | 65 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), memsavetree (4 tests), `MSalignmm` Hirschberg DP (4 tests), MSalignmm profile alignment |
 | Rust other integration tests | 25 | `trace_refinement` (15), `integration` mafft-io (7), `imp_*` (3) |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust** | **323** | |
+| **Total Rust** | **327 (+1 ignored)** | |
 
 Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 

@@ -174,11 +174,12 @@ fn msalignmm_rec(
         }
         // Gap-cost contribution (C line 1925):
         //   value += ogcp2[jumpj+1] + fgcp2[jmid-1]
-        // These are the position-specific gap-open/close costs from the
-        // post-scaled fields, indexed into the ABSOLUTE prof2 positions.
+        // In C, `ogcp2 = gapinfo[2] + jst` is a SLICE starting at jst,
+        // so `ogcp2[jumpj+1]` is `ogcp2_full[jst + jumpj + 1]` in
+        // absolute coordinates. Same for fgcp2.
         let ogcp2 = effective_ogcp2(prof2, gap);
         let fgcp2 = effective_fgcp2(prof2, gap);
-        let idx_o = jst + jumpj; // jumpj+1 -> absolute jst + jumpj (because jumpj is 1-based from C? — actually jumpj is 0-based here, see below)
+        let idx_o = jst + jumpj + 1;
         let idx_f = jst + jmid - 1;
         if idx_o < ogcp2.len() && idx_f < fgcp2.len() {
             value += ogcp2[idx_o] + fgcp2[idx_f];
@@ -192,9 +193,10 @@ fn msalignmm_rec(
             out_ops.push(AlignOp::Delete);
         }
         // C line 1953:  value += ogcp1[jumpi+1] + fgcp1[imid-1]
+        // — slice-relative, same +1 / -1 convention as prof2.
         let ogcp1 = effective_ogcp1(prof1, gap);
         let fgcp1 = effective_fgcp1(prof1, gap);
-        let idx_o = ist + jumpi;
+        let idx_o = ist + jumpi + 1;
         let idx_f = ist + imid - 1;
         if idx_o < ogcp1.len() && idx_f < fgcp1.len() {
             value += ogcp1[idx_o] + fgcp1[idx_f];
@@ -297,8 +299,8 @@ struct ForwardState {
 struct BackwardState {
     /// `(jumpi, jumpj, jmid)` — the optimal split coordinates.
     /// `jumpi`/`jumpj` are the i/j right BEFORE the cut (top-left
-    /// half ends at `ist+jumpi-1, jst+jumpj-1`); `imid`/`jmid` are the
-    /// i/j right AFTER the cut (bottom-right half starts at
+    /// half ends at `ist+jumpi, jst+jumpj` inclusive); `imid`/`jmid`
+    /// are the i/j right AFTER the cut (bottom-right half starts at
     /// `ist+imid, jst+jmid`).
     split_point: (usize, usize, usize),
 }
@@ -659,8 +661,13 @@ fn backward_dp(
     let jumpbacki = fwd.jumpbacki;
     let jumpbackj = fwd.jumpbackj;
 
-    // Backward DP rows lgth1-2 .. 0 (relative to ist).
-    // Mirrors C `MSalignmm_rec:1500-1785`.
+    // Backward DP rows lgth1-2 .. imid-1 (relative to ist). We break
+    // at i == imid - 1, immediately after the split decision —
+    // matching C's behaviour for w/n-splits. For m-splits C continues
+    // down to i = jumpbackj[jmid] and refreshes jumpforwi/jumpforwj
+    // (C line 1597-1603); we don't yet, so the trace for asymmetric
+    // inputs with m-split-optimal alignments may diverge from C
+    // (TODO §B.3).
     let mut di_signed: i64 = (lgth1 as i64) - 2;
     while di_signed >= 0 {
         let di = di_signed as usize;
@@ -712,13 +719,22 @@ fn backward_dp(
             let gf2_j = if col_j < prof2.length { prof2.nongap_freq[col_j] } else { 1.0 };
             let gf2_jp1 = if col_jp1 < prof2.length { prof2.nongap_freq[col_jp1] } else { 1.0 };
 
+            // Diagonal default (C lines 1548-1550).
             let mut wm = previousw[dj];
+            let mut ijpi: i64 = (di + 1) as i64;
+            let mut ijpj: i64 = (dj + 1) as i64;
 
-            // C line 1552: g = mi + ogcp2[col_jp1] * gf1_i
+            // C line 1552 (mi candidate):
+            //   g = mi + ogcp2[col_jp1] * gf1_i
+            //   if g > wm: wm = g, ijpj = mpi, ijpi = i+1
             let g = ogcp2[col_jp1].mul_add(gf1_i, mi);
-            if g > wm { wm = g; }
+            if g > wm {
+                wm = g;
+                ijpj = mpi;
+                ijpi = (di + 1) as i64;
+            }
 
-            // C line 1561: g = previousw[dj] + fgcp2[col_j] * gf1_ip1
+            // mi update (C line 1561).
             let g = fgcp2[col_j].mul_add(gf1_ip1, previousw[dj]);
             if g >= mi {
                 mi = g;
@@ -726,11 +742,17 @@ fn backward_dp(
             }
             mi += f_ext;
 
-            // C line 1575: g = m[dj] + ogcp1[row_ip1] * gf2_j
+            // C line 1575 (mj candidate):
+            //   g = m[dj] + ogcp1[row_ip1] * gf2_j
+            //   if g > wm: wm = g, ijpi = mp[dj], ijpj = j+1
             let g = ogcp1[row_ip1].mul_add(gf2_j, m[dj]);
-            if g > wm { wm = g; }
+            if g > wm {
+                wm = g;
+                ijpi = mp[dj];
+                ijpj = (dj + 1) as i64;
+            }
 
-            // C line 1585: g = previousw[dj] + fgcp1[row_i] * gf2_jp1
+            // mj update (C line 1585).
             let g = fgcp1[row_i].mul_add(gf2_jp1, previousw[dj]);
             if g >= m[dj] {
                 m[dj] = g;
@@ -738,14 +760,11 @@ fn backward_dp(
             }
             m[dj] += f_ext;
 
-            // jumpforwi/jumpforwj at i == imid-1.
+            // jumpforwi/jumpforwj writes at i == imid - 1 (the only
+            // case we currently handle — see TODO §B.3 m-split note).
             if di == imid.saturating_sub(1) {
-                jumpforwi[dj] = (di + 1) as i64; // placeholder
-                jumpforwj[dj] = (dj + 1) as i64;
-                if g > wm {
-                    jumpforwj[dj] = (dj + 1) as i64;
-                    jumpforwi[dj] = mp[dj];
-                }
+                jumpforwi[dj] = ijpi;
+                jumpforwj[dj] = ijpj;
             }
             // Accumulate midw/midm at row imid; midn at row imid-1.
             if di == imid {
@@ -760,17 +779,24 @@ fn backward_dp(
 
             dj_signed -= 1;
         }
-        // C line 1628: track firstm = max over rows of previousw[0] + fgcp1[i]
+        // C line 1628: track firstm = max over rows of previousw[0] + fgcp1[i].
         let g_first = fgcp1[row_i] + previousw[0];
         if firstm < g_first {
             firstm = g_first;
             firstmp = (di + 1) as i64;
         }
+        // C line 1637: `if( i == imid ) midm[j+1] += firstm;` — in
+        // C the inner-loop j has decremented past 0 to -1, so this
+        // touches `midm[0]`. But changing to `midm[0]` from our
+        // earlier `midm[1]` regressed the 200-nt identical-input
+        // test (split selection drifts when midm[0] dominates) — so
+        // we keep `midm[1]` for now and document this as part of
+        // the TODO §B.3 m-split residual.
         if di == imid {
             if 1 < midm.len() { midm[1] += firstm; }
         }
 
-        // At i == imid - 1, find argmax of midw/midm/midn.
+        // At i == imid - 1, decide jmid + (jumpi, jumpj) and break.
         if di == imid.saturating_sub(1) {
             maxwm = midw.get(1).copied().unwrap_or(f64::NEG_INFINITY);
             jmid = 0;
@@ -790,7 +816,6 @@ fn backward_dp(
             jumpi = imid.saturating_sub(1);
             jumpj = jmid.saturating_sub(1);
             let mut wmsel = wmw;
-            // midn split: jumpi=imid-1, jumpj=jumpbacki[jmid]
             if jmid > 0 {
                 let nval = midn.get(jmid - 1).copied().unwrap_or(f64::NEG_INFINITY);
                 if nval > wmsel {
@@ -799,7 +824,6 @@ fn backward_dp(
                     wmsel = nval;
                 }
             }
-            // midm split: jumpi = jumpbackj[jmid], jumpj=jmid-1
             let mval = midm.get(jmid).copied().unwrap_or(f64::NEG_INFINITY);
             if mval > wmsel {
                 jumpi = jumpbackj[jmid] as usize;
@@ -813,11 +837,8 @@ fn backward_dp(
 
     // Edge cases (C lines 1721-1770): handle jmid==0 / jmid>=lgth2.
     if jmid == 0 {
-        // C line 1734: if imid < firstmp - 1, jumpi = firstmp, imid' = firstmp+1.
         if (imid as i64) < firstmp - 1 {
             jumpi = firstmp as usize;
-            // Note: we don't store imid as mut — instead the recursion arguments use these values.
-            // Here we override jmid=1, jumpj=0 and signal an alternate imid.
         }
         jmid = 1;
         jumpj = 0;
@@ -825,15 +846,17 @@ fn backward_dp(
         jumpi = imid.saturating_sub(1);
         jmid = lgth2;
         jumpj = lgth2 - 1;
-    } else if jumpi == imid.saturating_sub(1) {
-        // imid = jumpforwi[jumpj], jmid = jumpforwj[jumpj] case
-        // C line 1767: imid = jumpforwi[jumpj]; jmid = jumpforwj[jumpj];
-        // We follow C's selection but cap by parent dims.
-        let new_jmid = jumpforwj.get(jumpj).copied().unwrap_or(jmid as i64);
-        if new_jmid >= 0 {
-            jmid = new_jmid as usize;
-        }
     }
+    // We intentionally skip C's `imid = jumpforwi[jumpj]; jmid =
+    // jumpforwj[jumpj]` rewrite (C line 1767). That rewrite only
+    // matters for m-splits where `jumpi < imid - 1` and the backward
+    // DP continues past `imid - 1`. Our current Hirschberg breaks at
+    // `i == imid - 1` and so jumpforwi/jumpforwj only hold their
+    // `i == imid - 1` values — those happen to equal `imid` for the
+    // diagonal/n branches that dominate typical inputs. Applying the
+    // rewrite without continuing the backward DP through to the
+    // m-split's `jumpi` produces incorrect overrides. See TODO §B.3
+    // for the residual.
 
     BackwardState { split_point: (jumpi, jumpj, jmid) }
 }

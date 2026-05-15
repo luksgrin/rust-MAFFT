@@ -313,6 +313,7 @@ pub fn progressive_align_with_mergeoralign_n(
                     &mut profile_cache,
                     None,
                     false,
+                    false,
                 );
 
                 let post_merge_width = aligned[existing_grp[0]].len();
@@ -418,6 +419,7 @@ pub fn progressive_align_with_mergeoralign_n(
                     use_fft,
                     &mut profile_cache,
                     None,
+                    false,
                     false,
                 );
 
@@ -621,7 +623,7 @@ pub fn progressive_align_partial(
     for step in topology.steps.iter().take(limit) {
         merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
-            &mut profile_cache, None, false,
+            &mut profile_cache, None, false, false,
         );
     }
     aligned
@@ -670,7 +672,7 @@ pub fn progressive_align_with_weights_override(
 ) -> MultipleAlignment {
     progressive_align_full(
         sequences, names, topology, scoring, use_fft, shift_penalty,
-        constraints, penalize_term_gaps, weights_override, 0.0, false,
+        constraints, penalize_term_gaps, weights_override, 0.0, false, false,
     )
 }
 
@@ -691,6 +693,7 @@ pub fn progressive_align_full(
     weights_override: Option<&[f64]>,
     unalign_level: f64,
     legacy_gap_cost: bool,
+    memsave_dp: bool,
 ) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
@@ -756,7 +759,7 @@ pub fn progressive_align_full(
         };
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, step_scoring, &gap, use_fft,
-            &mut profile_cache, constraints, penalize_term_gaps,
+            &mut profile_cache, constraints, penalize_term_gaps, memsave_dp,
         );
 
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
@@ -798,6 +801,7 @@ fn merge_step_cached(
     cache: &mut HashMap<Vec<usize>, CachedProfile>,
     constraints: Option<&mafft_types::LocalHomologyTable>,
     penalize_term_gaps: bool,
+    memsave_dp: bool,
 ) -> f64 {
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
@@ -934,6 +938,15 @@ fn merge_step_cached(
         mafft_align::profile_align_imp(
             &prof1, &prof2, &scoring.consweight_matrix, gap,
             penalize_term_gaps, penalize_term_gaps, Some(&imp),
+        )
+    } else if memsave_dp {
+        // `--memsave`: route through the Hirschberg DP. Mirrors C
+        // MAFFT's `MSalignmm` (`tbfast.c:1159-1161` under `alg='M'`).
+        // For inputs that fit in memory, the alignment is the same
+        // as `profile_align` — only memory layout differs.
+        mafft_align::msalignmm(
+            &prof1, &prof2, &scoring.consweight_matrix, gap,
+            penalize_term_gaps, penalize_term_gaps,
         )
     } else {
         // Non-FFT, no-constraints fallback (`--nofft` path or single-vs-

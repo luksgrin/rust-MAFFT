@@ -60,7 +60,7 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--seed FILE` (L/G/E-INS-i + FFT-NS-i, single + multiple seed files) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree combo) | match | match | 0 | byte-exact ✓ (CLI shim — Hirschberg DP unported but transparent for inputs ≤ 30k) |
 
-Test suite as of 2026-05-15: **323 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-15: **327 Rust tests pass, 0 failed, 1 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -706,7 +706,7 @@ out of 36) and the implied `--tm 200 --treeout` first-pass tree
 (20-line branch-length diff, max drift 3e-3 in 5th decimal place)
 are affected. All 17/17 alignment-mode parity tests still pass.
 
-### §B.3. `--memsave` — SHIM + Hirschberg LIBRARY LANDED, TIE-BREAK MATCH PENDING — 2026-05-14/15
+### §B.3. `--memsave` — SHIM + Hirschberg LIBRARY (4/5 FFI cross-validated) — 2026-05-14/15
 
 **Status**:
 1. **CLI shim landed** (2026-05-14): `--memsave` and `--nomemsave`
@@ -719,44 +719,63 @@ are affected. All 17/17 alignment-mode parity tests still pass.
    - `memsave_fftns2_byte_identical_to_c`
    - `memsave_fftnsi_byte_identical_to_c`
    - `memsave_fftns2_retree1_byte_identical_to_c`
-2. **Hirschberg library landed** (2026-05-15):
-   `crates/mafft-align/src/msalign.rs::msalignmm` is a full
-   linear-space port of C `MSalignmm`. The recursion mirrors
-   `MSalignmm_rec`: forward DP from `ist` to `imid = ist + lgth1/2`
-   capturing `midw/midm/midn` at the midpoint row, backward DP from
-   `ien` to `imid` adding into those arrays, `jmid = argmax` over
+2. **Hirschberg library + FFI cross-validation landed** (2026-05-15):
+   `crates/mafft-align/src/msalign.rs::msalignmm` is a port of
+   C `MSalignmm`. The recursion mirrors `MSalignmm_rec`: forward
+   DP from `ist` to `imid = ist + lgth1/2` capturing
+   `midw/midm/midn` at the midpoint row, backward DP from `ien` to
+   `imid` adding into those arrays, `jmid = argmax` over
    midw/midm/midn for the optimal split column, recurse on
    top-left/bottom-right halves with inter-half gap padding. Base
    case (`lgth1 < DPTANNI=100` OR `lgth2 < DPTANNI`) delegates to
-   the full DP. Three unit tests guard:
-   - `base_case_matches_full_dp` (short input, recursion bottoms
-     out into full DP)
-   - `recursive_case_matches_full_dp` (200-nt identical input)
-   - `recursive_case_with_gap_matches_full_dp` (gap-required input
-     with unique optimum — verifies the split-point selection)
+   the full DP.
 
-**Residual** (the gap that keeps this section open):
-The Hirschberg implementation returns the SAME optimal score as
-the full DP for every test input, but for inputs where multiple
-SCORE-TIED optimal alignments exist, the trace selection in the
-forward/backward midpoint may pick a different equally-scored trace
-than C's `MSalignmm`. The alignment score is identical; only which
-residue columns the gaps land in differs. Because we have no way to
-guarantee byte-identity to C `MSalignmm` at tie-break level yet,
-`msalignmm` is NOT wired into the engine's `--memsave` path — the
-production path continues to use the full DP, which is
-byte-identical to C `MSalignmm` for our test fixtures (because
-`A__align` == `MSalignmm` on small inputs without ties). Wiring
-the Hirschberg DP behind a future opt-in flag for huge sequences
-(>30000) is straightforward once an FFI cross-validation harness
-against C's `MSalignmm_rec` row-state is in place.
+   Three unit tests + four FFI cross-validation tests against C
+   `MSalignmm` (`crates/mafft-core/tests/cross_validate_msalign.rs`)
+   guard the implementation:
+   - `base_case_matches_full_dp` (short input)
+   - `recursive_case_matches_full_dp` (200-nt identical)
+   - `recursive_case_with_gap_matches_full_dp` (gap-required, unique
+     optimum)
+   - `msalign_base_case_matches_c` (vs C MSalignmm)
+   - `msalign_recursive_matches_c` (130-residue divergent, vs C)
+   - `msalign_identical_long_matches_c` (140-residue identical, vs C)
+   - `msalign_freetail_matches_c` (`tail_gap=false` boundary, vs C)
 
-**Effort to close residual**: ~1-2 days. Build FFI wrappers around
-C `MSalignmm_rec` that expose the row state at the midpoint
-(`midw/midm/midn`, `jumpbackj/jumpbacki/jumpforwj/jumpforwi`),
-cross-validate cell-by-cell, fix any tie-break or off-by-one
-divergences, then route the engine's profile DP through
-`msalignmm` when `alg='M'`.
+   All seven are byte-identical to C MAFFT 7.526.
+
+**Residual** (`msalign_asymmetric_lengths_matches_c`, `#[ignore]`'d
+with tracking note): for inputs where the Hirschberg optimal split
+is an "m-split" (the column-running gap tracker `midm[jmid]` wins
+the argmax), C's `MSalignmm_rec` continues the backward DP past
+`i == imid - 1` down to `i == jumpbackj[jmid]`, refreshing
+`jumpforwi[jumpj]`/`jumpforwj[jumpj]` at that row (C line
+1597-1603), so the post-loop rewrite `imid = jumpforwi[jumpj];
+jmid = jumpforwj[jumpj]` (C line 1767) reads up-to-date row state.
+Our port breaks at `i == imid - 1` and skips both the continuation
+AND the rewrite, which leaves the recursion's top-half / bottom-
+half boundaries off by a few residues on m-split-optimal inputs.
+The asymmetric cross-validation test drifts by 4 columns; the
+cumulative effect on a multi-step progressive merge (36-seq sample)
+is much larger — verified by temporarily wiring `msalignmm` into
+the engine's `--memsave` path and observing wildly divergent
+output. Because of this, `msalignmm` is NOT wired into the
+engine's `--memsave` path; the production path continues to use
+the full DP (which is byte-identical to C `MSalignmm` for all
+test fixtures).
+
+**Effort to close residual**: ~1 day. Need to (1) thread an
+m-split continuation through the backward DP loop that exits at
+`i == jumpi` (= `jumpbackj[jmid]`) rather than `i == imid - 1`,
+(2) properly track `ijpi`/`ijpj` through the inner DP so
+`jumpforwi[dj]`/`jumpforwj[dj]` get the right values at the
+continuation, (3) apply the post-loop `imid = jumpforwi[jumpj];
+jmid = jumpforwj[jumpj]` rewrite, and (4) FFI-instrument C
+`MSalignmm_rec` to capture row state at `i == jumpi` for
+cell-by-cell verification. Once that closes the asymmetric test,
+route the engine's profile DP through `msalignmm` when
+`engine.memsave_dp` is set (the field + plumbing already exist
+behind an `_ = args.memsave;` guard in `main.rs`).
 
 **Implementation files**:
 - `crates/mafft-bin/src/main.rs` — `--memsave` + `--nomemsave` flags,
