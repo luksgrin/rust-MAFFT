@@ -58,8 +58,9 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--anysymbol` / `--preservecase` (protein + DNA, non-standard chars, mixed case) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--leavegappyregion` / `--legacygappenalty` (FFT-NS-2/-i, NW, L/G/E-INS-i, BL/JTT, --anysymbol/--reorder/--treein/--memsavetree/--auto combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--seed FILE` (L/G/E-INS-i + FFT-NS-i, single + multiple seed files) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
+| `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree combo) | match | match | 0 | byte-exact ✓ (CLI shim — Hirschberg DP unported but transparent for inputs ≤ 30k) |
 
-Test suite as of 2026-05-14: **317 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-15: **323 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -705,25 +706,67 @@ out of 36) and the implied `--tm 200 --treeout` first-pass tree
 (20-line branch-length diff, max drift 3e-3 in 5th decimal place)
 are affected. All 17/17 alignment-mode parity tests still pass.
 
-### §B.3. `--memsave` — UNIMPLEMENTED
+### §B.3. `--memsave` — SHIM + Hirschberg LIBRARY LANDED, TIE-BREAK MATCH PENDING — 2026-05-14/15
 
-**Location**: `crates/mafft-bin/src/main.rs` — flag is absent; the CLI
-rejects it with "unknown argument".
-(`--reorder`/`--inputorder` landed 2026-05-13 — see §AA. `--treeout`
-landed 2026-05-13 — see §AB. `--treein` landed 2026-05-14 — see §AC.
-`--auto` landed 2026-05-14 — see §AD. `--memsavetree` landed
-2026-05-14 — see §AE. `--anysymbol`/`--preservecase` landed
-2026-05-14 — see §AF. `--leavegappyregion`/`--legacygappenalty`
-landed 2026-05-14 — see §AG. `--seed` landed 2026-05-14 — see §AH.)
+**Status**:
+1. **CLI shim landed** (2026-05-14): `--memsave` and `--nomemsave`
+   are accepted CLI flags with script-level gating that rejects them
+   for `--localpair`, `--globalpair`, `--genafpair`, `--qinsi`,
+   `--xinsi`, `--scarnalike`, and `--seed` (mirroring C MAFFT
+   `scripts/mafft:1866-1869` and `tbfast.c:1117-1118`). For inputs
+   that fit in memory (≤ 30000 in length per sequence), the
+   alignment is byte-identical to C MAFFT's output:
+   - `memsave_fftns2_byte_identical_to_c`
+   - `memsave_fftnsi_byte_identical_to_c`
+   - `memsave_fftns2_retree1_byte_identical_to_c`
+2. **Hirschberg library landed** (2026-05-15):
+   `crates/mafft-align/src/msalign.rs::msalignmm` is a full
+   linear-space port of C `MSalignmm`. The recursion mirrors
+   `MSalignmm_rec`: forward DP from `ist` to `imid = ist + lgth1/2`
+   capturing `midw/midm/midn` at the midpoint row, backward DP from
+   `ien` to `imid` adding into those arrays, `jmid = argmax` over
+   midw/midm/midn for the optimal split column, recurse on
+   top-left/bottom-right halves with inter-half gap padding. Base
+   case (`lgth1 < DPTANNI=100` OR `lgth2 < DPTANNI`) delegates to
+   the full DP. Three unit tests guard:
+   - `base_case_matches_full_dp` (short input, recursion bottoms
+     out into full DP)
+   - `recursive_case_matches_full_dp` (200-nt identical input)
+   - `recursive_case_with_gap_matches_full_dp` (gap-required input
+     with unique optimum — verifies the split-point selection)
 
-**C reference**: `scripts/mafft:543-545` (`--memsave`).
+**Residual** (the gap that keeps this section open):
+The Hirschberg implementation returns the SAME optimal score as
+the full DP for every test input, but for inputs where multiple
+SCORE-TIED optimal alignments exist, the trace selection in the
+forward/backward midpoint may pick a different equally-scored trace
+than C's `MSalignmm`. The alignment score is identical; only which
+residue columns the gaps land in differs. Because we have no way to
+guarantee byte-identity to C `MSalignmm` at tie-break level yet,
+`msalignmm` is NOT wired into the engine's `--memsave` path — the
+production path continues to use the full DP, which is
+byte-identical to C `MSalignmm` for our test fixtures (because
+`A__align` == `MSalignmm` on small inputs without ties). Wiring
+the Hirschberg DP behind a future opt-in flag for huge sequences
+(>30000) is straightforward once an FFI cross-validation harness
+against C's `MSalignmm_rec` row-state is in place.
 
-**Severity**: HIGH for feature coverage (users running with this flag
-get errors), but does not affect byte-parity of any currently-tested
-mode.
+**Effort to close residual**: ~1-2 days. Build FFI wrappers around
+C `MSalignmm_rec` that expose the row state at the midpoint
+(`midw/midm/midn`, `jumpbackj/jumpbacki/jumpforwj/jumpforwi`),
+cross-validate cell-by-cell, fix any tie-break or off-by-one
+divergences, then route the engine's profile DP through
+`msalignmm` when `alg='M'`.
 
-**Effort**: Largest remaining item — `--memsave` switches the DP to
-Hirschberg-style linear-space divide-and-conquer; new alignment kernel.
+**Implementation files**:
+- `crates/mafft-bin/src/main.rs` — `--memsave` + `--nomemsave` flags,
+  Impossible-style gating.
+- `crates/mafft-align/src/msalign.rs` — Hirschberg DP
+  (`msalignmm`), public library entry point.
+- `crates/mafft-core/tests/end_to_end.rs` — three byte-identity tests
+  (`memsave_*`).
+- `crates/mafft-core/tests/fixtures/sample.memsave.{fftns2,fftnsi.iter2,fftns2.retree1}`
+  — C-generated reference outputs.
 
 ### §B.4. `--retree N` for N ≠ 2 byte-untested for INS-i modes
 

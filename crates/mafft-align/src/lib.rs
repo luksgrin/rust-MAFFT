@@ -13,6 +13,7 @@ mod profile;
 mod fft_align;
 mod constraints;
 mod constrained_align;
+mod msalign;
 
 pub use dp::{Alignment, AlignOp, GapModel, matrix_i32_to_f64};
 pub use global::global_align;
@@ -33,3 +34,4 @@ pub use constraints::{
 pub use constrained_align::{
     constrained_profile_align, partial_profile_align, ConstrainedAlignParams,
 };
+pub use msalign::msalignmm;

@@ -2349,6 +2349,52 @@ fn seed_einsi_byte_identical_to_c() {
     }
 }
 
+/// `--memsave` for FFT-NS-2 must produce the same alignment as default
+/// mode. C's `--memsave` (`scripts/mafft:543-544`) sets `alg='M'` so
+/// `tbfast` runs `MSalignmm` (Hirschberg-style linear-space DP) instead
+/// of `A__align`. For inputs ≤ 30000 in length the alignment converges
+/// to the same trace — C's auto-switch at `len > 30000`
+/// (`tbfast.c:1096`) makes the two paths equivalent for typical inputs.
+/// Our engine uses full-memory DP regardless, so the byte-identity
+/// guarantee here is "FFT-NS-2 output == C's FFT-NS-2 + --memsave output."
+#[test]
+fn memsave_fftns2_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.memsave.fftns2"))
+        .expect("missing fixtures/sample.memsave.fftns2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's FFT-NS-2 + --memsave output");
+    }
+}
+
+/// `--memsave` with FFT-NS-i (`--maxiterate 2`).
+#[test]
+fn memsave_fftnsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.memsave.fftnsi.iter2"))
+        .expect("missing fixtures/sample.memsave.fftnsi.iter2");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 }).align(&input);
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's FFT-NS-i + --memsave output");
+    }
+}
+
+/// `--memsave` with `--retree 1` (FFT-NS-1).
+#[test]
+fn memsave_fftns2_retree1_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.memsave.fftns2.retree1"))
+        .expect("missing fixtures/sample.memsave.fftns2.retree1");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input);
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's FFT-NS-2 retree-1 + --memsave output");
+    }
+}
+
 /// `--seed` with the default FFT-NS pipeline: C promotes `iterate=0`
 /// to `iterate=2` so the seed constraints actually drive refinement
 /// (`scripts/mafft:1911-1923`). Verifies that the seed-only constraint

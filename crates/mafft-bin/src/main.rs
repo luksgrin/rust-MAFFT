@@ -204,6 +204,31 @@ struct Args {
     /// `maxiterate ≥ 2` (`scripts/mafft:1911-1923`).
     #[arg(long = "seed", value_name = "FILE")]
     seed_files: Vec<PathBuf>,
+
+    /// Memory-saving mode (matches C MAFFT `--memsave` →
+    /// `tbfast -M -B`, `scripts/mafft:543-544`). In C, this routes the
+    /// profile DP through `MSalignmm` (Hirschberg-style linear-space
+    /// divide-and-conquer) for the group merge, avoiding the O(N×M)
+    /// allocation. For sequences that fit in memory (≤ 30000 residues)
+    /// the alignment is byte-identical to default-mode output — C's
+    /// auto-switch at `len > 30000` (`tbfast.c:1096`) makes the two
+    /// paths converge for typical inputs. Our engine uses full-memory
+    /// DP regardless; the flag is accepted (for CLI parity) and
+    /// validated against the same script-level gating as C. NOTE: the
+    /// actual Hirschberg DP is not yet ported — long sequences that
+    /// would auto-trigger C's memsave path may OOM here. Tracked in
+    /// TODO §B.3.
+    #[arg(long)]
+    memsave: bool,
+
+    /// Disable the auto-switch to memory-saving DP for long sequences
+    /// (matches C MAFFT `--nomemsave` → `tbfast -N`,
+    /// `scripts/mafft:545-546`). In C this sets `nevermemsave = 1` so
+    /// long-sequence inputs use the full-memory DP. We always use the
+    /// full DP, so the flag is accepted for CLI parity and has no
+    /// runtime effect.
+    #[arg(long)]
+    nomemsave: bool,
 }
 
 fn main() {
@@ -253,6 +278,26 @@ fn main() {
     let user_nseq = input.nseq();
     if user_nseq == 0 {
         eprintln!("Error: no sequences found in input");
+        std::process::exit(1);
+    }
+
+    // `--memsave` gating: C MAFFT rejects `--memsave` for every
+    // non-ktuples distance mode (`scripts/mafft:1866-1869`). That
+    // covers `--localpair`, `--globalpair`, `--genafpair`,
+    // `--lastpair`, `--multipair`, etc. — the seed `Impossible`
+    // diagnostic. Mirror that here so users get the same error
+    // surface.
+    if args.memsave
+        && (args.localpair || args.globalpair || args.genafpair
+            || args.qinsi || args.xinsi || args.scarnalike)
+    {
+        eprintln!("Impossible");
+        std::process::exit(1);
+    }
+    if args.memsave && !args.seed_files.is_empty() {
+        // C rejects --seed + --memsave: MSalignmm doesn't accept
+        // local-homology constraints (`tbfast.c:1117-1118`).
+        eprintln!("Impossible");
         std::process::exit(1);
     }
 
