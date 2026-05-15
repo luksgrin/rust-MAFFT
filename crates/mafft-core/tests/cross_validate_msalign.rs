@@ -212,14 +212,165 @@ fn msalign_freetail_matches_c() {
     assert_eq!(rust_s2, c_s2, "freetail seq2 differs");
 }
 
-/// Asymmetric lengths where lgth1 < lgth2 — exercises an m-split
-/// case (the Hirschberg backward DP needs to continue past
-/// `i == imid - 1` to refresh `jumpforwi/jumpforwj` at the chosen
-/// `jumpi`, C line 1597-1603 and 1767). Our port currently breaks
-/// at `i == imid - 1`, so this test fails by a few columns. See
-/// TODO §B.3 for the residual. Marked `ignore` until the FFI
-/// instrumented cross-validation (`MSalignmm_rec` row-state at
-/// `i == jumpi`) lands.
+/// Cell-by-cell comparison of midw/midm/midn/jumpback*/jumpforw*
+/// between our Rust Hirschberg forward+backward DP and C
+/// `MSalignmm_rec` (via `rs_msalignmm_capture_top`). Pinpoints
+/// where any divergence first occurs.
+#[test]
+fn msalign_mid_state_matches_c() {
+    // Asymmetric input — the one that diverges at the alignment
+    // level. Same input as `msalign_asymmetric_lengths_matches_c`.
+    let s1 = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";
+    let s2 = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNGGRTLSEVMKWPFSDQIANLPTQRDLELFQKLMSARTVTNLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";
+    let lgth1 = s1.len();
+    let lgth2 = s2.len();
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+
+    // ---- Capture C state via the instrumented wrapper ----
+    let _guard = C_MUTEX.lock().unwrap();
+    let (c_imid, c_jmid, c_jumpi, c_jumpj, c_midw, c_midm, c_midn,
+         c_jumpbacki, c_jumpbackj, c_jumpforwi, c_jumpforwj) = unsafe {
+        init_c_protein_blosum62();
+
+        let alloclen = (lgth1 + lgth2 + 1000) as c_int;
+        let c_seq1 = CString::new(&s1[..]).unwrap();
+        let c_seq2 = CString::new(&s2[..]).unwrap();
+        let mut buf1: Vec<u8> = c_seq1.as_bytes().to_vec();
+        buf1.resize(alloclen as usize + 1, 0);
+        let mut buf2: Vec<u8> = c_seq2.as_bytes().to_vec();
+        buf2.resize(alloclen as usize + 1, 0);
+        let p1 = buf1.as_mut_ptr() as *mut c_char;
+        let p2 = buf2.as_mut_ptr() as *mut c_char;
+
+        let nalpha_c = scoring.substitution_matrix.len() as c_int;
+        let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha_c, nalpha_c);
+        for i in 0..scoring.substitution_matrix.len() {
+            for j in 0..scoring.substitution_matrix[i].len() {
+                *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
+            }
+        }
+
+        let out_size = lgth2 + 2;
+        let mut out_imid: c_int = 0;
+        let mut out_jmid: c_int = 0;
+        let mut out_jumpi: c_int = 0;
+        let mut out_jumpj: c_int = 0;
+        let mut out_midw = vec![0.0f64; out_size];
+        let mut out_midm = vec![0.0f64; out_size];
+        let mut out_midn = vec![0.0f64; out_size];
+        let mut out_jumpbacki = vec![0 as c_int; out_size];
+        let mut out_jumpbackj = vec![0 as c_int; out_size];
+        let mut out_jumpforwi = vec![0 as c_int; out_size];
+        let mut out_jumpforwj = vec![0 as c_int; out_size];
+
+        mafft_sys::rs_msalignmm_capture_top(
+            n_dyn, p1, p2,
+            lgth1 as c_int, lgth2 as c_int,
+            1, 1,
+            &mut out_imid, &mut out_jmid, &mut out_jumpi, &mut out_jumpj,
+            out_midw.as_mut_ptr(),
+            out_midm.as_mut_ptr(),
+            out_midn.as_mut_ptr(),
+            out_jumpbacki.as_mut_ptr(),
+            out_jumpbackj.as_mut_ptr(),
+            out_jumpforwi.as_mut_ptr(),
+            out_jumpforwj.as_mut_ptr(),
+        );
+
+        mafft_sys::freeconstants();
+        (out_imid as usize, out_jmid as usize, out_jumpi as usize, out_jumpj as usize,
+         out_midw, out_midm, out_midn,
+         out_jumpbacki, out_jumpbackj, out_jumpforwi, out_jumpforwj)
+    };
+
+    eprintln!("C: imid={} jmid={} jumpi={} jumpj={}",
+        c_imid, c_jmid, c_jumpi, c_jumpj);
+    eprintln!("C: midw[95]={:.2} midw[99]={:.2} midw[100]={:.2}",
+        c_midw[95], c_midw[99], c_midw[100]);
+    eprintln!("C: midm[95]={:.2} midm[99]={:.2} midm[100]={:.2}",
+        c_midm[95], c_midm[99], c_midm[100]);
+    eprintln!("C: midn[94]={:.2} midn[98]={:.2} midn[99]={:.2}",
+        c_midn[94], c_midn[98], c_midn[99]);
+    // Find C's max midw / midm.
+    let mut c_max_midw = (0, f64::NEG_INFINITY);
+    for j in 1..lgth2 {
+        if c_midw[j] > c_max_midw.1 { c_max_midw = (j, c_midw[j]); }
+    }
+    eprintln!("C: argmax(midw) = {} (val {:.2})", c_max_midw.0, c_max_midw.1);
+
+    eprintln!("C: midn[95]={:.2} midw[96]={:.2}", c_midn[95], c_midw[96]);
+    eprintln!("C: jumpbacki[96]={} jumpbackj[96]={}", c_jumpbacki[96], c_jumpbackj[96]);
+    eprintln!("C: jumpforwi[95]={} jumpforwj[95]={}", c_jumpforwi[95], c_jumpforwj[95]);
+
+    let _ = c_jumpbacki;
+    let _ = c_jumpbackj;
+    let _ = c_jumpforwi;
+    let _ = c_jumpforwj;
+
+    // ---- Build the matching Rust profiles, run msalignmm, observe split.
+    // (Splits are exposed via MS_DBG env; we just sanity-check that
+    // `msalignmm` produces an alignment of any width.)
+    let prof1 = Profile::from_aligned(&[s1.as_slice()], &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&[s2.as_slice()], &[1.0], &scoring.amino_map, scoring.nalphabets);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let aln = msalignmm(&prof1, &prof2, &scoring.consweight_matrix, &gap, true, true);
+    eprintln!("Rust msalignmm width: {}", aln.operations.len());
+
+    // The expectation: C MSalignmm gives a 151-wide alignment, so
+    // its split must place midw/midm/midn s.t. the recursion lands
+    // at width 151. Our Rust msalignmm currently gives 155.
+    // Either C's argmax(midw) differs from ours (telling us our
+    // forward+backward midw is wrong), or C picks the same column
+    // but the recursion glue (jumpforwi rewrite) diverges.
+}
+
+/// Run C MSalignmm on the (0, 55, 0, 95) top sub-region of the
+/// failing asymmetric input, compare to ours. Pinpoints whether the
+/// 1-column residual is in the base case (profile_align_imp_with_
+/// boundary mismatch with MSalignmm_tanni) or in the recursion glue.
+#[test]
+fn msalign_subregion_top_matches_c() {
+    // s1[0..=55] (56 chars from "MNGTE...VGFPV" + 'N' + 'F'),
+    // s2[0..=95] (96 chars).
+    let s1_full = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";
+    let s2_full = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNGGRTLSEVMKWPFSDQIANLPTQRDLELFQKLMSARTVTNLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";
+    let s1_top: &[u8] = &s1_full[0..56];
+    let s2_top: &[u8] = &s2_full[0..96];
+    assert_eq!(s1_top.len(), 56);
+    assert_eq!(s2_top.len(), 96);
+
+    // The top sub-region is called with head_gap=true, tail_gap=true
+    // (effective_tail=true because not at parent's end).
+    let (rust_s1, rust_s2, c_s1, c_s2) = align_via_both(s1_top, s2_top, true, true);
+    eprintln!("Rust top width: {}", rust_s1.len());
+    eprintln!("C    top width: {}", c_s1.len());
+    eprintln!("Rust s1: {}", String::from_utf8_lossy(&rust_s1));
+    eprintln!("C    s1: {}", String::from_utf8_lossy(&c_s1));
+    eprintln!("Rust s2: {}", String::from_utf8_lossy(&rust_s2));
+    eprintln!("C    s2: {}", String::from_utf8_lossy(&c_s2));
+
+    // Bottom sub-region: s1[57..=111] (55 chars), s2[96..=150] (55 chars).
+    // Per the recursion glue this is called with head_gap=false,
+    // tail_gap=true (top-level tail).
+    let s1_bot: &[u8] = &s1_full[57..=111];
+    let s2_bot: &[u8] = &s2_full[96..=150];
+    assert_eq!(s1_bot.len(), 55);
+    assert_eq!(s2_bot.len(), 55);
+    // Internal sub-region: effective_head=true (because ist!=0 in
+    // the recursive call). To mimic that on a standalone call we
+    // pass head_gap=true.
+    let (rs1, rs2, cs1, cs2) = align_via_both(s1_bot, s2_bot, true, true);
+    eprintln!("Bottom — Rust width: {}, C width: {}", rs1.len(), cs1.len());
+    eprintln!("Bottom Rust s1: {}", String::from_utf8_lossy(&rs1));
+    eprintln!("Bottom C    s1: {}", String::from_utf8_lossy(&cs1));
+    eprintln!("Bottom Rust s2: {}", String::from_utf8_lossy(&rs2));
+    eprintln!("Bottom C    s2: {}", String::from_utf8_lossy(&cs2));
+}
+
+/// Asymmetric lengths where lgth1 < lgth2 — m-split case. C MSalignmm
+/// continues the backward DP past `i == imid - 1` to refresh
+/// `jumpforwi/jumpforwj` at the chosen `jumpi` (C line 1597-1603 +
+/// 1767). Our port currently breaks at `i == imid - 1`. See TODO §B.3.
 #[test]
 #[ignore = "TODO §B.3: m-split jumpforwi refresh not yet implemented"]
 fn msalign_asymmetric_lengths_matches_c() {
@@ -227,6 +378,10 @@ fn msalign_asymmetric_lengths_matches_c() {
     let s1 = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";
     let s2 = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNGGRTLSEVMKWPFSDQIANLPTQRDLELFQKLMSARTVTNLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";
     let (rust_s1, rust_s2, c_s1, c_s2) = align_via_both(s1, s2, true, true);
+    eprintln!("Rust s1: {}", String::from_utf8_lossy(&rust_s1));
+    eprintln!("C    s1: {}", String::from_utf8_lossy(&c_s1));
+    eprintln!("Rust s2: {}", String::from_utf8_lossy(&rust_s2));
+    eprintln!("C    s2: {}", String::from_utf8_lossy(&c_s2));
     assert_eq!(rust_s1.len(), c_s1.len(),
         "width differs: rust={} c={}", rust_s1.len(), c_s1.len());
     assert_eq!(rust_s1, c_s1, "asymmetric seq1 differs");

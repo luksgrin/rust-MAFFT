@@ -46,6 +46,7 @@ fn main() {
     // disttbfast.c). Bodies are copies of the canonical implementations.
     let wrappers_dir: PathBuf = ["wrappers"].iter().collect();
     source_paths.push(wrappers_dir.join("parttree_helpers.c"));
+    source_paths.push(wrappers_dir.join("msalignmm_instr.c"));
 
     let mut build = cc::Build::new();
     build

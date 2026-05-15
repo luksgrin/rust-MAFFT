@@ -150,6 +150,7 @@ fn msalignmm_rec(
     );
 
     let (jumpi, jumpj, jmid) = bwd.split_point;
+    let imid = bwd.imid_override.unwrap_or(imid);
 
     // Recurse on top-left sub-region `(ist .. ist+jumpi, jst .. jst+jumpj)`.
     // C `MSalignmm_rec:1886` — both endpoints inclusive. For a diagonal
@@ -303,6 +304,12 @@ struct BackwardState {
     /// are the i/j right AFTER the cut (bottom-right half starts at
     /// `ist+imid, jst+jmid`).
     split_point: (usize, usize, usize),
+    /// If `Some`, overrides the parent's `imid = lgth1/2` with
+    /// `jumpforwi[jumpj]` (C line 1767). For typical splits this
+    /// equals `imid` (no change); for splits where the mj-branch
+    /// fed `ijpi = mp[dj]` it points further down, shifting the
+    /// bottom-half recursion start row.
+    imid_override: Option<usize>,
 }
 
 /// Forward DP from row `ist` to row `ist + imid` (inclusive of the
@@ -334,7 +341,7 @@ fn forward_dp(
     let headgapfreq1 = if ist > 0 { prof1.nongap_freq[ist - 1] } else { headgapfreq1_g };
     let headgapfreq2 = if jst > 0 { prof2.nongap_freq[jst - 1] } else { headgapfreq2_g };
 
-    let f_ext = gap.extend;
+    let _ = gap.extend; // C MSalignmm has USE_PENALTY_EX = 0; f_ext is unused.
 
     // `initverticalw`: `match_calc(prof2[jst], prof1[ist..])` then add
     // `ogcp1[ist] * headgapfreq2 + fgcp1[ist+i-1] * nongap_freq2[jst]`.
@@ -360,7 +367,10 @@ fn forward_dp(
             }
             initverticalw[di] = s;
         }
-        // Add head-gap penalty (C line 1229-1233).
+        // Add head-gap penalty (C line 1229-1233). C MSalignmm has
+        // `USE_PENALTY_EX = 0` (MSalignmm.c:7), so the `+= fpenalty_ex
+        // * i` increment that `A__align` (`profile_align_imp_with_
+        // boundary`) applies in its head-gap init is OMITTED here.
         let gf2_0 = prof2.nongap_freq[jst];
         if head_gap || ist != 0 {
             for di in 1..=imid {
@@ -371,7 +381,6 @@ fn forward_dp(
                     gf2_0,
                     ogcp1[ist].mul_add(headgapfreq2, initverticalw[di]),
                 );
-                initverticalw[di] = f_ext.mul_add(di as f64, initverticalw[di]);
             }
         }
     }
@@ -408,7 +417,6 @@ fn forward_dp(
                     gf1_0,
                     ogcp2[jst].mul_add(headgapfreq1, currentw[dj]),
                 );
-                currentw[dj] = f_ext.mul_add(dj as f64, currentw[dj]);
             }
         }
     }
@@ -509,7 +517,9 @@ fn forward_dp(
                 mi = g;
                 mpi = (dj - 1) as i64;
             }
-            mi += f_ext;
+            // C MSalignmm has `USE_PENALTY_EX = 0` (MSalignmm.c:7), so
+            // the `mi += fpenalty_ex;` increment that `A__align`
+            // applies is OMITTED here.
 
             // m[dj] (column-running gap-skip tracker)
             // C line 1349: g = m[dj] + fgcp1[row_im1] * gf2_j
@@ -521,7 +531,7 @@ fn forward_dp(
                 m[dj] = g;
                 mp[dj] = (di - 1) as i64;
             }
-            m[dj] += f_ext;
+            // `USE_PENALTY_EX = 0`: skip `m[dj] += fpenalty_ex;` too.
 
             currentw[dj] += wm;
 
@@ -563,7 +573,7 @@ fn backward_dp(
     let ogcp2 = effective_ogcp2(prof2, gap);
     let fgcp2 = effective_fgcp2(prof2, gap);
 
-    let f_ext = gap.extend;
+    let _ = gap.extend; // C MSalignmm has USE_PENALTY_EX = 0; f_ext is unused.
 
     let tail1: f64 = if ien + 1 < prof1.length { prof1.nongap_freq[ien + 1] } else { 1.0 };
     let tail2: f64 = if jen + 1 < prof2.length { prof2.nongap_freq[jen + 1] } else { 1.0 };
@@ -719,8 +729,14 @@ fn backward_dp(
             let gf2_j = if col_j < prof2.length { prof2.nongap_freq[col_j] } else { 1.0 };
             let gf2_jp1 = if col_jp1 < prof2.length { prof2.nongap_freq[col_jp1] } else { 1.0 };
 
-            // Diagonal default (C lines 1548-1550).
-            let mut wm = previousw[dj];
+            // Diagonal default (C lines 1548-1550). In the C
+            // MSalignmm backward inner loop, `*prept = previousw[j+1]`
+            // because `prept` starts at `previousw + lgth2 - 1` and
+            // decrements (so at iter j=lgth2-2, *prept = previousw[lgth2-1]
+            // = previousw[(lgth2-2) + 1]). All four `*prept` references
+            // below therefore use `previousw[dj + 1]`, NOT `previousw[dj]`.
+            let pprev = previousw[dj + 1];
+            let mut wm = pprev;
             let mut ijpi: i64 = (di + 1) as i64;
             let mut ijpj: i64 = (dj + 1) as i64;
 
@@ -734,13 +750,14 @@ fn backward_dp(
                 ijpi = (di + 1) as i64;
             }
 
-            // mi update (C line 1561).
-            let g = fgcp2[col_j].mul_add(gf1_ip1, previousw[dj]);
+            // mi update (C line 1561). g = *prept + fgcp2[j] * gf1[i+1]
+            //   = previousw[dj+1] + fgcp2[col_j] * gf1_ip1.
+            let g = fgcp2[col_j].mul_add(gf1_ip1, pprev);
             if g >= mi {
                 mi = g;
                 mpi = (dj + 1) as i64;
             }
-            mi += f_ext;
+            // C MSalignmm has `USE_PENALTY_EX = 0`: skip `mi += fpenalty_ex`.
 
             // C line 1575 (mj candidate):
             //   g = m[dj] + ogcp1[row_ip1] * gf2_j
@@ -752,13 +769,14 @@ fn backward_dp(
                 ijpj = (dj + 1) as i64;
             }
 
-            // mj update (C line 1585).
-            let g = fgcp1[row_i].mul_add(gf2_jp1, previousw[dj]);
+            // mj update (C line 1585). g = *prept + fgcp1[i] * gf2_{j+1}
+            //   = previousw[dj+1] + fgcp1[row_i] * gf2_jp1.
+            let g = fgcp1[row_i].mul_add(gf2_jp1, pprev);
             if g >= m[dj] {
                 m[dj] = g;
                 mp[dj] = (di + 1) as i64;
             }
-            m[dj] += f_ext;
+            // `USE_PENALTY_EX = 0`: skip `m[dj] += fpenalty_ex`.
 
             // jumpforwi/jumpforwj writes at i == imid - 1 (the only
             // case we currently handle — see TODO §B.3 m-split note).
@@ -846,19 +864,31 @@ fn backward_dp(
         jumpi = imid.saturating_sub(1);
         jmid = lgth2;
         jumpj = lgth2 - 1;
+    } else {
+        // C line 1767: `imid = jumpforwi[jumpj]; jmid = jumpforwj[jumpj]`.
+        // With the backward DP fixed (`*prept` indexing) the values
+        // captured at `i == imid - 1` are now meaningful: for diagonal
+        // and n-split paths they equal `imid` / `jmid` (no change),
+        // for m-split paths they point to a different cell. The
+        // override stays a no-op for w/n inputs and shifts the
+        // bottom-half recursion start row for m-splits.
+        let new_imid = jumpforwi.get(jumpj).copied().unwrap_or(imid as i64);
+        let new_jmid = jumpforwj.get(jumpj).copied().unwrap_or(jmid as i64);
+        let mut imid_eff = imid;
+        if new_imid >= 0 && new_jmid >= 0 {
+            imid_eff = new_imid as usize;
+            jmid = new_jmid as usize;
+        }
+        if imid_eff == jumpi {
+            jumpi = imid_eff.saturating_sub(1);
+        }
+        return BackwardState {
+            split_point: (jumpi, jumpj, jmid),
+            imid_override: Some(imid_eff),
+        };
     }
-    // We intentionally skip C's `imid = jumpforwi[jumpj]; jmid =
-    // jumpforwj[jumpj]` rewrite (C line 1767). That rewrite only
-    // matters for m-splits where `jumpi < imid - 1` and the backward
-    // DP continues past `imid - 1`. Our current Hirschberg breaks at
-    // `i == imid - 1` and so jumpforwi/jumpforwj only hold their
-    // `i == imid - 1` values — those happen to equal `imid` for the
-    // diagonal/n branches that dominate typical inputs. Applying the
-    // rewrite without continuing the backward DP through to the
-    // m-split's `jumpi` produces incorrect overrides. See TODO §B.3
-    // for the residual.
 
-    BackwardState { split_point: (jumpi, jumpj, jmid) }
+    BackwardState { split_point: (jumpi, jumpj, jmid), imid_override: None }
 }
 
 // Helper functions to compute the effective ogcp/fgcp scaled by

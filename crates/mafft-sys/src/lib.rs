@@ -286,6 +286,32 @@ unsafe extern "C" {
         out_len1: *mut c_double,
     );
 
+    /// Instrumented top-level forward + backward DP of C
+    /// `MSalignmm_rec`. Returns mid-row state for cross-validating
+    /// our Rust Hirschberg port. See
+    /// `wrappers/msalignmm_instr.c::rs_msalignmm_capture_top`.
+    /// Output arrays must be allocated to size `lgth2 + 2`.
+    pub fn rs_msalignmm_capture_top(
+        n_dynamicmtx: *mut *mut c_double,
+        seq1: *mut c_char,
+        seq2: *mut c_char,
+        lgth1: c_int,
+        lgth2: c_int,
+        headgp: c_int,
+        tailgp: c_int,
+        out_imid: *mut c_int,
+        out_jmid: *mut c_int,
+        out_jumpi: *mut c_int,
+        out_jumpj: *mut c_int,
+        out_midw: *mut c_double,
+        out_midm: *mut c_double,
+        out_midn: *mut c_double,
+        out_jumpbacki: *mut c_int,
+        out_jumpbackj: *mut c_int,
+        out_jumpforwi: *mut c_int,
+        out_jumpforwj: *mut c_int,
+    );
+
     // -- Pairwise alignment --
     pub fn G__align11(
         scoringmtx: *mut *mut c_double,
