@@ -549,13 +549,10 @@ fn msalign_full_trace_c_reimpl_symmetric_matches() {
 /// stderr output of the recursion (ENTER, SPLIT, INTER_HORIZ/VERT,
 /// TOP_DONE, BOTTOM_DONE, BASE_CASE).
 ///
-/// This test FAILS — faithful re-impl gives 152, real C gives 151.
-/// Confirming the asymmetric residual is a real-C-specific
-/// behavior not present in `MSalignmm_rec`'s public source. Marked
-/// `#[ignore]` so the harness stays in tree as a regression check
-/// without poisoning the C_MUTEX during the workspace test run.
+/// Verifies the faithful C re-implementation of `MSalignmm_rec`
+/// matches real C `MSalignmm` byte-for-byte. Cross-validated the
+/// `midw[j] += wm` indexing (NOT `midw[j+1] += wm` — `MSalignmm.c:1610`).
 #[test]
-#[ignore = "TODO §B.3: real C MSalignmm has 1-col behavior not in MSalignmm_rec source"]
 fn msalign_full_trace_c_reimpl_matches_real_c() {
     let s1_full = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";
     let s2_full = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNGGRTLSEVMKWPFSDQIANLPTQRDLELFQKLMSARTVTNLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";
@@ -644,12 +641,10 @@ fn msalign_full_trace_c_reimpl_matches_real_c() {
         trace_width, real_width);
 }
 
-/// Asymmetric lengths where lgth1 < lgth2 — m-split case. C MSalignmm
-/// continues the backward DP past `i == imid - 1` to refresh
-/// `jumpforwi/jumpforwj` at the chosen `jumpi` (C line 1597-1603 +
-/// 1767). Our port currently breaks at `i == imid - 1`. See TODO §B.3.
+/// Asymmetric lengths where `lgth1 < lgth2`. Closed 2026-05-16 by
+/// fixing the `midw[j] += wm` indexing (was incorrectly `midw[j+1]
+/// += wm` — see `msalign.rs::msalignmm_rec` and `MSalignmm.c:1610`).
 #[test]
-#[ignore = "TODO §B.3: m-split jumpforwi refresh not yet implemented"]
 fn msalign_asymmetric_lengths_matches_c() {
     // s1 = 110 residues, s2 = 180 residues (s1 with extra middle motif).
     let s1 = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSI";

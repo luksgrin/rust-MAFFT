@@ -785,9 +785,14 @@ fn backward_dp(
                 jumpforwj[dj] = ijpj;
             }
             // Accumulate midw/midm at row imid; midn at row imid-1.
+            // C `MSalignmm.c:1610-1612`:
+            //   midw[j] += wm;        // NOTE: j, not j+1
+            //   midm[j+1] += *mjpt;
+            // The midw index off-by-one (j vs j+1) was a port bug
+            // that surfaced as a 1-column drift on asymmetric inputs.
             if di == imid {
-                if dj + 1 < midw.len() { midw[dj + 1] += wm; }
-                if dj + 2 < midm.len() { midm[dj + 1] += m[dj]; }
+                if dj < midw.len() { midw[dj] += wm; }
+                if dj + 1 < midm.len() { midm[dj + 1] += m[dj]; }
             }
             if di == imid.saturating_sub(1) {
                 if dj < midn.len() { midn[dj] += mi; }
@@ -803,15 +808,11 @@ fn backward_dp(
             firstm = g_first;
             firstmp = (di + 1) as i64;
         }
-        // C line 1637: `if( i == imid ) midm[j+1] += firstm;` — in
-        // C the inner-loop j has decremented past 0 to -1, so this
-        // touches `midm[0]`. But changing to `midm[0]` from our
-        // earlier `midm[1]` regressed the 200-nt identical-input
-        // test (split selection drifts when midm[0] dominates) — so
-        // we keep `midm[1]` for now and document this as part of
-        // the TODO §B.3 m-split residual.
+        // C line 1637: `if( i == imid ) midm[j+1] += firstm;` — at
+        // this point the inner-loop j has decremented past 0 to -1,
+        // so `j + 1` is 0. C touches `midm[0]`.
         if di == imid {
-            if 1 < midm.len() { midm[1] += firstm; }
+            if !midm.is_empty() { midm[0] += firstm; }
         }
 
         // At i == imid - 1, decide jmid + (jumpi, jumpj) and break.
@@ -963,6 +964,105 @@ mod tests {
             "scores differ: full={} ms={}", aln_full.score, aln_ms.score);
         assert_eq!(aln_full.operations, aln_ms.operations,
             "trace differs for short input");
+    }
+
+    /// Two 360-char identical-prefix sequences (length similar to
+    /// the rhodopsin sample). Should align diagonally end-to-end
+    /// with `head_gap=false, tail_gap=false`. If msalignmm gives a
+    /// shorter trace, the recursion is broken at this length.
+    #[test]
+    fn freegap_360char_diagonal() {
+        let (mtx, map) = simple_setup();
+        let s: Vec<u8> = (0..360).map(|i| b"ACGT"[(i * 3 + 1) % 4]).collect();
+        let p1 = Profile::from_aligned(&[s.as_slice()], &[1.0], &map, 5);
+        let p2 = Profile::from_aligned(&[s.as_slice()], &[1.0], &map, 5);
+        let gap = GapModel::new(-200.0, -10.0);
+        let aln_full = profile_align_imp_with_boundary(
+            &p1, &p2, &mtx, &gap, false, false, None, false,
+            BoundaryFreqs::default(),
+        );
+        let aln_ms = msalignmm(&p1, &p2, &mtx, &gap, false, false);
+        assert_eq!(aln_full.operations.len(), aln_ms.operations.len(),
+            "360-char free-gap: trace length differs: full={} ms={}",
+            aln_full.operations.len(), aln_ms.operations.len());
+        assert!((aln_full.score - aln_ms.score).abs() < 1e-6);
+    }
+
+    /// Asymmetric multi-seq Hirschberg (100 chars × 105-char 2-seq
+    /// profile). Mirrors a typical progressive merge: a single new
+    /// sequence joined to a small existing group.
+    #[test]
+    fn freegap_100_vs_105_multiseq() {
+        let (mtx, map) = simple_setup();
+        let s1: Vec<u8> = (0..100).map(|i| b"ACGT"[(i * 3 + 1) % 4]).collect();
+        let s2_g1: Vec<u8> = (0..105).map(|i| b"ACGT"[(i * 7 + 5) % 4]).collect();
+        let s2_g2: Vec<u8> = (0..105).map(|i| b"ACGT"[(i * 11 + 3) % 4]).collect();
+        let p1 = Profile::from_aligned(&[s1.as_slice()], &[1.0], &map, 5);
+        let p2 = Profile::from_aligned(&[s2_g1.as_slice(), s2_g2.as_slice()], &[0.5, 0.5], &map, 5);
+        let gap = GapModel::new(-200.0, -10.0);
+        let aln_full = profile_align_imp_with_boundary(
+            &p1, &p2, &mtx, &gap, true, true, None, false,
+            BoundaryFreqs::default(),
+        );
+        let aln_ms = msalignmm(&p1, &p2, &mtx, &gap, true, true);
+        assert_eq!(aln_full.operations.len(), aln_ms.operations.len(),
+            "multi-seq asymmetric: trace length differs");
+        assert!((aln_full.score - aln_ms.score).abs() < 1e-6);
+    }
+
+    /// MULTI-sequence profile case (what the progressive merge
+    /// actually feeds msalignmm). Verifies msalignmm handles
+    /// profiles built from 2+ aligned sequences (with internal
+    /// gap columns and non-trivial nongap_freq distributions).
+    #[test]
+    fn multiseq_profile_matches_full_dp() {
+        let (mtx, map) = simple_setup();
+        // Pre-aligned group of 3 sequences with internal gaps.
+        let group1: Vec<&[u8]> = vec![
+            b"AC-GTACGTAC-GTAC",
+            b"ACGGTAC-TACGGT-C",
+            b"AC-GTACGTACGGTAC",
+        ];
+        let group2: Vec<&[u8]> = vec![
+            b"ACGTACGTAC-GTAC",
+            b"ACGGTACGT-CGTAC",
+        ];
+        let p1 = Profile::from_aligned(&group1, &[1.0/3.0; 3], &map, 5);
+        let p2 = Profile::from_aligned(&group2, &[0.5, 0.5], &map, 5);
+        let gap = GapModel::new(-200.0, -10.0);
+        let aln_full = profile_align_imp_with_boundary(
+            &p1, &p2, &mtx, &gap, false, false, None, false,
+            BoundaryFreqs::default(),
+        );
+        let aln_ms = msalignmm(&p1, &p2, &mtx, &gap, false, false);
+        assert!((aln_full.score - aln_ms.score).abs() < 1e-6,
+            "multi-seq profile: scores differ: full={} ms={}",
+            aln_full.score, aln_ms.score);
+        assert_eq!(aln_full.operations, aln_ms.operations,
+            "multi-seq profile: trace differs");
+    }
+
+    /// `head_gap=false, tail_gap=false` case (FFT-NS-2 / NW-NS-2 path
+    /// in the engine). Verifies msalignmm matches the full DP for
+    /// the free-terminal-gap settings the progressive merge uses.
+    #[test]
+    fn freegap_matches_full_dp() {
+        let (mtx, map) = simple_setup();
+        let s: Vec<u8> = (0..200).map(|i| b"ACGT"[(i * 3 + 1) % 4]).collect();
+        let s2: Vec<u8> = (0..200).map(|i| b"ACGT"[(i * 7 + 2) % 4]).collect();
+        let p1 = Profile::from_aligned(&[s.as_slice()], &[1.0], &map, 5);
+        let p2 = Profile::from_aligned(&[s2.as_slice()], &[1.0], &map, 5);
+        let gap = GapModel::new(-200.0, -10.0);
+        let aln_full = profile_align_imp_with_boundary(
+            &p1, &p2, &mtx, &gap, false, false, None, false,
+            BoundaryFreqs::default(),
+        );
+        let aln_ms = msalignmm(&p1, &p2, &mtx, &gap, false, false);
+        assert!((aln_full.score - aln_ms.score).abs() < 1e-6,
+            "head_gap=false: scores differ: full={} ms={}", aln_full.score, aln_ms.score);
+        assert_eq!(aln_full.operations.len(), aln_ms.operations.len(),
+            "head_gap=false: trace length differs: full={} ms={}",
+            aln_full.operations.len(), aln_ms.operations.len());
     }
 
     /// Recursive case with a non-trivial gap-required alignment.

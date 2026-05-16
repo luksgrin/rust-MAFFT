@@ -993,6 +993,8 @@ static double rs_msi_rec_traced(
         lastverticalw[i] = currentw[lgth2 - 1];
     }
 
+    if (trace) fprintf(stderr, "[MINE] FORWARD_END midw[94]=%.2f midw[95]=%.2f midw[96]=%.2f\n", midw[94], midw[95], midw[96]);
+
     /* Backward DP */
     rs_msi_match_calc(n_dynamicmtx, initverticalw, cpmx2, cpmx1, jst + lgth2 - 1, ist, lgth1, doublework, intwork, 1);
     rs_msi_match_calc(n_dynamicmtx, currentw, cpmx1, cpmx2, ist + lgth1 - 1, jst, lgth2, doublework, intwork, 1);
@@ -1039,7 +1041,7 @@ static double rs_msi_rec_traced(
                 jumpforwi[j] = ijpi;
                 jumpforwj[j] = ijpj;
             }
-            if (i == imid) { midw[j + 1] += wm; midm[j + 1] += *mjpt; }
+            if (i == imid) { midw[j] += wm; midm[j + 1] += *mjpt; }
             if (i == imid - 1) midn[j] += mi;
             *curpt += wm;
             mjpt--; prept--; mpjpt--; curpt--;
@@ -1049,6 +1051,9 @@ static double rs_msi_rec_traced(
         if (i == imid) midm[j + 1] += firstm;
 
         if (i == imid - 1) {
+            if (trace) fprintf(stderr, "[MINE] midw[94]=%.2f midw[95]=%.2f midw[96]=%.2f midw[99]=%.2f\n", midw[94], midw[95], midw[96], midw[99]);
+            if (trace) fprintf(stderr, "[MINE] midm[94]=%.2f midm[95]=%.2f midm[96]=%.2f\n", midm[94], midm[95], midm[96]);
+            if (trace) fprintf(stderr, "[MINE] midn[93]=%.2f midn[94]=%.2f midn[95]=%.2f\n", midn[93], midn[94], midn[95]);
             maxwm = midw[1]; jmid = 0;
             for (j = 2; j < lgth2 - 1; j++) {
                 if (midw[j] > maxwm) { jmid = j; maxwm = midw[j]; }

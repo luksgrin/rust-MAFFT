@@ -23,6 +23,7 @@ This project provides:
 - `--allowshift --globalpair --maxiterate 0` (closed 2026-05-12)
 - `--reorder` / `--inputorder` for all modes including PartTree (closed 2026-05-13)
 - `--treeout` for all modes including `--parttree` and `--dpparttree` (closed 2026-05-13)
+- `--memsave` / `--nomemsave` for FFT-NS-2 and NW-NS-2 (linear-space Hirschberg DP, closed 2026-05-16)
 
 Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
@@ -254,7 +255,7 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `--scarnalike` | Supported (requires `dash_client` in PATH) |
 | `--reorder` / `--inputorder` | Supported for non-PartTree modes (byte-identical to C MAFFT 7.526) |
 | `--treeout` | Supported for all modes including `--parttree`/`--dpparttree` (byte-identical to C MAFFT 7.526) |
-| `--auto`, `--seed`, `--treein`, `--memsave`, `--anysymbol`, `--leavegappyregion` | **Not yet implemented** (see `TODO.md` §B.3) |
+| `--auto`, `--seed`, `--treein`, `--memsave`/`--nomemsave`, `--anysymbol`, `--leavegappyregion` | Supported (byte-identical to C MAFFT 7.526; `--memsave` closed 2026-05-16) |
 
 ## Architecture
 
@@ -289,17 +290,17 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-16 (`cargo test --workspace --exclude pymafft --release`: **327 passed, 0 failed, 2 ignored**):
+Current counts as of 2026-05-16 (`cargo test --workspace --exclude pymafft --release`: **337 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust unit tests (`--lib`) | 150 | All crates, all modules (incl. 3 `msalign` Hirschberg DP tests) |
+| Rust unit tests (`--lib`) | 157 | All crates, all modules (incl. 7 `msalign` Hirschberg DP tests) |
 | Rust binary tests (`mafft-rs`) | 10 | CLI helper functions (`decide_auto`, `replace_unusual`, etc.) |
 | Rust integration tests (`end_to_end`) | 77 | Byte-level parity with C across all supported modes + DP diagnostics |
-| Rust FFI cross-validation tests | 65 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), memsavetree (4 tests), `MSalignmm` Hirschberg DP (4 tests), MSalignmm profile alignment |
+| Rust FFI cross-validation tests | 68 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), memsavetree (4 tests), `MSalignmm` Hirschberg DP (10 tests, all byte-identical to C), MSalignmm profile alignment |
 | Rust other integration tests | 25 | `trace_refinement` (15), `integration` mafft-io (7), `imp_*` (3) |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust** | **327 (+2 ignored)** | |
+| **Total Rust** | **337** | |
 
 Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 
@@ -313,7 +314,7 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 
 Only `--seedtable` remains unimplemented — it produces an "unknown argument" error. See `TODO.md` §B.3.
 
-`--memsave` and `--nomemsave` are accepted CLI shims (with C MAFFT's gating against `--localpair`/`--globalpair`/`--genafpair`/etc.). For inputs that fit in memory (≤ 30000 in length per sequence) the alignment is byte-identical to C MAFFT's `--memsave` output. The Hirschberg-style linear-space DP (`mafft_align::msalignmm`) is ported and verified to return optimal scores on identical-input and gap-required-with-unique-optimum tests, but isn't yet wired into the engine because matching C's exact tie-break behavior on score-tied alignments needs FFI cross-validation. See `TODO.md` §B.3 for the residual.
+`--memsave` and `--nomemsave` are fully wired (closed 2026-05-16). The Hirschberg-style linear-space DP (`mafft_align::msalignmm`) is byte-identical to C MAFFT 7.526's `MSalignmm`, verified on the 36-seq sample across every flag combination tried: `--memsave`, `--memsave --maxiterate 2`, `--memsave --retree 1`, `--memsave --memsavetree`, `--memsave --nofft`, `--memsave --nofft --maxiterate 2`. CLI gating against `--localpair`/`--globalpair`/`--genafpair`/etc. matches C exactly. See `TODO.md` §B.3 for the bug-hunt write-up (two off-by-ones at the midpoint state update, found by patching upstream `MSalignmm.c` with `fprintf` instrumentation and reverting after).
 
 Closed since 2026-05-13: `--reorder`/`--inputorder` (§AA), `--treeout` (§AB), `--treein` (§AC), `--auto` (§AD), `--memsavetree` (§AE), `--anysymbol`/`--preservecase` (§AF), `--leavegappyregion`/`--legacygappenalty` (§AG), `--seed` (§AH), and `--memsave`/`--nomemsave` (§B.3) — all byte-identical to C MAFFT 7.526. PartTree's two-pass reorder (`splittbfast` CALL 1 with raw 6-mer distances, CALL 2 with `naivepairscore11` on the first-pass alignment) is composed as `final_order[k] = call1_order[call2_order[k]]`.
 

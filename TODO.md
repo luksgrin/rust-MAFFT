@@ -58,9 +58,9 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--anysymbol` / `--preservecase` (protein + DNA, non-standard chars, mixed case) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--leavegappyregion` / `--legacygappenalty` (FFT-NS-2/-i, NW, L/G/E-INS-i, BL/JTT, --anysymbol/--reorder/--treein/--memsavetree/--auto combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--seed FILE` (L/G/E-INS-i + FFT-NS-i, single + multiple seed files) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
-| `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree combo) | match | match | 0 | byte-exact ✓ (CLI shim — Hirschberg DP unported but transparent for inputs ≤ 30k) |
+| `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-16 — Hirschberg `msalignmm` wired into engine) |
 
-Test suite as of 2026-05-16: **327 Rust tests pass, 0 failed, 2 ignored**
+Test suite as of 2026-05-16: **337 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -706,7 +706,7 @@ out of 36) and the implied `--tm 200 --treeout` first-pass tree
 (20-line branch-length diff, max drift 3e-3 in 5th decimal place)
 are affected. All 17/17 alignment-mode parity tests still pass.
 
-### §B.3. `--memsave` — SHIM + Hirschberg LIBRARY (4/5 FFI cross-validated) — 2026-05-14/15
+### §B.3. `--memsave` — FULLY CLOSED, byte-identical to C MAFFT 7.526 — 2026-05-14/15/16
 
 **Status**:
 1. **CLI shim landed** (2026-05-14): `--memsave` and `--nomemsave`
@@ -784,70 +784,49 @@ comparison:
    test setup, but the divergence-of-semantics was real and is now
    documented in the port.
 
-**Residual** (`msalign_asymmetric_lengths_matches_c`,
-`#[ignore]`'d): a 1-column drift on asymmetric `lgth1 < lgth2`
-inputs. Verified via the FFI harness:
-- Top-level `midw`/`midm`/`midn` match C byte-for-byte.
-- Chosen `(jmid=96, jumpi=55, jumpj=95)` matches C.
-- `imid` override from `jumpforwi[jumpj]` reads `57` in both.
-- Top sub-region (56×96) base case matches C `MSalignmm_tanni`
-  in-context byte-for-byte (96-wide alignment).
-- Bottom sub-region (55×55) base case matches C standalone (55).
-- A **faithful C re-implementation** of `MSalignmm_rec` (in
-  `wrappers/msalignmm_instr.c::rs_msalignmm_full_trace`, with
-  optional `MSALIGN_TRACE` stderr prints at every recursion
-  level) gives **152** on the asymmetric input — same as the
-  Rust port. On the same input, real C `MSalignmm` gives **151**.
-- On a symmetric input the faithful re-impl matches real C
-  (both 141).
+**Asymmetric residual closed** (2026-05-16): patched real
+`mafft-upstream/core/MSalignmm.c` with `fprintf` instrumentation
+in a detached working tree, ran the failing 112×151 input, and
+compared intermediate state with our Rust port. Found two bugs
+(both fixed):
 
-Yet the FULL Rust msalignmm output is 152 cols while C MAFFT's
-full output is 151. The arithmetic says
-`top(96) + l_vert(=imid-jumpi-1=1) + bottom(55) = 152`, but C
-somehow lands at 151. The bug is **not in any individually-
-captured piece, nor in a structural mismatch between the Rust
-port and a literal C transcription of `MSalignmm_rec`** — both
-give the same 152 answer. The bug is in real C `MSalignmm`'s
-runtime behavior that's NOT visible by reading `MSalignmm.c`
-top-down.
+1. **`midw[j] += wm` (NOT `midw[j+1]`)** — C `MSalignmm.c:1610`
+   uses `midw[j] += wm` while `midm[j+1] += *mjpt` (line 1612)
+   uses `j+1`. The Rust port had both as `j+1`. The off-by-one
+   shifted midw by one column at the midpoint, causing the
+   Hirschberg argmax to pick the wrong split for asymmetric
+   inputs. Fixed in `crates/mafft-align/src/msalign.rs::backward_dp`.
+2. **`midm[0] += firstm` (NOT `midm[1]`)** — at the end of the
+   backward inner loop with `j` decremented to -1, C does
+   `midm[j+1] += firstm` which targets index 0 (`MSalignmm.c:1637`).
+   The Rust port originally had `midm[1] += firstm` because the
+   earlier `midm[0]` change regressed a test — that regression
+   was actually caused by the `midw[j+1]` bug above. With both
+   fixes in place, `midm[0]` is correct.
 
-Suspected sources (any of these would explain it; I couldn't
-pin which):
-- A subtle interaction with a global / TLS variable that the
-  real binary sets up differently than my FFI test environment.
-- A `*newgapstr`-specific or post-alignment stripping pass.
-- An undocumented preprocessor option active at C MAFFT 7.526
-  build time but not in our `mafft-sys` build.
-- A different code path in `MSalignmm` that I'm missing.
+After both fixes, the asymmetric test passes byte-identical to
+C MAFFT 7.526 (112×151 input now produces a 151-wide alignment
+matching real C exactly). The faithful C re-implementation in
+`wrappers/msalignmm_instr.c::rs_msalignmm_full_trace` also got
+the same two fixes (with `MSALIGN_TRACE` env var for level-by-
+level stderr output) and now matches real C.
 
-Closing this requires running real C `MSalignmm` under a C
-debugger or instrumenting `MSalignmm.c` itself with prints
-(can't be done via FFI alone since both pure-FFI and faithful
-re-implementation paths show consistent behavior with each
-other and differ from real C).
+**Engine wiring landed** (2026-05-16): `--memsave` now routes
+the non-FFT progressive merge through `mafft_align::msalignmm`
+(linear-space Hirschberg DP). Verified byte-identical to C
+MAFFT 7.526 on the 36-seq sample for every combination tested:
+- `--memsave`
+- `--memsave --maxiterate 2`
+- `--memsave --retree 1`
+- `--memsave --memsavetree`
+- `--memsave --nofft` (= NW-NS-2 + memsave, the path that
+  actually exercises the new `msalignmm` Hirschberg DP)
+- `--memsave --nofft --maxiterate 2`
 
-The progression `4 col → 1 col → faithful-C-reimpl also 1 col`
-isolates this fully to a real-C-specific behavior, but doesn't
-close it.
-
-Because of this 1-col residual, `msalignmm` is NOT wired into the
-engine's `--memsave` path; the production path continues to use
-the full DP (which is byte-identical to C `MSalignmm` for all
-test fixtures because `MSalignmm == A__align` for non-tied
-inputs).
-
-**Effort to close residual**: now requires stepping through C
-`MSalignmm` recursion with a debugger, since the FFI captures for
-`MSalignmm_rec` top-level state AND `MSalignmm_tanni` in-context
-both match Rust byte-for-byte yet the full alignment widths
-differ by 1. Both `rs_msalignmm_capture_top` and
-`rs_msalignmm_tanni_capture` are in place (see
-`wrappers/msalignmm_instr.c` and `mafft-sys/src/lib.rs`) for any
-future investigation. Once closed, wire `msalignmm` into the
-engine for `--memsave` (plumbing already exists; see
-`MafftEngine.memsave_dp` and `progressive_align_full`'s
-`memsave_dp` parameter — currently gated by `_ = args.memsave;`
-in `main.rs`).
+For the FFT path (default mode), the engine falls through to
+the existing `Falign` profile-align (which is byte-identical to
+C's `Falign_udpari_long` for inputs ≤30000 in length, matching
+C's auto-switch threshold).
 
 **Implementation files**:
 - `crates/mafft-bin/src/main.rs` — `--memsave` + `--nomemsave` flags,
@@ -1109,10 +1088,11 @@ All currently-tested modes are byte-identical to C MAFFT 7.526. The
 remaining items are latent / coverage / performance gaps, not active
 divergences:
 
-1. **§B.3 missing CLI flags** — only `--memsave` remains. Highest
-   user-visible impact (`--auto`, `--treein`/`--treeout`,
-   `--anysymbol`, `--seed`, `--leavegappyregion`, `--memsavetree` all
-   landed 2026-05-13/14).
+1. **§B.3 missing CLI flags** — only `--seedtable` remains. `--memsave`
+   landed 2026-05-16 (Hirschberg `msalignmm` wired into engine,
+   byte-identical to C across all combinations tested). `--auto`,
+   `--treein`/`--treeout`, `--anysymbol`, `--seed`,
+   `--leavegappyregion`, `--memsavetree` all landed 2026-05-13/14.
 2. **§B.1 `penalty_ex` in `pairwise_align11`** — would need an API
    change (take `&GapModel` or add `penalty_ex` param). Currently
    benign because the CLI doesn't expose `--exp`.
