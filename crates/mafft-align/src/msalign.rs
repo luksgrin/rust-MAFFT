@@ -867,11 +867,8 @@ fn backward_dp(
     } else {
         // C line 1767: `imid = jumpforwi[jumpj]; jmid = jumpforwj[jumpj]`.
         // With the backward DP fixed (`*prept` indexing) the values
-        // captured at `i == imid - 1` are now meaningful: for diagonal
-        // and n-split paths they equal `imid` / `jmid` (no change),
-        // for m-split paths they point to a different cell. The
-        // override stays a no-op for w/n inputs and shifts the
-        // bottom-half recursion start row for m-splits.
+        // captured at `i == imid - 1` are now byte-identical to C's
+        // — verified via `rs_msalignmm_capture_top` FFI cross-validation.
         let new_imid = jumpforwi.get(jumpj).copied().unwrap_or(imid as i64);
         let new_jmid = jumpforwj.get(jumpj).copied().unwrap_or(jmid as i64);
         let mut imid_eff = imid;

@@ -60,7 +60,7 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--seed FILE` (L/G/E-INS-i + FFT-NS-i, single + multiple seed files) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree combo) | match | match | 0 | byte-exact ✓ (CLI shim — Hirschberg DP unported but transparent for inputs ≤ 30k) |
 
-Test suite as of 2026-05-15: **329 Rust tests pass, 0 failed, 1 ignored**
+Test suite as of 2026-05-16: **327 Rust tests pass, 0 failed, 2 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -744,13 +744,29 @@ are affected. All 17/17 alignment-mode parity tests still pass.
 
    All seven are byte-identical to C MAFFT 7.526.
 
-**FFI cross-validation landed** (2026-05-15):
-`crates/mafft-sys/wrappers/msalignmm_instr.c::rs_msalignmm_capture_top`
-exposes C `MSalignmm_rec`'s top-level state — `midw[]`, `midm[]`,
-`midn[]`, `jumpbacki[]`, `jumpbackj[]`, `jumpforwi[]`,
-`jumpforwj[]`, plus the chosen `(imid, jmid, jumpi, jumpj)` after
-the edge-case rewrite. Two bugs in the Rust port were caught and
-fixed by side-by-side comparison:
+**FFI cross-validation landed** (2026-05-15/16):
+`crates/mafft-sys/wrappers/msalignmm_instr.c` exposes three C
+instrumentation hooks for cross-validating against our Rust
+Hirschberg port:
+- `rs_msalignmm_capture_top` — top-level `MSalignmm_rec` state:
+  `midw[]`, `midm[]`, `midn[]`, `jumpbacki[]`, `jumpbackj[]`,
+  `jumpforwi[]`, `jumpforwj[]`, and the chosen
+  `(imid, jmid, jumpi, jumpj)` after the edge-case rewrite.
+- `rs_msalignmm_tanni_capture` — in-context `MSalignmm_tanni`
+  on a sub-region of the FULL parent profile (cpmx / gapinfo built
+  from parent sequences, then sliced per `ist`/`ien`/`jst`/`jen`).
+  Used to verify our `profile_align_imp_with_boundary` base case
+  matches C's `MSalignmm_tanni` when called as a recursive child.
+- `rs_msalignmm_full_trace` — faithful C re-implementation of
+  `MSalignmm_rec`'s full recursive structure (including the
+  inter-half horizontal/vertical gap inserts and MEMSAVE pointer
+  advance) with optional level-by-level stderr trace (gated by
+  `getenv("MSALIGN_TRACE")`). Lets us run the algorithm as
+  written in `MSalignmm.c` and compare with real C `MSalignmm`'s
+  output.
+
+Two bugs in the Rust port were caught and fixed by side-by-side
+comparison:
 
 1. **`previousw[dj+1]` off-by-one in backward DP** (`msalign.rs`):
    C's `*prept` pointer starts at `previousw + lgth2 - 1` and
@@ -770,20 +786,49 @@ fixed by side-by-side comparison:
 
 **Residual** (`msalign_asymmetric_lengths_matches_c`,
 `#[ignore]`'d): a 1-column drift on asymmetric `lgth1 < lgth2`
-inputs. Top-level `midw`/`midm`/`midn` and the chosen
-`(jmid, jumpi, jumpj)` match C byte-for-byte; the `imid` override
-from `jumpforwi[jumpj]` reads `57` (= C's value). Top and bottom
-sub-regions both produce identical widths to C (96 and 55
-respectively). But our recursion adds an inter-half vertical gap
-(`l_vert = imid - jumpi - 1 = 1`) that C MAFFT's full recursion
-does not surface in the final alignment, yielding 152 vs C's 151.
-Suspected cause: C's recursive level either computes a different
-effective `imid` after a second-level override, or its
-`MSalignmm_tanni` base case absorbs an extra column via free-tail
-boundary logic that our `profile_align_imp_with_boundary` doesn't
-exactly replicate at internal sub-regions. Pinpointing requires
-FFI instrumentation of `MSalignmm_tanni` (similar to what we did
-for `_rec`).
+inputs. Verified via the FFI harness:
+- Top-level `midw`/`midm`/`midn` match C byte-for-byte.
+- Chosen `(jmid=96, jumpi=55, jumpj=95)` matches C.
+- `imid` override from `jumpforwi[jumpj]` reads `57` in both.
+- Top sub-region (56×96) base case matches C `MSalignmm_tanni`
+  in-context byte-for-byte (96-wide alignment).
+- Bottom sub-region (55×55) base case matches C standalone (55).
+- A **faithful C re-implementation** of `MSalignmm_rec` (in
+  `wrappers/msalignmm_instr.c::rs_msalignmm_full_trace`, with
+  optional `MSALIGN_TRACE` stderr prints at every recursion
+  level) gives **152** on the asymmetric input — same as the
+  Rust port. On the same input, real C `MSalignmm` gives **151**.
+- On a symmetric input the faithful re-impl matches real C
+  (both 141).
+
+Yet the FULL Rust msalignmm output is 152 cols while C MAFFT's
+full output is 151. The arithmetic says
+`top(96) + l_vert(=imid-jumpi-1=1) + bottom(55) = 152`, but C
+somehow lands at 151. The bug is **not in any individually-
+captured piece, nor in a structural mismatch between the Rust
+port and a literal C transcription of `MSalignmm_rec`** — both
+give the same 152 answer. The bug is in real C `MSalignmm`'s
+runtime behavior that's NOT visible by reading `MSalignmm.c`
+top-down.
+
+Suspected sources (any of these would explain it; I couldn't
+pin which):
+- A subtle interaction with a global / TLS variable that the
+  real binary sets up differently than my FFI test environment.
+- A `*newgapstr`-specific or post-alignment stripping pass.
+- An undocumented preprocessor option active at C MAFFT 7.526
+  build time but not in our `mafft-sys` build.
+- A different code path in `MSalignmm` that I'm missing.
+
+Closing this requires running real C `MSalignmm` under a C
+debugger or instrumenting `MSalignmm.c` itself with prints
+(can't be done via FFI alone since both pure-FFI and faithful
+re-implementation paths show consistent behavior with each
+other and differ from real C).
+
+The progression `4 col → 1 col → faithful-C-reimpl also 1 col`
+isolates this fully to a real-C-specific behavior, but doesn't
+close it.
 
 Because of this 1-col residual, `msalignmm` is NOT wired into the
 engine's `--memsave` path; the production path continues to use
@@ -791,13 +836,15 @@ the full DP (which is byte-identical to C `MSalignmm` for all
 test fixtures because `MSalignmm == A__align` for non-tied
 inputs).
 
-**Effort to close residual**: ~0.5-1 day. Build the analogous
-`rs_msalignmm_tanni_capture` FFI wrapper to capture C's
-`MSalignmm_tanni` output at internal sub-regions
-(`ist > 0 || jst > 0`, `jen < fulllen2-1 || ien < fulllen1-1`)
-and find where it diverges from
-`profile_align_imp_with_boundary`. Once closed, wire `msalignmm`
-into the engine for `--memsave` (plumbing already exists; see
+**Effort to close residual**: now requires stepping through C
+`MSalignmm` recursion with a debugger, since the FFI captures for
+`MSalignmm_rec` top-level state AND `MSalignmm_tanni` in-context
+both match Rust byte-for-byte yet the full alignment widths
+differ by 1. Both `rs_msalignmm_capture_top` and
+`rs_msalignmm_tanni_capture` are in place (see
+`wrappers/msalignmm_instr.c` and `mafft-sys/src/lib.rs`) for any
+future investigation. Once closed, wire `msalignmm` into the
+engine for `--memsave` (plumbing already exists; see
 `MafftEngine.memsave_dp` and `progressive_align_full`'s
 `memsave_dp` parameter — currently gated by `_ = args.memsave;`
 in `main.rs`).

@@ -312,6 +312,49 @@ unsafe extern "C" {
         out_jumpforwj: *mut c_int,
     );
 
+    /// Run a re-implementation of C `MSalignmm_tanni` for a
+    /// sub-region of the PARENT profile (built with full
+    /// `cpmx_calc_new` / `gapcountf` over the parent sequences).
+    /// Captures the aligned `out_seq1`/`out_seq2` strings via the
+    /// preallocated buffers. Caller must allocate the output
+    /// buffers to at least `sub_lgth1 + sub_lgth2 + 100` bytes.
+    /// Use to cross-validate `profile_align_imp_with_boundary`
+    /// against C's `MSalignmm_tanni` in-context.
+    pub fn rs_msalignmm_tanni_capture(
+        n_dynamicmtx: *mut *mut c_double,
+        seq1: *mut c_char,
+        seq2: *mut c_char,
+        lgth1: c_int,
+        lgth2: c_int,
+        ist: c_int,
+        ien: c_int,
+        jst: c_int,
+        jen: c_int,
+        headgp: c_int,
+        tailgp: c_int,
+        out_seq1: *mut c_char,
+        out_seq2: *mut c_char,
+        out_width: *mut c_int,
+    );
+
+    /// Faithful C port of MSalignmm_rec with optional recursive-trace
+    /// prints to stderr (gated by `getenv("MSALIGN_TRACE")`). Lets us
+    /// see level-by-level state (ENTER, SPLIT, INTER_HORIZ/VERT,
+    /// TOP_DONE, BOTTOM_DONE, BASE_CASE width) so divergences from
+    /// real C MSalignmm can be pinned to a specific recursion level.
+    pub fn rs_msalignmm_full_trace(
+        n_dynamicmtx: *mut *mut c_double,
+        seq1: *mut c_char,
+        seq2: *mut c_char,
+        lgth1: c_int,
+        lgth2: c_int,
+        headgp: c_int,
+        tailgp: c_int,
+        out_seq1: *mut c_char,
+        out_seq2: *mut c_char,
+        out_width: *mut c_int,
+    );
+
     // -- Pairwise alignment --
     pub fn G__align11(
         scoringmtx: *mut *mut c_double,
