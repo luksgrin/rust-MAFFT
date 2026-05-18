@@ -61,7 +61,7 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-16 — Hirschberg `msalignmm` wired into engine) |
 | `--seedtable FILE` (L/G/E-INS-i + FFT-NS-i, pre-computed hat3.seed input) | match | match | 0 | byte-exact ✓ (closed 2026-05-17) |
 
-Test suite as of 2026-05-18: **353 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-18: **349 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -1040,16 +1040,39 @@ warning against `par_iter().sum()`.
 during refactoring — removing the guard would cascade into
 non-deterministic refinement decisions.
 
-### §B.7. `parttree.rs` (old) `max_by_key` tie-break
+### §B.7. ~~`parttree.rs` (old) `max_by_key` tie-break~~ — RESOLVED 2026-05-18 (file deleted)
 
-**Location**: `crates/mafft-tree/src/parttree.rs:159-161` — uses
-`max_by_key` which returns the LAST tied max. C's iteration uses FIRST
-tied max.
+**Original concern**: `crates/mafft-tree/src/parttree.rs:159-161` used
+`max_by_key` which returns the LAST tied max (vs C's FIRST tied).
 
-**Status**: Dead code — the engine uses
-`parttree_split::build_parttree_topology` (the resolved §6 path), not
-this old `parttree::parttree` function. Reachable only via the deprecated
-re-export at `mafft-tree/src/lib.rs:23`. Consider deleting.
+**Investigation**: the TODO claimed this was dead code reachable only
+via a deprecated re-export. In fact `engine.rs::progressive_align`
+still routed `--dpparttree` through it. The 36-seq sample never
+triggered the bug because `n=36 < group_size=150` bypasses the
+recursive partitioning entirely (falls back to plain `musclesupg`).
+Larger `--dpparttree` runs (> 150 seqs) would have hit the broken
+recursion.
+
+**Fix**: re-routed `--dpparttree` through
+`parttree_split::build_parttree_topology` (the same well-ported path
+`--parttree` uses), then deleted the entire `parttree.rs` module and
+its `pub use` re-export at `lib.rs:27`. C's `--dpparttree` vs
+`--parttree` differ only in `partdist` (`ktuples` vs `localalign`,
+`scripts/mafft:392/395`) inside C's `splittbfast`; our Rust uses
+k-tuple for both. The 36-seq sample remains byte-identical to C for
+both modes. A true DP-based distance for >150-seq `--dpparttree`
+runs is not yet ported (would slot into `parttree_dist.rs`); flagged
+as a future enhancement, not a regression — even the old code didn't
+actually compute a DP distance (it consulted `params.use_dp` but the
+body always called `ktuple_distance` regardless).
+
+**Verified post-deletion**: 6 parttree-flavour modes byte-identical
+to C MAFFT 7.526 — `--parttree`, `--dpparttree`,
+`--parttree --nofft`, `--parttree --reorder`, `--parttree --treeout`,
+`--dpparttree --treeout`.
+
+**Test count delta**: -4 (the 4 unit tests in the deleted file).
+Workspace: 353 → 349 passed.
 
 ### §B.9. ~~`--memsavetree` — algorithm ported, residual height drift~~ — RESOLVED 2026-05-14
 

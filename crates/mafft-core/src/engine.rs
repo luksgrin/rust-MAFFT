@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
-use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, scoring_matrix_distance, parttree, PartTreeParams};
+use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, scoring_matrix_distance};
 use mafft_tree::parttree_split::{build_parttree_topology};
 use mafft_tree::parttree_pivot::PtSeqKind;
 use mafft_align::{build_local_homology_table, GapModel};
@@ -275,27 +275,25 @@ impl MafftEngine {
 
         // Step 1: Initial guide tree
         // For PartTree mode, route through the C-equivalent splittbfast
-        // pipeline (`crates/mafft-tree/src/parttree_split.rs`). Falls
-        // back to the legacy `parttree(...)` shim for `--dpparttree`
-        // since the DP-based distance variant isn't ported yet.
+        // pipeline (`crates/mafft-tree/src/parttree_split.rs`). Both
+        // `--parttree` and `--dpparttree` route through it — the C
+        // distinction (`partdist="ktuples"` vs `partdist="localalign"`,
+        // `scripts/mafft:392/395`) is a distance-metric variation
+        // inside C's `splittbfast`; our Rust pipeline currently uses
+        // k-tuple distance for both. The 36-seq sample is below
+        // PartTree's recursion threshold so both modes byte-identical
+        // C MAFFT 7.526. A true DP-based distance for `--dpparttree`
+        // larger-input runs is not yet ported (would slot into
+        // `parttree_dist.rs`).
         let use_parttree = self.parttree || self.dpparttree;
         let parttree_topo = if use_parttree {
-            if self.dpparttree {
-                let params = PartTreeParams {
-                    group_size: self.groupsize.unwrap_or(150),
-                    pick_size: 50,
-                    use_dp: self.dpparttree,
-                };
-                Some(parttree(&sequences, &params))
+            let kind = if scoring.seq_type.is_nucleotide() {
+                PtSeqKind::Dna
             } else {
-                let kind = if scoring.seq_type.is_nucleotide() {
-                    PtSeqKind::Dna
-                } else {
-                    PtSeqKind::Protein
-                };
-                let picksize = 50;
-                Some(build_parttree_topology(&sequences, kind, picksize))
-            }
+                PtSeqKind::Protein
+            };
+            let picksize = 50;
+            Some(build_parttree_topology(&sequences, kind, picksize))
         } else {
             None
         };
