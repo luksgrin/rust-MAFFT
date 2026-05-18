@@ -281,6 +281,99 @@ pub fn build_seed_homology_table(
     table
 }
 
+/// Parse a hat3 seed table (matches C MAFFT's `--seedtable` input format,
+/// which is the same format `multi2hat3s.c:214` writes for `--seed`).
+///
+/// Each non-empty line:
+///
+/// ```text
+/// i j overlapaa opt start1 end1 start2 end2 k
+/// ```
+///
+/// where `i`, `j` are 0-based sequence indices into the alignment input,
+/// `start*` / `end*` are inclusive 0-based residue positions, `opt` is
+/// the `tsuyosa`-boosted-and-`*5.8/600`-normalized score that C's
+/// `putlocalhom2` (`io.c:861`) writes, and `k` is the `korh`
+/// classification byte. The C reader (`readlocalhomtable2_half`) populates
+/// only one triangle; we mirror each entry to `(j, i)` with
+/// `start1`/`start2` swapped so downstream `build_imp_matrix` /
+/// `recompute_importance` find entries in both directions.
+///
+/// `opt` is stored as-written by `multi2hat3s.c:214`
+/// (`isumscore * 5.8 / (600 * sumoverlap) * tsuyosa`); C loads these
+/// directly into its localhomtable via `readlocalhomtable2_half` without
+/// any rescale, so we do the same. Note this is ~100× smaller than the
+/// magnitude `build_seed_homology_table` produces (the in-memory `--seed`
+/// path skips both C's `5.8/600` write-side and C's pairwise `600/5.8`
+/// read-side, while the seed-load path applies neither). Both magnitudes
+/// dominate the per-cell impmatrix contributions so the final alignment
+/// is unchanged; what matters is internal self-consistency with C.
+///
+/// Blank lines and lines starting with `#` are skipped (matching the
+/// `grep -v "^$"` pre-filter in `scripts/mafft:1149`). Any malformed line
+/// returns an `Err` with a 1-based line number for diagnostics.
+pub fn parse_hat3_seed(
+    text: &str,
+    nseq: usize,
+) -> Result<LocalHomologyTable, String> {
+    let mut table = LocalHomologyTable::new(nseq);
+    for (lineno, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 9 {
+            return Err(format!(
+                "hat3 line {}: expected 9 fields, got {}", lineno + 1, parts.len()));
+        }
+        let parse_usize = |s: &str, field: &str| -> Result<usize, String> {
+            s.parse::<usize>().map_err(|e| format!(
+                "hat3 line {}: parse `{}` ({}): {}", lineno + 1, field, s, e))
+        };
+        let parse_i32 = |s: &str, field: &str| -> Result<i32, String> {
+            s.parse::<i32>().map_err(|e| format!(
+                "hat3 line {}: parse `{}` ({}): {}", lineno + 1, field, s, e))
+        };
+        let parse_f64 = |s: &str, field: &str| -> Result<f64, String> {
+            s.parse::<f64>().map_err(|e| format!(
+                "hat3 line {}: parse `{}` ({}): {}", lineno + 1, field, s, e))
+        };
+        let i = parse_usize(parts[0], "i")?;
+        let j = parse_usize(parts[1], "j")?;
+        let overlapaa = parse_i32(parts[2], "overlapaa")?;
+        let opt = parse_f64(parts[3], "opt")?;
+        let start1 = parse_i32(parts[4], "start1")?;
+        let end1 = parse_i32(parts[5], "end1")?;
+        let start2 = parse_i32(parts[6], "start2")?;
+        let end2 = parse_i32(parts[7], "end2")?;
+        let korh = parts[8].as_bytes().first().copied().unwrap_or(b'k');
+        if i >= nseq || j >= nseq {
+            return Err(format!(
+                "hat3 line {}: index ({}, {}) out of range for nseq={}",
+                lineno + 1, i, j, nseq));
+        }
+        if i == j { continue; }
+        let importance = if overlapaa > 0 { opt / overlapaa as f64 } else { 0.0 };
+        let fwd = HomologyRegion {
+            start1, end1, start2, end2,
+            opt,
+            overlapaa,
+            importance,
+            korh,
+            ..Default::default()
+        };
+        let rev = HomologyRegion {
+            start1: start2,
+            end1: end2,
+            start2: start1,
+            end2: end1,
+            ..fwd.clone()
+        };
+        table.push(i, j, fwd);
+        table.push(j, i, rev);
+    }
+    Ok(table)
+}
+
 /// Merge `extra` entries into `into`. Both tables must have the same
 /// `nseq`. Used to fold a seed-derived homology table into the pairwise
 /// homology table built by L-INS-i / G-INS-i / E-INS-i.
@@ -761,5 +854,62 @@ mod tests {
             assert_eq!(fwd[0].start1, rev[0].start2);
             assert_eq!(fwd[0].start2, rev[0].start1);
         }
+    }
+
+    #[test]
+    fn parse_hat3_seed_basic() {
+        let text = "0 1 10 1234.500 0 9 0 9 k\n";
+        let table = parse_hat3_seed(text, 3).expect("parse ok");
+        let fwd = table.get(0, 1);
+        assert_eq!(fwd.len(), 1);
+        assert_eq!(fwd[0].start1, 0);
+        assert_eq!(fwd[0].end1, 9);
+        assert_eq!(fwd[0].start2, 0);
+        assert_eq!(fwd[0].end2, 9);
+        assert_eq!(fwd[0].overlapaa, 10);
+        assert_eq!(fwd[0].opt, 1234.5);
+        assert_eq!(fwd[0].importance, 123.45);
+        assert_eq!(fwd[0].korh, b'k');
+        let rev = table.get(1, 0);
+        assert_eq!(rev.len(), 1);
+        assert_eq!(rev[0].start1, 0);
+        assert_eq!(rev[0].end1, 9);
+        assert_eq!(rev[0].opt, 1234.5);
+    }
+
+    #[test]
+    fn parse_hat3_seed_skips_blank_and_comments() {
+        let text = "\n# leading comment\n0 1 10 100.000 0 9 0 9 k\n\n# trailing\n";
+        let table = parse_hat3_seed(text, 2).expect("parse ok");
+        assert_eq!(table.get(0, 1).len(), 1);
+        assert_eq!(table.get(1, 0).len(), 1);
+    }
+
+    #[test]
+    fn parse_hat3_seed_rejects_oob_index() {
+        let text = "0 5 10 1.0 0 9 0 9 k\n";
+        assert!(parse_hat3_seed(text, 3).is_err());
+    }
+
+    #[test]
+    fn parse_hat3_seed_rejects_short_line() {
+        let text = "0 1 10 1.0 0\n";
+        assert!(parse_hat3_seed(text, 3).is_err());
+    }
+
+    #[test]
+    fn parse_hat3_seed_multiple_regions_same_pair() {
+        // Two chained regions on the same (i,j) — `extract_putlocalhom2`
+        // emits this when the seed alignment has an internal indel.
+        let text = "0 1 348 14356.319 0 337 0 337 k\n\
+                    0 1 348 14356.319 338 347 338 347 k\n";
+        let table = parse_hat3_seed(text, 2).expect("parse ok");
+        assert_eq!(table.get(0, 1).len(), 2);
+        assert_eq!(table.get(1, 0).len(), 2);
+        let r = table.get(0, 1);
+        assert_eq!(r[0].overlapaa, 348);
+        assert_eq!(r[1].overlapaa, 348);
+        assert_eq!(r[0].opt, 14356.319);
+        assert_eq!(r[1].opt, 14356.319);
     }
 }

@@ -59,8 +59,9 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--leavegappyregion` / `--legacygappenalty` (FFT-NS-2/-i, NW, L/G/E-INS-i, BL/JTT, --anysymbol/--reorder/--treein/--memsavetree/--auto combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--seed FILE` (L/G/E-INS-i + FFT-NS-i, single + multiple seed files) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-16 — Hirschberg `msalignmm` wired into engine) |
+| `--seedtable FILE` (L/G/E-INS-i + FFT-NS-i, pre-computed hat3.seed input) | match | match | 0 | byte-exact ✓ (closed 2026-05-17) |
 
-Test suite as of 2026-05-16: **337 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-17: **346 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -838,6 +839,50 @@ C's auto-switch threshold).
 - `crates/mafft-core/tests/fixtures/sample.memsave.{fftns2,fftnsi.iter2,fftns2.retree1}`
   — C-generated reference outputs.
 
+### §B.3.2. `--seedtable FILE` — CLOSED, byte-identical to C MAFFT 7.526 — 2026-05-17
+
+`--seedtable FILE` accepts a pre-computed hat3.seed file matching C
+`multi2hat3s.c:214`'s 9-field text format
+(`i j overlapaa opt start1 end1 start2 end2 k`) and feeds the resulting
+`LocalHomologyTable` into the engine via the same path `--seed` already
+uses. CLI gating mirrors C MAFFT exactly: rejected with `--seed`,
+`--add`/`--addfragments`, `--parttree`/`--dpparttree`, or `--memsave`;
+forces `maxiterate ≥ 2` and promotes FFT-NS-2 → FFT-NS-i
+(`scripts/mafft:1911-1923`, `:1880-1883`, `:1281-1284`,
+`:1963-1965`).
+
+Parser implementation: `mafft_align::parse_hat3_seed`. The file's `opt`
+values are stored as-written (no rescaling) — the C side also loads them
+into `localhomtable` directly via `readlocalhomtable2_half` without
+applying the pairwise `tbfast.c:2202` `* 600/5.8` reverse, so we match
+C's in-memory convention for the seed path. Magnitudes happen to differ
+from what `build_seed_homology_table` produces (which uses
+`isumscore / sumoverlap * tsuyosa` and skips the `5.8/600` factor)
+because the seed constraint dominates at any reasonable magnitude; both
+paths converge to the same final alignment.
+
+**Verification**: 4 byte-identity tests in
+`crates/mafft-core/tests/end_to_end.rs::seedtable_*` (L/G/E-INS-i +
+FFT-NS-i) compare against the existing `sample.seed.{linsi,ginsi,einsi,fftnsi}.iter2`
+C reference fixtures. The hat3 fixture
+(`crates/mafft-core/tests/fixtures/sample.seed.hat3`) was captured from
+`mafft --seed --debug` (multi2hat3s output) and is the same file the
+user would pass to `--seedtable` directly. The combined-input fixture
+(`sample.seed.combined.fa`) is the gap-stripped concatenation of seed
+FASTA + user FASTA — same convention `--seed` uses internally.
+
+Files:
+- `crates/mafft-align/src/constraints.rs::parse_hat3_seed` —
+  hat3 parser (+ 4 unit tests covering valid/invalid/multi-region/empty).
+- `crates/mafft-bin/src/main.rs` — `--seedtable` CLI flag, gating, and
+  engine wiring.
+- `crates/mafft-core/tests/end_to_end.rs` —
+  `seedtable_{linsi,ginsi,einsi,fftnsi}_byte_identical_to_c`.
+- `crates/mafft-core/tests/fixtures/sample.seed.hat3` — captured
+  multi2hat3s output.
+- `crates/mafft-core/tests/fixtures/sample.seed.combined.fa` —
+  gap-stripped seed-prepended input matching the hat3 position space.
+
 ### §B.4. `--retree N` for N ≠ 2 byte-untested for INS-i modes
 
 **Location**: `crates/mafft-core/src/engine.rs:410-422` overrides
@@ -1088,10 +1133,13 @@ All currently-tested modes are byte-identical to C MAFFT 7.526. The
 remaining items are latent / coverage / performance gaps, not active
 divergences:
 
-1. **§B.3 missing CLI flags** — only `--seedtable` remains. `--memsave`
-   landed 2026-05-16 (Hirschberg `msalignmm` wired into engine,
-   byte-identical to C across all combinations tested). `--auto`,
-   `--treein`/`--treeout`, `--anysymbol`, `--seed`,
+1. **§B.3 missing CLI flags** — fully closed. `--seedtable` landed
+   2026-05-17 (parses hat3.seed files matching `multi2hat3s.c:214`
+   format and hands the table to the engine via the same path as
+   `--seed`; byte-identical to C MAFFT 7.526 for L/G/E-INS-i and
+   FFT-NS-i). `--memsave` landed 2026-05-16 (Hirschberg `msalignmm`
+   wired into engine, byte-identical to C across all combinations
+   tested). `--auto`, `--treein`/`--treeout`, `--anysymbol`, `--seed`,
    `--leavegappyregion`, `--memsavetree` all landed 2026-05-13/14.
 2. **§B.1 `penalty_ex` in `pairwise_align11`** — would need an API
    change (take `&GapModel` or add `penalty_ex` param). Currently

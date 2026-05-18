@@ -2416,3 +2416,89 @@ fn seed_fftnsi_byte_identical_to_c() {
             "seq {i} differs from C's --seed FFT-NS-i output");
     }
 }
+
+/// `--seedtable` byte-identical to C MAFFT for L-INS-i.
+///
+/// The hat3.seed file was captured from `mafft --seed --debug` (the
+/// `multi2hat3s` output). The combined input file is the gap-stripped
+/// concatenation of seed FASTA + user FASTA, matching what our `--seed`
+/// CLI prepends internally. C's `multi2hat3s.c:375` actually writes
+/// *gapped* seeds to infile, but hat3 positions are in gap-stripped
+/// residue space; either convention works as long as the input matches
+/// the position space, and we ship the gap-stripped variant for clarity.
+/// The resulting alignment matches C's `--seed` reference (which equals
+/// C's `--seedtable` output for the same combined input).
+#[test]
+fn seedtable_linsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.seed.linsi.iter2"))
+        .expect("missing fixtures/sample.seed.linsi.iter2");
+    let combined = read_fasta(fixture_path("sample.seed.combined.fa"))
+        .expect("missing fixtures/sample.seed.combined.fa");
+    let hat3 = std::fs::read_to_string(fixture_path("sample.seed.hat3"))
+        .expect("missing fixtures/sample.seed.hat3");
+    let seed_table = mafft_align::parse_hat3_seed(&hat3, combined.nseq())
+        .expect("parse hat3");
+    let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 });
+    engine.seed_homology = Some(seed_table);
+    let msa = engine.align(&combined);
+
+    assert_eq!(msa.nseq(), c_ref.nseq(), "nseq mismatch");
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --seed L-INS-i reference");
+    }
+}
+
+/// `--seedtable` byte-identical to C MAFFT for G-INS-i.
+#[test]
+fn seedtable_ginsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.seed.ginsi.iter2"))
+        .expect("missing fixtures/sample.seed.ginsi.iter2");
+    let combined = read_fasta(fixture_path("sample.seed.combined.fa")).unwrap();
+    let hat3 = std::fs::read_to_string(fixture_path("sample.seed.hat3")).unwrap();
+    let seed_table = mafft_align::parse_hat3_seed(&hat3, combined.nseq()).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 2 });
+    engine.seed_homology = Some(seed_table);
+    let msa = engine.align(&combined);
+
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --seed G-INS-i reference");
+    }
+}
+
+/// `--seedtable` byte-identical to C MAFFT for E-INS-i.
+#[test]
+fn seedtable_einsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.seed.einsi.iter2"))
+        .expect("missing fixtures/sample.seed.einsi.iter2");
+    let combined = read_fasta(fixture_path("sample.seed.combined.fa")).unwrap();
+    let hat3 = std::fs::read_to_string(fixture_path("sample.seed.hat3")).unwrap();
+    let seed_table = mafft_align::parse_hat3_seed(&hat3, combined.nseq()).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::EInsi { iterations: 2 });
+    engine.seed_homology = Some(seed_table);
+    let msa = engine.align(&combined);
+
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --seed E-INS-i reference");
+    }
+}
+
+/// `--seedtable` byte-identical to C MAFFT for FFT-NS-i.
+#[test]
+fn seedtable_fftnsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.seed.fftnsi.iter2"))
+        .expect("missing fixtures/sample.seed.fftnsi.iter2");
+    let combined = read_fasta(fixture_path("sample.seed.combined.fa")).unwrap();
+    let hat3 = std::fs::read_to_string(fixture_path("sample.seed.hat3")).unwrap();
+    let seed_table = mafft_align::parse_hat3_seed(&hat3, combined.nseq()).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 });
+    engine.seed_homology = Some(seed_table);
+    let msa = engine.align(&combined);
+
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --seed FFT-NS-i reference");
+    }
+}

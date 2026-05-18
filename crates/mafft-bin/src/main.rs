@@ -205,6 +205,21 @@ struct Args {
     #[arg(long = "seed", value_name = "FILE")]
     seed_files: Vec<PathBuf>,
 
+    /// Pre-computed seed local-homology table (matches C MAFFT
+    /// `--seedtable FILE`, `scripts/mafft:1021-1024`,
+    /// `scripts/mafft:2437-2438`). The file follows the same 9-field text
+    /// format `multi2hat3s.c:214` writes for `--seed`:
+    ///   `i j overlapaa opt start1 end1 start2 end2 k`
+    /// (one record per line, 0-based sequence indices and inclusive
+    /// residue positions; `opt` is the already-`tsuyosa`-boosted score).
+    /// Unlike `--seed`, no sequences are prepended — the file's `i`/`j`
+    /// reference whatever indices the user's input FASTA contains.
+    /// Mutually exclusive with `--seed`, `--add`/`--addfragments`,
+    /// `--parttree`/`--dpparttree`, and `--memsave`. Forces
+    /// `maxiterate ≥ 2` (`scripts/mafft:1911-1923`).
+    #[arg(long = "seedtable", value_name = "FILE")]
+    seedtable: Option<PathBuf>,
+
     /// Memory-saving mode (matches C MAFFT `--memsave` →
     /// `tbfast -M -B`, `scripts/mafft:543-544`). In C, this routes the
     /// profile DP through `MSalignmm` (Hirschberg-style linear-space
@@ -300,6 +315,32 @@ fn main() {
         eprintln!("Impossible");
         std::process::exit(1);
     }
+    if args.memsave && args.seedtable.is_some() {
+        // Same gating as --seed + --memsave: hat3.seed is plumbed into
+        // tbfast through localhomtable, which `MSalignmm` doesn't read
+        // (`tbfast.c:1117-1118`).
+        eprintln!("Impossible");
+        std::process::exit(1);
+    }
+    if !args.seed_files.is_empty() && args.seedtable.is_some() {
+        // `scripts/mafft:1963-1965`: "Use either one of seedtable and seed.
+        // Not both."
+        eprintln!("Use either one of seedtable and seed.  Not both.");
+        std::process::exit(1);
+    }
+    let add_arg = args.add.as_ref().or(args.addfragments.as_ref());
+    if args.seedtable.is_some() && add_arg.is_some() {
+        // `scripts/mafft:1281-1284`: "Use either ONE of --seed,
+        // --seedtable, --addprofile and --add."
+        eprintln!("Impossible");
+        eprintln!("Use either ONE of --seed, --seedtable, --addprofile and --add.");
+        std::process::exit(1);
+    }
+    if args.seedtable.is_some() && (args.parttree || args.dpparttree) {
+        // `scripts/mafft:1880-1883`: parttree + seed/seedtable is Impossible.
+        eprintln!("Impossible");
+        std::process::exit(1);
+    }
 
     // `--seed FILE` (repeatable): read each pre-aligned seed file with
     // gaps preserved (the seed-pair LH extraction needs the gap
@@ -390,12 +431,12 @@ fn main() {
         determine_mode(&args)
     };
 
-    // `--seed`: C MAFFT forces `iterate ≥ 2` when seed alignments are
-    // present (`scripts/mafft:1911-1923`) — the seed-pair `hat3.seed`
-    // constraints only fire during refinement. Lift `0`/`1` iteration
-    // counts to 2, and promote progressive-only FFT-NS-2 to FFT-NS-i
-    // with 2 iterations.
-    if !args.seed_files.is_empty() {
+    // `--seed` / `--seedtable`: C MAFFT forces `iterate ≥ 2` when seed
+    // alignments are present (`scripts/mafft:1911-1923`) — the seed-pair
+    // `hat3.seed` constraints only fire during refinement. Lift `0`/`1`
+    // iteration counts to 2, and promote progressive-only FFT-NS-2 to
+    // FFT-NS-i with 2 iterations.
+    if !args.seed_files.is_empty() || args.seedtable.is_some() {
         mode = match mode {
             AlignmentMode::FftNs2 => AlignmentMode::FftNsi { iterations: 2 },
             AlignmentMode::FftNsi { iterations } => {
@@ -543,6 +584,24 @@ fn main() {
             &scoring.consweight_matrix,
             &scoring.amino_map,
         );
+        engine.seed_homology = Some(seed_table);
+    } else if let Some(path) = &args.seedtable {
+        // `--seedtable FILE`: parse the pre-computed hat3.seed file and
+        // hand it to the engine like `--seed` would. No sequences are
+        // prepended — the file's `i`/`j` reference indices into the user
+        // input as supplied.
+        let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            eprintln!("Error reading {}: {e}", path.display());
+            std::process::exit(1);
+        });
+        let seed_table = mafft_align::parse_hat3_seed(&text, total_nseq)
+            .unwrap_or_else(|e| {
+                eprintln!("Error parsing {}: {e}", path.display());
+                std::process::exit(1);
+            });
+        if !args.quiet {
+            eprintln!("--seedtable: loaded {}", path.display());
+        }
         engine.seed_homology = Some(seed_table);
     }
 
