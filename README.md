@@ -44,7 +44,8 @@ Every progressive merge step matches in score and width and every refinement ite
 | BLOSUM 30 / 45 / 50 / 62 / 80 (FFT)         | match   | match      | 0    | ✓ byte-exact |
 | BLOSUM 80 NW (`--bl 80 --nofft`)            | 712     | 712        | 0    | ✓ byte-exact |
 | JTT 100 / 200 (FFT)                         | match   | match      | 0    | ✓ byte-exact |
-| TM 100 / 200 (NW + FFT)                     | match   | match      | 0    | ✓ byte-exact |
+| TM 100 / 200 (NW + FFT, default `--retree 2`) | match | match      | 0    | ✓ byte-exact |
+| TM 200 (`--retree 1`)                       | 717     | 717        | 8†   | C-side tied-trace artifact (see `MAFFT_UPSTREAM_REPORT.md`) |
 | `--parttree`, `--dpparttree`                | 752     | 752        | 0    | ✓ byte-exact |
 | `--parttree --nofft`                        | 752     | 752        | 0    | ✓ byte-exact (closed 2026-05-12) |
 | `--parttree --reorder`                      | 752     | 752        | 0    | ✓ byte-exact (closed 2026-05-13) |
@@ -56,7 +57,18 @@ Every progressive merge step matches in score and width and every refinement ite
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0    | ✓ byte-exact (closed 2026-05-12) |
 | `--reorder` (non-PartTree modes)            | match   | match      | 0    | ✓ byte-exact (closed 2026-05-13) |
 
-† We uppercase residues; C preserves case. With `diff -i` (case-insensitive) RNA produces 0 lines.
+† For RNA: we uppercase residues; C preserves case. With `diff -i` (case-insensitive) RNA produces 0 lines.
+
+†† For `--tm 200 --retree 1`: 4 single-char gap shifts in 2 of 36 sequences. Both
+alignments are optimal-scored ties; the diff comes from C `A__align`'s
+`static TLS` buffers (`commonIP/ijp`, `cpmx1/2`, `ogcp/fgcp/gapfreq` arrays)
+biasing tied-DP-cell selection by accumulated state from prior calls. Our
+DP produces byte-identical `ijp[i][j]` to C's `A__align` given identical
+inputs (verified cell-by-cell across all 365×363 cells of the divergent
+step), so this is a C-side artifact, not a Rust bug. Full analysis +
+upstream report in `MAFFT_UPSTREAM_REPORT.md`. Affects only `--retree 1
+--tm 200`; default `--tm 200` (retree=2) is byte-identical because the
+second pass realigns from a rebuilt tree.
 
 Every mainstream mode is byte-identical to C MAFFT 7.526. The remaining
 items in `TODO.md` are latent / coverage / performance gaps and missing

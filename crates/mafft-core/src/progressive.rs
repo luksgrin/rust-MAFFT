@@ -1083,14 +1083,19 @@ fn blend_profiles_exact(
     let mut ogcp = vec![0.0f64; alen];
     let mut fgcp = vec![0.0f64; alen];
 
-    // createcpmxresult: blend frequency matrices
+    // createcpmxresult: blend frequency matrices.
+    // FMA throughout: matches gcc's `-O3` fusion of `a + b*c` so the blended
+    // child-profile is bit-identical to C's. Without FMA the per-column
+    // weighted frequency accumulates 1-ULP differences that propagate into
+    // match_calc_row and flip DP tie-breaks for flat-landscape matrices
+    // (TM PAM 200 — §B.2).
     {
         let mut p = 0usize;
         for j in 0..alen {
             if gaptable1[j] != b'-' {
                 if p < prof1.length {
                     for k in 0..nalphabets.min(prof1.freqs[p].len()) {
-                        freqs[j][k] += prof1.freqs[p][k] * eff1;
+                        freqs[j][k] = prof1.freqs[p][k].mul_add(eff1, freqs[j][k]);
                     }
                 }
                 p += 1;
@@ -1103,7 +1108,7 @@ fn blend_profiles_exact(
             if gaptable2[j] != b'-' {
                 if p < prof2.length {
                     for k in 0..nalphabets.min(prof2.freqs[p].len()) {
-                        freqs[j][k] += prof2.freqs[p][k] * eff2;
+                        freqs[j][k] = prof2.freqs[p][k].mul_add(eff2, freqs[j][k]);
                     }
                 }
                 p += 1;
@@ -1119,7 +1124,7 @@ fn blend_profiles_exact(
                 // gap position: skip
             } else {
                 if p < prof1.nongap_freq.len() {
-                    nongap_freq[j] += prof1.nongap_freq[p] * eff1;
+                    nongap_freq[j] = prof1.nongap_freq[p].mul_add(eff1, nongap_freq[j]);
                 }
                 p += 1;
             }
@@ -1132,7 +1137,7 @@ fn blend_profiles_exact(
                 // gap position: skip
             } else {
                 if p < prof2.nongap_freq.len() {
-                    nongap_freq[j] += prof2.nongap_freq[p] * eff2;
+                    nongap_freq[j] = prof2.nongap_freq[p].mul_add(eff2, nongap_freq[j]);
                 }
                 p += 1;
             }
@@ -1177,15 +1182,15 @@ fn blend_og_one_side(
     for j in 0..alen {
         if gaptable[j] == b'-' {
             if j == 0 {
-                result[j] += 1.0 * eff;
+                result[j] += eff;
             } else if gaptable[j - 1] != b'-' && p > 0 {
                 let gf_val = if p - 1 < gf.len() { gf[p - 1] } else { 1.0 };
-                result[j] += gf_val * eff;
+                result[j] = gf_val.mul_add(eff, result[j]);
             }
         } else {
             if j == 0 || (j > 0 && gaptable[j - 1] != b'-') {
                 if p < ori.len() {
-                    result[j] += ori[p] * eff;
+                    result[j] = ori[p].mul_add(eff, result[j]);
                 }
             }
             p += 1;
@@ -1210,12 +1215,12 @@ fn blend_fg_one_side(
                 result[j] += eff;
             } else if gaptable[j + 1] != b'-' {
                 let gf_val = if p < gf.len() { gf[p] } else { 1.0 };
-                result[j] += gf_val * eff;
+                result[j] = gf_val.mul_add(eff, result[j]);
             }
         } else {
             if j < alen - 1 && gaptable[j + 1] != b'-' {
                 if p < ori.len() {
-                    result[j] += ori[p] * eff;
+                    result[j] = ori[p].mul_add(eff, result[j]);
                 }
             }
             p += 1;

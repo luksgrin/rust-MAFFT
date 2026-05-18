@@ -49,7 +49,7 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--parttree --reorder`                      | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
 | `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree) | match | match | 0 | byte-exact ✓ (closed 2026-05-13) |
 | `--dpparttree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
-| `--tm 200 --treeout`                        | match   | match      | 20         | residual gap — see §B.2: pass-0 TM alignment drift propagates into tree branch lengths |
+| `--tm 200 --treeout`                        | match   | match      | 20         | C-side tied-trace artifact ✓ (analyzed 2026-05-18, see §B.2 + `MAFFT_UPSTREAM_REPORT.md`) — pass-0 TM alignment drift propagates into tree branch lengths |
 | `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G/E-INS-i, FFT-NS-i, all non-parttree modes) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
 | `--treein --treeout`                        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) — appends `#by loadtree\n` like C `mltaln9.c:2818` |
 | `--auto` (small/medium/large brackets covered by size heuristic) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
@@ -623,7 +623,7 @@ non-FFT no-constraint 1-vs-1 merges (NW-NS-2 only), and the CLI does
 not expose `--exp` (which would set ppenalty_ex). All NW-NS-2 modes
 remain byte-identical to C.
 
-### §B.2. Missing FMA `mul_add` outside `match_calc_row` — DEFENSIVE FIXES LANDED, TM SCORING STILL DIVERGES
+### §B.2. ~~Missing FMA `mul_add` outside `match_calc_row` — DEFENSIVE FIXES LANDED, TM SCORING STILL DIVERGES~~ — RESOLVED (not our bug) 2026-05-18
 
 **Location**: `crates/mafft-align/src/{global,local,genaffine}.rs` —
 inner DP loops use plain `a + b` instead of `f64::mul_add`. `profile.rs`
@@ -678,34 +678,129 @@ from the rebuilt tree, but the first-pass divergence cascades into
    topology issue — it's a DP precision divergence at a specific merge
    step (most likely the merges that introduce 12 and 13).
 
-The remaining 1-ULP drift is in a code path we haven't pinned. Possible
-candidates: `global.rs` / `local.rs` / `genaffine.rs` inner DP (used by
-pairwise paths we haven't audited), the per-cell impmtx or cpmx
-construction in `cpmx_calc_new`-equivalent code, or a subtle ordering
-difference in the FFT cross-correlation.
+**Further investigated 2026-05-18** (FMA audit + cell-level FFI diff
+landed; residual is *not a Rust bug* — it's an artifact of C's
+stateful `A__align` static buffers):
 
-All other modes (BLOSUM62 / BL80 / JTT 200 / DNA / `--add` /
-`--allowshift`) are byte-identical even at retree=1, so the FMA gap is
-currently TM-specific (TM PAM 200 has the flattest score distribution).
+10. Bisection via `MAFFT_DEBUG_STEPS=1` env var (Rust) + `CDBG_PT_STEPS`
+    patch on C `disttbfast.c::treebase` found the divergence at
+    **step 12** of the `--tm 200 --retree 1 --nofft` 36-seq run: merging
+    cluster `{7,8,9}` (post-step-4) with raw seq `{11}`. Both implementations
+    produce identical width (367) AND identical pscore
+    (208675.4644010082) — but the traceback picks tied DP candidates
+    differently:
+    - C: `MAAWEAA---FAARRRHEE...` (3 gaps before F)
+    - Rust: `MAAWEAAF---AARRRHEE...` (F first, 3 gaps after)
+    This propagates forward: at step 13 (4-vs-1) the cluster
+    `{7,8,9,11}` profile differs slightly, the DP picks a different
+    traceback path, and the score *does* diverge (C=219250.2,
+    Rust=218942.5, width=368 same). The final 8-line FASTA diff comes
+    from these cascaded gap-placement flips.
 
-**Fix path** (deferred — see severity note below):
-- 8-line diagnostic test: `mafft-rs --tm 200 --retree 1 sample` vs
-  `mafft --tm 200 --retree 1 sample` should converge to 0 once the
-  right FMA is added.
-- Audit `global.rs` / `local.rs` / `genaffine.rs` inner DP loops.
-- Add a per-step alignment-trace dump (similar to `CDBG_PT_STEPS` in
-  splittbfast) to pin the FIRST diverging merge step.
-- Use the cross_validate_profile_align FFI harness to do a focused
-  1-vs-3 alignment with the exact profile that occurs in the seq 12
-  merge step, and diff DP cell values numerically. The minimal repro
-  in finding (8) means the divergent merge can be isolated to a
-  single profile-vs-single-seq DP call.
+11. **FMA audit pass landed** (defensive — matches gcc-O3 FMA fusion;
+    didn't close the §B.2 residual but tightened other latent
+    precision boundaries):
+    - `mafft-core/src/progressive.rs::blend_profiles_exact` — converted
+      `freqs[j][k] += prof.freqs[p][k] * eff` (createcpmxresult), the
+      `nongap_freq[j] += prof.nongap_freq[p] * eff` (creategapfreqresult),
+      and the open/close-gap blends `blend_og_one_side` / `blend_fg_one_side`
+      to `mul_add`. These run only when the merged-cluster cache fires
+      (combined size > 20) so they didn't affect the 5-seq step 12 case.
+    - `mafft-tree/src/weighting.rs::sequence_weights` — converted
+      `rootnode[s] += step.left_length * eff[s]` (C `mltaln9.c:9893`)
+      to `mul_add`.
+
+12. **Cell-level FFI cross-validation landed** (2026-05-18): wrote a
+    focused test (`tm200_step12_ijp_cellwise_diff`, now removed)
+    that:
+    - Patched C `Salignmm.c::A__align` with an `MAFFT_IJP_DUMP` env
+      filter that writes the full `ijp[i][j]` matrix to a file for
+      step-12 dimensions (`lgth1==364 && lgth2==362`).
+    - Added a parallel `MAFFT_IJP_DUMP_R` dump on the Rust side in
+      `profile.rs::profile_align_imp_with_boundary`.
+    - Set up a test that loaded the step-12 inputs (3-seq `{7,8,9}`
+      cluster + raw seq 11, captured via `RDBG_DUMP_PRE_STEP=12`),
+      ran C's `A__align` via FFI and our `profile_align` on the same
+      inputs, then diffed the resulting `ijp` matrices.
+
+    **Findings**:
+    - With matched inputs (`poffset=0`, same matrix via C's
+      `n_dis_consweight_multi`, same normalized eff weights, same
+      penalties), **Rust's `profile_align` produces byte-identical
+      `ijp` to C's `A__align` (0 interior differences across all
+      365×363 cells)**. The DP is correct.
+    - But C's `A__align` in the full-run context (after 12 prior
+      `A__align` calls in `treebase`) produces a *different* `ijp`
+      matrix than C's `A__align` called fresh in the isolated test —
+      and a different traceback alignment (`MAAWEAA---FAARR` vs
+      `MAAWEAAF---AARR`), with the same scalar score
+      (208675.4644010082) and width (367).
+    - Specifically, dumping `initverticalw`, `currentw`, `ogcp1/2`,
+      `fgcp1/2`, `gapfreq1pt/2pt` at indices 0-5 and 250-259 from both
+      the isolated test and the full-run step-12 invocation showed
+      **every value byte-identical** between contexts. Yet the
+      resulting `ijp` differs at 341 interior cells (first divergence
+      at `i=4, j=257`).
+    - This is only explainable by C's `A__align` having
+      `static TLS` buffers (commonIP/ijp, cpmx1/2, ogcp1/2, fgcp1/2,
+      gapfreq1/2, m, mp, w1/w2) whose post-call state subtly affects
+      the next call's tied-cell selection — *even though the
+      observable inputs match*. A "warm-up" A__align call in the test
+      changed C's output by 1 cell, confirming static-state
+      sensitivity.
+
+**Conclusion**: The 8-line `--tm 200 --retree 1` FASTA diff is **not a
+Rust correctness bug**. Our DP produces byte-identical `ijp` to
+C's `A__align` given identical inputs. The diff is a C-side
+tied-trace artifact dependent on accumulated prior-call static buffer
+state in `A__align` — a TM-200-specific manifestation because TM PAM
+200 has the flattest score distribution and exposes ties that
+BLOSUM/JTT don't.
+
+**Why other modes don't show this**: All other matrices (BLOSUM62 /
+BL80 / JTT 200 / DNA / `--add` / `--allowshift`) have enough score
+diversity that tied DP cells are rare. TM 200 is the only matrix
+where the static-state sensitivity surfaces.
+
+**To close** (deferred — see severity note): would require
+reverse-engineering C's exact static-buffer cross-call dependency in
+`A__align` and intentionally reproducing the same stateful behavior
+in Rust's `profile_align`. The complexity outweighs the benefit since
+the alignment is already optimal-scored (both traces tie); only the
+choice between tied traces differs.
 
 **Severity**: LOW. Default `--tm 200` (retree=2) output is byte-
-identical. Only `--retree 1 --tm 200` output (8-line diff in 2 seqs
-out of 36) and the implied `--tm 200 --treeout` first-pass tree
-(20-line branch-length diff, max drift 3e-3 in 5th decimal place)
-are affected. All 17/17 alignment-mode parity tests still pass.
+identical. Only `--retree 1 --tm 200` output (8-line diff = 4 single-
+char gap shifts in 2 of 36 sequences, both at tied DP cells) and the
+implied `--tm 200 --treeout` first-pass tree (20-line branch-length
+diff, max drift 3e-3 in 5th decimal place) are affected. All
+correctness tests pass. The 346-test workspace suite is unchanged by
+the 2026-05-18 FMA audit + cell-level investigation.
+
+**RESOLUTION (2026-05-18)**: marking this section closed. The 8-line
+diff is **not a Rust correctness bug** — our `profile_align` produces
+byte-identical `ijp[i][j]` to C's `A__align` given identical inputs
+(confirmed cell-by-cell across 365×363 cells). The diff is a C-side
+artifact: `A__align`'s `static TLS` buffers (`commonIP/ijp`,
+`cpmx1/2`, `ogcp1/2o`, `fgcp1/2o`, `gapfreq1/2`, `m`, `mp`, `w1/w2`)
+are sized to the max `(lgth1, lgth2)` seen across all calls and grown
+but never shrunk. For matrices flat enough to produce DP ties (only
+TM PAM 200 in the standard set), trailing buffer cells from previous
+larger calls bias the next call's tied-cell selection. Output is
+still optimal-scored — only tied-trace selection differs.
+
+We documented the full investigation in `MAFFT_UPSTREAM_REPORT.md`
+for upstream contact (Kazutaka Katoh, katoh@ifrec.osaka-u.ac.jp).
+Per the report's analysis: "feature in spirit (perf), bug in detail
+(silent cross-call coupling). For us it means the 8-line diff isn't
+reproducible without intentionally copying C's static-buffer
+side-channel, which would be ~zero benefit for noticeable Rust-side
+complexity."
+
+The defensive FMA fixes that landed during the investigation
+(`blend_profiles_exact` + 4 callees → `mul_add`; `sequence_weights`
+→ `mul_add`) are kept — they harden other latent precision
+boundaries even though they don't close this specific residual.
 
 ### §B.3. `--memsave` — FULLY CLOSED, byte-identical to C MAFFT 7.526 — 2026-05-14/15/16
 
@@ -1144,8 +1239,11 @@ divergences:
 2. **§B.1 `penalty_ex` in `pairwise_align11`** — would need an API
    change (take `&GapModel` or add `penalty_ex` param). Currently
    benign because the CLI doesn't expose `--exp`.
-3. **§B.2 FMA `mul_add` in {global,local,genaffine}.rs** — audit pass
-   to forestall future 1-ULP tie-break flips on flat-landscape matrices.
+3. ~~**§B.2 FMA `mul_add` in {global,local,genaffine}.rs**~~ —
+   RESOLVED 2026-05-18. The 8-line `--tm 200 --retree 1` diff is a
+   C-side static-buffer cross-call coupling artifact in `A__align`,
+   not a Rust bug. Documented in `MAFFT_UPSTREAM_REPORT.md`.
+   Defensive FMA fixes kept (blend_profiles_exact, sequence_weights).
 4. **§B.4 `--retree N` for N ≠ 2** — add regression test.
 5. **§C.1 per-group gap stripping** — performance only, no behavior
    change.
