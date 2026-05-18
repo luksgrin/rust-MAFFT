@@ -2502,3 +2502,88 @@ fn seedtable_fftnsi_byte_identical_to_c() {
             "seq {i} differs from C's --seed FFT-NS-i reference");
     }
 }
+
+// ---------------------------------------------------------------------------
+// §B.4 — `--retree N` byte-identity tests (closed 2026-05-18).
+//
+// C `scripts/mafft:1840-1842` clamps `cycle = min(cycle, 3)` for all modes,
+// and `scripts/mafft:1934-1936` forces `cycle = 1` for L/G/E/Q/X-INS-i
+// regardless of `--retree N`. Without those guards, `--retree N > 1
+// --localpair` silently runs extra progressive passes and diverges from C
+// by hundreds of lines.
+//
+// These tests lock down byte-identity for the non-default `--retree`
+// values that exercise both rewrites.
+// ---------------------------------------------------------------------------
+
+fn run_retree_engine(mode: AlignmentMode, retree: usize, sample: &str) -> mafft_core::MultipleAlignment {
+    let input = read_fasta(test_data_path(sample)).expect("sample fixture");
+    MafftEngine::new(mode).with_retree(retree).align(&input)
+}
+
+fn assert_byte_equal_to_ref(msa: &mafft_core::MultipleAlignment, c_ref_path: &str, label: &str) {
+    let c_ref = read_fasta(fixture_path(c_ref_path)).unwrap_or_else(|_| panic!("missing fixture {c_ref_path}"));
+    assert_eq!(msa.nseq(), c_ref.nseq(), "{label}: nseq mismatch");
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "{label}: seq {i} differs from C reference {c_ref_path}",
+        );
+    }
+}
+
+/// `--retree 3` for FFT-NS-2 — exercises the user-requested 3 passes on
+/// a non-INS-i mode (no override fires). C uses cycle=3 directly.
+#[test]
+fn retree_3_fftns2_byte_identical_to_c() {
+    let msa = run_retree_engine(AlignmentMode::FftNs2, 3, "sample");
+    assert_byte_equal_to_ref(&msa, "sample.retree3.fftns2", "--retree 3");
+}
+
+/// `--retree 5` for FFT-NS-2 — verifies the `cycle = min(cycle, 3)` clamp
+/// at `scripts/mafft:1840`. C clamps to 3; we must match.
+#[test]
+fn retree_5_fftns2_byte_identical_to_c() {
+    let msa = run_retree_engine(AlignmentMode::FftNs2, 5, "sample");
+    assert_byte_equal_to_ref(&msa, "sample.retree5.fftns2", "--retree 5");
+}
+
+/// `--retree 3 --maxiterate 2` for FFT-NS-i — same cycle clamp, plus
+/// iterative refinement on top of the 3-pass progressive build.
+#[test]
+fn retree_3_fftnsi_iter2_byte_identical_to_c() {
+    let msa = run_retree_engine(AlignmentMode::FftNsi { iterations: 2 }, 3, "sample");
+    assert_byte_equal_to_ref(&msa, "sample.retree3.fftnsi.iter2", "--retree 3 --maxiterate 2");
+}
+
+/// `--retree 3 --localpair` (L-INS-i) — verifies the INS-i override at
+/// `scripts/mafft:1934-1936` forces cycle=1 regardless of `--retree N`.
+/// Before the fix, our engine ran 3 progressive passes here, diverging
+/// from C by 898 lines on the 36-seq sample.
+#[test]
+fn retree_3_linsi_byte_identical_to_c() {
+    let msa = run_retree_engine(AlignmentMode::LInsi { iterations: 0 }, 3, "sample");
+    assert_byte_equal_to_ref(&msa, "sample.retree3.linsi", "--retree 3 --localpair");
+}
+
+/// `--retree 5 --localpair` — same override, plus the clamp would
+/// otherwise cap at 3. Both must collapse to cycle=1.
+#[test]
+fn retree_5_linsi_byte_identical_to_c() {
+    let msa = run_retree_engine(AlignmentMode::LInsi { iterations: 0 }, 5, "sample");
+    assert_byte_equal_to_ref(&msa, "sample.retree5.linsi", "--retree 5 --localpair");
+}
+
+/// `--retree 3 --globalpair` (G-INS-1) — same override as L-INS-i.
+#[test]
+fn retree_3_ginsi_byte_identical_to_c() {
+    let msa = run_retree_engine(AlignmentMode::GInsi { iterations: 0 }, 3, "sample");
+    assert_byte_equal_to_ref(&msa, "sample.retree3.ginsi", "--retree 3 --globalpair");
+}
+
+/// `--retree 3 --genafpair` (E-INS-1) — same override as L-INS-i.
+#[test]
+fn retree_3_einsi_byte_identical_to_c() {
+    let msa = run_retree_engine(AlignmentMode::EInsi { iterations: 0 }, 3, "sample");
+    assert_byte_equal_to_ref(&msa, "sample.retree3.einsi", "--retree 3 --genafpair");
+}

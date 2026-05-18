@@ -486,14 +486,22 @@ impl MafftEngine {
         // Each iteration after the first computes distances from the ALIGNMENT
         // (not the raw sequences), producing a better tree.
         //
-        // C's `scripts/mafft:142-156` sets `defaultcycle=1` for L-INS-i,
-        // G-INS-i, E-INS-i (vs `defaultcycle=2` for FFT-NS-2 and FFT-NS-i).
-        // Match that — INS-i modes do a single progressive pass with the
-        // pairwise-derived tree; only FFT-NS modes do the rebuild-tree
-        // second pass. Honour user-supplied `--retree N` first.
-        let retree = if self.retree != 2 {
-            self.retree.max(1)
-        } else if matches!(
+        // C's `scripts/mafft:142-156` sets `defaultcycle=1` for L/G/E/Q/X-INS-i
+        // (vs `defaultcycle=2` for FFT-NS-2 and FFT-NS-i). The script then
+        // applies two post-`--retree` rewrites that override the user value:
+        //
+        //   1. `scripts/mafft:1840-1842` clamps `cycle = min(cycle, 3)` for
+        //      ALL distance modes — `--retree 5` becomes 3 in C.
+        //   2. `scripts/mafft:1934-1936` forces `cycle = 1` in the
+        //      `distance ∈ {local, global, localgenaf, globalgenaf, scarna}`
+        //      branch (= L/G/E/Q/X-INS-i) regardless of `--retree`. So
+        //      `--retree 3 --localpair` runs with cycle=1 in C, not 3.
+        //
+        // Mirror both: cap at 3 for FFT-NS-*, force 1 for INS-i regardless
+        // of the user value. Without this, `--retree N --localpair` (N > 1)
+        // silently runs extra passes vs C and diverges by hundreds of lines
+        // (898 lines on the 36-seq sample with `--retree 3 --localpair`).
+        let retree = if matches!(
             self.mode,
             AlignmentMode::LInsi { .. }
                 | AlignmentMode::GInsi { .. }
@@ -503,7 +511,7 @@ impl MafftEngine {
         ) {
             1
         } else {
-            2
+            self.retree.clamp(1, 3)
         };
         let mut msa = MultipleAlignment {
             sequences: sequences.clone(),

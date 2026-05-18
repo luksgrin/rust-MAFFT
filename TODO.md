@@ -61,7 +61,7 @@ mafft and our binary agree on every byte for every ✓ row.
 | `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-16 — Hirschberg `msalignmm` wired into engine) |
 | `--seedtable FILE` (L/G/E-INS-i + FFT-NS-i, pre-computed hat3.seed input) | match | match | 0 | byte-exact ✓ (closed 2026-05-17) |
 
-Test suite as of 2026-05-17: **346 Rust tests pass, 0 failed, 0 ignored**
+Test suite as of 2026-05-18: **353 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
 pass. Every mainstream mode in the matrix above is byte-identical to C
 MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
@@ -978,20 +978,44 @@ Files:
 - `crates/mafft-core/tests/fixtures/sample.seed.combined.fa` —
   gap-stripped seed-prepended input matching the hat3 position space.
 
-### §B.4. `--retree N` for N ≠ 2 byte-untested for INS-i modes
+### §B.4. ~~`--retree N` for N ≠ 2 byte-untested for INS-i modes~~ — RESOLVED 2026-05-18
 
-**Location**: `crates/mafft-core/src/engine.rs:410-422` overrides
-`retree = 1` for L/G/E/Q/X-INS-i; for FFT-NS-i uses CLI default
-`retree = 2`.
+**Discovery**: while writing regression tests for non-default `--retree`,
+found that Rust honored the user's `--retree N` literally while C
+applies two undocumented post-`--retree` rewrites in `scripts/mafft`:
 
-**C reference**: `scripts/mafft:86, 142-156`.
+1. **`scripts/mafft:1840-1842`** clamps `cycle = min(cycle, 3)` for ALL
+   modes. So `--retree 5` runs 3 passes in C, not 5.
+2. **`scripts/mafft:1934-1936`** forces `cycle = 1` in the `distance ∈
+   {local, global, localgenaf, globalgenaf, scarna}` branch (=
+   L/G/E/Q/X-INS-i) regardless of `--retree N`. So `--retree 3
+   --localpair` runs cycle=1 in C, not 3.
 
-**Status**: Logic looks correct (default 2, override to 1 for INS-i),
-but no test asserts byte-identity for `--retree 3 --localpair sample` or
-similar.
+Without these rewrites, our `--retree 3 --localpair` diverged from C
+by 898 lines on the 36-seq sample, and `--retree 5 --localpair` by the
+same (Rust ran 5 passes vs C's 1).
 
-**Effort**: Add a regression test once an output fixture is generated
-from C.
+**Fix**: `crates/mafft-core/src/engine.rs:485-507` rewritten to mirror
+both rewrites:
+- INS-i modes (L/G/E/Q/X-INS-i): `retree = 1` regardless of `self.retree`.
+- All other modes: `retree = self.retree.clamp(1, 3)`.
+
+**Tests** (7 new in `end_to_end.rs::retree_*`):
+- `retree_3_fftns2_byte_identical_to_c`
+- `retree_5_fftns2_byte_identical_to_c` (exercises the 3-cap clamp)
+- `retree_3_fftnsi_iter2_byte_identical_to_c`
+- `retree_3_linsi_byte_identical_to_c` (would have failed pre-fix by
+  898 lines; exercises the INS-i override)
+- `retree_5_linsi_byte_identical_to_c`
+- `retree_3_ginsi_byte_identical_to_c`
+- `retree_3_einsi_byte_identical_to_c`
+
+Fixtures: `sample.retree{3,5}.{fftns2,linsi}`,
+`sample.retree3.{fftnsi.iter2,ginsi,einsi}` — captured from C MAFFT
+7.526 on the 36-seq sample.
+
+Verified manually across 4 modes × 4 retree values (1, 2, 3, 5) — all
+20 combinations byte-identical to C.
 
 ### §B.5. HashMap iteration order in `profile_cache`
 
@@ -1244,7 +1268,9 @@ divergences:
    C-side static-buffer cross-call coupling artifact in `A__align`,
    not a Rust bug. Documented in `MAFFT_UPSTREAM_REPORT.md`.
    Defensive FMA fixes kept (blend_profiles_exact, sequence_weights).
-4. **§B.4 `--retree N` for N ≠ 2** — add regression test.
+4. ~~**§B.4 `--retree N` for N ≠ 2**~~ — RESOLVED 2026-05-18. Found
+   that Rust honored `--retree N` literally while C clamps at 3 and
+   forces 1 for INS-i. Fixed `engine.rs` + added 7 regression tests.
 5. **§C.1 per-group gap stripping** — performance only, no behavior
    change.
 6. **§D X-INS-i (`--xinsi`)** — needs `contrafold` binary to validate.

@@ -25,6 +25,7 @@ This project provides:
 - `--treeout` for all modes including `--parttree` and `--dpparttree` (closed 2026-05-13)
 - `--memsave` / `--nomemsave` for FFT-NS-2 and NW-NS-2 (linear-space Hirschberg DP, closed 2026-05-16)
 - `--seedtable FILE` (pre-computed hat3.seed input, closed 2026-05-17)
+- `--retree N` for any N (clamped to [1,3] per `scripts/mafft:1840`; forced to 1 for L/G/E/Q/X-INS-i per `scripts/mafft:1934` — closed 2026-05-18)
 
 Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
@@ -303,17 +304,17 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-17 (`cargo test --workspace --exclude pymafft --release`: **346 passed, 0 failed, 0 ignored**):
+Current counts as of 2026-05-18 (`cargo test --workspace --exclude pymafft --release`: **353 passed, 0 failed, 0 ignored**):
 
 | Suite | Count | What |
 |-------|-------|------|
 | Rust unit tests (`--lib`) | 161 | All crates, all modules (incl. 7 `msalign` Hirschberg DP tests + 4 `parse_hat3_seed` tests) |
 | Rust binary tests (`mafft-rs`) | 10 | CLI helper functions (`decide_auto`, `replace_unusual`, etc.) |
-| Rust integration tests (`end_to_end`) | 81 | Byte-level parity with C across all supported modes + DP diagnostics (incl. 4 `--seedtable` byte-equal tests) |
+| Rust integration tests (`end_to_end`) | 88 | Byte-level parity with C across all supported modes + DP diagnostics (incl. 4 `--seedtable` byte-equal tests + 7 `--retree N` byte-equal tests covering the clamp-at-3 and INS-i-forces-1 rewrites in `scripts/mafft:1840,1934`) |
 | Rust FFI cross-validation tests | 68 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), memsavetree (4 tests), `MSalignmm` Hirschberg DP (10 tests, all byte-identical to C), MSalignmm profile alignment |
 | Rust other integration tests | 25 | `trace_refinement` (15), `integration` mafft-io (7), `imp_*` (3) |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust** | **346** | |
+| **Total Rust** | **353** | |
 
 Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 
