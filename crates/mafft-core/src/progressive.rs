@@ -5,7 +5,14 @@
 /// are left untouched. Profiles are cached after each merge step
 /// (`cpmxhist`) to match C's exact float accumulation order.
 
-use std::collections::HashMap;
+// §B.5 — `profile_cache` uses `BTreeMap` (not `HashMap`) for deterministic
+// iteration order. The cache is currently `.get()` / `.insert()` / `.remove()`
+// only, so HashMap's randomized order isn't an active hazard — but any future
+// refactor adding `.iter()` / `.values()` / `.keys()` would silently produce
+// non-deterministic alignment output. `BTreeMap` makes that future-safe at
+// negligible cost (cache size is bounded by `nseq`, keys are small
+// `Vec<usize>`).
+use std::collections::BTreeMap;
 use mafft_align::{profile_align, pairwise_align11, fft_profile_align, Profile, GapModel, Alignment, AlignOp, FftAlignParams};
 use mafft_tree::{Topology, sequence_weights, compute_distfromtip};
 use mafft_types::ScoringContext;
@@ -218,7 +225,7 @@ pub fn progressive_align_with_mergeoralign_n(
     let mut last_score = 0.0;
     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
 
-    let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
+    let mut profile_cache: BTreeMap<Vec<usize>, CachedProfile> = BTreeMap::new();
 
     // Track which rows are "already aligned" — i.e., have participated
     // in some merge already. Existing rows start aligned (the input
@@ -617,7 +624,7 @@ pub fn progressive_align_partial(
         gap = gap.with_shift(shift);
     }
 
-    let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
+    let mut profile_cache: BTreeMap<Vec<usize>, CachedProfile> = BTreeMap::new();
 
     let limit = n_steps.min(topology.steps.len());
     for step in topology.steps.iter().take(limit) {
@@ -722,7 +729,7 @@ pub fn progressive_align_full(
 
     // Profile cache: maps a set of sequence indices (sorted) to its cached profile.
     // After each merge, the merged profile is stored so the next merge can reuse it.
-    let mut profile_cache: HashMap<Vec<usize>, CachedProfile> = HashMap::new();
+    let mut profile_cache: BTreeMap<Vec<usize>, CachedProfile> = BTreeMap::new();
 
     // Per-step dynamic-matrix offset. `--allowshift`/`--unalignlevel`
     // triggers `unalign_level > 0`. C builds a fresh `dynamicmtx` per
@@ -798,7 +805,7 @@ fn merge_step_cached(
     scoring: &ScoringContext,
     gap: &GapModel,
     use_fft: bool,
-    cache: &mut HashMap<Vec<usize>, CachedProfile>,
+    cache: &mut BTreeMap<Vec<usize>, CachedProfile>,
     constraints: Option<&mafft_types::LocalHomologyTable>,
     penalize_term_gaps: bool,
     memsave_dp: bool,

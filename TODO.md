@@ -1017,18 +1017,26 @@ Fixtures: `sample.retree{3,5}.{fftns2,linsi}`,
 Verified manually across 4 modes × 4 retree values (1, 2, 3, 5) — all
 20 combinations byte-identical to C.
 
-### §B.5. HashMap iteration order in `profile_cache`
+### §B.5. ~~HashMap iteration order in `profile_cache`~~ — RESOLVED 2026-05-18 (BTreeMap swap)
 
-**Location**: `crates/mafft-core/src/progressive.rs:196, 592, 694`
-(`HashMap<Vec<usize>, CachedProfile>`).
+**Original concern**: `crates/mafft-core/src/progressive.rs` used
+`HashMap<Vec<usize>, CachedProfile>` for the profile cache. Currently
+safe — only `.get()` / `.insert()` / `.remove()` were used — but any
+future refactor adding `.iter()` / `.values()` / `.keys()` loops would
+silently produce non-deterministic alignment output.
 
-**Risk**: Currently safe — the cache is only `.get()`-accessed, never
-iterated. If a future refactor adds `.iter()` / `.values()` / `.keys()`
-loops over the cache, Rust's randomized iteration order will produce
-non-deterministic output.
+**Fix**: replaced `HashMap` with `BTreeMap` at all four call sites
+(`progressive.rs:221, 620, 725, 801`). Cache size is bounded by
+`nseq` and keys are small `Vec<usize>` (typically <50 elements), so
+the per-lookup cost is negligible. Output now deterministic by
+construction, no future-refactor footgun.
 
-**Fix**: Add `// DETERMINISM: do not iterate this cache — get-only`
-comment, or replace with `BTreeMap` for deterministic iteration order.
+**Verified**: 349 tests pass (no perf regression at 36-seq scale),
+all 7 representative mode variants (default, `--retree 1`,
+`--maxiterate 100`, `--localpair`, `--globalpair --maxiterate 1000`,
+`--parttree`, `--dpparttree`) byte-identical to C MAFFT 7.526.
+Multi-run L-INS-i (`--maxiterate 1000 --localpair`) produces
+bit-identical output across 3 consecutive runs.
 
 ### §B.6. Sequential float summation guard in `refinement.rs:1069-1080`
 
