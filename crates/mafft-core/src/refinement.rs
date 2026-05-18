@@ -1103,6 +1103,15 @@ fn pairwise_score(seq1: &[u8], seq2: &[u8], scoring: &ScoringContext) -> f64 {
     //   '-' in seq1. Same for seq2.
     // - amino_dis_consweight_multi[gap][*] = 0, so gap-region positions
     //   contribute only the single gap-open penalty per gap run.
+    //
+    // A previous attempt to rewrite this as a per-cell branchless state
+    // machine (2026-05-18) failed because C's `while (seq1[k] == '-')`
+    // consume loop crosses both-gap positions (it only looks at seq1),
+    // while a naive per-cell rule that resets state on both-gap would
+    // re-charge penalty when an A-gap-run is interrupted by a both-gap
+    // column. The minimum branchless formulation that matches C exactly
+    // is a 3-state machine (Neutral / AGapRun / BGapRun) — still has
+    // branches, no clean SIMD path. Keeping the C-style structure.
     let penalty = scoring.gap.open as f64;
     let len = seq1.len().min(seq2.len());
     let mut score = 0.0f64;

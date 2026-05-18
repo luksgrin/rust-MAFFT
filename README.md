@@ -339,8 +339,33 @@ C preserves the input case of residues (e.g., lowercase RNA). We uppercase all r
 
 ### Performance
 
-- Per-group gap stripping in progressive alignment is not implemented; we strip globally instead. Functionally correct but wastes DP work. See `TODO.md` §C.1.
-- No SIMD for the DP fill loops themselves (data dependencies prevent vectorization without anti-diagonal restructuring).
+Benchmark snapshot vs C MAFFT 7.526 (2026-05-18, macOS arm64, 5 runs summed,
+108-seq synthetic input):
+
+| Mode                                     | C MAFFT | mafft-rs | Ratio          |
+|------------------------------------------|---------|----------|----------------|
+| default (FFT-NS-2)                       | 1.34s   | 1.16s    | 1.16× faster   |
+| `--maxiterate 50` (FFT-NS-i)             | 6.62s   | 7.78s    | 1.18× SLOWER   |
+| `--maxiterate 50 --localpair` (L-INS-i)  | 37.00s  | 22.93s   | **1.61× faster** |
+| `--maxiterate 50 --globalpair` (G-INS-i) | 35.32s  | 22.62s   | **1.56× faster** |
+| `--parttree`                             | 1.70s   | 0.09s    | **18× faster**   |
+| `--dpparttree`                           | 7.24s   | 0.08s    | **90× faster**   |
+
+FFT-NS-i is the only mode where Rust is slower; the deficit is in the
+inner DP cell loop (55% self time per `macOS sample`-based profile)
+and its per-call `Vec` allocation (~14% of that). C's `A__align`
+amortizes allocation across calls via `static TLS` buffers (the same
+mechanism behind the §B.2 stateful-buffer artifact). See
+[`PROFILING.md`](./PROFILING.md) for the recorded profile, the recipe
+to reproduce it, and three candidate optimization paths.
+
+Earlier-flagged perf items (`TODO.md` §C.1 per-group gap stripping, §C.2
+SIMD inner DP loops) are deferred — both were filed before measurement;
+the modes §C.1 targets are already faster than C, and §C.2's "SIMD the
+arithmetic" framing isn't the real lever (allocator amortization is).
+
+SIMD-friendly patterns in `match_score()`, `pairwise_score()`,
+`pairwise_identity_distance()` auto-vectorize via LLVM.
 
 ## Upstream MAFFT
 

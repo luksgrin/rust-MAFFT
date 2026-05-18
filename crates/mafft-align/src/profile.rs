@@ -5,7 +5,47 @@
 /// Aligns two groups of sequences by computing position-specific frequency
 /// matrices (profiles) and running affine-gap DP on the profile scores.
 
+use std::cell::RefCell;
+
 use crate::dp::{AlignOp, Alignment, GapModel};
+
+// §C.2 path-(1) allocation arena: amortise the two big 2D DP matrices
+// (`h` and `ijp`) across calls to `profile_align_imp_with_boundary`.
+// Per `PROFILING.md`, ~9% of FFT-NS-i `--maxiterate 50` runtime is in
+// `Vec` allocator churn inside the profile DP; pooling `h` (n×m f64,
+// typically ~3 MB) and `ijp` (n×m i32, ~1.5 MB) is the cheapest lever
+// because the per-cell DP body never reads stale data — every read
+// cell is written by either the boundary init (line 631-632) or the
+// DP body before any traceback read.
+//
+// Thread-local so rayon workers don't contend; each worker gets its
+// own pool. Growth-only resize (matches C `A__align`'s `static TLS`
+// buffer amortisation — see `MAFFT_UPSTREAM_REPORT.md` for the
+// downstream effect on tied-cell traceback). RefCell because the DP
+// body needs `&mut` to the rows.
+thread_local! {
+    static DP_H_POOL: RefCell<Vec<Vec<f64>>> = const { RefCell::new(Vec::new()) };
+    static DP_IJP_POOL: RefCell<Vec<Vec<i32>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Grow `pool` so the first `rows` rows each hold at least `cols`
+/// cells. No per-cell reset — every read cell in `h` / `ijp` is
+/// unconditionally written by either the boundary init (`ijp[i][0]`,
+/// `ijp[0][j]`, `h[i][0]`, `h[0][j]`) or by the DP body before any
+/// traceback read, so stale data in unused cells (or in the
+/// `[rows..][cols..]` tail beyond the active region) cannot affect
+/// correctness. `fill` is the initial value for newly grown cells
+/// (only relevant the FIRST time a row reaches a given length).
+fn ensure_2d<T: Clone>(pool: &mut Vec<Vec<T>>, rows: usize, cols: usize, fill: T) {
+    while pool.len() < rows {
+        pool.push(Vec::new());
+    }
+    for row in pool.iter_mut().take(rows) {
+        if row.len() < cols {
+            row.resize(cols, fill.clone());
+        }
+    }
+}
 
 /// A position-specific frequency matrix (profile).
 ///
@@ -68,50 +108,70 @@ impl Profile {
         let mut opening_count = vec![0.0f64; length];
         let mut closing_count = vec![0.0f64; length];
 
+        // Single-pass fused loop: freqs + gap_freq + opening_count +
+        // closing_count in one walk of each sequence (was three separate
+        // walks before — measurable speedup in refinement-heavy modes like
+        // FFT-NS-i where Profile::from_aligned is called O(nseq²) times).
+        //
+        // Semantics (preserved exactly from the original three-pass code):
+        //
+        //   - opening_count[pos] += w when the previous position was
+        //     non-gap AND the current position IS gap (= a non-gap → gap
+        //     transition at `pos`). The "previous position" before pos=0
+        //     is treated as non-gap.
+        //   - closing_count[pos] += w when the current position IS gap
+        //     AND the next position is non-gap (= a gap → non-gap
+        //     transition recorded at the gap's `pos`). The "next
+        //     position" past the end is treated as non-gap.
+        //   - For sequences shorter than `length`: positions [seq.len(),
+        //     length) are treated as out-of-bounds. The original code
+        //     read them as gaps in opening logic (`map_or(true, ...)`)
+        //     and non-gaps in closing logic (`map_or(false, ...)`). We
+        //     replicate that by treating an "out-of-bounds tail" as an
+        //     immediate single gap (so opening fires once at seq.len() if
+        //     the last in-bounds residue was non-gap; closing fires at
+        //     seq.len() if it was a gap). Beyond seq.len() the state
+        //     stays gap for the rest of the loop.
         for (seq, &w) in sequences.iter().zip(weights.iter()) {
-            // Frequencies: C's cpmx_calc_new maps ALL characters through amino_n,
-            // including '-' (index 24) and '.' (index 23). Gap characters participate
-            // in the composition probability matrix and thus in match_score computation.
-            for (pos, &ch) in seq.iter().enumerate() {
-                if pos >= length { break; }
+            let n = seq.len().min(length);
+            let mut gc_prev = false; // state at position -1: assume non-gap
+
+            for pos in 0..n {
+                let ch = unsafe { *seq.get_unchecked(pos) };
                 let is_gap = ch == b'-' || ch == b'.';
                 if is_gap {
                     gap_freq[pos] += w;
+                    if !gc_prev {
+                        opening_count[pos] += w;
+                    }
+                } else if gc_prev && pos > 0 {
+                    // closing recorded at the GAP position (pos-1), not
+                    // at the non-gap position we're currently visiting.
+                    closing_count[pos - 1] += w;
                 }
-                // Map ALL characters (including gaps) into freqs, matching C's cpmx_calc_new
                 let idx = amino_map[ch as usize] as usize;
                 if idx < nalphabets {
                     freqs[pos][idx] += w;
                 }
+                gc_prev = is_gap;
             }
 
-            // Gap opening count: C's st_OpeningGapCount (mltaln9.c:12837)
-            // ogcp[i] counts non-gap→gap transitions at position i.
-            // gc starts as 0 (assumes non-gap before position 0).
-            {
-                let mut gc = false; // gc = 0 in C
-                for pos in 0..length {
-                    let gb = gc;
-                    gc = seq.get(pos).map_or(true, |&c| c == b'-' || c == b'.');
-                    if !gb && gc {
-                        opening_count[pos] += w;
-                    }
-                }
+            // Tail beyond seq.len(): the original opening pass had
+            // `seq.get(pos).map_or(true, ...)`, so the first out-of-bounds
+            // position counts as a non-gap→gap transition iff the last
+            // in-bounds residue was non-gap. (Beyond that, gc stays true
+            // so no further opening_count[] firings.)
+            if n < length && !gc_prev {
+                opening_count[n] += w;
             }
-
-            // Gap closing count: C's st_FinalGapCount (mltaln9.c:12880)
-            // fgcp[i] counts gap→non-gap transitions where gap is at position i
-            // and non-gap is at position i+1. gc starts as seq[0].
-            {
-                let mut gc = seq.first().map_or(true, |&c| c == b'-' || c == b'.');
-                for pos in 0..length {
-                    let gb = gc;
-                    gc = seq.get(pos + 1).map_or(false, |&c| c == b'-' || c == b'.');
-                    // C: gc = 0 at tail (assumes non-gap after last position)
-                    if gb && !gc {
-                        closing_count[pos] += w;
-                    }
-                }
+            // Closing tail: original had `gc = seq.get(pos+1).map_or(false, ...)`
+            // — past-the-end counts as non-gap, so if seq[n-1] is gap,
+            // closing_count[n-1] fires. The branch above already records
+            // closing at pos-1 when transitioning to non-gap; we still
+            // need to flush a trailing gap run at the last in-bounds
+            // position.
+            if n > 0 && gc_prev {
+                closing_count[n - 1] += w;
             }
         }
 
@@ -516,9 +576,18 @@ pub fn profile_align_imp_with_boundary(
         }
     };
 
-    // h matrix (need full for traceback) and ijp
-    let mut h = vec![vec![0.0f64; m + 1]; n + 1];
-    let mut ijp = vec![vec![0i32; m + 1]; n + 1];
+    // h matrix (need full for traceback) and ijp.
+    //
+    // §C.2 path-(1): take these from thread-local pools (the dominant
+    // allocations per call — ~3 MB for h, ~1.5 MB for ijp at typical
+    // sizes). Grow-only resize, no per-cell zero (every read cell is
+    // unconditionally written by the boundary init below or the DP
+    // body before any traceback read). The pool is restored at the
+    // end of the function before constructing the return value.
+    let mut h: Vec<Vec<f64>> = DP_H_POOL.with_borrow_mut(std::mem::take);
+    let mut ijp: Vec<Vec<i32>> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
+    ensure_2d(&mut h, n + 1, m + 1, 0.0f64);
+    ensure_2d(&mut ijp, n + 1, m + 1, 0i32);
 
     // initverticalw (C line 776): match_calc with prof2 pos 0 vs all prof1 positions.
     // C calls match_calc with swapped profiles: cpmx2pt first, cpmx1pt second.
@@ -938,6 +1007,16 @@ pub fn profile_align_imp_with_boundary(
     }
 
     let best_score = h[n][m];
+
+    // Return h/ijp to the thread-local pools so the next call avoids
+    // re-allocating them. (See the §C.2 path-(1) comment at the top of
+    // the function for rationale.) Swap-in/swap-out matches C
+    // `A__align`'s `static TLS` buffer amortisation strategy without
+    // breaking determinism — h/ijp are write-then-read inside this
+    // function, so stale data carried across calls cannot leak into
+    // the alignment.
+    DP_H_POOL.with_borrow_mut(|p| std::mem::swap(p, &mut h));
+    DP_IJP_POOL.with_borrow_mut(|p| std::mem::swap(p, &mut ijp));
 
     Alignment {
         seq1: Vec::new(),

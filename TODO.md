@@ -1239,30 +1239,167 @@ user tree).
 
 ## §C. Performance / non-correctness items
 
-### §C.1. Per-group gap stripping in progressive alignment
+### Benchmark snapshot (2026-05-18)
 
-**Status**: Not implemented — we strip columns all-gap across all
-sequences globally, not per-group like C's `commongappick()`.
+Empirical measurements (5 runs summed, real time, macOS arm64,
+`mafft-rs` release build vs C MAFFT 7.526):
 
-**Effect**: For a 500-column MSA where group1 has 100 residue-containing
-columns and group2 has 120, C's per-group strip DP's 100 × 120 = 12,000
-cells; ours DP's up to 500 × 500 = 250,000 cells. Functionally correct
-(same output) but wastes work.
+| Mode (108 seqs synthetic) | C MAFFT | mafft-rs | Ratio |
+|---------------------------|---------|----------|-------|
+| default (FFT-NS-2)        | 1.34s   | 1.16s    | Rust 1.16× faster |
+| `--maxiterate 50` (FFT-NS-i) | 6.62s | 7.78s   | Rust 1.18× SLOWER |
+| `--maxiterate 50 --localpair` (L-INS-i) | 37.00s | 22.93s | Rust **1.61× faster** |
+| `--maxiterate 50 --globalpair` (G-INS-i) | 35.32s | 22.62s | Rust **1.56× faster** |
+| `--parttree`              | 1.70s   | 0.09s    | Rust **18× faster** |
+| `--dpparttree`            | 7.24s   | 0.08s    | Rust **90× faster** |
 
-**Why hard**: per-group stripping breaks when `kept1 != kept2` because
-"other" sequences (not in either group) can't follow both cursors
-simultaneously. Solving requires porting C's `insertnewgaps()` from
-`addfunctions.c` for the strip-restore round-trip.
+The only mode where Rust is slower than C is FFT-NS-i, and that gap
+is fully concentrated in the FIRST 1-2 refinement iterations (per
+`--maxiterate {0,2,10,50,100,200}` sweep: Rust matches or beats C at
+iteration 0; loses ~0.9s in iterations 1-2; per-iteration cost is
+similar from iteration 10 onward).
 
-**Priority**: Low for correctness, medium for performance on large
-inputs.
+The §C.1 / §C.2 items below pre-date these measurements. Both are
+deferred: neither targets the actual performance hot-spot (FFT-NS-i
+refinement first-iteration setup), and the modes they were intended
+to speed up (progressive alignment for §C.1, generic inner DP for
+§C.2) are already faster than C in our measurements.
 
-### §C.2. SIMD inner loops
+### §C.1. Per-group gap stripping in progressive alignment — DEFERRED
 
-**Status**: SIMD-friendly patterns in `match_score()`,
-`pairwise_score()`, `pairwise_identity_distance()` auto-vectorize via
-LLVM. The DP fill loops themselves are not SIMD'd (anti-diagonal
-restructuring would be required to break the data dependency).
+**Original claim** (pre-2026-05-18): "C strips per-group, we strip
+globally — for a 500-column MSA with group1=100 residue-containing
+columns and group2=120, C DP's 12,000 cells while we DP up to
+250,000. Wastes work."
+
+**Empirical reality** (benchmark snapshot above): we are already
+*faster* than C on the modes where progressive alignment dominates
+runtime (default 1.16×, L-INS-i 1.61×, G-INS-i 1.56×, PartTree
+18-90×). The theoretical 20× cell-count gap doesn't translate into
+measurable wall-clock loss because (a) most groups don't have wildly
+different `kept1`/`kept2` columns in practice, and (b) the DP per-cell
+cost in Rust is dominated by FMA + cache loads, not arithmetic
+density.
+
+**Status**: deferred. The implementation cost is high (port
+C's `insertnewgaps()` from `addfunctions.c` for the strip-restore
+round-trip, then thread per-group gap maps through
+`merge_step_cached`), and the benefit is not measurable on current
+benchmarks. Reconsider if a real-world workload surfaces a
+progressive-alignment bottleneck.
+
+### §C.2. SIMD inner DP loops — DEFERRED (profile + 2 attempts landed 2026-05-18; remaining gap is in inner DP arithmetic, not allocator or branchy-helper)
+
+**Profile data** (macOS `sample`, 1.4s `mafft-rs --maxiterate 50
+/tmp/sample_108.fa` run, ~1300 main-thread samples; full recipe in
+`PROFILING.md`):
+
+| Self-time samples | Function | % main thread |
+|-------------------|----------|---------------|
+| 509 | `profile_align_imp_with_boundary` | **55%** |
+| 97  | `compute_split_score`             | 11% |
+| 89  | `Profile::from_aligned`           | 10% (after §C.2.1 fusion) |
+| 26  | `Profile::match_score`            | 3% |
+| remaining 22% | rayon, alloc, traversal | — |
+
+Within `profile_align_imp_with_boundary`: 501/582 of its rolled
+samples are in the inner cell-update loop; 80 samples are in `Vec`
+allocation for `ijp`, `h`, `cpmx2_sparse`, and per-row buffers.
+
+**Interpretation**: the 18% Rust-vs-C deficit is dominated by the
+inner DP. Within it, ~14% of self time is allocator churn (we
+allocate fresh per call; C `A__align` reuses static TLS buffers,
+which is the same mechanism behind the §B.2 stateful-buffer
+artifact). The remaining 86% is arithmetic in the cell update
+itself — already FMA-fused and matching C's gcc-O3 inner loop.
+
+**Three candidate paths to close the gap** (ordered by effort,
+documented in `PROFILING.md` §"Closing the FFT-NS-i gap"):
+1. Pre-allocated `DpScratch` arena threaded through
+   `profile_align_imp_*` (closes ~7-10% of FFT-NS-i runtime, ~1-2
+   hour port).
+2. `compute_split_score` branchless inner — current gap branches
+   prevent LLVM SIMD on the residue-residue path (~5% gain, ~1 hour).
+3. Anti-diagonal DP rewrite — major project, byte-equivalence
+   regression risk, reserved for a sustained-bottleneck scenario
+   (1-2 days).
+
+(1) + (2) together would likely close most of the 18% gap. The TODO
+section name (§C.2 "SIMD inner DP loops") is now slightly misleading
+— the real lever is allocator amortization, not SIMD-of-arithmetic.
+
+**Status**: deferred until someone has a sustained FFT-NS-i workload
+to justify the work. Profile data + workflow are committed
+(`PROFILING.md`) so the next pass starts from data, not speculation.
+
+**Attempts (2026-05-18)**:
+
+- **Path 1 — `h` / `ijp` thread-local pools (LANDED, perf-neutral)**:
+  `mafft-align/src/profile.rs` now takes the two big 2D DP matrices
+  (`h`: ~3 MB f64, `ijp`: ~1.5 MB i32) from `thread_local!` pools at
+  the top of `profile_align_imp_with_boundary` and swaps them back
+  before returning. Grow-only resize, no per-cell zero — every read
+  cell is unconditionally written by the boundary init or the DP body
+  before any traceback read. Per re-profile, raw_vec::grow_one inside
+  the DP function dropped from ~80 to ~20-30 samples. Wall-clock
+  impact on `--maxiterate 50 sample_108.fa` (3 trials × 5 runs):
+  pre-path-1 Rust ≈ 6.77s vs post Rust ≈ 6.74s — **within
+  measurement noise**. The allocator-reduction prediction
+  (~9% runtime) didn't translate to wall-clock because macOS's
+  malloc/free was already fast enough that the saved allocations
+  weren't the bottleneck. The pooling is kept anyway (cleaner code,
+  free-or-better, mirrors C `A__align`'s `static TLS` buffer reuse).
+
+- **Path 2 — branchless `pairwise_score` (REVERTED)**: rewrote
+  `mafft-core/src/refinement.rs::pairwise_score` as a per-cell
+  state-machine, replacing C's `while (seq1[k] == '-')` consume loop.
+  Failed correctness on 16 unit tests because C's consume loop walks
+  through both-gap positions if seq1 stays gap (it only checks seq1
+  in the inner while), while a naive per-cell reset-on-both-gap rule
+  re-charges penalty when an A-gap-run is interrupted by a both-gap
+  column. The minimum branchless formulation that matches C exactly
+  is a 3-state machine (Neutral / AGapRun / BGapRun) — still has
+  branches, no clean SIMD path. Reverted; the original C-style
+  while-loop is preserved with an explanatory comment block.
+
+**Net**: path 1 landed (no behavior change, marginal-or-better
+perf), path 2 reverted (correctness > speculative perf). The
+remaining ~18% FFT-NS-i gap is in the inner DP cell update
+arithmetic itself; closing it requires the anti-diagonal SIMD
+rewrite mentioned in `PROFILING.md` candidate (3), which is a
+multi-day project with regression risk.
+
+SIMD-friendly patterns in `match_score()`, `pairwise_score()`,
+`pairwise_identity_distance()` continue to auto-vectorize via LLVM
+where possible (the gap-run consume loops in `pairwise_score` still
+inhibit it on the gap-run paths).
+
+### §C.2.1. Profile construction loop fusion — LANDED 2026-05-18
+
+**Change**: `mafft-align/src/profile.rs::Profile::from_aligned`
+collapsed from 3 sequential walks per input sequence (freqs+gap_freq,
+opening_count, closing_count) to a single fused walk. The fused walk
+maintains a `gc_prev` state byte that drives both the opening and
+closing transition counters as it visits each residue. Tail-end
+semantics (sequences shorter than `length`) are preserved by
+explicit flush after the loop.
+
+**Motivation**: `Profile::from_aligned` is called O(nseq²) times in
+the refinement loop (once per side of each branch, for ~2 × nsteps
+branches per iteration × N iterations). Reducing 3 walks to 1 is a
+straightforward 3× reduction in pass count.
+
+**Measured impact**: ~6.8s vs original ~7.0-7.8s on `--maxiterate 50
+sample_108.fa` (5 runs summed). Within measurement noise on this
+machine — the fused loop is a code-cleanliness win that *should*
+help in the hot loop, but the wall-clock benefit is hidden by other
+per-branch costs (DP matrix allocation, score recomputation). All
+349 workspace tests still pass; all 7 representative modes still
+byte-identical to C MAFFT 7.526.
+
+**No future work blocked**: any future profile-build optimization
+(e.g., pre-allocated arenas, SIMD residue scans) would start from
+this single-pass body.
 
 ---
 
@@ -1302,6 +1439,14 @@ divergences:
 4. ~~**§B.4 `--retree N` for N ≠ 2**~~ — RESOLVED 2026-05-18. Found
    that Rust honored `--retree N` literally while C clamps at 3 and
    forces 1 for INS-i. Fixed `engine.rs` + added 7 regression tests.
-5. **§C.1 per-group gap stripping** — performance only, no behavior
-   change.
-6. **§D X-INS-i (`--xinsi`)** — needs `contrafold` binary to validate.
+5. ~~**§C.1 per-group gap stripping**~~ — DEFERRED 2026-05-18.
+   Benchmarks (see §C header) show Rust is already faster than C on
+   the modes this would help (default 1.16×, L-INS-i 1.61×, G-INS-i
+   1.56×, PartTree 18-90×). High implementation cost, no measurable
+   benefit.
+6. ~~**§C.2 SIMD inner DP**~~ — DEFERRED 2026-05-18. Only mode
+   where Rust is slower than C is FFT-NS-i (~25%), and the deficit
+   is in refinement-iteration-1 setup, not inner-cell throughput.
+   SIMD rewrite wouldn't address it. If FFT-NS-i perf becomes a
+   priority, file a focused §C.3 instead.
+7. **§D X-INS-i (`--xinsi`)** — needs `contrafold` binary to validate.

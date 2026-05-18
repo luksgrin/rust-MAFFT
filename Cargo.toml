@@ -24,3 +24,10 @@ authors = ["Lucas Goiriz <luksgrin@users.noreply.github.com>"]
 keywords = ["bioinformatics", "alignment", "msa", "fasta", "mafft"]
 categories = ["science", "command-line-utilities"]
 readme = "README.md"
+
+# Profile with debug symbols (for samply/cargo-flamegraph). Same codegen as
+# release, but keeps function names so profilers show meaningful labels.
+# Build with: cargo build --profile profiling --bin mafft-rs
+[profile.profiling]
+inherits = "release"
+debug = true
