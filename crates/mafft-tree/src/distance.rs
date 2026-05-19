@@ -343,9 +343,11 @@ fn ktuple_distance_aa(seq1: &[u8], seq2: &[u8], k: usize) -> f64 {
 
     let common = common_sextets(&table1, &points2, tsize);
 
-    // Length factor (C's protein parameters)
-    let len1 = groups1.len() as f64;
-    let len2 = groups2.len() as f64;
+    // C's disttbfast.c:3845-3856 uses `nogaplen` (gaps-only stripped),
+    // NOT the filtered group length, for lenfac. Sequences with X / '.' /
+    // other unknowns contribute to nogaplen but are skipped from groups.
+    let len1 = nogap_len(seq1) as f64;
+    let len2 = nogap_len(seq2) as f64;
     let lenfac = compute_lenfac(len1, len2, 0.01, 10000.0, 10000.0, 0.1);
 
     let dist = (1.0 - common as f64 / ss1.min(ss2) as f64) * lenfac * 2.0;
@@ -378,13 +380,17 @@ fn ktuple_distance_nuc(seq1: &[u8], seq2: &[u8], k: usize) -> f64 {
 
     let common = common_sextets(&table1, &points2, tsize);
 
-    // Length factor (C's DNA 6-tuple parameters)
-    let len1 = groups1.len() as f64;
-    let len2 = groups2.len() as f64;
+    // C's disttbfast.c:3845-3856 uses `nogaplen` for lenfac (see aa version).
+    let len1 = nogap_len(seq1) as f64;
+    let len2 = nogap_len(seq2) as f64;
     let lenfac = compute_lenfac(len1, len2, 0.01, 2500.0, 2500.0, 0.1);
 
     let dist = (1.0 - common as f64 / ss1.min(ss2) as f64) * lenfac * 2.0;
     dist.clamp(0.0, 2.0)
+}
+
+fn nogap_len(seq: &[u8]) -> usize {
+    seq.iter().filter(|&&c| c != b'-').count()
 }
 
 /// C's length adjustment factor.
@@ -435,6 +441,42 @@ mod tests {
         let d = ktuple_distance(b"ACDEFGHIKLMN", b"WWWWWWWWWWWW", 6);
         // No common 6-tuples (mixed groups vs all-aromatic) → distance > 1.0
         assert!(d > 1.0, "distance should be high for unrelated, got {d}");
+    }
+
+    #[test]
+    fn ktuple_lenfac_uses_nogaplen_not_filtered_groups() {
+        // C's disttbfast.c:3845-3856 computes lenfac from `nogaplen`
+        // (`gappick0` strips only '-'), not from the filtered-group
+        // length. For a sequence carrying 'X' / '.' / 'U', the filtered
+        // group length is shorter than nogaplen; using the wrong one
+        // shifts the distance by ~1e-3, which is enough to flip UPGMA
+        // guide-tree join order on real-world inputs (BB12041 from
+        // BALIBASE 3 is the smallest example — see `balibase_parity_run.md`).
+        //
+        // This test pins the behavior: two sequences with X — one short
+        // enough that the filtered length differs from nogaplen — must
+        // produce the same distance as the C reference computed via
+        // nogaplen.
+        // Two distantly related sequences so common-sextet count is
+        // strictly < bunbo (i.e. the lenfac actually scales a non-zero
+        // base). With X inserted, `nogaplen` increments but the filtered
+        // group length is unchanged → lenfac differs → distance differs.
+        let base_a = b"ACDEFGHIKLMNPQRSTVWY".repeat(8);
+        let base_b = b"WYFGAILVMKRNDQECSHTP".repeat(8);
+
+        let without_x = ktuple_distance(&base_a, &base_b, 6);
+
+        let mut with_x_a = base_a.clone();
+        let mut with_x_b = base_b.clone();
+        with_x_a.insert(40, b'X');
+        with_x_b.insert(40, b'X');
+        let with_x = ktuple_distance(&with_x_a, &with_x_b, 6);
+
+        // Same group content (X is filtered both times), but nogaplen
+        // differs by 1 → lenfac differs → distance differs.
+        let diff = (with_x - without_x).abs();
+        assert!(diff > 1e-7,
+            "ktuple_distance must depend on nogaplen (X kept), not filtered groups; got with_x={with_x}, without_x={without_x}, diff={diff}");
     }
 
     #[test]

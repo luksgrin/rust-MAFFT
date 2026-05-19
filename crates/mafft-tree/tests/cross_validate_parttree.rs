@@ -592,3 +592,70 @@ fn parttree_upgma_matches_c() {
         cleanup_c();
     }
 }
+
+/// BB12041 diagnostic: dump per-pair distance from Rust's `ktuple_distance`
+/// against C's `commonsextet_p`-based pipeline value, using the
+/// `disttbfast.c` recipe (raw nogaplen, NOT filtered-group len, for
+/// lenfac). Run only when the BB12041 fixture is present.
+#[test]
+#[ignore]
+fn bb12041_ktuple_distance_diagnostic() {
+    use mafft_tree::ktuple_distance;
+    let path = std::path::Path::new("/tmp/balibase/bench1.0/bali3/in/BB12041");
+    if !path.exists() {
+        eprintln!("BB12041 fixture missing; skipping. expected at {}", path.display());
+        return;
+    }
+    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let input = read_fasta(path).expect("load BB12041");
+    let nseq = input.sequences.len();
+    println!("BB12041: {} sequences", nseq);
+    for (i, s) in input.sequences.iter().enumerate() {
+        let nogaplen: usize = s.data.iter().filter(|&&c| c != b'-').count();
+        let group_len: usize = encode_points_protein(&s.data).len() + 5; // +5 so it matches nogaplen for no-X seqs
+        println!("  {} '{}': raw_len={}, nogaplen={}, group_len={}",
+                 i + 1, s.name, s.data.len(), nogaplen, group_len);
+    }
+
+    unsafe { init_c_protein(); }
+
+    let mut c_pts: Vec<Vec<i32>> = input.sequences.iter()
+        .map(|s| unsafe { c_encode_points(&s.data) })
+        .collect();
+    for v in &mut c_pts { v.push(-1); }
+
+    // Compute "raw nogaplen" for each (strip only '-').
+    let nogaplens: Vec<usize> = input.sequences.iter()
+        .map(|s| s.data.iter().filter(|&&c| c != b'-').count())
+        .collect();
+
+    println!("\n{:<5} {:<5} {:<14} {:<14} {:<14} {:<14}",
+             "i", "j", "rust_ktuple", "c_disttbfast", "diff", "c-rust");
+    for i in 0..nseq {
+        let mut c_table = vec![0i32; 46656];
+        unsafe { mafft_sys::makecompositiontable_p(c_table.as_mut_ptr(), c_pts[i].as_mut_ptr()); }
+        for j in (i + 1)..nseq {
+            let mut c_pts_j = c_pts[j].clone();
+            let c_common = unsafe {
+                mafft_sys::commonsextet_p(c_table.as_mut_ptr(), c_pts_j.as_mut_ptr())
+            };
+            // C's disttbfast formula:
+            //   lenfac(raw_len_i, raw_len_j, ...) — using nogaplen
+            //   bunbo = min(points_i.len(), points_j.len())
+            //   dist = (1 - common/bunbo) * lenfac * 2.0
+            let ss_i = c_pts[i].len() - 1; // strip END_OF_VEC sentinel
+            let ss_j = c_pts[j].len() - 1;
+            let bunbo = ss_i.min(ss_j) as f64;
+            let raw = 1.0 - c_common as f64 / bunbo;
+            let lf = lenfac(nogaplens[i], nogaplens[j], PLENFACA, PLENFACB, PLENFACC, PLENFACD);
+            let c_disttbfast = (raw * lf * 2.0).clamp(0.0, 2.0);
+
+            let rust_d = ktuple_distance(&input.sequences[i].data, &input.sequences[j].data, 6);
+            let diff = (rust_d - c_disttbfast).abs();
+            let flag = if diff > 1e-12 { " <-- DIFF" } else { "" };
+            println!("{:<5} {:<5} {:<14.10} {:<14.10} {:<14.10e}{}",
+                     i + 1, j + 1, rust_d, c_disttbfast, diff, flag);
+        }
+    }
+    unsafe { cleanup_c(); }
+}

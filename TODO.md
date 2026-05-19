@@ -8,10 +8,8 @@
 
 ## Current parity matrix (36-seq protein sample, mafft-upstream/test/sample)
 
-Verified 2026-05-12 by running `target/release/mafft-rs <args> sample` against
-the system `mafft <args> sample` (MAFFT 7.526) and diffing the FASTA outputs.
-Widths are taken as `length(seq[1])` (the canonical MSA width); the system
-mafft and our binary agree on every byte for every ✓ row.
+`target/release/mafft-rs <args> sample` vs system `mafft <args> sample`
+(MAFFT 7.526), diffing the FASTA outputs.
 
 | Mode / flags                                | C width | Rust width | diff lines | Status |
 |---------------------------------------------|---------|------------|------------|--------|
@@ -24,1216 +22,133 @@ mafft and our binary agree on every byte for every ✓ row.
 | L-INS-i (`linsi` / `--localpair --maxiterate 1000`) | 735 | 735 | 0       | byte-exact ✓ |
 | G-INS-i (`ginsi` / `--globalpair --maxiterate 1000`)| 737 | 737 | 0       | byte-exact ✓ |
 | E-INS-i (`einsi` / `--genafpair --maxiterate 1000`) | 729 | 729 | 0       | byte-exact ✓ |
-| BL30 FFT (`--bl 30`)                        | 773     | 773        | 0          | byte-exact ✓ |
-| BL45 FFT (`--bl 45`)                        | 729     | 729        | 0          | byte-exact ✓ |
-| BL50 FFT (`--bl 50`)                        | 712     | 712        | 0          | byte-exact ✓ |
-| BL62 FFT (`--bl 62`)                        | 717     | 717        | 0          | byte-exact ✓ |
-| BL80 FFT (`--bl 80`)                        | 712     | 712        | 0          | byte-exact ✓ |
+| BL30 / BL45 / BL50 / BL62 / BL80 FFT (`--bl N`) | match | match | 0      | byte-exact ✓ |
 | BL80 NW (`--bl 80 --nofft`)                 | 712     | 712        | 0          | byte-exact ✓ |
-| JTT 200 FFT (`--jtt 200`)                   | 729     | 729        | 0          | byte-exact ✓ |
-| JTT 100 FFT (`--jtt 100`)                   | 732     | 732        | 0          | byte-exact ✓ |
-| TM 100 NW (`--tm 100 --nofft`)              | 767     | 767        | 0          | byte-exact ✓ |
-| TM 200 NW (`--tm 200 --nofft`)              | 765     | 765        | 0          | byte-exact ✓ |
-| TM 100 FFT (`--tm 100`)                     | 767     | 767        | 0          | byte-exact ✓ |
-| TM 200 FFT (`--tm 200`)                     | 767     | 767        | 0          | byte-exact ✓ |
+| JTT 200 / JTT 100 FFT (`--jtt N`)           | match   | match      | 0          | byte-exact ✓ |
+| TM 100 / TM 200 NW (`--tm N --nofft`)       | match   | match      | 0          | byte-exact ✓ |
+| TM 100 / TM 200 FFT (`--tm N`, default retree=2) | match | match    | 0          | byte-exact ✓ |
+| `--tm 200 --retree 1`                       | 717     | 717        | 8          | C-side tied-trace artifact ✓ (see §B.2) |
+| `--tm 200 --treeout`                        | match   | match      | 20         | C-side tied-trace artifact ✓ (pass-0 TM drift propagates into tree branches; see §B.2) |
 | PartTree (`--parttree`)                     | 752     | 752        | 0          | byte-exact ✓ |
 | DP-PartTree (`--dpparttree`)                | 752     | 752        | 0          | byte-exact ✓ |
-| PartTree NW (`--parttree --nofft`)          | 752     | 752        | 0          | byte-exact ✓ (closed 2026-05-12) |
-| `--add` (30+6 fixture)                      | 741     | 741        | 0          | byte-exact ✓ |
-| `--add --nofft` (30+6 fixture)              | 741     | 741        | 0          | byte-exact ✓ |
-| `--add --keeplength` (30+6 fixture)         | 595     | 595        | 0          | byte-exact ✓ |
+| PartTree NW (`--parttree --nofft`)          | 752     | 752        | 0          | byte-exact ✓ |
+| `--parttree --reorder`                      | match   | match      | 0          | byte-exact ✓ |
+| `--add` / `--add --nofft` / `--add --keeplength` (30+6 fixture) | match | match | 0 | byte-exact ✓ |
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (needs `mxscarnamod`) |
-| `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ (closed 2026-05-12) |
-| `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
-| `--parttree --reorder`                      | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
-| `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree) | match | match | 0 | byte-exact ✓ (closed 2026-05-13) |
-| `--dpparttree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-13) |
-| `--tm 200 --treeout`                        | match   | match      | 20         | C-side tied-trace artifact ✓ (analyzed 2026-05-18, see §B.2 + `MAFFT_UPSTREAM_REPORT.md`) — pass-0 TM alignment drift propagates into tree branch lengths |
-| `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G/E-INS-i, FFT-NS-i, all non-parttree modes) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
-| `--treein --treeout`                        | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) — appends `#by loadtree\n` like C `mltaln9.c:2818` |
-| `--auto` (small/medium/large brackets covered by size heuristic) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
-| `--memsavetree` (k-mer + MSA two-pass tree)  | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
-| `--memsavetree --treeout`                    | match   | match      | 0          | byte-exact ✓ (closed 2026-05-14) |
-| `--anysymbol` / `--preservecase` (protein + DNA, non-standard chars, mixed case) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
-| `--leavegappyregion` / `--legacygappenalty` (FFT-NS-2/-i, NW, L/G/E-INS-i, BL/JTT, --anysymbol/--reorder/--treein/--memsavetree/--auto combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
-| `--seed FILE` (L/G/E-INS-i + FFT-NS-i, single + multiple seed files) | match | match | 0 | byte-exact ✓ (closed 2026-05-14) |
-| `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ (closed 2026-05-16 — Hirschberg `msalignmm` wired into engine) |
-| `--seedtable FILE` (L/G/E-INS-i + FFT-NS-i, pre-computed hat3.seed input) | match | match | 0 | byte-exact ✓ (closed 2026-05-17) |
+| `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ |
+| `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ |
+| `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree, dpparttree) | match | match | 0 | byte-exact ✓ |
+| `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G/E-INS-i, FFT-NS-i, all non-parttree) | match | match | 0 | byte-exact ✓ |
+| `--treein --treeout`                        | match   | match      | 0          | byte-exact ✓ (appends `#by loadtree\n` like C `mltaln9.c:2818`) |
+| `--auto` (small/medium/large brackets)      | match   | match      | 0          | byte-exact ✓ |
+| `--memsavetree` / `--memsavetree --treeout` | match   | match      | 0          | byte-exact ✓ |
+| `--anysymbol` / `--preservecase` (protein + DNA, non-standard chars, mixed case) | match | match | 0 | byte-exact ✓ |
+| `--leavegappyregion` / `--legacygappenalty` (combos with --anysymbol/--reorder/--treein/--memsavetree/--auto) | match | match | 0 | byte-exact ✓ |
+| `--seed FILE` (L/G/E-INS-i + FFT-NS-i, single + multiple files) | match | match | 0 | byte-exact ✓ |
+| `--seedtable FILE` (L/G/E-INS-i + FFT-NS-i, pre-computed hat3.seed) | match | match | 0 | byte-exact ✓ |
+| `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ (Hirschberg `msalignmm` wired into engine) |
+| `--retree {1,2,3,5}` × {FFT-NS-2, FFT-NS-i, L/G/E-INS-i} (20 combos) | match | match | 0 | byte-exact ✓ |
 
-Test suite as of 2026-05-18: **349 Rust tests pass, 0 failed, 0 ignored**
+Test suite: **349 Rust tests pass, 0 failed, 0 ignored**
 (`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
-pass. Every mainstream mode in the matrix above is byte-identical to C
-MAFFT 7.526 — including `--parttree --reorder` and `--treeout` for all
-modes including `--dpparttree`.
+pass.
 
-Resolved sections (full implementation notes in git history):
-- §1 G-INS-1 (2026-05-06) — `global_align` ported to mirror `G__align11`'s
-  max-so-far DP with `>=` tie-break; `outgap = 1` threaded for G-INS-i.
-- §2 E-INS-1 (2026-05-06) — `genaffine_local_align` ported to mirror
-  `genL__align11`; `PairAligner::GeneralizedAffine` added; E-INS-i
-  parameter overrides (lexp=laof=0) mirrored from `scripts/mafft:1940-1948`.
-- §3 L/G/E-INS-i refinement (2026-05-07) — six combined fixes: impmatch
-  diagonal, Falign_localhom port, partA__align strict-`>` tiebreak,
-  boundary nongap-freq, hat2-rounded distance for refinement tree,
-  naivepairscore11 for E-INS-i distance.
-- §4 BLOSUM 50 FFT (2026-05-08) — `f64::mul_add` for FMA-equivalent
-  rounding in `match_calc_row`, matching gcc-O3 FMA output bit-for-bit.
-- §5 FFT anchor / TM 200 FFT (2026-05-10) — bit-for-bit FFT C-port,
-  `shift_and_score` sign convention, anchor coordinate mapping,
-  `align_with_anchors` as segment-boundary DP, 2-channel polarity+volume
-  FFT for protein.
-- §6 PartTree (2026-05-10) — distance + lenfac, pivot selection
-  (tokyoripara=0 when picksize>njob), UPGMA-on-yukomtx, unweighted
-  profile mode, `outgap = 1` for parttree.
-- §7 `--add` / `--addfragments` / `--keeplength` (2026-05-10) —
-  `mergeoralign[]` semantics (iter().all not any), per-step
-  findcommongaps/commongappick/restorecommongaps/insertnewgaps for
-  NewRight/NewLeft merge types.
-- §9a Q-INS-i (2026-05-10) — works when `mxscarnamod` is built from
-  `mafft-upstream/extensions`.
+## Closed work (full implementation notes in git history)
 
----
-
-## §AH. `--seed` — RESOLVED 2026-05-14 (byte-identical for L/G/E-INS-i and FFT-NS-i)
-
-**Mode**: `mafft --seed FILE [--seed FILE ...]` (repeatable). Each seed
-file is a pre-aligned FASTA; its sequences are prepended (gap-stripped)
-to the user input with a `_seed_` name prefix, and all in-group seed
-pairs generate `korh = 'k'` local-homology entries with `opt` boosted
-by `tsuyosa = user_nseq² * 100`. The seed-derived entries are merged
-into the pairwise homology table BEFORE `recompute_importance` so the
-position-vote pass weighs seed and pairwise regions together. Forces
-`maxiterate ≥ 2` (`scripts/mafft:1911-1923`) — the seed constraints
-only fire during refinement.
-
-**Reference**: `scripts/mafft:1025-1028` (CLI), `:1174-1196` (concat
-seed files), `:2400-2436` (seed pipeline), `multi2hat3s.c` (LH entry
-generation), `io.c:723` (`putlocalhom2`).
-
-### Implementation
-
-1. **`crates/mafft-align/src/constraints.rs`** —
-   - `extract_putlocalhom2_regions(al1, al2, matrix, amino_map, off1,
-     off2, korh) -> Vec<HomologyRegion>` — extracted from the inline
-     putlocalhom2 logic in `build_homology_table_with_unalign`. Works
-     on any pair of pre-aligned (gapped) sequences.
-   - `build_seed_homology_table(seed_groups, total_nseq, user_nseq,
-     matrix, amino_map) -> LocalHomologyTable` — applies
-     `tsuyosa = user_nseq² * 100` to each region's `opt` (mirroring
-     C `multi2hat3s.c:149`) and writes (i,j) + (j,i) entries into a
-     table sized for the full combined input.
-   - `merge_homology_tables(into, extra)` — folds the seed LH table
-     into the pairwise LH table before `recompute_importance`.
-2. **`crates/mafft-core/src/engine.rs::MafftEngine`** — new
-   `seed_homology: Option<LocalHomologyTable>` field. When set:
-   - Merged into `pairwise_for_constraints` before
-     `recompute_importance` runs (L/G/E-INS-i path).
-   - Used directly with `recompute_importance` on the post-progressive
-     guide tree's weights when no pairwise homology was built
-     (FFT-NS-i + `--seed`).
-3. **`crates/mafft-bin/src/main.rs`** — `--seed FILE` (repeatable).
-   Reads each file with `read_fasta_casepreserve` (gaps preserved),
-   prepends gap-stripped renamed sequences (`>_seed_<name>`) to the
-   user input, builds the seed homology table via
-   `build_seed_homology_table`, sets `engine.seed_homology`, and
-   forces `iterate ≥ 2` for the chosen mode (`FftNs2` becomes
-   `FftNsi{iterations: 2}`).
-
-### Tests
-
-`crates/mafft-core/tests/end_to_end.rs`:
-
-- `seed_linsi_byte_identical_to_c`
-- `seed_ginsi_byte_identical_to_c`
-- `seed_einsi_byte_identical_to_c`
-- `seed_fftnsi_byte_identical_to_c`
-
-Each test uses a 3-seq L-INS-i-aligned seed (`sample.seed3.aln`) and
-a 5-seq user input (`sample.seed_input5.fa`) drawn from
-`sample.first9.fa`. All four are byte-identical to C MAFFT 7.526.
+| Section | Topic | Date |
+|---------|-------|------|
+| §1 | G-INS-1 — `global_align` mirroring `G__align11`'s max-so-far DP with `>=` tie-break; `outgap=1` threaded for G-INS-i. | 2026-05-06 |
+| §2 | E-INS-1 — `genaffine_local_align` mirroring `genL__align11`; `PairAligner::GeneralizedAffine`; E-INS-i `lexp=laof=0` per `scripts/mafft:1940-1948`. | 2026-05-06 |
+| §3 | L/G/E-INS-i refinement — impmatch diagonal, `Falign_localhom` port, `partA__align` strict-`>` tiebreak, boundary nongap-freq, hat2-rounded refinement-tree distance, `naivepairscore11` for E-INS-i. | 2026-05-07 |
+| §4 | BLOSUM 50 FFT — `f64::mul_add` in `match_calc_row` matching gcc-O3 FMA. | 2026-05-08 |
+| §5 | FFT anchor / TM 200 FFT — bit-for-bit FFT C-port, `shift_and_score` sign convention, anchor coordinate mapping, 2-channel polarity+volume FFT. | 2026-05-10 |
+| §6 | PartTree — distance + lenfac, pivot selection (`tokyoripara=0` when `picksize>njob`), UPGMA-on-yukomtx, unweighted profile, `outgap=1`. | 2026-05-10 |
+| §7 | `--add` / `--addfragments` / `--keeplength` — `mergeoralign[]` semantics, per-step `findcommongaps`/`commongappick`/`restorecommongaps`/`insertnewgaps` for NewRight/NewLeft. | 2026-05-10 |
+| §9a | Q-INS-i — works when `mxscarnamod` is built from `mafft-upstream/extensions`. | 2026-05-10 |
+| §A | `--parttree --nofft` — `pairwise_align11` now receives `penalize_term_gaps` (was hard-coded `false, false`). | 2026-05-12 |
+| §A0 | `--allowshift` — `makedynamicmtx` skips `amino[i] == '-'` row/col when applying `offset * 600` delta (matches `mltaln9.c:15197-15203`). | 2026-05-12 |
+| §AA | `--reorder` / `--inputorder` — `Topology::dfs_order`; `engine.reorder_output` permutes after refinement. PartTree closed via two-pass composition `final_order[k] = call1_order[call2_order[k]]` from `splittbfast` CALL 1/2. | 2026-05-13 |
+| §AB | `--treeout` — `topology_to_newick` matching `mltaln9.c:6190-6491`; `--dpparttree --treeout` via `run_parttree_pipeline_with_scorer` with `G__align11_noalign` on `n_disLN`. | 2026-05-13 |
+| §AC | `--treein` — `treein.rs` parser; overrides progressive merge tree, LH-table importance reweighting, and refinement-tree rebuild (matching `tbfast.c:2072`/`:2967`/`:1355`/`dvtditr.c:766`). | 2026-05-14 |
+| §AD | `--auto` — `decide_auto` reads `(nseq, nlen)`, picks mode + retree from the 7-bracket table. | 2026-05-14 |
+| §AE | `--memsavetree` — port of `compacttreegivendist` (`mltaln9.c:5221`) — NOT `compacttree_memsaveselectable` which is `--youngestlinkage`. Pass 0 k-mer + pass 1 MSA distance. | 2026-05-14 |
+| §AF | `--anysymbol` / `--preservecase` — `read_fasta_casepreserve`, `replace_unusual`, post-align name-keyed restore (mirrors C `replaceu` + `restoreu`). | 2026-05-14 |
+| §AG | `--leavegappyregion` / `--legacygappenalty` — `GapModel::legacy_gap_cost` threads through; profile DP early-returns into recursive call with `nongap_freq = [1.0; len]` clones. | 2026-05-14 |
+| §AH | `--seed FILE` (repeatable) — `extract_putlocalhom2_regions`, `build_seed_homology_table` with `tsuyosa = user_nseq² * 100`, merged into pairwise LH before `recompute_importance`. Forces `iterate ≥ 2`. | 2026-05-14 |
+| §B.1 | `mi += penalty_ex` / `m[j] += penalty_ex` increments in profile DP. `pairwise_align11` still missing it but benign because CLI doesn't expose `--exp`. | 2026-05-11 |
+| §B.3 | `--memsave` / `--nomemsave` — Hirschberg `msalignmm` (`mafft-align/src/msalign.rs`) wired into engine. Two off-by-one bugs fixed at midpoint state update (`midw[j] += wm` per `MSalignmm.c:1610`, `midm[0] += firstm` per `:1637`) — found by patching upstream `MSalignmm.c` with `fprintf` instrumentation. | 2026-05-14/15/16 |
+| §B.3.2 | `--seedtable FILE` — `parse_hat3_seed` reads the 9-field text format `multi2hat3s.c:214` writes. Engine wiring shares the `--seed` path. CLI gating: rejects `--seed`, `--add`, `--parttree`, `--memsave`; forces `iterate ≥ 2`. | 2026-05-17 |
+| §B.4 | `--retree N` — engine now mirrors two undocumented `scripts/mafft` rewrites: `:1840-1842` clamps `cycle = min(cycle, 3)`; `:1934-1936` forces `cycle = 1` for L/G/E/Q/X-INS-i. Pre-fix, `--retree 3 --localpair` diverged 898 lines. 7 regression tests + verified manually across 20 combinations. | 2026-05-18 |
+| §B.5 | `profile_cache` HashMap → BTreeMap. Get-only today, but `BTreeMap` removes the iteration-order-dependence footgun for future refactors. | 2026-05-18 |
+| §B.7 | Deleted `parttree.rs` (legacy module with broken `max_by_key` tie-break in unreachable-for-36-seq recursive code). Re-routed `--dpparttree` through `parttree_split::build_parttree_topology`. | 2026-05-18 |
+| §B.8 | `--treein --genafpair --maxiterate >1` — `recompute_importance` now uses `user_topo` (when set) for `sequence_weights`, not `musclesupg(&dm)`. Affected E-INS-i only because L/G/FFT-NS-i happened to converge to the same tie-breaks on the 36-seq sample regardless of weights. | 2026-05-14 |
+| §B.9 | `--memsavetree` — see §AE; initial port was `compacttree_memsaveselectable` (the `--youngestlinkage` algorithm), not `compacttreegivendist`. Replaced after FFI cross-validation showed C uses the ELSE branch at `disttbfast.c:4017` for `compacttree == 2`. | 2026-05-14 |
 
 ---
 
-## §AB. `--treeout` — RESOLVED 2026-05-13 (byte-identical to C for all modes incl. `--dpparttree`)
+## §B.2. `--tm 200 --retree 1` 8-line diff — RESOLVED 2026-05-18 (not our bug, upstream report pending)
 
-**Mode**: `mafft <flags> --treeout sample` now writes `<sample>.tree` in
-Newick format byte-identical to C MAFFT 7.526 for FFT-NS-2, FFT-NS-i,
-NW-NS-2, L/G/E-INS-i, BL/JTT scoring variants, and `--parttree`.
-All `--treeout` modes including `--dpparttree` are byte-identical to C
-MAFFT 7.526 (see "§AB.5 `--dpparttree --treeout`" at end of this section
-for the closure details).
+**The only known byte-divergence in production**: `mafft --tm 200 --retree 1
+sample` vs `mafft-rs --tm 200 --retree 1 sample` differs by 8 lines — 4
+single-char gap shifts in 2 of 36 sequences (M62903 and S75720, chicken
+opsins). Default `--tm 200` (retree=2) converges to C's output because the
+second pass realigns from the rebuilt tree, but the first-pass divergence
+cascades into `--tm 200 --treeout` branch-length drift (~3e-3, 20-line
+diff).
 
-### Implementation
+**Diagnosis (cell-level FFI cross-validation, 2026-05-18)**: our Rust
+`profile_align` produces byte-identical `ijp[i][j]` to C's `A__align`
+when both are called in isolation with the same inputs (verified
+cell-by-cell across 365×363 cells of the divergent step-12 grid). But
+C's `A__align` in the full-run context — after 12 prior calls in
+`treebase` — produces a *different* `ijp` matrix with the same scalar
+score (208675.4644010082) and width (367).
 
-1. **`crates/mafft-tree/src/newick.rs::topology_to_newick`** — port of
-   C's standard guide-tree serialization (`mltaln9.c:6190-6491` in
-   `fixed_musclesupg_double_realloc_nobk_halfmtx_treeout_memsave`).
-   Leaf format `\n<i+1>_<sanitized_name>\n`, sanitize-mask matches C
-   (alnum + `/=-{}` kept, everything else → `_`). Branch lengths emit
-   via Rust `{:7.5}` to mirror C's `%7.5f`. Final string terminated
-   with `;\n`.
-2. **`crates/mafft-core/src/progressive.rs::MultipleAlignment`** — two
-   new fields:
-   - `guide_tree: Option<Topology>` — populated by the engine with
-     either the final progressive guide tree (FFT-NS-2 / `--parttree`
-     / `--nofft`) or the refinement-pass tree built inside `dvtditr`
-     (FFT-NS-i / *-INS-i). Refinement-tree branch lengths require
-     rounding distances to `%.3f` to match `dndpre`'s hat2 precision
-     (`engine.rs:670-680`).
-   - `first_pass_sequences: Option<Vec<Vec<u8>>>` — C's `pre_1` cache,
-     needed by both `--parttree --reorder` and `--parttree --treeout`
-     because CALL 2 reads the FIRST-pass alignment.
-3. **`crates/mafft-tree/src/parttree_split.rs::compute_parttree_newick_fromaln`**
-   — parttree-specific tree builder mirroring `splittbfast.c:1275-1301`
-   (leaf format: numeric leaves, no branches, no names) +
-   `splittbfast.c:2532-2553` (per-merge `(child1,child2)` concat). Shares
-   the CALL 2 pivot pipeline with `compute_parttree_order_fromaln` via
-   the new `run_parttree_fromaln_pipeline` helper.
-4. **`crates/mafft-bin/src/main.rs`** — `--treeout` CLI flag; writes
-   `<input>.tree` after alignment finishes. For PartTree, calls the
-   `_fromaln` variant on `msa.first_pass_sequences`; for everything
-   else, calls `topology_to_newick(msa.guide_tree, msa.names)`.
+The visible inputs (`initverticalw`, `currentw`, `ogcp1/2`, `fgcp1/2`,
+`gapfreq1pt/2pt`, normalized eff weights, dynamic matrix) are
+byte-identical between the isolated test and the full-run invocation.
+The `ijp` divergence is only explainable by C's `A__align` having
+`static TLS` buffers (`commonIP/ijp`, `cpmx1/2`, `ogcp/fgcp1/2o`,
+`gapfreq1/2`, `m`, `mp`, `w1/w2`) whose post-call residue biases the
+next call's tied-cell selection. A warm-up `A__align` call in the test
+flipped 1 ijp cell, confirming static-state sensitivity. TM PAM 200 is
+the only matrix flat enough to surface this — BLOSUM/JTT have enough
+score diversity that tied DP cells are rare.
 
-### `--dpparttree --treeout` — RESOLVED 2026-05-13
+**Severity**: LOW. Both Rust and C produce optimal-scored alignments
+on the failing config; only the choice between tied traces differs.
+All correctness tests pass; the 8-line diff is *the only* known
+byte-difference vs C MAFFT 7.526 on the 36-seq test sample.
 
-C's `--dpparttree` runs `splittbfast` ONCE (cycle=1) with `-U` flag
-(`splittbfast.c:677-679` → `doalign=1`), so distances are computed via
-`G__align11_noalign( n_disLN, -1200, -60, ... )` on **raw** sequences
-(`splittbfast.c:1700`), with `outgap=1` (terminal gaps penalized).
-This is fundamentally different from `--parttree`'s cycle=2 pipeline.
+**Defensive FMA fixes that landed during the investigation** (kept,
+they harden other latent precision boundaries):
+- `mafft-core/src/progressive.rs::blend_profiles_exact` (and the
+  `blend_og_one_side` / `blend_fg_one_side` helpers) — 4 `+= a * b`
+  patterns converted to `mul_add`.
+- `mafft-tree/src/weighting.rs::sequence_weights` —
+  `rootnode[s] += step.left_length * eff[s]` (mirrors C
+  `mltaln9.c:9893`) converted to `mul_add`.
 
-**Implementation:**
-
-1. **`mafft-tree/src/parttree_split.rs::run_parttree_pipeline_with_scorer`**
-   — generic CALL-1-style parttree pipeline that accepts caller-supplied
-   `selfscore`, `orilen`, `pair_score`, and `seqs_equal` closures.
-   Shared between the fromaln (CALL 2) and dpparttree (CALL 1) paths.
-2. **`mafft-tree/src/parttree_split.rs::parttree_result_to_newick`** —
-   extracted from `compute_parttree_newick_fromaln` so both pipelines
-   can serialize via the same code.
-3. **`mafft-bin/src/main.rs`** — when `--dpparttree --treeout` is set,
-   builds the `n_disLN` matrix (`n_dis - 60` for residue cells, 0
-   elsewhere — `constants.c:1447-1450`), calls
-   `mafft_align::global_align` with `GapModel(-1200, -60)` and
-   `head_gap=tail_gap=true` (matching `outgap=1`), and feeds these
-   distances into the generic parttree pipeline.
-
-**Result**: `--dpparttree --treeout` is now byte-identical to C MAFFT
-7.526 (0-line diff on the 36-seq sample).
+**Pending action**: `MAFFT_UPSTREAM_REPORT.md` documents the full
+investigation (cell-level FFI capture, patches, conclusion) and is
+ready to send upstream (Kazutaka Katoh, katoh@ifrec.osaka-u.ac.jp).
+Closing this on our side would require deliberately replicating C's
+exact static-buffer cross-call dependency in our `profile_align` —
+significant complexity for ~zero benefit since both traces are
+optimal-scored.
 
 ---
 
-## §AG. `--leavegappyregion` / `--legacygappenalty` — RESOLVED 2026-05-14
-
-**Mode**: `mafft --leavegappyregion` (alias `--legacygappenalty`) sets
-`legacygapcost = 1` — the pre-7.110 gap-cost behaviour where the
-profile DP treats every column as fully nongap, disabling the
-gap-aware reweighting introduced in MAFFT 7.110. Useful when the
-input already has trustworthy gap structure that the new heuristic
-would erode.
-
-**Implementation**:
-- `GapModel::legacy_gap_cost` field + `with_legacy_gap_cost(bool)`
-  builder (`crates/mafft-align/src/dp.rs`).
-- `profile_align_imp_with_boundary` (`crates/mafft-align/src/profile.rs`)
-  early-returns into a recursive call with the legacy flag cleared,
-  after substituting clones whose `nongap_freq = [1.0; len]` /
-  `gap_freq = [0.0; len]` and a default `BoundaryFreqs`. Mirrors
-  `Salignmm.c:1604-1610`.
-- `MafftEngine::legacy_gap_cost` + `RefinementParams::legacy_gap_cost`
-  thread the flag from CLI through both `progressive_align_full` and
-  `iterative_refine` into the inner `GapModel` constructions.
-- CLI flag `--leavegappyregion` with `--legacygappenalty` as a clap
-  alias.
-
-**Parity verified** on the 36-seq protein sample across:
-- FFT-NS-2 default
-- NW-NS-2 (`--nofft`)
-- FFT-NS-i (`--maxiterate 100`)
-- L/G/E-INS-i (`--localpair`/`--globalpair`/`--genafpair --maxiterate 1000`)
-- BLOSUM80 (`--bl 80`)
-- Combos with `--anysymbol`, `--reorder`, `--treein`, `--memsavetree`,
-  `--auto` — all byte-identical.
-
-**Tests**: `leavegappyregion_byte_identical_to_c` end-to-end fixture
-test (`crates/mafft-core/tests/end_to_end.rs`).
-
----
-
-## §AF. `--anysymbol` / `--preservecase` — RESOLVED 2026-05-14
-
-**Mode**: `mafft --anysymbol` (alias `--preservecase`) allows arbitrary
-characters in input. Mirrors C MAFFT `scripts/mafft:330-343`'s
-external `replaceu` + `restoreu` pipeline as in-process pre/post
-steps.
-
-**Implementation** (`crates/mafft-bin/src/main.rs`):
-1. CLI flags `--anysymbol` and `--preservecase`.
-2. New `read_fasta_casepreserve` / `read_fasta_from_reader_casepreserve`
-   in `mafft-io` — strip only whitespace and ASCII digits; everything
-   else (case, `*`, `@`, IUPAC, etc.) is preserved. Mirrors C's
-   `readData_pointer_casepreserve`.
-3. `replace_unusual()` substitutes non-standard chars with `X`
-   (protein) / `n` (DNA), then canonicalizes case
-   (`toupper` for protein, `tolower` for DNA). Mirrors C
-   `replaceu.c::replace_unusual`.
-4. Pre-align: snapshot originals into a name-keyed map, then apply
-   `replace_unusual` to `input.sequences`.
-5. Post-align: for each aligned row, walk every non-gap position and
-   copy the next character from the gap-stripped original (name
-   lookup; works correctly even when `--reorder` permutes the output).
-   Mirrors C `restoreu.c::fillorichar`.
-
-**Parity verified** on the 36-seq protein sample and a custom test
-input with non-standard chars (`@`, `&`, `*`, `U`, `B`, `J`, `Z`,
-lowercase). Byte-identical across `--anysymbol`, `--preservecase`,
-`--anysymbol --localpair --maxiterate 1000`, and DNA `--anysymbol`
-on a synthetic test.
-
-**Tests**: 3 unit tests for `replace_unusual` covering protein
-canonicalization, DNA canonicalization, and length preservation.
-
----
-
-## §AE. `--memsavetree` — RESOLVED 2026-05-14 (byte-identical to C MAFFT)
-
-**Mode**: `mafft --memsavetree` uses C MAFFT's `compacttreegivendist`
-algorithm (`mltaln9.c:5221`) instead of the standard musclesupg UPGMA.
-Recommended for very large inputs (100k+ seqs) where the O(N²)
-distance matrix wouldn't fit in RAM; `--auto` enables it
-automatically for that bracket.
-
-Algorithm: stepwise tree insertion driven by the initial
-nearest-neighbor scan `compactdisthalfmtxthread`. Each leaf
-attaches to the existing tree at the height implied by its
-precomputed `mindist`. No per-step cluster-distance recomputation
-(unlike the cluster-mix UPGMA in `compacttree_memsaveselectable`).
-
-**Implementation** (`crates/mafft-tree/src/memsavetree.rs`):
-- `compacttree_givendist` — generic algorithm driver
-- `memsavetree` — k-mer-distance entry (pass 0; `disttbfast.c` flow)
-- `memsavetree_msa` — MSA-distance entry (pass 1; `tbfast.c:2538`
-  "Making a compact tree from msa, step 1")
-
-**Engine wiring** (`engine.rs:500-528`): pass 0 uses k-mer
-`memsavetree`; pass 1+ rebuilds from `msa.sequences` via
-`memsavetree_msa`. Mirrors C's two-pass disttbfast/tbfast structure.
-
-**Parity verified**: `--memsavetree --retree 1`, default
-(`retree=2`), `--memsavetree --treeout` all byte-identical on the
-36-seq sample.
-
-**Cross-validation tests** (`crates/mafft-tree/tests/cross_validate_memsavetree.rs`):
-- `distcompact_matches_c_for_every_pair`
-- `initial_mindist_matches_c`
-- `cluster_mix_for_first_divergent_step`
-- `memsavetree_topol_matches_c_step_by_step`
-
-**FFI helper** (`mafft-sys::rs_compacttreegivendist`): wraps C's
-`compacttreegivendist`. The wrapper had to also set the global `njob`
-(C uses GLOBAL `njob` for `joblist = calloc(njob, ...)`, not the
-function arg) — forgetting that was a SIGSEGV.
-
----
-
-## §AD. `--auto` — RESOLVED 2026-05-14 (byte-identical to C on small/medium/large brackets)
-
-**Mode**: `mafft --auto` picks the alignment strategy from `nseq`
-(number of sequences) and `nlen` (longest sequence length). Mirrors
-`scripts/mafft:1290-1343`:
-
-| `nseq < ` | `nlen < ` | Mode | iter | retree |
-|-----------|-----------|------|------|--------|
-| 100  | 3000  | L-INS-i  | 1000 | 1 |
-| 200  | 1000  | L-INS-i  | 2    | 1 |
-| 500  | 10000 | FFT-NS-i | 2    | 2 |
-| 20000 | —    | FFT-NS-2 | 0    | 2 |
-| 100000 | —   | FFT-NS-2 + memsavetree | 0 | 2 |
-| 200000 | —   | FFT-NS-2 + memsavetree | 0 | 1 |
-| ∞    | 3000  | --dpparttree | — | 1 |
-| ∞    | ∞     | --parttree   | — | 1 |
-
-**Implementation**: `crates/mafft-bin/src/main.rs::decide_auto` reads
-the size, returns an `AutoChoice { mode, retree, parttree, dpparttree }`.
-When `--auto` is set, the choice OVERRIDES `--localpair`/`--globalpair`/
-`--genafpair`/`--parttree`/`--dpparttree`/`--maxiterate`/`--retree`.
-
-**Parity tests**: `crates/mafft-bin/src/main.rs::tests::auto_*` (7
-unit tests covering each bracket) and
-`crates/mafft-core/tests/end_to_end.rs::auto_picks_linsi_for_small_sample`
-cross-validates the 36-seq sample (which lands in the smallest
-bracket, picking L-INS-i with iterate=1000).
-
-**Caveat**: the 100k–200k brackets use C's `memsavetree` (a memory-
-optimised tree algorithm not yet ported); we fall through to standard
-FFT-NS-2 / FFT-NS-1 there. The progressive *alignment* step is the
-same as C, but the tree construction differs, so very-large outputs
-may not be byte-identical. The smaller brackets (which cover all
-typical interactive use cases) ARE byte-identical.
-
----
-
-## §AC. `--treein` — RESOLVED 2026-05-14 (byte-identical to C across all non-E-INS-i modes)
-
-**Mode**: `mafft --treein FILE` lets the user supply a custom guide tree
-in MAFFT's internal format (4 columns per line: `im jm len0 len1`,
-1-indexed, `im < jm`). C reads this file via
-`mltaln9.c::loadtree`/`loadtreeoneline`; users typically convert their
-Newick tree using `mafft-upstream/core/newick2mafft.rb`.
-
-**Implementation**:
-- `crates/mafft-tree/src/treein.rs` — parser
-  (`parse_mafft_tree`/`parse_mafft_tree_str`) reading the 4-column
-  format and rebuilding a `Topology` with `JoinStep` lefts/rights set
-  to the cluster member lists in C's `min(member)`-keeps-rep order
-  (mirrors `loadtree`'s `Bchain` linked-list reduction).
-- `crates/mafft-core/src/engine.rs::MafftEngine.treein_path` — new
-  `Option<PathBuf>` field. When set, `align()` loads the tree once
-  and overrides THREE places C also overrides:
-  1. **Progressive merge tree** (`tbfast.c:2072` `if(treein) loadtree`).
-  2. **LH-table importance reweighting** (`tbfast.c:2967
-     counteff_simple_double_nostatic_memsave` + `tbfast.c:1355
-     calcimportance_half`) — the topology drives the per-sequence
-     weights used to recompute `region.opt` for the LH constraints.
-  3. **Refinement tree rebuild** (`dvtditr.c:766-768` `if(intree)
-     veryfastsupg_double_loadtree`).
-- `crates/mafft-bin/src/main.rs` — `--treein FILE` CLI flag,
-  pre-`align` file-existence check, and a `#by loadtree\n` trailer on
-  `--treeout` output matching C `mltaln9.c:2818`.
-
-**Parity tests**: `crates/mafft-core/tests/end_to_end.rs::treein_*`
-cross-validates FFT-NS-2, NW-NS-2, L-INS-i, G-INS-i, E-INS-i against
-C MAFFT 7.526 with the same `_guidetree` file.
-
-**Result**: All `--treein` modes byte-identical to C MAFFT 7.526.
-
----
-
-## §AA. `--reorder` — RESOLVED 2026-05-13 (byte-identical to C, except PartTree)
-
-**Mode**: `mafft --reorder sample` now produces Rust output byte-identical
-to C MAFFT 7.526 across all non-PartTree modes (FFT-NS-2, FFT-NS-i,
-NW-NS-2, L/G/E-INS-1, L/G/E-INS-i). Verified 2026-05-13 on the 36-seq
-sample.
-
-### Implementation
-
-1. **`crates/mafft-tree/src/topology.rs::Topology::dfs_order`** — returns
-   leaves in tree-DFS order. Mirrors C's `topolorderz` (`mltaln9.c:1928`):
-   each merge step's `left` / `right` vectors already accumulate subtree
-   leaves in DFS order, so the root step's `left ++ right` is the full
-   ordering.
-2. **`crates/mafft-core/src/engine.rs`** — new `reorder_output` field +
-   `with_reorder()` setter. Captures the final progressive guide tree
-   (`final_progressive_topo`) on each retree pass; after refinement,
-   permutes `msa.sequences` and `msa.names` via `topo.dfs_order()`.
-3. **`crates/mafft-bin/src/main.rs`** — adds `--reorder` and
-   `--inputorder` CLI flags (mutually exclusive). `--inputorder` is the
-   default and is a CLI-only flag (no engine effect).
-
-### PartTree partial fix (2026-05-13)
-
-For `--parttree --reorder`, the engine now calls
-`parttree_split::compute_parttree_order` which mirrors C's
-`splittbfast.c::splitseq_mq` order-generation in two stages:
-1. Top-level partition: `treeorder = topol[nyuko-2][0] ++ topol[nyuko-2][1]`
-   from the yuko-level UPGMA root step (`splittbfast.c:2351-2354`).
-2. Leaf emission: for each yuko in `treeorder`, append `outs[yuko]` in
-   the same `j`-iteration order C uses (`splittbfast.c:1305-1309`).
-
-`c_normalized_subtree` recursively applies C's smaller-first-element
-normalization (`mltaln9.c:8184-8197`) to reconstruct the leaf order
-within each `topol[step][i]` array.
-
-**Result**: parttree --reorder diff vs C: **944 → 454 lines** (50%
-reduction). Same alignment content (sequences match by sort), just in
-a different order at the upper levels of the yuko tree.
-
-### PartTree full closure (2026-05-13)
-
-C `--parttree` runs `splittbfast` TWICE (`scripts/mafft:2655` and `:2681`):
-
-1. **CALL 1**: builds the parttree from raw 6-mer distances, does
-   progressive alignment → `pre_1` (intermediate aligned FASTA).
-2. **CALL 2**: re-reads `pre_1` with `-Z` (`fromaln=1`) and recomputes
-   distances via `naivepairscore11(orialn_a, orialn_b, penalty)` on the
-   first-pass aligned rows (NOT the final-pass alignment). Selfscore is
-   the diagonal sum of the substitution matrix
-   (`splittbfast.c:3011-3017`). This produces a STRUCTURALLY DIFFERENT
-   yuko UPGMA tree from CALL 1 (lopsided 8/27 vs CALL 1's 20/15 split
-   for the n=36 sample).
-
-The final `--reorder` output is the **composition** of both passes:
-`final_order[k] = call1_order[call2_order[k]]`.
-
-**Implementation:**
-
-1. **`naivepairscore11_aligned`** (`parttree_split.rs:280-321`) —
-   port of `mltaln9.c:13801-13851`. Strips common gaps inline (no
-   allocation), then walks the alignment adding the substitution
-   matrix value or a single gap penalty per gap RUN.
-2. **`selfscore_aligned`** (`parttree_split.rs:328-344`) — diagonal
-   sum of the substitution matrix over non-gap residues.
-3. **`compute_parttree_order_fromaln`** (`parttree_split.rs:402-518`) —
-   full CALL 2 pipeline: pick reference, dcompare_sort via libc qsort,
-   pivot selection with shimon-style dedupe on aligned content,
-   `pickmtx` / `dfromc` via `naivepairscore11_aligned`, yuko
-   assignment, UPGMA on yukomtx, c-normalized DFS traversal.
-4. **`first_pass_msa`** capture in `engine.rs:447-452` — stashes the
-   intermediate MSA after pass 0 of the retree loop. CALL 2 must see
-   this `pre_1`, NOT the final `pre_2`, because the second pass
-   produces a subtly different alignment that yields different
-   pair scores.
-5. **Composition** in `engine.rs:678-688` —
-   `final_order[k] = call1_order[call2_order[k]]`.
-
-**Result**: `--parttree --reorder` is now **byte-identical to C** on the
-36-seq protein sample (0-line diff). Regression test
-`reorder_parttree_matches_c` in `crates/mafft-core/tests/end_to_end.rs`
-pins the exact 36-element output permutation.
-
----
-
-## §A. `--parttree --nofft` — RESOLVED 2026-05-12 (byte-identical to C)
-
-**Mode**: `mafft --parttree --nofft sample` now produces Rust width
-**752** matching C width **752** byte-for-byte (0 diff lines).
-
-### Root cause
-
-`crates/mafft-core/src/progressive.rs::merge_step_cached` called
-`pairwise_align11` for the 1-vs-1 no-constraint case with `head_gap` and
-`tail_gap` **hardcoded to `false, false`**, ignoring the
-`penalize_term_gaps` flag set by `outgap = 1` for `--parttree`
-(`scripts/mafft:2655`). C MAFFT terminal-gap-penalizes 1-vs-1 merges
-under `--parttree`, so every PartTree NW pair-merge diverged. FFT path
-was unaffected because it routes through a different 1-vs-1 helper.
-
-### Fix
-
-`crates/mafft-core/src/progressive.rs::merge_step_cached` — pass
-`penalize_term_gaps, penalize_term_gaps` instead of `false, false`:
-
-```rust
-pairwise_align11(
-    &aligned[group1[0]], &aligned[group2[0]],
-    &scoring.consweight_matrix, &scoring.amino_map,
-    scoring.gap.open as f64, penalize_term_gaps, penalize_term_gaps,
-)
-```
-
-All other PartTree variants (`--parttree` FFT, `--dpparttree`) were
-already byte-identical; this fix touches only the NW-no-constraint path.
-
----
-
-## §A0. `--allowshift` — RESOLVED 2026-05-12 (byte-identical to C)
-
-**Mode**: `mafft --allowshift --globalpair --maxiterate 0 sample` now
-produces Rust width **1029** matching C width **1029** byte-for-byte
-(0 diff lines).
-
-### Root cause (final)
-
-C's `makedynamicmtx` (`mltaln9.c:15197-15203`) applies the `offset * 600`
-delta to the substitution matrix BUT SKIPS the row and column where
-`amino[i] == '-'` (gap character — index 24 in the protein alphabet).
-Rust's `make_dynamic_matrix` (`progressive.rs`) and the per-pair
-`dyn_matrix` construction (`constraints.rs`) were applying delta to
-EVERY cell, including the '-' row/col.
-
-For raw amino-acid input the DP never directly indexes the '-' row of
-the substitution matrix via `score_at(c1, c2)`. But C's static
-`amino_dynamicmtx` is char-indexed and the unshifted '-' row's values
-feed into the boundary handling of `match_calc_mtx` at the last row
-(i = lgth1) when C reads `seq1[0][lgth1] = '\0'` and looks up
-`amino_dynamicmtx['\0'][...]`. Without the '-' skip, our shifted matrix
-gave a different boundary score from C's, which propagated through the
-warp DP and the per-step / per-pair re-align paths, producing the
-TRGP-vs-TRG--P alignment shift in pair (U22180, M62903).
-
-### Final fix
-
-1. **`progressive.rs::make_dynamic_matrix`** — added `gap_idx` parameter
-   and skip `if i == gap_idx || j == gap_idx { v }` matching C's
-   `amino[i] == '-'` check. The caller (`progressive_align_full`)
-   computes `gap_idx = scoring.amino_map[b'-' as usize]` once and threads
-   it in.
-2. **`constraints.rs::build_homology_table_with_unalign`** — per-pair
-   dynamic matrix construction in the re-align branch now applies the
-   same '-' skip.
-3. **Engine-side script-param zeroing** (`engine.rs:304-318`) — restored
-   `lexp = laof = 0` when `unalign_active`, mirroring `scripts/mafft:1469-1473`.
-   This was previously left off because of a downstream bug; with that
-   downstream bug now fixed, this is the correct behavior.
-
-### Trajectory (closed)
-
-Rust progression on n=36 with `--allowshift --globalpair --maxiterate 0`:
-- 746 (no effect, only CLI flag wired)
-- 809 (per-step matrix scaling, int matrices)
-- 957 (+ per-pair re-align, int matrices)
-- 993 (after f64 DP migration)
-- 987 (after warp DP port)
-- 1018 (after `§B.1` `mi += penalty_ex` fix)
-- **1029 = C byte-identical** (after `'-'` row/col skip in `make_dynamic_matrix`)
-
----
-
-## §B. Latent divergence candidates (potential future surfacing)
-
-These are byte-identical on all 36-seq-sample modes but may surface for
-other inputs / mode combinations. Investigate when adding a new mode or
-when a divergence shows up in the wild.
-
-### §B.1. ~~Missing `mi += penalty_ex` / `mj[j] += penalty_ex` in profile DP~~ — RESOLVED 2026-05-11
-
-**C reference**: `mafft-upstream/core/Salignmm.c:1718, 1727, 1933, 1953`.
-
-C does four `fpenalty_ex` accumulations that Rust was missing:
-1. `initverticalw[i] += fpenalty_ex * i` (line 1718, head_gap init).
-2. `currentw[j] += fpenalty_ex * j` (line 1727, head_gap init).
-3. `mi += fpenalty_ex` (line 1933, in main DP loop after mi update).
-4. `if (j < lgth2) m[j] += fpenalty_ex` (line 1953, after mj update).
-
-**Fix landed** in `crates/mafft-align/src/profile.rs::profile_align_imp_with_boundary`:
-- Lines 535, 567: init increments.
-- Lines 671, 688-690: per-cell increments in main DP loop.
-
-**Guarded by** `profile_align_imp_nonzero_penalty_ex_matches_c_a__align`
-in `crates/mafft-core/tests/cross_validate_profile_align.rs`, which runs
-profile_align_imp with `penalty_ex = -100` against C's `A__align` with
-the same and asserts byte-identical width AND score. Before fix: Rust
-score 107421 vs C 104721 (Δ=2700). After fix: byte-identical.
-
-**Why it was latent**: For protein default `DEFAULTGEP_B = 0` → `penalty_ex
-= 0` → all four increments are no-ops. DNA default `DEFAULTGEP_N = 0` →
-same. Would have surfaced if a future scoring model or `--exp` override
-(distinct from `--ep` which sets matrix offset, not gap extend) routed
-non-zero penalty_ex to the group DP. All 265 existing tests still pass.
-
-**Same gap exists in `pairwise_align11`** (`crates/mafft-align/src/profile.rs:910`)
-— the flat-penalty 1-vs-1 path used for NW-NS-2 single-merges. It takes
-`penalty: f64` only, no `penalty_ex`, so adding the C-equivalent
-`mi += fpenalty_ex_i` (with `i < lgth1` guard, mirroring `Galign11.c:1291,1318`)
-would require an API change (take `gap: &GapModel` or add a `penalty_ex`
-parameter). Currently benign — `pairwise_align11` is reached only by
-non-FFT no-constraint 1-vs-1 merges (NW-NS-2 only), and the CLI does
-not expose `--exp` (which would set ppenalty_ex). All NW-NS-2 modes
-remain byte-identical to C.
-
-### §B.2. ~~Missing FMA `mul_add` outside `match_calc_row` — DEFENSIVE FIXES LANDED, TM SCORING STILL DIVERGES~~ — RESOLVED (not our bug) 2026-05-18
-
-**Location**: `crates/mafft-align/src/{global,local,genaffine}.rs` —
-inner DP loops use plain `a + b` instead of `f64::mul_add`. `profile.rs`
-DP inner loop and gap candidates already use `mul_add` (§4 fix).
-Boundary inits and the `mj[j]` row-init in `profile.rs`, plus the
-FFT polarity/volume channel build in `fft_align.rs`, now use
-`mul_add` consistently (landed 2026-05-13). Defensive — preserves
-byte-identity for all 17 alignment modes, no regressions.
-
-**C reference**: gcc `-O3 -mfma` (or auto-FMA on `arm64`/`aarch64`) fuses
-`a + b * c` into a single-rounding FMA. Two-step Rust arithmetic
-produces 1-ULP differences that can flip tie-breaks on flat-landscape
-matrices (§4 BL50 root cause).
-
-**Confirmed active for TM scoring (2026-05-13)**:
-`mafft --tm 200 --retree 1 sample` vs `mafft-rs --tm 200 --retree 1 sample`
-differs by 8 lines — 4 single-char shifts at output FASTA lines 156
-and 170 (M62903 and S75720, chicken opsins). The default `--tm 200`
-(retree=2) converges to C's output because the second pass re-aligns
-from the rebuilt tree, but the first-pass divergence cascades into
-`--tm 200 --treeout` branch-length drift (~3e-3, 20-line diff).
-
-**Investigated 2026-05-13** (partial):
-1. Matrices are bit-identical to C (cell-by-cell cross-validate
-   tests pass with 0 mismatches for BL/JTT/TM/DNA).
-2. `--tm 200 --retree 1 --nofft` shows the SAME 8-line diff, so FFT is
-   not the source.
-3. Pairwise_align11 (1-vs-1) and profile_align (multi-vs-anything)
-   are both invoked — diff persists. No naive `+= *` patterns remain
-   in either function.
-4. Boundary init FMA + `mj[j]` init FMA + FFT-channel polarity/volume
-   FMA all landed; none closed the gap.
-
-**Further investigated 2026-05-14**:
-5. Guide tree is **byte-identical** between C and Rust even on the
-   minimal repro — so the merge order matches; the divergence is
-   purely in the per-step DP, not in tree construction.
-6. Tried MUL+FMA+ADD reshape in boundary init (closer to gcc's
-   left-to-right contraction emission for `a*b + c*d` parenthesized
-   subexpressions); no change. Reverted.
-7. Confirmed C's `Salignmm.c:1953` increments `m[j] += fpenalty_ex`
-   UNCONDITIONALLY (no `j < lgth2` guard). Our prior code had a
-   spurious `if j < m` guard; removed (literal C match, no observable
-   change for protein default `fpenalty_ex = 0`).
-8. Minimal repro: `{seqs 1..29, 30, 33, 36}` (32 of 36 seqs) — adding
-   seq 30 to `{1..29, 33, 36}` flips the tie-break. Removing 30 → 0
-   diff; adding 30 → 8-line diff. seq 30 (rat 5HT-7 serotonin receptor)
-   affects the alignment of seqs 12 (M62903 chicken visual pigment) and
-   13 (S75720 chicken P-opsin) at their leading boundary, even though
-   30 is in a different subtree.
-9. Trees match exactly in the minimal repro, so this is NOT a tree-
-   topology issue — it's a DP precision divergence at a specific merge
-   step (most likely the merges that introduce 12 and 13).
-
-**Further investigated 2026-05-18** (FMA audit + cell-level FFI diff
-landed; residual is *not a Rust bug* — it's an artifact of C's
-stateful `A__align` static buffers):
-
-10. Bisection via `MAFFT_DEBUG_STEPS=1` env var (Rust) + `CDBG_PT_STEPS`
-    patch on C `disttbfast.c::treebase` found the divergence at
-    **step 12** of the `--tm 200 --retree 1 --nofft` 36-seq run: merging
-    cluster `{7,8,9}` (post-step-4) with raw seq `{11}`. Both implementations
-    produce identical width (367) AND identical pscore
-    (208675.4644010082) — but the traceback picks tied DP candidates
-    differently:
-    - C: `MAAWEAA---FAARRRHEE...` (3 gaps before F)
-    - Rust: `MAAWEAAF---AARRRHEE...` (F first, 3 gaps after)
-    This propagates forward: at step 13 (4-vs-1) the cluster
-    `{7,8,9,11}` profile differs slightly, the DP picks a different
-    traceback path, and the score *does* diverge (C=219250.2,
-    Rust=218942.5, width=368 same). The final 8-line FASTA diff comes
-    from these cascaded gap-placement flips.
-
-11. **FMA audit pass landed** (defensive — matches gcc-O3 FMA fusion;
-    didn't close the §B.2 residual but tightened other latent
-    precision boundaries):
-    - `mafft-core/src/progressive.rs::blend_profiles_exact` — converted
-      `freqs[j][k] += prof.freqs[p][k] * eff` (createcpmxresult), the
-      `nongap_freq[j] += prof.nongap_freq[p] * eff` (creategapfreqresult),
-      and the open/close-gap blends `blend_og_one_side` / `blend_fg_one_side`
-      to `mul_add`. These run only when the merged-cluster cache fires
-      (combined size > 20) so they didn't affect the 5-seq step 12 case.
-    - `mafft-tree/src/weighting.rs::sequence_weights` — converted
-      `rootnode[s] += step.left_length * eff[s]` (C `mltaln9.c:9893`)
-      to `mul_add`.
-
-12. **Cell-level FFI cross-validation landed** (2026-05-18): wrote a
-    focused test (`tm200_step12_ijp_cellwise_diff`, now removed)
-    that:
-    - Patched C `Salignmm.c::A__align` with an `MAFFT_IJP_DUMP` env
-      filter that writes the full `ijp[i][j]` matrix to a file for
-      step-12 dimensions (`lgth1==364 && lgth2==362`).
-    - Added a parallel `MAFFT_IJP_DUMP_R` dump on the Rust side in
-      `profile.rs::profile_align_imp_with_boundary`.
-    - Set up a test that loaded the step-12 inputs (3-seq `{7,8,9}`
-      cluster + raw seq 11, captured via `RDBG_DUMP_PRE_STEP=12`),
-      ran C's `A__align` via FFI and our `profile_align` on the same
-      inputs, then diffed the resulting `ijp` matrices.
-
-    **Findings**:
-    - With matched inputs (`poffset=0`, same matrix via C's
-      `n_dis_consweight_multi`, same normalized eff weights, same
-      penalties), **Rust's `profile_align` produces byte-identical
-      `ijp` to C's `A__align` (0 interior differences across all
-      365×363 cells)**. The DP is correct.
-    - But C's `A__align` in the full-run context (after 12 prior
-      `A__align` calls in `treebase`) produces a *different* `ijp`
-      matrix than C's `A__align` called fresh in the isolated test —
-      and a different traceback alignment (`MAAWEAA---FAARR` vs
-      `MAAWEAAF---AARR`), with the same scalar score
-      (208675.4644010082) and width (367).
-    - Specifically, dumping `initverticalw`, `currentw`, `ogcp1/2`,
-      `fgcp1/2`, `gapfreq1pt/2pt` at indices 0-5 and 250-259 from both
-      the isolated test and the full-run step-12 invocation showed
-      **every value byte-identical** between contexts. Yet the
-      resulting `ijp` differs at 341 interior cells (first divergence
-      at `i=4, j=257`).
-    - This is only explainable by C's `A__align` having
-      `static TLS` buffers (commonIP/ijp, cpmx1/2, ogcp1/2, fgcp1/2,
-      gapfreq1/2, m, mp, w1/w2) whose post-call state subtly affects
-      the next call's tied-cell selection — *even though the
-      observable inputs match*. A "warm-up" A__align call in the test
-      changed C's output by 1 cell, confirming static-state
-      sensitivity.
-
-**Conclusion**: The 8-line `--tm 200 --retree 1` FASTA diff is **not a
-Rust correctness bug**. Our DP produces byte-identical `ijp` to
-C's `A__align` given identical inputs. The diff is a C-side
-tied-trace artifact dependent on accumulated prior-call static buffer
-state in `A__align` — a TM-200-specific manifestation because TM PAM
-200 has the flattest score distribution and exposes ties that
-BLOSUM/JTT don't.
-
-**Why other modes don't show this**: All other matrices (BLOSUM62 /
-BL80 / JTT 200 / DNA / `--add` / `--allowshift`) have enough score
-diversity that tied DP cells are rare. TM 200 is the only matrix
-where the static-state sensitivity surfaces.
-
-**To close** (deferred — see severity note): would require
-reverse-engineering C's exact static-buffer cross-call dependency in
-`A__align` and intentionally reproducing the same stateful behavior
-in Rust's `profile_align`. The complexity outweighs the benefit since
-the alignment is already optimal-scored (both traces tie); only the
-choice between tied traces differs.
-
-**Severity**: LOW. Default `--tm 200` (retree=2) output is byte-
-identical. Only `--retree 1 --tm 200` output (8-line diff = 4 single-
-char gap shifts in 2 of 36 sequences, both at tied DP cells) and the
-implied `--tm 200 --treeout` first-pass tree (20-line branch-length
-diff, max drift 3e-3 in 5th decimal place) are affected. All
-correctness tests pass. The 346-test workspace suite is unchanged by
-the 2026-05-18 FMA audit + cell-level investigation.
-
-**RESOLUTION (2026-05-18)**: marking this section closed. The 8-line
-diff is **not a Rust correctness bug** — our `profile_align` produces
-byte-identical `ijp[i][j]` to C's `A__align` given identical inputs
-(confirmed cell-by-cell across 365×363 cells). The diff is a C-side
-artifact: `A__align`'s `static TLS` buffers (`commonIP/ijp`,
-`cpmx1/2`, `ogcp1/2o`, `fgcp1/2o`, `gapfreq1/2`, `m`, `mp`, `w1/w2`)
-are sized to the max `(lgth1, lgth2)` seen across all calls and grown
-but never shrunk. For matrices flat enough to produce DP ties (only
-TM PAM 200 in the standard set), trailing buffer cells from previous
-larger calls bias the next call's tied-cell selection. Output is
-still optimal-scored — only tied-trace selection differs.
-
-We documented the full investigation in `MAFFT_UPSTREAM_REPORT.md`
-for upstream contact (Kazutaka Katoh, katoh@ifrec.osaka-u.ac.jp).
-Per the report's analysis: "feature in spirit (perf), bug in detail
-(silent cross-call coupling). For us it means the 8-line diff isn't
-reproducible without intentionally copying C's static-buffer
-side-channel, which would be ~zero benefit for noticeable Rust-side
-complexity."
-
-The defensive FMA fixes that landed during the investigation
-(`blend_profiles_exact` + 4 callees → `mul_add`; `sequence_weights`
-→ `mul_add`) are kept — they harden other latent precision
-boundaries even though they don't close this specific residual.
-
-### §B.3. `--memsave` — FULLY CLOSED, byte-identical to C MAFFT 7.526 — 2026-05-14/15/16
-
-**Status**:
-1. **CLI shim landed** (2026-05-14): `--memsave` and `--nomemsave`
-   are accepted CLI flags with script-level gating that rejects them
-   for `--localpair`, `--globalpair`, `--genafpair`, `--qinsi`,
-   `--xinsi`, `--scarnalike`, and `--seed` (mirroring C MAFFT
-   `scripts/mafft:1866-1869` and `tbfast.c:1117-1118`). For inputs
-   that fit in memory (≤ 30000 in length per sequence), the
-   alignment is byte-identical to C MAFFT's output:
-   - `memsave_fftns2_byte_identical_to_c`
-   - `memsave_fftnsi_byte_identical_to_c`
-   - `memsave_fftns2_retree1_byte_identical_to_c`
-2. **Hirschberg library + FFI cross-validation landed** (2026-05-15):
-   `crates/mafft-align/src/msalign.rs::msalignmm` is a port of
-   C `MSalignmm`. The recursion mirrors `MSalignmm_rec`: forward
-   DP from `ist` to `imid = ist + lgth1/2` capturing
-   `midw/midm/midn` at the midpoint row, backward DP from `ien` to
-   `imid` adding into those arrays, `jmid = argmax` over
-   midw/midm/midn for the optimal split column, recurse on
-   top-left/bottom-right halves with inter-half gap padding. Base
-   case (`lgth1 < DPTANNI=100` OR `lgth2 < DPTANNI`) delegates to
-   the full DP.
-
-   Three unit tests + four FFI cross-validation tests against C
-   `MSalignmm` (`crates/mafft-core/tests/cross_validate_msalign.rs`)
-   guard the implementation:
-   - `base_case_matches_full_dp` (short input)
-   - `recursive_case_matches_full_dp` (200-nt identical)
-   - `recursive_case_with_gap_matches_full_dp` (gap-required, unique
-     optimum)
-   - `msalign_base_case_matches_c` (vs C MSalignmm)
-   - `msalign_recursive_matches_c` (130-residue divergent, vs C)
-   - `msalign_identical_long_matches_c` (140-residue identical, vs C)
-   - `msalign_freetail_matches_c` (`tail_gap=false` boundary, vs C)
-
-   All seven are byte-identical to C MAFFT 7.526.
-
-**FFI cross-validation landed** (2026-05-15/16):
-`crates/mafft-sys/wrappers/msalignmm_instr.c` exposes three C
-instrumentation hooks for cross-validating against our Rust
-Hirschberg port:
-- `rs_msalignmm_capture_top` — top-level `MSalignmm_rec` state:
-  `midw[]`, `midm[]`, `midn[]`, `jumpbacki[]`, `jumpbackj[]`,
-  `jumpforwi[]`, `jumpforwj[]`, and the chosen
-  `(imid, jmid, jumpi, jumpj)` after the edge-case rewrite.
-- `rs_msalignmm_tanni_capture` — in-context `MSalignmm_tanni`
-  on a sub-region of the FULL parent profile (cpmx / gapinfo built
-  from parent sequences, then sliced per `ist`/`ien`/`jst`/`jen`).
-  Used to verify our `profile_align_imp_with_boundary` base case
-  matches C's `MSalignmm_tanni` when called as a recursive child.
-- `rs_msalignmm_full_trace` — faithful C re-implementation of
-  `MSalignmm_rec`'s full recursive structure (including the
-  inter-half horizontal/vertical gap inserts and MEMSAVE pointer
-  advance) with optional level-by-level stderr trace (gated by
-  `getenv("MSALIGN_TRACE")`). Lets us run the algorithm as
-  written in `MSalignmm.c` and compare with real C `MSalignmm`'s
-  output.
-
-Two bugs in the Rust port were caught and fixed by side-by-side
-comparison:
-
-1. **`previousw[dj+1]` off-by-one in backward DP** (`msalign.rs`):
-   C's `*prept` pointer starts at `previousw + lgth2 - 1` and
-   decrements once per inner-loop iteration, so at iteration `j`,
-   `*prept == previousw[j+1]`. The Rust port was reading
-   `previousw[dj]` (i.e., `previousw[j]`), off by one. Fixing it
-   to `previousw[dj+1]` brought `midw[j]`, `midm[j]`, `midn[j]`
-   byte-identical to C across all 152 columns.
-2. **`USE_PENALTY_EX = 0` not honoured** (`msalign.rs`): C
-   `MSalignmm.c:7` `#define USE_PENALTY_EX 0` disables the
-   `mi += fpenalty_ex` / `m[j] += fpenalty_ex` increments and the
-   `initverticalw[i] += fpenalty_ex * i` head-gap-init term — but
-   `A__align` / `profile_align_imp_with_boundary` DO apply these.
-   For BLOSUM62 default `penalty_ex = 0` so this is a no-op in our
-   test setup, but the divergence-of-semantics was real and is now
-   documented in the port.
-
-**Asymmetric residual closed** (2026-05-16): patched real
-`mafft-upstream/core/MSalignmm.c` with `fprintf` instrumentation
-in a detached working tree, ran the failing 112×151 input, and
-compared intermediate state with our Rust port. Found two bugs
-(both fixed):
-
-1. **`midw[j] += wm` (NOT `midw[j+1]`)** — C `MSalignmm.c:1610`
-   uses `midw[j] += wm` while `midm[j+1] += *mjpt` (line 1612)
-   uses `j+1`. The Rust port had both as `j+1`. The off-by-one
-   shifted midw by one column at the midpoint, causing the
-   Hirschberg argmax to pick the wrong split for asymmetric
-   inputs. Fixed in `crates/mafft-align/src/msalign.rs::backward_dp`.
-2. **`midm[0] += firstm` (NOT `midm[1]`)** — at the end of the
-   backward inner loop with `j` decremented to -1, C does
-   `midm[j+1] += firstm` which targets index 0 (`MSalignmm.c:1637`).
-   The Rust port originally had `midm[1] += firstm` because the
-   earlier `midm[0]` change regressed a test — that regression
-   was actually caused by the `midw[j+1]` bug above. With both
-   fixes in place, `midm[0]` is correct.
-
-After both fixes, the asymmetric test passes byte-identical to
-C MAFFT 7.526 (112×151 input now produces a 151-wide alignment
-matching real C exactly). The faithful C re-implementation in
-`wrappers/msalignmm_instr.c::rs_msalignmm_full_trace` also got
-the same two fixes (with `MSALIGN_TRACE` env var for level-by-
-level stderr output) and now matches real C.
-
-**Engine wiring landed** (2026-05-16): `--memsave` now routes
-the non-FFT progressive merge through `mafft_align::msalignmm`
-(linear-space Hirschberg DP). Verified byte-identical to C
-MAFFT 7.526 on the 36-seq sample for every combination tested:
-- `--memsave`
-- `--memsave --maxiterate 2`
-- `--memsave --retree 1`
-- `--memsave --memsavetree`
-- `--memsave --nofft` (= NW-NS-2 + memsave, the path that
-  actually exercises the new `msalignmm` Hirschberg DP)
-- `--memsave --nofft --maxiterate 2`
-
-For the FFT path (default mode), the engine falls through to
-the existing `Falign` profile-align (which is byte-identical to
-C's `Falign_udpari_long` for inputs ≤30000 in length, matching
-C's auto-switch threshold).
-
-**Implementation files**:
-- `crates/mafft-bin/src/main.rs` — `--memsave` + `--nomemsave` flags,
-  Impossible-style gating.
-- `crates/mafft-align/src/msalign.rs` — Hirschberg DP
-  (`msalignmm`), public library entry point.
-- `crates/mafft-core/tests/end_to_end.rs` — three byte-identity tests
-  (`memsave_*`).
-- `crates/mafft-core/tests/fixtures/sample.memsave.{fftns2,fftnsi.iter2,fftns2.retree1}`
-  — C-generated reference outputs.
-
-### §B.3.2. `--seedtable FILE` — CLOSED, byte-identical to C MAFFT 7.526 — 2026-05-17
-
-`--seedtable FILE` accepts a pre-computed hat3.seed file matching C
-`multi2hat3s.c:214`'s 9-field text format
-(`i j overlapaa opt start1 end1 start2 end2 k`) and feeds the resulting
-`LocalHomologyTable` into the engine via the same path `--seed` already
-uses. CLI gating mirrors C MAFFT exactly: rejected with `--seed`,
-`--add`/`--addfragments`, `--parttree`/`--dpparttree`, or `--memsave`;
-forces `maxiterate ≥ 2` and promotes FFT-NS-2 → FFT-NS-i
-(`scripts/mafft:1911-1923`, `:1880-1883`, `:1281-1284`,
-`:1963-1965`).
-
-Parser implementation: `mafft_align::parse_hat3_seed`. The file's `opt`
-values are stored as-written (no rescaling) — the C side also loads them
-into `localhomtable` directly via `readlocalhomtable2_half` without
-applying the pairwise `tbfast.c:2202` `* 600/5.8` reverse, so we match
-C's in-memory convention for the seed path. Magnitudes happen to differ
-from what `build_seed_homology_table` produces (which uses
-`isumscore / sumoverlap * tsuyosa` and skips the `5.8/600` factor)
-because the seed constraint dominates at any reasonable magnitude; both
-paths converge to the same final alignment.
-
-**Verification**: 4 byte-identity tests in
-`crates/mafft-core/tests/end_to_end.rs::seedtable_*` (L/G/E-INS-i +
-FFT-NS-i) compare against the existing `sample.seed.{linsi,ginsi,einsi,fftnsi}.iter2`
-C reference fixtures. The hat3 fixture
-(`crates/mafft-core/tests/fixtures/sample.seed.hat3`) was captured from
-`mafft --seed --debug` (multi2hat3s output) and is the same file the
-user would pass to `--seedtable` directly. The combined-input fixture
-(`sample.seed.combined.fa`) is the gap-stripped concatenation of seed
-FASTA + user FASTA — same convention `--seed` uses internally.
-
-Files:
-- `crates/mafft-align/src/constraints.rs::parse_hat3_seed` —
-  hat3 parser (+ 4 unit tests covering valid/invalid/multi-region/empty).
-- `crates/mafft-bin/src/main.rs` — `--seedtable` CLI flag, gating, and
-  engine wiring.
-- `crates/mafft-core/tests/end_to_end.rs` —
-  `seedtable_{linsi,ginsi,einsi,fftnsi}_byte_identical_to_c`.
-- `crates/mafft-core/tests/fixtures/sample.seed.hat3` — captured
-  multi2hat3s output.
-- `crates/mafft-core/tests/fixtures/sample.seed.combined.fa` —
-  gap-stripped seed-prepended input matching the hat3 position space.
-
-### §B.4. ~~`--retree N` for N ≠ 2 byte-untested for INS-i modes~~ — RESOLVED 2026-05-18
-
-**Discovery**: while writing regression tests for non-default `--retree`,
-found that Rust honored the user's `--retree N` literally while C
-applies two undocumented post-`--retree` rewrites in `scripts/mafft`:
-
-1. **`scripts/mafft:1840-1842`** clamps `cycle = min(cycle, 3)` for ALL
-   modes. So `--retree 5` runs 3 passes in C, not 5.
-2. **`scripts/mafft:1934-1936`** forces `cycle = 1` in the `distance ∈
-   {local, global, localgenaf, globalgenaf, scarna}` branch (=
-   L/G/E/Q/X-INS-i) regardless of `--retree N`. So `--retree 3
-   --localpair` runs cycle=1 in C, not 3.
-
-Without these rewrites, our `--retree 3 --localpair` diverged from C
-by 898 lines on the 36-seq sample, and `--retree 5 --localpair` by the
-same (Rust ran 5 passes vs C's 1).
-
-**Fix**: `crates/mafft-core/src/engine.rs:485-507` rewritten to mirror
-both rewrites:
-- INS-i modes (L/G/E/Q/X-INS-i): `retree = 1` regardless of `self.retree`.
-- All other modes: `retree = self.retree.clamp(1, 3)`.
-
-**Tests** (7 new in `end_to_end.rs::retree_*`):
-- `retree_3_fftns2_byte_identical_to_c`
-- `retree_5_fftns2_byte_identical_to_c` (exercises the 3-cap clamp)
-- `retree_3_fftnsi_iter2_byte_identical_to_c`
-- `retree_3_linsi_byte_identical_to_c` (would have failed pre-fix by
-  898 lines; exercises the INS-i override)
-- `retree_5_linsi_byte_identical_to_c`
-- `retree_3_ginsi_byte_identical_to_c`
-- `retree_3_einsi_byte_identical_to_c`
-
-Fixtures: `sample.retree{3,5}.{fftns2,linsi}`,
-`sample.retree3.{fftnsi.iter2,ginsi,einsi}` — captured from C MAFFT
-7.526 on the 36-seq sample.
-
-Verified manually across 4 modes × 4 retree values (1, 2, 3, 5) — all
-20 combinations byte-identical to C.
-
-### §B.5. ~~HashMap iteration order in `profile_cache`~~ — RESOLVED 2026-05-18 (BTreeMap swap)
-
-**Original concern**: `crates/mafft-core/src/progressive.rs` used
-`HashMap<Vec<usize>, CachedProfile>` for the profile cache. Currently
-safe — only `.get()` / `.insert()` / `.remove()` were used — but any
-future refactor adding `.iter()` / `.values()` / `.keys()` loops would
-silently produce non-deterministic alignment output.
-
-**Fix**: replaced `HashMap` with `BTreeMap` at all four call sites
-(`progressive.rs:221, 620, 725, 801`). Cache size is bounded by
-`nseq` and keys are small `Vec<usize>` (typically <50 elements), so
-the per-lookup cost is negligible. Output now deterministic by
-construction, no future-refactor footgun.
-
-**Verified**: 349 tests pass (no perf regression at 36-seq scale),
-all 7 representative mode variants (default, `--retree 1`,
-`--maxiterate 100`, `--localpair`, `--globalpair --maxiterate 1000`,
-`--parttree`, `--dpparttree`) byte-identical to C MAFFT 7.526.
-Multi-run L-INS-i (`--maxiterate 1000 --localpair`) produces
-bit-identical output across 3 consecutive runs.
-
-### §B.6. Sequential float summation guard in `refinement.rs:1069-1080`
+## §B.6. Sequential float summation guard in `refinement.rs:1069-1080`
 
 **Location**: `crates/mafft-core/src/refinement.rs:1069-1080` —
 intergroup scoring uses explicit sequential summation with a comment
 warning against `par_iter().sum()`.
 
-**Status**: Already correct and documented. Listed here as a reminder
-during refactoring — removing the guard would cascade into
-non-deterministic refinement decisions.
-
-### §B.7. ~~`parttree.rs` (old) `max_by_key` tie-break~~ — RESOLVED 2026-05-18 (file deleted)
-
-**Original concern**: `crates/mafft-tree/src/parttree.rs:159-161` used
-`max_by_key` which returns the LAST tied max (vs C's FIRST tied).
-
-**Investigation**: the TODO claimed this was dead code reachable only
-via a deprecated re-export. In fact `engine.rs::progressive_align`
-still routed `--dpparttree` through it. The 36-seq sample never
-triggered the bug because `n=36 < group_size=150` bypasses the
-recursive partitioning entirely (falls back to plain `musclesupg`).
-Larger `--dpparttree` runs (> 150 seqs) would have hit the broken
-recursion.
-
-**Fix**: re-routed `--dpparttree` through
-`parttree_split::build_parttree_topology` (the same well-ported path
-`--parttree` uses), then deleted the entire `parttree.rs` module and
-its `pub use` re-export at `lib.rs:27`. C's `--dpparttree` vs
-`--parttree` differ only in `partdist` (`ktuples` vs `localalign`,
-`scripts/mafft:392/395`) inside C's `splittbfast`; our Rust uses
-k-tuple for both. The 36-seq sample remains byte-identical to C for
-both modes. A true DP-based distance for >150-seq `--dpparttree`
-runs is not yet ported (would slot into `parttree_dist.rs`); flagged
-as a future enhancement, not a regression — even the old code didn't
-actually compute a DP distance (it consulted `params.use_dp` but the
-body always called `ktuple_distance` regardless).
-
-**Verified post-deletion**: 6 parttree-flavour modes byte-identical
-to C MAFFT 7.526 — `--parttree`, `--dpparttree`,
-`--parttree --nofft`, `--parttree --reorder`, `--parttree --treeout`,
-`--dpparttree --treeout`.
-
-**Test count delta**: -4 (the 4 unit tests in the deleted file).
-Workspace: 353 → 349 passed.
-
-### §B.9. ~~`--memsavetree` — algorithm ported, residual height drift~~ — RESOLVED 2026-05-14
-
-**Root cause**: I was porting the WRONG C function.
-`compacttree_memsaveselectable` (`mltaln9.c:5491`) is what
-`--youngestlinkage` uses (compacttree=4), NOT `--memsavetree`. For
-`--memsavetree` (compacttree=2), C MAFFT calls
-`compacttreegivendist` (`mltaln9.c:5221`) — a completely different
-stepwise-insertion algorithm.
-
-**Discovery path**: FFI wrapper `rs_compacttree_memsaveselectable_kmer`
-(after fixing the `njob` global SIGSEGV — C uses GLOBAL `njob` for
-`joblist = calloc(njob, sizeof(int))`, not the function param)
-showed our memsavetree matched `compacttree_memsaveselectable`
-bit-exact. Yet C's `--memsavetree --treeout` output differed by 76
-lines. Tracing through `disttbfast.c:4017` revealed
-`if (compacttree == 4) compacttree_memsaveselectable(...) else
-compacttreegivendist(...)` — and for `compacttree == 2`, it's the
-ELSE branch.
-
-**Fix**: Ported `compacttreegivendist` (`mltaln9.c:5221-5331`) into
-`crates/mafft-tree/src/memsavetree.rs::compacttree_givendist`. The
-algorithm:
-1. Initial step: leaves 0 and 1 link at `mindist[1]/2`.
-2. For each subsequent leaf `i ∈ [2, nseq)`: walk UP the tree from
-   `treept[nearest[i]]` until a parent's height exceeds
-   `mindist[i]/2`, then insert leaf `i` as a sibling under a new
-   internal node at height `mindist[i]/2`.
-3. DFS post-order traversal reformats into our `Topology` struct
-   (mirrors C `reformat_rec`).
-
-The pass-1 MSA tree uses the SAME algorithm with MSA-derived
-`mindist`/`nearest` (from `distcompact_msa` via `naivepairscorefast`).
-This is what `tbfast.c:2538 "Making a compact tree from msa, step 1"`
-does after pass 0 progressive alignment.
-
-**Result**: `--memsavetree` (both `--retree 1` and default
-`retree=2`) now byte-identical to C MAFFT 7.526 on the 36-seq sample.
-`--memsavetree --treeout` also byte-identical.
-
-**Tests**: 4 cross-validate tests
-(`crates/mafft-tree/tests/cross_validate_memsavetree.rs`) + 1 e2e
-fixture test (`memsavetree_byte_identical_to_c`). All pass.
-
----
-
-### §B.9.legacy. Old notes — algorithm ported, residual height drift after merge step 7
-
-**Investigation update 2026-05-14**:
-
-Added FFI cross-validation infrastructure (`mafft-sys::wrappers/parttree_helpers.c::rs_compact_initial_mindist` + `mafft-sys::distcompact`) and three new tests in `crates/mafft-tree/tests/cross_validate_memsavetree.rs`:
-- `distcompact_matches_c_for_every_pair` ✓ (per-pair distance bit-exact)
-- `initial_mindist_matches_c` ✓ (initial pairwise scan + nearest array bit-exact)
-- `cluster_mix_for_first_divergent_step` ✓ (cluster_mix for the specific (28→{29,30}) merge matches C exactly: d(29,28)=0.194214, d(30,28)=0.165792, mix=0.167213)
-
-**Key finding**: All per-pair primitives MATCH C bit-for-bit. The algorithm structure matches C (we even mirror C's `for(acpti=ac; acpti->next!=NULL; ...)` last-active-skip quirk at `mltaln9.c:5647`). The first 6 merges (33,34), (19,20), (29,30), (7,8), (9→cluster), (21→cluster) match C exactly with the same branch lengths.
-
-**The divergence appears at merge step 7**: leaf 28 (0-indexed) attaches to cluster {29, 30}. Our mindist[28] = 0.167213 (= cluster_mix value); C's effective merge distance for the same pair = 0.19422 (twice the tree-output branch length 0.09711). Yet cluster_mix(d(29,28), d(30,28)) provably equals 0.167213 in BOTH C and Rust.
-
-Hypothesis: C's mindist[28] somehow stays at a larger value (~0.194) despite the cluster_mix at step k=2 computing 0.167. Possible mechanisms: (a) some prior step's `nearest[i] == jm` update path skips the `if(tmpdouble < mindist[i])` guard; (b) the "antei sei no tame" loop after distance recomputation overwrites in a way we miss; (c) we're misreading which pair C actually picks at step 7.
-
-**Outstanding FFI work**: `rs_compacttree_memsaveselectable_kmer` (wraps C's full algorithm) currently SEGFAULTs inside compacttree — likely missing global setup (TLS, distarrarg state). Test marked `#[ignore]` for now. Fixing that wrapper would directly capture C's `topol[k][0][0]` / `len[k]` per step and pinpoint the first divergent decision.
-
-**Earlier state preserved below**:
-
-### §B.9.old. `--memsavetree` — algorithm ported, residual merge-order drift after step 2
-
-**Location**: `crates/mafft-tree/src/memsavetree.rs` — ports
-`mltaln9.c::compacttree_memsaveselectable` with `howcompact=2`,
-`memsave=1` (the algorithm `--memsavetree` and `--auto` 100k+ brackets
-use). Wired into `engine.rs` for both pass 0 (k-mer distance) and
-pass 1+ (MSA distance via `distcompact_msa`).
-
-**Current state**:
-- **Algorithm structure correct**: the C reference's
-  `compactdisthalfmtxthread` (initial scan) + main loop
-  (`mltaln9.c:5639-6097`) + per-step distance recomputation
-  (`verycompactkmerdistarrthreadjoblist` / `verycompactmsadistarrthreadjoblist`)
-  is faithfully ported with cluster_mix linkage (`SUEFF=0.1`),
-  `preferenceval` tie-break, and full member-list reconstruction for
-  the progressive-alignment consumer.
-- **First-merge parity**: on the 36-seq sample, the FIRST merge after
-  the MSA-distance rebuild matches C MAFFT 7.526 byte-for-byte —
-  branch length 0.13869 (vs the standard musclesupg branch 0.35002),
-  confirming the MSA `distcompact_msa` path is bit-correct.
-- **Residual drift starting at merge step ≥ 2**:
-  - k-mer-only tree (`--memsavetree --retree 1 --treeout`): 76-line
-    diff vs C (different topology starting at step 3).
-  - Full two-pass output (`--memsavetree`): 930-line diff vs C, all
-    propagated from the pass 0 k-mer tree topology drift.
-- **Tests**: 4 unit tests in `memsavetree::tests::*` cover algorithm
-  invariants (`im < jm` swap, 2-seq merge, identical-seq merge, etc.).
-  No fixture cross-validation yet because outputs don't match.
-
-**Suspected cause**: tie-break ordering in the `find min mindist[i]`
-scan, or a 1-ULP drift in `cluster_mix_double` that pushes the
-nearest-neighbor pick onto a different `j` for some merge step. The
-initial pairwise mindist[]/nearest[] looks correct (since the first
-merge picks the same pair); the divergence emerges in the second-merge
-selection.
-
-**Fix path**:
-- Add `mafft-sys` FFI binding for `compacttree_memsaveselectable` (or
-  call `compactdisthalfmtxthread` directly) to cross-validate
-  intermediate mindist[]/nearest[] arrays cell-by-cell.
-- Audit `nearest[i] == jm` handling: when the merge updates `nearest`
-  without updating `mindist`, this preserves the OLD `mindist`
-  reference to a (now-merged) cluster. Verify our behavior matches C's
-  exactly here.
-- Once the k-mer tree matches, the MSA tree should follow since the
-  per-step pipeline is the same code.
-
-**Severity**: MEDIUM. `--memsavetree` is essentially "extra-large
-input" territory; `--auto` falls back to it only at nseq ≥ 100k.
-For 36 seqs our output is functional (valid alignment) but not
-byte-identical to C's.
-
----
-
-### §B.8. ~~`--treein --genafpair --maxiterate >1` (E-INS-i refinement w/ user tree)~~ — RESOLVED 2026-05-14
-
-**Root cause**: `engine.rs::recompute_importance` was deriving the
-sequence weights for the LH table importance recomputation from
-`musclesupg(&dm)` — the UPGMA tree built from pairwise distances.
-C MAFFT does this same step (`tbfast.c:2967 counteff_simple_double_
-nostatic_memsave( njob, topol, len, dep, eff )` followed by
-`tbfast.c:1355 calcimportance_half( njob, effarr, aseq, ... )`)
-using `topol`/`len` from `loadtree`'s loaded user tree. With
-`--treein` the two topologies differ on branch lengths, so the
-weights differ → the LH table's per-region `region.opt` (importance)
-differs → E-INS-i refinement makes different tie-break decisions
-starting at iter 2 (iter 1 happens to match because the first round
-of refinement reads the same starting alignment).
-
-L-INS-i / G-INS-i / FFT-NS-i all use the same code path; they
-happened to converge to the same final alignment regardless of
-weights on the 36-seq test sample (less sensitive tie-breaks). The
-fix unifies behavior across all four modes.
-
-**Fix**: `engine.rs:412-426` now loads `user_topo` BEFORE the
-importance-recomputation block and prefers it over
-`musclesupg(&dm)`:
-```rust
-let initial_topo = user_topo.clone()
-    .unwrap_or_else(|| musclesupg(&dm, ClusterMethod::default()));
-let weights = mafft_tree::sequence_weights(&initial_topo);
-```
-
-**Regression test**: `crates/mafft-core/tests/end_to_end.rs::
-treein_einsi_byte_identical_to_c` cross-validates `--treein
---genafpair --maxiterate 1000` against the fixture
-`sample.treein.einsi` (generated from C MAFFT 7.526 with the same
-user tree).
+**Status**: Already correct and documented. This section exists *as*
+the reminder — removing the sequential guard would cascade into
+non-deterministic refinement accept/reject decisions.
 
 ---
 
@@ -1241,212 +156,160 @@ user tree).
 
 ### Benchmark snapshot (2026-05-18)
 
-Empirical measurements (5 runs summed, real time, macOS arm64,
-`mafft-rs` release build vs C MAFFT 7.526):
+5 runs summed, real time, macOS arm64, `mafft-rs` release vs C MAFFT
+7.526, 108-seq synthetic input:
 
-| Mode (108 seqs synthetic) | C MAFFT | mafft-rs | Ratio |
-|---------------------------|---------|----------|-------|
-| default (FFT-NS-2)        | 1.34s   | 1.16s    | Rust 1.16× faster |
-| `--maxiterate 50` (FFT-NS-i) | 6.62s | 7.78s   | Rust 1.18× SLOWER |
-| `--maxiterate 50 --localpair` (L-INS-i) | 37.00s | 22.93s | Rust **1.61× faster** |
-| `--maxiterate 50 --globalpair` (G-INS-i) | 35.32s | 22.62s | Rust **1.56× faster** |
-| `--parttree`              | 1.70s   | 0.09s    | Rust **18× faster** |
-| `--dpparttree`            | 7.24s   | 0.08s    | Rust **90× faster** |
+| Mode                                     | C MAFFT | mafft-rs | Ratio          |
+|------------------------------------------|---------|----------|----------------|
+| default (FFT-NS-2)                       | 1.34s   | 1.16s    | Rust 1.16× faster |
+| `--maxiterate 50` (FFT-NS-i)             | 6.62s   | 7.78s    | Rust 1.18× SLOWER |
+| `--maxiterate 50 --localpair` (L-INS-i)  | 37.00s  | 22.93s   | Rust **1.61× faster** |
+| `--maxiterate 50 --globalpair` (G-INS-i) | 35.32s  | 22.62s   | Rust **1.56× faster** |
+| `--parttree`                             | 1.70s   | 0.09s    | Rust **18× faster**   |
+| `--dpparttree`                           | 7.24s   | 0.08s    | Rust **90× faster**   |
 
-The only mode where Rust is slower than C is FFT-NS-i, and that gap
-is fully concentrated in the FIRST 1-2 refinement iterations (per
-`--maxiterate {0,2,10,50,100,200}` sweep: Rust matches or beats C at
-iteration 0; loses ~0.9s in iterations 1-2; per-iteration cost is
-similar from iteration 10 onward).
+### §C.1. Per-group gap stripping — DEFERRED
 
-The §C.1 / §C.2 items below pre-date these measurements. Both are
-deferred: neither targets the actual performance hot-spot (FFT-NS-i
-refinement first-iteration setup), and the modes they were intended
-to speed up (progressive alignment for §C.1, generic inner DP for
-§C.2) are already faster than C in our measurements.
-
-### §C.1. Per-group gap stripping in progressive alignment — DEFERRED
-
-**Original claim** (pre-2026-05-18): "C strips per-group, we strip
-globally — for a 500-column MSA with group1=100 residue-containing
-columns and group2=120, C DP's 12,000 cells while we DP up to
-250,000. Wastes work."
-
-**Empirical reality** (benchmark snapshot above): we are already
-*faster* than C on the modes where progressive alignment dominates
-runtime (default 1.16×, L-INS-i 1.61×, G-INS-i 1.56×, PartTree
-18-90×). The theoretical 20× cell-count gap doesn't translate into
-measurable wall-clock loss because (a) most groups don't have wildly
-different `kept1`/`kept2` columns in practice, and (b) the DP per-cell
-cost in Rust is dominated by FMA + cache loads, not arithmetic
-density.
-
-**Status**: deferred. The implementation cost is high (port
-C's `insertnewgaps()` from `addfunctions.c` for the strip-restore
-round-trip, then thread per-group gap maps through
-`merge_step_cached`), and the benefit is not measurable on current
-benchmarks. Reconsider if a real-world workload surfaces a
+Pre-2026-05-18 theory: C strips per group via `commongappick()`, we
+strip globally — for a 500-column MSA with `kept1=100, kept2=120` C
+DPs 12,000 cells while we DP up to 250,000. *Empirical reality*: we're
+already faster than C on the modes this would help (default 1.16×,
+L-INS-i 1.61×, G-INS-i 1.56×, PartTree 18-90×). The cell-count
+theory doesn't translate to wall-clock because most refinement
+branches don't have wildly different `kept1`/`kept2` columns in
+practice. Implementing per-group stripping requires porting C's
+`insertnewgaps()` round-trip from `addfunctions.c` — high cost, no
+measurable benefit. Reconsider only if a real workload surfaces a
 progressive-alignment bottleneck.
 
-### §C.2. SIMD inner DP loops — DEFERRED (profile + 2 attempts landed 2026-05-18; remaining gap is in inner DP arithmetic, not allocator or branchy-helper)
+### §C.2. FFT-NS-i ~18% gap — DEFERRED (profile data captured in `PROFILING.md`)
 
-**Profile data** (macOS `sample`, 1.4s `mafft-rs --maxiterate 50
-/tmp/sample_108.fa` run, ~1300 main-thread samples; full recipe in
-`PROFILING.md`):
+FFT-NS-i is the only mode where Rust is slower than C. Per the
+profile (macOS `sample`, full recipe in `PROFILING.md`):
 
 | Self-time samples | Function | % main thread |
 |-------------------|----------|---------------|
-| 509 | `profile_align_imp_with_boundary` | **55%** |
+| 509 | `profile_align_imp_with_boundary` (inner DP cell update) | **55%** |
 | 97  | `compute_split_score`             | 11% |
-| 89  | `Profile::from_aligned`           | 10% (after §C.2.1 fusion) |
+| 89  | `Profile::from_aligned`           | 10% |
 | 26  | `Profile::match_score`            | 3% |
-| remaining 22% | rayon, alloc, traversal | — |
-
-Within `profile_align_imp_with_boundary`: 501/582 of its rolled
-samples are in the inner cell-update loop; 80 samples are in `Vec`
-allocation for `ijp`, `h`, `cpmx2_sparse`, and per-row buffers.
-
-**Interpretation**: the 18% Rust-vs-C deficit is dominated by the
-inner DP. Within it, ~14% of self time is allocator churn (we
-allocate fresh per call; C `A__align` reuses static TLS buffers,
-which is the same mechanism behind the §B.2 stateful-buffer
-artifact). The remaining 86% is arithmetic in the cell update
-itself — already FMA-fused and matching C's gcc-O3 inner loop.
-
-**Three candidate paths to close the gap** (ordered by effort,
-documented in `PROFILING.md` §"Closing the FFT-NS-i gap"):
-1. Pre-allocated `DpScratch` arena threaded through
-   `profile_align_imp_*` (closes ~7-10% of FFT-NS-i runtime, ~1-2
-   hour port).
-2. `compute_split_score` branchless inner — current gap branches
-   prevent LLVM SIMD on the residue-residue path (~5% gain, ~1 hour).
-3. Anti-diagonal DP rewrite — major project, byte-equivalence
-   regression risk, reserved for a sustained-bottleneck scenario
-   (1-2 days).
-
-(1) + (2) together would likely close most of the 18% gap. The TODO
-section name (§C.2 "SIMD inner DP loops") is now slightly misleading
-— the real lever is allocator amortization, not SIMD-of-arithmetic.
-
-**Status**: deferred until someone has a sustained FFT-NS-i workload
-to justify the work. Profile data + workflow are committed
-(`PROFILING.md`) so the next pass starts from data, not speculation.
+| 22% rest | rayon, alloc, traversal | — |
 
 **Attempts (2026-05-18)**:
 
-- **Path 1 — `h` / `ijp` thread-local pools (LANDED, perf-neutral)**:
-  `mafft-align/src/profile.rs` now takes the two big 2D DP matrices
-  (`h`: ~3 MB f64, `ijp`: ~1.5 MB i32) from `thread_local!` pools at
-  the top of `profile_align_imp_with_boundary` and swaps them back
-  before returning. Grow-only resize, no per-cell zero — every read
-  cell is unconditionally written by the boundary init or the DP body
-  before any traceback read. Per re-profile, raw_vec::grow_one inside
-  the DP function dropped from ~80 to ~20-30 samples. Wall-clock
-  impact on `--maxiterate 50 sample_108.fa` (3 trials × 5 runs):
-  pre-path-1 Rust ≈ 6.77s vs post Rust ≈ 6.74s — **within
-  measurement noise**. The allocator-reduction prediction
-  (~9% runtime) didn't translate to wall-clock because macOS's
-  malloc/free was already fast enough that the saved allocations
-  weren't the bottleneck. The pooling is kept anyway (cleaner code,
-  free-or-better, mirrors C `A__align`'s `static TLS` buffer reuse).
-
-- **Path 2 — branchless `pairwise_score` (REVERTED)**: rewrote
-  `mafft-core/src/refinement.rs::pairwise_score` as a per-cell
-  state-machine, replacing C's `while (seq1[k] == '-')` consume loop.
-  Failed correctness on 16 unit tests because C's consume loop walks
-  through both-gap positions if seq1 stays gap (it only checks seq1
-  in the inner while), while a naive per-cell reset-on-both-gap rule
+- **`Profile::from_aligned` 3-pass → single-pass fusion** —
+  *LANDED* (`profile.rs::Profile::from_aligned`). Per-sequence walk
+  now updates freqs, gap_freq, opening_count, closing_count in one
+  pass via a `gc_prev` state byte (vs 3 separate walks before).
+  Tail-end semantics preserved for sequences shorter than `length`.
+  Wall-clock impact within noise; code-cleanliness win, no behavior
+  change.
+- **`h` / `ijp` thread-local pool** — *LANDED* (`profile.rs` top:
+  `DP_H_POOL`, `DP_IJP_POOL`). Take the two big 2D DP matrices from
+  thread-local pools at the top of `profile_align_imp_with_boundary`,
+  swap back before returning. Grow-only resize, no per-cell zero —
+  every read cell is unconditionally written by boundary init or DP
+  body before any traceback read. Re-profile confirmed
+  `raw_vec::grow_one` samples inside the DP function dropped from
+  ~80 to ~20-30. Wall-clock impact within noise on macOS (malloc/free
+  is already fast); kept for code-cleanliness + symmetry with C
+  `A__align`'s `static TLS` buffer reuse.
+- **Branchless `compute_split_score`** — *ATTEMPTED, REVERTED*.
+  Rewrote `pairwise_score` as a per-cell state-machine to remove the
+  `while (seq1[k] == '-')` consume loop. Failed 16 byte-identity
+  tests because C's consume loop crosses both-gap positions
+  (it only checks seq1), while a naive reset-on-both-gap rule
   re-charges penalty when an A-gap-run is interrupted by a both-gap
-  column. The minimum branchless formulation that matches C exactly
-  is a 3-state machine (Neutral / AGapRun / BGapRun) — still has
-  branches, no clean SIMD path. Reverted; the original C-style
-  while-loop is preserved with an explanatory comment block.
+  column. The minimum correct branchless form is a 3-state machine
+  (Neutral / AGapRun / BGapRun) — still branchy, no clean SIMD path.
+  Reverted to the C-style structure with an explanatory comment.
 
-**Net**: path 1 landed (no behavior change, marginal-or-better
-perf), path 2 reverted (correctness > speculative perf). The
-remaining ~18% FFT-NS-i gap is in the inner DP cell update
-arithmetic itself; closing it requires the anti-diagonal SIMD
-rewrite mentioned in `PROFILING.md` candidate (3), which is a
-multi-day project with regression risk.
+**Remaining gap is in the inner DP cell-update arithmetic itself**
+(456/922 main-thread samples post-pool). Closing it requires the
+anti-diagonal SIMD rewrite — a multi-day project with byte-identity
+regression risk on the warp DP, gap-skip trackers, and traceback
+ordering. Deferred until a sustained FFT-NS-i workload justifies the
+cost.
 
 SIMD-friendly patterns in `match_score()`, `pairwise_score()`,
 `pairwise_identity_distance()` continue to auto-vectorize via LLVM
-where possible (the gap-run consume loops in `pairwise_score` still
-inhibit it on the gap-run paths).
+where possible (the gap-run consume loop in `pairwise_score` still
+inhibits it on the gap-run paths).
 
-### §C.2.1. Profile construction loop fusion — LANDED 2026-05-18
+---
 
-**Change**: `mafft-align/src/profile.rs::Profile::from_aligned`
-collapsed from 3 sequential walks per input sequence (freqs+gap_freq,
-opening_count, closing_count) to a single fused walk. The fused walk
-maintains a `gc_prev` state byte that drives both the opening and
-closing transition counters as it visits each residue. Tail-end
-semantics (sequences shorter than `length`) are preserved by
-explicit flush after the loop.
+## §E. BALIBASE 3 parity sweep — 97.2 % byte-identical after lenfac fix
 
-**Motivation**: `Profile::from_aligned` is called O(nseq²) times in
-the refinement loop (once per side of each branch, for ~2 × nsteps
-branches per iteration × N iterations). Reducing 3 walks to 1 is a
-straightforward 3× reduction in pass count.
+Harness: `scripts/balibase_parity.py`. Corpus: Drive5 mirror of BALIBASE 3
+(`bench.tar.gz`; lbgi.fr server is currently 404, Drive5 is the only
+working source). Full breakdown in `balibase_parity_run.md`.
 
-**Measured impact**: ~6.8s vs original ~7.0-7.8s on `--maxiterate 50
-sample_108.fa` (5 runs summed). Within measurement noise on this
-machine — the fused loop is a code-cleanliness win that *should*
-help in the hot loop, but the wall-clock benefit is hidden by other
-per-branch costs (DP matrix allocation, score recomputation). All
-349 workspace tests still pass; all 7 representative modes still
-byte-identical to C MAFFT 7.526.
+**Result on default mode (FFT-NS-2)**: **212 / 218 byte-identical
+(97.2 %)** after the 2026-05-18 `nogaplen` fix.
 
-**No future work blocked**: any future profile-build optimization
-(e.g., pre-allocated arenas, SIMD residue scans) would start from
-this single-pass body.
+**Fix landed**: `mafft-tree/src/distance.rs::ktuple_distance_aa/_nuc`
+was computing `lenfac` from the post-X-filtered group length where C's
+`disttbfast.c:3845-3856` uses raw `nogaplen` (gap-only stripped). For
+sequences carrying X / `.`, distances were biased by ~1-1.5×10⁻³ —
+enough to flip UPGMA join order on inputs containing X (which is
+~5 % of BALIBASE). Closed 11 of 17 divergences in one line. Regression
+test: `distance::tests::ktuple_lenfac_uses_nogaplen_not_filtered_groups`.
+FFI confirmation: `bb12041_ktuple_distance_diagnostic`
+(in `cross_validate_parttree.rs`, `#[ignore]`'d, requires
+`/tmp/balibase/...`).
+
+**Remaining 6 divergences**:
+- 4 tied-trace cases (BB20018, BB20039, BB40036, BB40048) — same
+  width, single-residue gap shifts; likely the same §B.2 C-side
+  static-buffer artifact.
+- 2 width-differs cases (BB20027, BB40041) — genuinely divergent
+  alignments, neither involves X. Next investigation target.
+
+**Pending**:
+1. BB20027 deep-dive (2026-05-19): isolated divergence to
+   pass-1 progressive only (retree=1 byte-identical, retree=2
+   diverges by 28 cols). Rebuilt tree byte-matches C, weights
+   match (deterministic from tree), raw input matches, `--add`
+   with C's intermediate matches → bug is in some pass-1 mid-merge
+   step. Closing it requires C instrumentation; deferred. Full
+   notes in `balibase_parity_run.md`.
+2. BB40041: not investigated yet. Likely shares root cause with
+   BB20027.
+3. Cell-level FFI confirmation of the 4 tied-trace cases against §B.2.
+4. Sweep with `--maxiterate 100` and `--localpair --maxiterate 100`
+   once default-mode parity is closed.
 
 ---
 
 ## §D. X-INS-i (`--xinsi`) — UNTESTABLE without `contrafold`
 
-Requires Stanford's `CONTRAfold v2.02+` binary, distributed separately
-(http://contra.stanford.edu/contrafold/). Not shipped by upstream MAFFT,
-not buildable from `mafft-upstream/extensions`. Rust wiring exists
+Requires Stanford's `CONTRAfold v2.02+` binary (http://contra.stanford.edu/contrafold/),
+distributed separately. Not shipped by upstream MAFFT, not buildable
+from `mafft-upstream/extensions`. Rust wiring exists
 (`engine.rs::XInsi`, `mafft-bin/src/main.rs:--xinsi`) and emits the
 correct "contrafold not found" diagnostic when the binary is absent.
 End-to-end validation deferred until `contrafold` is installed.
 
 ---
 
-## Recommended order of attack
+## Active items summary
 
-All currently-tested modes are byte-identical to C MAFFT 7.526. The
-remaining items are latent / coverage / performance gaps, not active
-divergences:
+Everything that follows is either (a) a documented gotcha that we
+choose not to fix, or (b) an external dependency we can't satisfy:
 
-1. **§B.3 missing CLI flags** — fully closed. `--seedtable` landed
-   2026-05-17 (parses hat3.seed files matching `multi2hat3s.c:214`
-   format and hands the table to the engine via the same path as
-   `--seed`; byte-identical to C MAFFT 7.526 for L/G/E-INS-i and
-   FFT-NS-i). `--memsave` landed 2026-05-16 (Hirschberg `msalignmm`
-   wired into engine, byte-identical to C across all combinations
-   tested). `--auto`, `--treein`/`--treeout`, `--anysymbol`, `--seed`,
-   `--leavegappyregion`, `--memsavetree` all landed 2026-05-13/14.
-2. **§B.1 `penalty_ex` in `pairwise_align11`** — would need an API
-   change (take `&GapModel` or add `penalty_ex` param). Currently
-   benign because the CLI doesn't expose `--exp`.
-3. ~~**§B.2 FMA `mul_add` in {global,local,genaffine}.rs**~~ —
-   RESOLVED 2026-05-18. The 8-line `--tm 200 --retree 1` diff is a
-   C-side static-buffer cross-call coupling artifact in `A__align`,
-   not a Rust bug. Documented in `MAFFT_UPSTREAM_REPORT.md`.
-   Defensive FMA fixes kept (blend_profiles_exact, sequence_weights).
-4. ~~**§B.4 `--retree N` for N ≠ 2**~~ — RESOLVED 2026-05-18. Found
-   that Rust honored `--retree N` literally while C clamps at 3 and
-   forces 1 for INS-i. Fixed `engine.rs` + added 7 regression tests.
-5. ~~**§C.1 per-group gap stripping**~~ — DEFERRED 2026-05-18.
-   Benchmarks (see §C header) show Rust is already faster than C on
-   the modes this would help (default 1.16×, L-INS-i 1.61×, G-INS-i
-   1.56×, PartTree 18-90×). High implementation cost, no measurable
-   benefit.
-6. ~~**§C.2 SIMD inner DP**~~ — DEFERRED 2026-05-18. Only mode
-   where Rust is slower than C is FFT-NS-i (~25%), and the deficit
-   is in refinement-iteration-1 setup, not inner-cell throughput.
-   SIMD rewrite wouldn't address it. If FFT-NS-i perf becomes a
-   priority, file a focused §C.3 instead.
-7. **§D X-INS-i (`--xinsi`)** — needs `contrafold` binary to validate.
+1. **§B.2** — 8-line `--tm 200 --retree 1` diff. C-side static-buffer
+   tied-trace artifact, not a Rust bug. `MAFFT_UPSTREAM_REPORT.md`
+   ready for upstream contact.
+2. **§B.6** — sequential float summation guard in `refinement.rs`.
+   Section IS the reminder; no work needed.
+3. **§C.1** — per-group gap stripping. Deferred; we're already faster
+   than C on the affected modes.
+4. **§C.2** — FFT-NS-i ~18% gap. Deferred; profile data in
+   `PROFILING.md`. Closing it requires the anti-diagonal SIMD
+   rewrite (multi-day project, no measurable production benefit
+   currently).
+5. **§D** — X-INS-i needs `contrafold` binary; untestable until
+   someone installs it.
+6. **§E** — BALIBASE 3 sweep: **212/218 byte-identical (97.2%)** on
+   default mode after the `nogaplen` lenfac fix. 4 tied-trace + 2
+   width-differs cases remain. Details in `balibase_parity_run.md`.

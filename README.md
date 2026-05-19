@@ -13,23 +13,25 @@ This project provides:
 
 - FFT-NS-2 (default), NW-NS-2 (`--nofft`)
 - FFT-NS-i (`--maxiterate 100`)
-- L-INS-1, G-INS-1, E-INS-1 (`--localpair`/`--globalpair`/`--genafpair` with `--maxiterate 0`)
+- L-INS-1, G-INS-1, E-INS-1 (`--localpair` / `--globalpair` / `--genafpair` with `--maxiterate 0`)
 - L-INS-i, G-INS-i, E-INS-i (with iterative refinement)
 - BLOSUM 30 / 45 / 50 / 62 / 80 (FFT and NW)
-- JTT 100 / 200, TM 100 / 200 (FFT and NW)
+- JTT 100 / 200, TM 100 / 200 (FFT and NW; TM 200 + `--retree 1` has an
+  8-line diff that's a C-side tied-trace artifact — see
+  `MAFFT_UPSTREAM_REPORT.md`)
 - `--parttree`, `--dpparttree`, `--parttree --nofft` (divide-and-conquer guide tree)
 - `--add`, `--add --nofft`, `--add --keeplength`
 - Q-INS-i (RNA, requires `mxscarnamod`)
-- `--allowshift --globalpair --maxiterate 0` (closed 2026-05-12)
-- `--reorder` / `--inputorder` for all modes including PartTree (closed 2026-05-13)
-- `--treeout` for all modes including `--parttree` and `--dpparttree` (closed 2026-05-13)
-- `--memsave` / `--nomemsave` for FFT-NS-2 and NW-NS-2 (linear-space Hirschberg DP, closed 2026-05-16)
-- `--seedtable FILE` (pre-computed hat3.seed input, closed 2026-05-17)
-- `--retree N` for any N (clamped to [1,3] per `scripts/mafft:1840`; forced to 1 for L/G/E/Q/X-INS-i per `scripts/mafft:1934` — closed 2026-05-18)
+- `--allowshift`, `--reorder` / `--inputorder`, `--treeout`, `--treein`,
+  `--auto`, `--anysymbol` / `--preservecase`,
+  `--leavegappyregion` / `--legacygappenalty`, `--memsavetree`,
+  `--memsave` / `--nomemsave` (Hirschberg `msalignmm` wired into engine),
+  `--seed FILE`, `--seedtable FILE`, `--retree N` (clamped to [1,3]
+  with INS-i forced to 1, matching `scripts/mafft:1840,1934`)
 
 Every progressive merge step matches in score and width and every refinement iteration converges to C's exact alignment.
 
-### Parity matrix (36-seq protein sample, 2026-05-12)
+### Parity matrix (36-seq protein sample)
 
 | Mode / flags                                | C width | Rust width | diff | Status |
 |---------------------------------------------|---------|------------|------|--------|
@@ -47,33 +49,28 @@ Every progressive merge step matches in score and width and every refinement ite
 | JTT 100 / 200 (FFT)                         | match   | match      | 0    | ✓ byte-exact |
 | TM 100 / 200 (NW + FFT, default `--retree 2`) | match | match      | 0    | ✓ byte-exact |
 | TM 200 (`--retree 1`)                       | 717     | 717        | 8†   | C-side tied-trace artifact (see `MAFFT_UPSTREAM_REPORT.md`) |
-| `--parttree`, `--dpparttree`                | 752     | 752        | 0    | ✓ byte-exact |
-| `--parttree --nofft`                        | 752     | 752        | 0    | ✓ byte-exact (closed 2026-05-12) |
-| `--parttree --reorder`                      | 752     | 752        | 0    | ✓ byte-exact (closed 2026-05-13) |
-| `--add` (30+6 fixture)                      | 741     | 741        | 0    | ✓ byte-exact |
-| `--add --nofft` (30+6 fixture)              | 741     | 741        | 0    | ✓ byte-exact |
-| `--add --keeplength` (30+6 fixture)         | 595     | 595        | 0    | ✓ byte-exact |
-| RNA NW (`--nofft samplerna`)                | 360     | 360        | 0†   | ✓ byte-exact (case-insensitive) |
-| Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0†   | ✓ byte-exact (needs `mxscarnamod`) |
-| `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0    | ✓ byte-exact (closed 2026-05-12) |
-| `--reorder` (non-PartTree modes)            | match   | match      | 0    | ✓ byte-exact (closed 2026-05-13) |
+| `--parttree`, `--dpparttree`, `--parttree --nofft`, `--parttree --reorder` | 752 | 752 | 0 | ✓ byte-exact |
+| `--add` / `--add --nofft` / `--add --keeplength` (30+6 fixture) | match | match | 0 | ✓ byte-exact |
+| RNA NW (`--nofft samplerna`)                | 360     | 360        | 0‡   | ✓ byte-exact (case-insensitive) |
+| Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0‡   | ✓ byte-exact (needs `mxscarnamod`) |
+| `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0    | ✓ byte-exact |
+| `--reorder` (non-PartTree modes)            | match   | match      | 0    | ✓ byte-exact |
 
-† For RNA: we uppercase residues; C preserves case. With `diff -i` (case-insensitive) RNA produces 0 lines.
+‡ For RNA / Q-INS-i: we uppercase residues; C preserves case. With `diff -i` RNA produces 0 lines.
 
-†† For `--tm 200 --retree 1`: 4 single-char gap shifts in 2 of 36 sequences. Both
+† `--tm 200 --retree 1`: 4 single-char gap shifts in 2 of 36 sequences. Both
 alignments are optimal-scored ties; the diff comes from C `A__align`'s
-`static TLS` buffers (`commonIP/ijp`, `cpmx1/2`, `ogcp/fgcp/gapfreq` arrays)
-biasing tied-DP-cell selection by accumulated state from prior calls. Our
-DP produces byte-identical `ijp[i][j]` to C's `A__align` given identical
-inputs (verified cell-by-cell across all 365×363 cells of the divergent
-step), so this is a C-side artifact, not a Rust bug. Full analysis +
-upstream report in `MAFFT_UPSTREAM_REPORT.md`. Affects only `--retree 1
---tm 200`; default `--tm 200` (retree=2) is byte-identical because the
-second pass realigns from a rebuilt tree.
+`static TLS` buffers biasing tied-DP-cell selection by accumulated state
+from prior calls. Our DP produces byte-identical `ijp[i][j]` to C's
+`A__align` given identical inputs (verified cell-by-cell across all
+365×363 cells), so this is a C-side artifact, not a Rust bug. Full
+analysis + upstream report in `MAFFT_UPSTREAM_REPORT.md`. Default
+`--tm 200` (retree=2) is byte-identical because the second pass realigns
+from a rebuilt tree.
 
-Every mainstream mode is byte-identical to C MAFFT 7.526. The remaining
-items in `TODO.md` are latent / coverage / performance gaps and missing
-CLI flags, not active divergences.
+Every other mode is byte-identical to C MAFFT 7.526. Remaining items in
+`TODO.md` are non-correctness gaps (performance deferrals and one
+external-dependency limitation), not active divergences.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -256,20 +253,21 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 |---------------------|--------|
 | `--maxiterate`, `--localpair`, `--globalpair`, `--genafpair` | Supported |
 | `--add`, `--addfragments`, `--keeplength` | Supported |
-| `--allowshift` | Supported (byte-identical to C, closed 2026-05-12) |
+| `--allowshift` | Supported (byte-identical to C) |
 | `--nofft` | Supported |
-| `--retree N` | Supported (default 2 for FFT-NS, 1 for INS-i, matching C) |
+| `--retree N` | Supported (clamp at 3, forces 1 for INS-i, matching `scripts/mafft:1840,1934`) |
 | `--op`, `--ep`, `--bl` | Supported |
 | `--thread N` | Supported (Rayon) |
 | `--kimura N` | Supported (custom Kimura R for DNA PAM generation) |
 | `--parttree`, `--dpparttree` | Supported (divide-and-conquer tree for 10K+ sequences) |
 | `--groupsize N` | Supported (partition size for PartTree, default 150) |
 | `--qinsi` (Q-INS-i) | Supported (requires `mxscarnamod` in PATH) |
-| `--xinsi` (X-INS-i) | Supported (requires `contrafold` in PATH) |
+| `--xinsi` (X-INS-i) | Supported (requires `contrafold` in PATH; untestable until installed) |
 | `--scarnalike` | Supported (requires `dash_client` in PATH) |
-| `--reorder` / `--inputorder` | Supported for non-PartTree modes (byte-identical to C MAFFT 7.526) |
-| `--treeout` | Supported for all modes including `--parttree`/`--dpparttree` (byte-identical to C MAFFT 7.526) |
-| `--auto`, `--seed`, `--treein`, `--memsave`/`--nomemsave`, `--anysymbol`, `--leavegappyregion` | Supported (byte-identical to C MAFFT 7.526; `--memsave` closed 2026-05-16) |
+| `--reorder` / `--inputorder` | Supported for all modes including PartTree |
+| `--treeout` | Supported for all modes including `--parttree` / `--dpparttree` |
+| `--memsave` / `--nomemsave` | Supported (Hirschberg `msalignmm` wired into engine for the non-FFT path) |
+| `--seed`, `--seedtable`, `--treein`, `--auto`, `--anysymbol` / `--preservecase`, `--leavegappyregion` / `--legacygappenalty`, `--memsavetree` | Supported (byte-identical to C MAFFT 7.526) |
 
 ## Architecture
 
@@ -304,19 +302,35 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-Current counts as of 2026-05-18 (`cargo test --workspace --exclude pymafft --release`: **349 passed, 0 failed, 0 ignored**):
+`cargo test --workspace --exclude pymafft --release`: **349 passed, 0 failed, 0 ignored**:
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust unit tests (`--lib`) | 157 | All crates, all modules (incl. 7 `msalign` Hirschberg DP tests + 4 `parse_hat3_seed` tests; dropped 4 from deleted `parttree.rs` legacy module — §B.7 closed 2026-05-18) |
+| Rust unit tests (`--lib`) | 157 | All crates, all modules (incl. 7 `msalign` Hirschberg DP tests + 4 `parse_hat3_seed` tests) |
 | Rust binary tests (`mafft-rs`) | 10 | CLI helper functions (`decide_auto`, `replace_unusual`, etc.) |
-| Rust integration tests (`end_to_end`) | 88 | Byte-level parity with C across all supported modes + DP diagnostics (incl. 4 `--seedtable` byte-equal tests + 7 `--retree N` byte-equal tests covering the clamp-at-3 and INS-i-forces-1 rewrites in `scripts/mafft:1840,1934`) |
-| Rust FFI cross-validation tests | 68 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline (8 tests), memsavetree (4 tests), `MSalignmm` Hirschberg DP (10 tests, all byte-identical to C), MSalignmm profile alignment |
+| Rust integration tests (`end_to_end`) | 88 | Byte-level parity with C across all supported modes + DP diagnostics (incl. 4 `--seedtable` and 7 `--retree N` byte-equal tests) |
+| Rust FFI cross-validation tests | 68 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline, memsavetree, `MSalignmm` Hirschberg DP, MSalignmm profile alignment |
 | Rust other integration tests | 25 | `trace_refinement` (15), `integration` mafft-io (7), `imp_*` (3) |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
 | **Total Rust** | **349** | |
 
 Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
+
+#### BALIBASE parity sweep
+
+The included tests pin parity on a 36-seq protein sample. For broader
+coverage across sequence counts, lengths, and divergence levels, run
+`scripts/balibase_parity.py` against an unpacked BALIBASE 4 distribution
+(https://www.lbgi.fr/balibase/) — it runs both `mafft` and `mafft-rs` on
+every `.tfa` input, diffs FASTA outputs, and writes a per-test TSV plus a
+mode-by-mode summary. Exit code is 0 iff every test is byte-identical.
+
+```bash
+cargo build --release
+scripts/balibase_parity.py /path/to/BAliBASE/ \
+    --modes "" "--maxiterate 100" "--localpair --maxiterate 100" \
+    --output balibase_parity.tsv
+```
 
 ## Known limitations
 
@@ -326,12 +340,14 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 
 ### Missing CLI flags
 
-None of the user-visible CLI flags remain unimplemented. The remaining
-TODO items are latent / coverage / performance gaps, not active divergences.
+None. Every user-visible MAFFT 7.526 CLI flag is implemented and
+byte-identical to C on the 36-seq test sample.
 
-`--memsave` and `--nomemsave` are fully wired (closed 2026-05-16). The Hirschberg-style linear-space DP (`mafft_align::msalignmm`) is byte-identical to C MAFFT 7.526's `MSalignmm`, verified on the 36-seq sample across every flag combination tried: `--memsave`, `--memsave --maxiterate 2`, `--memsave --retree 1`, `--memsave --memsavetree`, `--memsave --nofft`, `--memsave --nofft --maxiterate 2`. CLI gating against `--localpair`/`--globalpair`/`--genafpair`/etc. matches C exactly. See `TODO.md` §B.3 for the bug-hunt write-up (two off-by-ones at the midpoint state update, found by patching upstream `MSalignmm.c` with `fprintf` instrumentation and reverting after).
-
-Closed since 2026-05-13: `--reorder`/`--inputorder` (§AA), `--treeout` (§AB), `--treein` (§AC), `--auto` (§AD), `--memsavetree` (§AE), `--anysymbol`/`--preservecase` (§AF), `--leavegappyregion`/`--legacygappenalty` (§AG), `--seed` (§AH), `--memsave`/`--nomemsave` (§B.3, 2026-05-16), and `--seedtable` (§B.3, 2026-05-17) — all byte-identical to C MAFFT 7.526. PartTree's two-pass reorder (`splittbfast` CALL 1 with raw 6-mer distances, CALL 2 with `naivepairscore11` on the first-pass alignment) is composed as `final_order[k] = call1_order[call2_order[k]]`.
+The remaining `TODO.md` items are: (a) the `--tm 200 --retree 1` 8-line
+diff (a C-side artifact, see `MAFFT_UPSTREAM_REPORT.md`), (b)
+performance deferrals where Rust is already faster than C on most
+modes, and (c) `--xinsi` untestable until Stanford's `contrafold` is
+installed.
 
 ### Case preservation
 

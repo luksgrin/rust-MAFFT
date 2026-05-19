@@ -28,6 +28,16 @@ thread_local! {
     static DP_IJP_POOL: RefCell<Vec<Vec<i32>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Drop pooled DP buffers on this thread. The engine calls this between
+/// retree passes when investigating cross-pass state leak; in production
+/// it's a no-op for correctness (the DP body writes every cell in the
+/// active region before reading) but a small perf hit (re-allocates on
+/// next call).
+pub fn reset_dp_pools() {
+    DP_H_POOL.with_borrow_mut(|p| p.clear());
+    DP_IJP_POOL.with_borrow_mut(|p| p.clear());
+}
+
 /// Grow `pool` so the first `rows` rows each hold at least `cols`
 /// cells. No per-cell reset — every read cell in `h` / `ijp` is
 /// unconditionally written by either the boundary init (`ijp[i][0]`,
