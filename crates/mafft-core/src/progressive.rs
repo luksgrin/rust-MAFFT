@@ -1205,7 +1205,17 @@ fn blend_og_one_side(
     }
 }
 
-/// C's createfgresult logic for one side (MSalignmm.c lines 419-439).
+/// C's createfgresult logic for one side (Salignmm.c lines 782-823).
+///
+/// IMPORTANT: C reads `gaptable1[j+1]` even at j = alen-1, accessing
+/// the null terminator past the end of the C string (which is `!= '-'`).
+/// So at the LAST non-gap position, C ALWAYS adds `ori[p] * eff` (the
+/// closing-count contribution), since the "next" position is treated as
+/// non-gap. Our Rust gaptable is a `&[u8]` without a null terminator,
+/// so we treat the out-of-bounds j+1 as non-gap to match. The prior
+/// `j < alen - 1` short-circuit dropped this contribution at the
+/// alignment's last position, causing pass-1 BB20027 cpmx drift when
+/// the merged profile was cached and reused at the next merge.
 fn blend_fg_one_side(
     result: &mut [f64],
     ori: &[f64],     // raw closing counts
@@ -1216,16 +1226,21 @@ fn blend_fg_one_side(
 ) {
     let alen = result.len();
     let mut p = 0usize;
+    // C treats out-of-bounds `gaptable[alen]` as non-gap (the `\0` of
+    // the null-terminated string, which is != '-').
+    let next_is_gap = |j: usize| -> bool {
+        if j + 1 < alen { gaptable[j + 1] == b'-' } else { false }
+    };
     for j in 0..alen {
         if gaptable[j] == b'-' {
             if j == alen - 1 {
                 result[j] += eff;
-            } else if gaptable[j + 1] != b'-' {
+            } else if !next_is_gap(j) {
                 let gf_val = if p < gf.len() { gf[p] } else { 1.0 };
                 result[j] = gf_val.mul_add(eff, result[j]);
             }
         } else {
-            if j < alen - 1 && gaptable[j + 1] != b'-' {
+            if !next_is_gap(j) {
                 if p < ori.len() {
                     result[j] = ori[p].mul_add(eff, result[j]);
                 }

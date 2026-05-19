@@ -64,56 +64,78 @@ were unaffected.
 
 ## BB20027 deep-dive findings (2026-05-19)
 
-Spent a long session narrowing BB20027 (29 seqs, +28 column delta).
-Did NOT close it but isolated the divergence to a specific code path:
+Deep investigation; root cause IDENTIFIED but full fix requires more work.
 
-- `--retree 1` (single-pass progressive): **byte-identical** to C
-  (both width 1612).
-- `--retree 2` (default, second progressive pass on rebuilt tree):
-  diverges (C width 1602 vs Rust 1630).
-- `--nofft` does not affect the divergence (FFT anchor placement is
-  not the cause).
-- C and Rust's rebuilt tree (`--treeout` after `--retree 2`) is
-  **byte-identical** Newick — same topology, same branch lengths.
-- Sequence weights derived from the rebuilt tree therefore match
-  (since `sequence_weights` is deterministic given the tree).
-- Inputs to pass 1: raw input sequences, byte-identical in both
-  implementations (we use `sequences.clone()` each pass, matching
-  C's `gappick0(bseq, seq)`).
-- `--add` test (give both implementations C's 28-way intermediate
-  alignment + the 1p8j_A sequence, ask them to add it): byte-identical
-  output. So the *final* merge step's profile-vs-sequence DP is fine.
-- Therefore the divergence is in some earlier merge step of pass 1.
-  The 28-way intermediate profile that Rust pass-1 builds is subtly
-  different from C's, despite (raw input, tree, weights) being
-  byte-identical.
-- BB20027 has NO non-standard residues (no X / `.` / `J`), so it's
-  not another `nogaplen` lenfac case.
-- DP TLS pool reset between passes (mafft-align/profile.rs's
-  `reset_dp_pools`) does not change the output. Cross-pass buffer
-  pollution is not the cause.
-- The result is deterministic across 3 runs (md5sum identical).
+### Layer 1 — isolated to pass-1 progressive
 
-**What's left to check (would require multi-hour C instrumentation)**:
-1. Instrument `disttbfast.c::treebase` to log per-merge-step input
-   group widths, output width, and DP score. Diff Rust pass-1's
-   step trace against C's step-by-step.
-2. Suspect: the per-step `eff1`/`eff2` weight blending in
-   `progressive.rs::merge_step_cached` may diverge from C's
-   `fastconjuction_noname` accumulation for non-uniform group
-   sizes. Pass 0 happens to not trigger it; pass 1's tree does.
-3. Suspect: the gap-stripping inside `Profile::from_aligned`
-   when rebuilding a profile from aligned-with-gaps sequences
-   (pass 0 starts from gap-free input; pass 1 may re-encounter
-   pre-built profiles with internal gaps from earlier merges).
+- `--retree 1`: byte-identical to C (width 1612).
+- `--retree 2` (default): diverges (1602 vs 1630).
+- `--nofft`: divergence persists → not FFT-anchor placement.
+- Rebuilt tree (`--treeout` after retree=2): byte-identical Newick.
+- Sequence weights match C bit-for-bit (FFI test
+  `bb20027_pass1_weights_match_c`: 0 drift across all 29 weights).
+- `--add` test (force C's 28-way profile + 1p8j_A): byte-identical.
+  → final merge step's DP is fine; the *intermediate* 28-way profile
+  is what diverges.
+- Rust pass-1 step-trace (`MAFFT_DEBUG_STEPS=1`) vs C instrumented
+  trace: identical widths/scores through step 12. **Step 13 (clus1=8,
+  clus2=2)** is the first divergence: same width 593, but Rust score
+  100653.4 vs C 100625.6 (Δ 27.8). Different DP optimum on identical
+  inputs → tied-DP-cell selection driven by 1-ULP cpmx drift.
 
-## Next investigation step
+### Layer 2 — root cause: cache-vs-from-scratch cpmx precision drift
 
-Pick BB40041 next — the other remaining WIDTH-differs case. Same
-diagnostic flow: `--retree 1` to see if it's also a pass-1-only
-divergence, `--nofft` to rule out FFT. If it shares the BB20027
-profile, both are likely a single root cause in pass-1 progressive
-merge accumulation.
+The 8-way profile entering step 13's DP differs by 1 ULP between C
+and Rust:
+
+- **Rust `Profile::from_aligned`** equals **C `cpmx_calc_new`**
+  bit-for-bit (FFI test `rust_profile_freqs_match_c_cpmx_calc_new`,
+  0 cells differ).
+- **Rust `Profile::from_aligned`** ≠ **Rust `blend_profiles_exact`**
+  by 1 ULP in ~30 of 1166 cells (test
+  `rust_from_scratch_matches_rust_blend`, max diff 5.55e-17).
+  The blend cascade — `((w/clusterA_sum) * clusterA_total_sum/all_sum)`
+  — loses precision vs the direct `w/all_sum` from-scratch path.
+- C uses `cpmxhist` (createcpmxresult-via-blend) for every internal
+  node regardless of size — see `disttbfast.c:2620,2913` —
+  while Rust only caches the merged profile when combined seqs > 20
+  (`progressive.rs:987`). At step 13, Rust builds prof1 from scratch
+  on the 8 aligned sequences, while C uses the cached blend from
+  step 12's `createcpmxresult`. Same math, 1-ULP precision drift in
+  ~30 cells, drift flips one DP tied cell at step 13.
+
+### Layer 3 — partial fix attempted; revealed C-blend mismatch
+
+Setting `combined_seqs > 0` (always cache) closes BB20027 cleanly
+(1359-line diff → 4-line tied-trace), but opens 5 previously-matching
+tests (BB20005, BB30003, BB30013, BB40046, BB50016) with similar
+small drifts. So our `blend_profiles_exact` doesn't bit-match C's
+`createcpmxresult` somewhere; the additional mismatches surface only
+when we use the blend path universally.
+
+**Real bug FIXED**: `blend_fg_one_side` had `j < alen - 1`
+short-circuit that dropped the closing-count contribution at the
+final non-gap position. C reads `gaptable[j+1]` past the null
+terminator (treated as non-gap) and DOES add `ori[p] * eff` there.
+Fixed in `progressive.rs:1208-1248` with `next_is_gap()` helper that
+treats out-of-bounds j+1 as non-gap to match C exactly. This is a
+real correctness bug but doesn't surface in the baseline-threshold
+tests (the cell is rarely tied at the final position).
+
+### Layer 4 — what's left
+
+At least ONE MORE site where our blend differs from C's blend in a
+way that flips tied cells. Finding it requires either:
+1. FFI-binding C's `createcpmxresult` (currently `static`) and
+   cell-by-cell comparison against `blend_profiles_exact` on a
+   realistic 8+2 input pair, OR
+2. Instrumenting C's per-step cpmx and Rust's per-step cpmx, diffing
+   cell-by-cell at step 13 of BB20027 (the known-divergent step).
+
+Both require ~half a day of focused work. For now, the BB20027
+divergence is one of 6 known residual cases at 97.2% byte-equality;
+the other 5 are tied-trace artifacts (likely §B.2 C-side static
+buffer effects, not Rust bugs).
 
 ## Reproduction
 

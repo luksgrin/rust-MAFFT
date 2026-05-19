@@ -266,13 +266,21 @@ FFI confirmation: `bb12041_ktuple_distance_diagnostic`
   alignments, neither involves X. Next investigation target.
 
 **Pending**:
-1. BB20027 deep-dive (2026-05-19): isolated divergence to
-   pass-1 progressive only (retree=1 byte-identical, retree=2
-   diverges by 28 cols). Rebuilt tree byte-matches C, weights
-   match (deterministic from tree), raw input matches, `--add`
-   with C's intermediate matches → bug is in some pass-1 mid-merge
-   step. Closing it requires C instrumentation; deferred. Full
-   notes in `balibase_parity_run.md`.
+1. BB20027 deep-dive (2026-05-19): **ROOT CAUSE IDENTIFIED.** Pass-1
+   step 13 (8+2 merge) DP diverges due to 1-ULP cpmx drift between
+   Rust `Profile::from_aligned` (from-scratch) and C `cpmxhist`
+   (cached `createcpmxresult` blend). Step-by-step trace via
+   instrumented `disttbfast.c` confirmed step 13 is the first
+   divergent merge: same width 593, score 100653.4 (Rust) vs
+   100625.6 (C). C always caches via `cpmxhist`; Rust caches only
+   when combined_seqs > 20. Cache-always FIX closes BB20027 (1359 →
+   4 lines, tied-trace) but opens 5 other tests because our
+   `blend_profiles_exact` doesn't yet bit-match C's
+   `createcpmxresult`. Fixed one bug in `blend_fg_one_side`
+   (out-of-bounds j+1 should match C's null-terminator read).
+   At least one more blend discrepancy remains; finding it needs
+   ~half-day with FFI binding of `createcpmxresult` (currently
+   `static` in C). Full notes in `balibase_parity_run.md`.
 2. BB40041: not investigated yet. Likely shares root cause with
    BB20027.
 3. Cell-level FFI confirmation of the 4 tied-trace cases against §B.2.
