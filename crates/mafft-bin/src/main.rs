@@ -244,6 +244,16 @@ struct Args {
     /// runtime effect.
     #[arg(long)]
     nomemsave: bool,
+
+    /// Replicate C MAFFT's static-TLS `reuseprofiles` memoization
+    /// (`Salignmm.c:1446-1450`) so tied-DP-cell choices match C
+    /// byte-for-byte. Off by default — the stateless progressive
+    /// engine is the design goal. Enable when downstream byte-equality
+    /// with C MAFFT 7.526 is hard-required on inputs that surface the
+    /// `A__align` static-state artifact (BB20027-class cases, see
+    /// `MAFFT_UPSTREAM_REPORT.md`).
+    #[arg(long = "c-compat")]
+    c_compat: bool,
 }
 
 fn main() {
@@ -545,6 +555,9 @@ fn main() {
     // — `midw[j] += wm`, not `j+1`).
     if args.memsave {
         engine.memsave_dp = true;
+    }
+    if args.c_compat {
+        engine.c_compat = true;
     }
     // `--memsavetree` overrides distance-based UPGMA tree construction with
     // C MAFFT's compacttree_memsaveselectable algorithm. `--auto` may also

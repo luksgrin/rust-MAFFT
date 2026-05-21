@@ -22,7 +22,7 @@ pub use genaffine::{genaffine_local_align, GenAffineGapModel};
 pub use profile::{
     Profile, profile_align, profile_align_imp, profile_align_imp_with_tiebreak,
     profile_align_imp_with_boundary, BoundaryFreqs, pairwise_align11, align_with_anchors,
-    reset_dp_pools,
+    reset_dp_pools, reset_cpmx_memo,
 };
 pub use fft_align::{fft_profile_align, find_fft_anchors, FftAlignParams, Anchor};
 pub use constraints::{

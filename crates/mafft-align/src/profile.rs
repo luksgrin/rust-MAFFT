@@ -26,6 +26,55 @@ use crate::dp::{AlignOp, Alignment, GapModel};
 thread_local! {
     static DP_H_POOL: RefCell<Vec<Vec<f64>>> = const { RefCell::new(Vec::new()) };
     static DP_IJP_POOL: RefCell<Vec<Vec<i32>>> = const { RefCell::new(Vec::new()) };
+    /// `--c-compat` opt-in: mirrors C's `static TLS` memoization in
+    /// `Salignmm.c::A__align` (lines 1091-1094, 1446-1450, 2203-2206).
+    /// When `Profile::from_aligned_with_memo` is called repeatedly with
+    /// matching `(firstmem, lgth, icyc == previous_icyc + 1)`, the new
+    /// profile is built via `cpmx_calc_add`-equivalent semantics
+    /// (multiply existing freqs by orieff, add neweff for the new
+    /// sequence) instead of `cpmx_calc_new` (zero + rebuild). The two
+    /// paths produce mathematically equivalent results but differ in
+    /// FP precision — and that 1-ULP drift biases C's tied-DP-cell
+    /// selection. To reproduce C bit-for-bit on tied cells, we must
+    /// replicate the same per-thread state machine.
+    static CPMX_MEMO: RefCell<CpmxMemoState> = const { RefCell::new(CpmxMemoState::new()) };
+}
+
+/// Per-thread cpmx memoization state mirroring C `Salignmm.c` statics
+/// `previousfirstlen` / `previousicyc` / `previousfirstmem` /
+/// `previouscall` plus the static `cpmx1` buffer. Activated only when
+/// the engine is built with `c_compat=true`.
+struct CpmxMemoState {
+    /// True if at least one prior `from_aligned_with_memo` ran on this
+    /// thread. Mirrors C `previouscall` (set via `calledbyfulltreebase`
+    /// in C; here we only ever set it when c_compat is on, so the
+    /// presence-of-prior-call is the bit we need).
+    previous_call: bool,
+    previous_firstmem: i32,
+    previous_icyc: usize,
+    previous_first_len: usize,
+    /// Persistent cpmx buffer: `freqs[pos][k]` for pos in
+    /// `[0..previous_first_len)`, k in `[0..nalphabets)`. Sized to the
+    /// largest `lgth` × `nalphabets` seen, grown but never shrunk.
+    freqs: Vec<Vec<f64>>,
+    gap_freq: Vec<f64>,
+    opening: Vec<f64>,
+    closing: Vec<f64>,
+}
+
+impl CpmxMemoState {
+    const fn new() -> Self {
+        Self {
+            previous_call: false,
+            previous_firstmem: -1,
+            previous_icyc: 0,
+            previous_first_len: 0,
+            freqs: Vec::new(),
+            gap_freq: Vec::new(),
+            opening: Vec::new(),
+            closing: Vec::new(),
+        }
+    }
 }
 
 /// Drop pooled DP buffers on this thread. The engine calls this between
@@ -36,6 +85,51 @@ thread_local! {
 pub fn reset_dp_pools() {
     DP_H_POOL.with_borrow_mut(|p| p.clear());
     DP_IJP_POOL.with_borrow_mut(|p| p.clear());
+}
+
+/// Reset C-compat memoization on this thread. Engine calls this at the
+/// start of each retree pass to mirror C's `Salignmm.c:1365-1366` where
+/// `previousfirstlen = -1; previousicyc = -1;` is set after a buffer
+/// resize (effectively per-pass).
+pub fn reset_cpmx_memo() {
+    CPMX_MEMO.with_borrow_mut(|s| {
+        s.previous_call = false;
+        s.previous_firstmem = -1;
+        s.previous_icyc = 0;
+        s.previous_first_len = 0;
+    });
+}
+
+/// Add one new sequence's opening / closing gap counts to existing
+/// per-thread accumulators, matching `st_OpeningGapAdd` /
+/// `st_FinalGapAdd` in `mltaln9.c:12795,12906`. Scales existing by
+/// `orieff`, adds `neweff`-weighted transitions for the new sequence.
+fn cpmx_add_opening_closing(
+    new_seq: &[u8],
+    neweff: f64,
+    orieff: f64,
+    opening: &mut [f64],
+    closing: &mut [f64],
+    lgth: usize,
+) {
+    for j in 0..lgth {
+        opening[j] *= orieff;
+        closing[j] *= orieff;
+    }
+    let n = new_seq.len().min(lgth);
+    let mut gc_prev = false;
+    for pos in 0..n {
+        let ch = unsafe { *new_seq.get_unchecked(pos) };
+        let is_gap = ch == b'-' || ch == b'.';
+        if is_gap {
+            if !gc_prev { opening[pos] += neweff; }
+        } else if gc_prev && pos > 0 {
+            closing[pos - 1] += neweff;
+        }
+        gc_prev = is_gap;
+    }
+    if n < lgth && !gc_prev { opening[n] += neweff; }
+    if n > 0 && gc_prev { closing[n - 1] += neweff; }
 }
 
 /// Grow `pool` so the first `rows` rows each hold at least `cols`
@@ -202,6 +296,156 @@ impl Profile {
             length,
             nalphabets,
         }
+    }
+
+    /// `--c-compat` opt-in: build a profile using C's `cpmx_calc_add` /
+    /// `st_OpeningGapAdd` / `st_FinalGapAdd` / `gapcountadd` semantics
+    /// when the memo conditions match the prior call, OR fall back to
+    /// `from_aligned` semantics otherwise.
+    ///
+    /// `firstmem`/`icyc`/`lgth` are C-style identifiers for the cluster
+    /// being built: `firstmem` is the global index of the first member,
+    /// `icyc` is the cluster size (number of sequences), `lgth` is the
+    /// aligned-sequence length.
+    ///
+    /// Memo activates when: `previous_call == true && firstmem ==
+    /// previous_firstmem && lgth == previous_first_len && icyc ==
+    /// previous_icyc + 1`. Mirrors `Salignmm.c:1447`.
+    ///
+    /// When activated, only the **last** sequence (`sequences[icyc-1]`)
+    /// is incrementally added to the per-thread persistent buffer via
+    /// `cpmx_calc_add` semantics: existing freqs scaled by `orieff =
+    /// 1.0 - neweff`, new sequence's residue gets `neweff` added per
+    /// column. Same for opening / closing / gap_freq.
+    pub fn from_aligned_with_memo(
+        sequences: &[&[u8]],
+        weights: &[f64],
+        amino_map: &[u8; 256],
+        nalphabets: usize,
+        firstmem: i32,
+        icyc: usize,
+        lgth: usize,
+    ) -> Self {
+        assert_eq!(sequences.len(), weights.len());
+        assert_eq!(sequences.len(), icyc);
+        if sequences.is_empty() || lgth == 0 {
+            return Self::from_aligned(sequences, weights, amino_map, nalphabets);
+        }
+        // C's `cpmx_calc_add` requires `lgth` to match the prior call's
+        // and `icyc == previous_icyc + 1`. Otherwise fall back to
+        // from-scratch — but we must also UPDATE the memo so the next
+        // call sees correct previous_* values. (Hence we can't just
+        // delegate to `from_aligned` for the else branch.)
+        CPMX_MEMO.with_borrow_mut(|s| {
+            let activate = s.previous_call
+                && firstmem >= 0
+                && firstmem == s.previous_firstmem
+                && lgth == s.previous_first_len
+                && icyc == s.previous_icyc + 1;
+            let nalpha = nalphabets;
+            // Ensure buffers sized to lgth × nalpha.
+            if s.freqs.len() < nalpha {
+                s.freqs.resize_with(nalpha, Vec::new);
+            }
+            for row in s.freqs.iter_mut().take(nalpha) {
+                if row.len() < lgth {
+                    row.resize(lgth, 0.0);
+                }
+            }
+            if s.gap_freq.len() < lgth {
+                s.gap_freq.resize(lgth, 0.0);
+            }
+            if s.opening.len() < lgth {
+                s.opening.resize(lgth, 0.0);
+            }
+            if s.closing.len() < lgth {
+                s.closing.resize(lgth, 0.0);
+            }
+            if activate {
+                // `cpmx_calc_add` (tddis.c:160): scale existing by orieff,
+                // add `neweff` to new sequence's slot per column.
+                let newmem = icyc - 1;
+                let neweff = weights[newmem];
+                let orieff = 1.0 - neweff;
+                let new_seq = sequences[newmem];
+                for j in 0..lgth {
+                    for i in 0..nalpha {
+                        s.freqs[i][j] *= orieff;
+                    }
+                    if j < new_seq.len() {
+                        let ch = new_seq[j];
+                        let idx = amino_map[ch as usize] as usize;
+                        if idx < nalpha {
+                            s.freqs[idx][j] += neweff;
+                        }
+                    }
+                }
+                // `gapcountadd` (mltaln9.c:15109): mirror of gapcountf
+                // for one new sequence: gap_freq[j] = orieff * gap_freq[j]
+                // + neweff * (1 if gap at j else 0). Stored as gap freq
+                // (NOT 1.0 - gap), C does the 1.0 - flip in A__align.
+                for j in 0..lgth {
+                    s.gap_freq[j] *= orieff;
+                    if j < new_seq.len() && (new_seq[j] == b'-' || new_seq[j] == b'.') {
+                        s.gap_freq[j] += neweff;
+                    }
+                }
+                // `st_OpeningGapAdd` / `st_FinalGapAdd` (mltaln9.c:12795/12906):
+                // incremental versions of *Count. Need same transition logic
+                // as from_aligned but only for the newly added sequence,
+                // scaled by orieff/neweff.
+                cpmx_add_opening_closing(
+                    new_seq, neweff, orieff, &mut s.opening, &mut s.closing, lgth);
+            } else {
+                // From-scratch: zero+fill (matches cpmx_calc_new etc.)
+                for j in 0..lgth {
+                    s.gap_freq[j] = 0.0;
+                    s.opening[j] = 0.0;
+                    s.closing[j] = 0.0;
+                    for i in 0..nalpha { s.freqs[i][j] = 0.0; }
+                }
+                for (seq, &w) in sequences.iter().zip(weights.iter()) {
+                    let n = seq.len().min(lgth);
+                    let mut gc_prev = false;
+                    for pos in 0..n {
+                        let ch = unsafe { *seq.get_unchecked(pos) };
+                        let is_gap = ch == b'-' || ch == b'.';
+                        if is_gap {
+                            s.gap_freq[pos] += w;
+                            if !gc_prev { s.opening[pos] += w; }
+                        } else if gc_prev && pos > 0 {
+                            s.closing[pos - 1] += w;
+                        }
+                        let idx = amino_map[ch as usize] as usize;
+                        if idx < nalpha { s.freqs[idx][pos] += w; }
+                        gc_prev = is_gap;
+                    }
+                    if n < lgth && !gc_prev { s.opening[n] += w; }
+                    if n > 0 && gc_prev { s.closing[n - 1] += w; }
+                }
+            }
+            // Update memo state for next call.
+            s.previous_call = true;
+            s.previous_firstmem = firstmem;
+            s.previous_icyc = icyc;
+            s.previous_first_len = lgth;
+            // Snapshot into a fresh Profile (lengths trimmed to current lgth).
+            let mut freqs = vec![vec![0.0f64; nalpha]; lgth];
+            for j in 0..lgth {
+                for k in 0..nalpha { freqs[j][k] = s.freqs[k][j]; }
+            }
+            let gap_freq = s.gap_freq[..lgth].to_vec();
+            let nongap_freq: Vec<f64> = gap_freq.iter().map(|&g| 1.0 - g).collect();
+            Self {
+                freqs,
+                gap_freq,
+                nongap_freq,
+                ogcp: s.opening[..lgth].to_vec(),
+                fgcp: s.closing[..lgth].to_vec(),
+                length: lgth,
+                nalphabets: nalpha,
+            }
+        })
     }
 
     /// Compute the match score between position `i` of this profile and
@@ -739,6 +983,7 @@ pub fn profile_align_imp_with_boundary(
     // `for(i=0;i<lgth+1;i++) gapfreq[i] = 1.0 - gapfreq[i];` with calloc'd 0 → 1).
     // Our DP needs these boundary values when i==n or j==m.
     let lasti = if tail_gap { n + 1 } else { n };
+
     for i in 1..lasti {
         std::mem::swap(&mut previousw, &mut currentw);
         previousw[0] = initverticalw[i - 1];
@@ -1291,5 +1536,73 @@ mod tests {
         let seqs: Vec<&[u8]> = vec![b"A-GT", b"ACGT"];
         let prof = Profile::from_aligned(&seqs, &[0.5, 0.5], &map, 5);
         assert!((prof.gap_freq[1] - 0.5).abs() < 1e-10); // 50% gap at pos 1
+    }
+
+    #[test]
+    fn cpmx_memo_first_call_matches_from_aligned() {
+        // Without any prior memo state, from_aligned_with_memo should
+        // produce results equivalent to from_aligned (within FP).
+        super::reset_cpmx_memo();
+        let (_mtx, map) = simple_setup();
+        let seqs: Vec<&[u8]> = vec![b"ACGT", b"ACGT", b"AC-T"];
+        let w = vec![1.0 / 3.0; 3];
+        let p1 = Profile::from_aligned(&seqs, &w, &map, 5);
+        let p2 = Profile::from_aligned_with_memo(&seqs, &w, &map, 5, 0, 3, 4);
+        // FROM-SCRATCH path → bit-identical to from_aligned.
+        for pos in 0..4 {
+            for k in 0..5 {
+                let a = p1.freqs[pos][k];
+                let b = p2.freqs[pos][k];
+                assert_eq!(a, b, "freqs[{}][{}]: from_aligned={a:e} memo={b:e}", pos, k);
+            }
+        }
+        for pos in 0..4 {
+            assert_eq!(p1.gap_freq[pos], p2.gap_freq[pos]);
+            assert_eq!(p1.ogcp[pos], p2.ogcp[pos]);
+            assert_eq!(p1.fgcp[pos], p2.fgcp[pos]);
+        }
+    }
+
+    #[test]
+    fn cpmx_memo_incremental_matches_from_scratch_for_extension() {
+        // When the memo activates (extension by one sequence), the
+        // incremental and from-scratch paths should produce the same
+        // mathematical result (modulo 1-ULP FP precision).
+        super::reset_cpmx_memo();
+        let (_mtx, map) = simple_setup();
+        let two_seqs: Vec<&[u8]> = vec![b"ACGT", b"AC-T"];
+        let w2 = vec![0.5, 0.5];
+        // First call: cluster of 2 sequences.
+        let _p2 = Profile::from_aligned_with_memo(
+            &two_seqs, &w2, &map, 5, 0 /*firstmem*/, 2 /*icyc*/, 4 /*lgth*/);
+        // Second call: cluster of 3 sequences (extends with one more).
+        // C's effective normalized weights are 1/3 each. In incremental
+        // form (per cpmx_calc_add): new cpmx = old * (1 - 1/3) + 1/3 * delta_new.
+        // But we passed prev weights as [0.5, 0.5], so the existing cpmx
+        // values match a 2-way profile. To extend, the caller normally
+        // re-normalizes weights to sum to 1.0 within the new cluster.
+        let three_seqs: Vec<&[u8]> = vec![b"ACGT", b"AC-T", b"AGGT"];
+        let w3 = vec![1.0 / 3.0; 3];
+        let p3_incr = Profile::from_aligned_with_memo(
+            &three_seqs, &w3, &map, 5, 0, 3, 4);
+        // Compare to from-scratch on the 3-way cluster.
+        let p3_scratch = Profile::from_aligned(&three_seqs, &w3, &map, 5);
+        // Note: incremental path uses the old cpmx (built from 2 seqs
+        // with weights [0.5,0.5]) scaled by (1 - 1/3) = 2/3, then adds
+        // 1/3 * delta_new. The scaled-old equals from-scratch on 2 seqs
+        // with weights [0.5*2/3, 0.5*2/3] = [1/3, 1/3]. Plus 1/3 for
+        // the 3rd seq. Net: matches from-scratch on 3 seqs with [1/3,
+        // 1/3, 1/3]. Mathematically equal; FP-differently arrived at.
+        let mut max_diff: f64 = 0.0;
+        for pos in 0..4 {
+            for k in 0..5 {
+                let d = (p3_incr.freqs[pos][k] - p3_scratch.freqs[pos][k]).abs();
+                max_diff = max_diff.max(d);
+            }
+        }
+        // Allow up to a few ULP — the incremental path has different
+        // FP rounding than from-scratch.
+        assert!(max_diff < 1e-14,
+            "incremental vs from-scratch diverge by {:.3e}", max_diff);
     }
 }

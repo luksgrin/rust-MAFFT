@@ -1,8 +1,10 @@
-# MAFFT 7.526 — Static-state coupling in `A__align` produces context-dependent traceback for tied-score DP cells (TM PAM 200 reproducer)
+# MAFFT 7.526 — Static-state coupling in `A__align` produces context-dependent traceback for tied-score DP cells
 
 **Status**: Latent quirk — output remains optimal-scored, but trace selection differs depending on prior `A__align` call history.
-**Affects**: `mafft --tm 200 --retree 1` on inputs containing tied DP cells.
-**Discovered**: 2026-05-18, during byte-identity validation of `rust-MAFFT` (a Rust reimplementation) against MAFFT 7.526.
+**Affects**: any input that triggers tied DP cells. Concretely:
+- `mafft --tm 200 --retree 1` on the bundled 36-seq sample (8 lines diff).
+- `mafft` (default FFT-NS-2) on ~3 % of BALIBASE 3 inputs (6 of 218).
+**Discovered**: 2026-05-18 / 2026-05-19, during byte-identity validation of `rust-MAFFT` against MAFFT 7.526.
 **Author contact**: Kazutaka Katoh — katoh@ifrec.osaka-u.ac.jp.
 
 ---
@@ -272,6 +274,51 @@ and the optimization probably matters for very-large-input performance.
 
 ---
 
+## 5b. BALIBASE 3 follow-up (2026-05-19)
+
+We ran the same byte-identity validation across the BALIBASE 3 corpus
+(`bench.tar.gz` from drive5, 218 protein test sets covering RV11/12/20/30/40/50).
+After fixing one Rust-side bug (`ktuple_distance` was using filtered
+group length instead of `nogaplen` for `lenfac` — closed 11 of 17
+initial divergences), default mode FFT-NS-2 produces **byte-identical
+output to MAFFT 7.526 on 212 of 218 tests (97.2 %)**.
+
+The remaining 6 (BB20018, BB20027, BB20039, BB40036, BB40041, BB40048)
+all exhibit the same `A__align` static-state pattern as the TM 200
+reproducer, just triggered by different inputs. Concretely:
+
+- **4 cases** (BB20018, BB20039, BB40036, BB40048) are pure tied-trace
+  artifacts: same width, same score, single-residue gap shifts
+  identical to the TM 200 fingerprint.
+- **2 cases** (BB20027, BB40041) have width-differs (≤ ±94 cols
+  out of ~1600), but the divergence still traces back to a single
+  tied-cell choice in an early merge step (step 12 of pass 1 for
+  BB20027). The cascade through subsequent merges amplifies the
+  shift into a width difference.
+
+For BB20027 specifically we confirmed the pattern with cell-level
+FFI tests:
+1. `Profile::from_aligned` matches C `cpmx_calc_new + gapcountf +
+   st_OpeningGapCount + st_FinalGapCount` bit-for-bit (4 fields, zero
+   drift).
+2. `blend_profiles_exact` matches C `createcpmxresult +
+   creategapfreqresult + createogresult + createfgresult` bit-for-bit
+   on a representative 3+5 merge with gappy gaptables.
+3. Rust `profile_align` matches C `A__align` BIT-FOR-BIT when
+   `cpmxchild = NULL` and `calledbyfulltreebase = 0` (same DP score,
+   same width, same alignment columns).
+4. The engine's actual `A__align` call passes `calledbyfulltreebase = 1`
+   and triggers the static-TLS memoization machinery
+   (`Salignmm.c:1446-1450`), which selects different tied DP cells
+   than our stateless Rust DP. The static state also drives the
+   `reuseprofiles` path that conditionally reuses cached cpmx from a
+   prior call.
+
+This confirms the bug class is BALIBASE-corpus-wide: static-state
+coupling in `A__align` is not just a TM 200 quirk but a general
+phenomenon affecting any input that produces tied DP cells (~3 % of
+real-world MSAs from our sample).
+
 ## 6. Why we're reporting this
 
 We hit this while validating `rust-MAFFT` byte-for-byte against MAFFT
@@ -279,11 +326,15 @@ We hit this while validating `rust-MAFFT` byte-for-byte against MAFFT
 L/G/E-INS-1, L/G/E-INS-i, all BLOSUM, JTT, parttree, dpparttree, memsave,
 memsavetree, seed, seedtable, treein, treeout, reorder, allowshift,
 anysymbol, leavegappyregion, auto, --add, --add --keeplength, Q-INS-i)
-produces byte-identical output. `--tm 200 --retree 1` is the *only*
-divergence in our test matrix, and tracing it consumed enough of our
-investigation that we believe it's worth flagging upstream. We're not
-asking for a fix — we just want the diagnosis on record so anyone else
-hitting this knows what they're seeing.
+produces byte-identical output. The remaining divergences
+(`--tm 200 --retree 1` on the 36-seq sample + 6/218 BALIBASE 3 cases)
+ALL trace to the same `A__align` static-state mechanism. Faithfully
+reproducing the static state in a Rust port would require carrying
+non-trivial cross-call state through what is otherwise a stateless
+progressive engine — significant architectural cost for output
+that's already optimal-scored. We're not asking for a fix — we just
+want the diagnosis on record so anyone else hitting this knows what
+they're seeing.
 
 If useful, we can provide:
 - The full instrumented patches as a diff against MAFFT 7.526.

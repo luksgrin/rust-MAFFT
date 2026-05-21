@@ -321,6 +321,8 @@ pub fn progressive_align_with_mergeoralign_n(
                     None,
                     false,
                     false,
+                    false, // c_compat off in --add path
+                    true,  // --add: pass 0 only, cache valid
                 );
 
                 let post_merge_width = aligned[existing_grp[0]].len();
@@ -428,6 +430,8 @@ pub fn progressive_align_with_mergeoralign_n(
                     None,
                     false,
                     false,
+                    false, // c_compat off in --add path
+                    true,  // --add: pass 0 only, cache valid
                 );
 
                 for &i in step.left.iter().chain(step.right.iter()) {
@@ -631,6 +635,8 @@ pub fn progressive_align_partial(
         merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, scoring, &gap, use_fft,
             &mut profile_cache, None, false, false,
+            false, // c_compat off in partial replay (test diagnostics)
+            true,  // partial replay mirrors pass 0
         );
     }
     aligned
@@ -702,6 +708,66 @@ pub fn progressive_align_full(
     legacy_gap_cost: bool,
     memsave_dp: bool,
 ) -> MultipleAlignment {
+    progressive_align_full_c_compat(
+        sequences, names, topology, scoring, use_fft, shift_penalty,
+        constraints, penalize_term_gaps, weights_override, unalign_level,
+        legacy_gap_cost, memsave_dp, false,
+    )
+}
+
+/// Like `progressive_align_full` but with an explicit `c_compat` flag
+/// that enables C MAFFT's static-TLS cpmx memoization (see
+/// `mafft_align::profile::CPMX_MEMO`). Default callers should use
+/// `progressive_align_full` which passes `c_compat=false`.
+pub fn progressive_align_full_c_compat(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+    constraints: Option<&mafft_types::LocalHomologyTable>,
+    penalize_term_gaps: bool,
+    weights_override: Option<&[f64]>,
+    unalign_level: f64,
+    legacy_gap_cost: bool,
+    memsave_dp: bool,
+    c_compat: bool,
+) -> MultipleAlignment {
+    progressive_align_full_c_compat_ex(
+        sequences, names, topology, scoring, use_fft, shift_penalty,
+        constraints, penalize_term_gaps, weights_override, unalign_level,
+        legacy_gap_cost, memsave_dp, c_compat, true,
+    )
+}
+
+/// Like `progressive_align_full_c_compat` but with an explicit `use_cache`
+/// flag. When `use_cache` is false, every merge rebuilds its child profiles
+/// fresh from the current `aligned[]` state via `cpmx_calc_new`, mirroring
+/// C MAFFT's `dooneiteration` behavior (`disttbfast.c:2288-2289` —
+/// `cpmxchild0/1 = NULL`). When true (default), child profiles are blended
+/// from cached parent profiles via `blend_profiles_exact`, mirroring C's
+/// `createcpmxresult` in `treebase` (pass 0). The blend matches C's
+/// `createcpmxresult` exactly (including its "tsukawanai" comment that
+/// excludes the eff*1.0 gap contribution at gap-insertion positions —
+/// see `Salignmm.c:622-626`); using it in pass-1+ would diverge from C,
+/// which forces fresh `cpmx_calc_new` there.
+pub fn progressive_align_full_c_compat_ex(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    scoring: &ScoringContext,
+    use_fft: bool,
+    shift_penalty: Option<f64>,
+    constraints: Option<&mafft_types::LocalHomologyTable>,
+    penalize_term_gaps: bool,
+    weights_override: Option<&[f64]>,
+    unalign_level: f64,
+    legacy_gap_cost: bool,
+    memsave_dp: bool,
+    c_compat: bool,
+    use_cache: bool,
+) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
@@ -730,6 +796,15 @@ pub fn progressive_align_full(
     // Profile cache: maps a set of sequence indices (sorted) to its cached profile.
     // After each merge, the merged profile is stored so the next merge can reuse it.
     let mut profile_cache: BTreeMap<Vec<usize>, CachedProfile> = BTreeMap::new();
+
+    // `--c-compat`: reset per-thread cpmx memo at start of this pass
+    // (mirrors C `Salignmm.c:1365-1366` which sets previousfirstlen=-1,
+    // previousicyc=-1 on buffer resize). For multi-pass progressive
+    // (retree>1), each pass starts with a clean memo so cross-pass
+    // state doesn't leak.
+    if c_compat {
+        mafft_align::reset_cpmx_memo();
+    }
 
     // Per-step dynamic-matrix offset. `--allowshift`/`--unalignlevel`
     // triggers `unalign_level > 0`. C builds a fresh `dynamicmtx` per
@@ -766,7 +841,8 @@ pub fn progressive_align_full(
         };
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, step_scoring, &gap, use_fft,
-            &mut profile_cache, constraints, penalize_term_gaps, memsave_dp,
+            &mut profile_cache, constraints, penalize_term_gaps, memsave_dp, c_compat,
+            use_cache,
         );
 
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
@@ -777,12 +853,60 @@ pub fn progressive_align_full(
             score: last_score,
         });
         if std::env::var("MAFFT_DEBUG_STEPS").is_ok() {
-            eprintln!("RDBG {} {} {} {} {:.1}",
+            eprintln!("RDBG {} {} {} {} {:.4}",
                 step_idx, step.left.len(), step.right.len(), width, last_score);
         }
         if std::env::var("RDBG_PT_STEPS").is_ok() {
             eprintln!("RDBG_PT step={} clus1={} clus2={} width={} mem1={:?} mem2={:?}",
                 step_idx, step.left.len(), step.right.len(), width, step.left, step.right);
+        }
+        // BB30013 cpmxhist diagnostic: dump the cached profile for this
+        // step's output cluster after the merge writes to cache. Matches
+        // C's `disttbfast.c::treebase` cpmxhist dump at the same point.
+        if let Ok(prefix) = std::env::var("MAFFT_DUMP_CPMX_PREFIX") {
+            let mut key = step.left.clone();
+            key.extend_from_slice(&step.right);
+            key.sort_unstable();
+            if let Some(cached) = profile_cache.get(&key) {
+                let fname = format!("{}_step_{}.txt", prefix, step_idx);
+                if let Ok(mut f) = std::fs::File::create(&fname) {
+                    use std::io::Write;
+                    let prof = &cached.profile;
+                    let cw = prof.length;
+                    let na = prof.nalphabets;
+                    writeln!(f, "step={} width={} nalphabets={} clus1={} clus2={} score={:.6}",
+                        step_idx, cw, na, step.left.len(), step.right.len(), last_score).unwrap();
+                    for k in 0..na {
+                        write!(f, "F[{}]:", k).unwrap();
+                        for j in 0..cw {
+                            write!(f, " {:.18e}", prof.freqs[j][k]).unwrap();
+                        }
+                        writeln!(f).unwrap();
+                    }
+                    // C's `gapfreq*pt` stores `nongap_freq` (= 1.0 - gap_freq);
+                    // see `Salignmm.c:1495,1519` for the post-gapcountf flip.
+                    // Rust caches `nongap_freq` of length `cw` and sets
+                    // `nongap_freq[cw] = 1.0` implicitly in the DP. To match
+                    // C's cpmxhist[nalphabets] which has length cw+1, we
+                    // emit cw nongap_freq values + the implied 1.0 terminator.
+                    write!(f, "G:").unwrap();
+                    for j in 0..cw {
+                        write!(f, " {:.18e}", prof.nongap_freq[j]).unwrap();
+                    }
+                    write!(f, " {:.18e}", 1.0).unwrap();
+                    writeln!(f).unwrap();
+                    write!(f, "O:").unwrap();
+                    for j in 0..cw {
+                        write!(f, " {:.18e}", prof.ogcp[j]).unwrap();
+                    }
+                    writeln!(f).unwrap();
+                    write!(f, "N:").unwrap();
+                    for j in 0..cw {
+                        write!(f, " {:.18e}", prof.fgcp[j]).unwrap();
+                    }
+                    writeln!(f).unwrap();
+                }
+            }
         }
     }
 
@@ -809,6 +933,8 @@ fn merge_step_cached(
     constraints: Option<&mafft_types::LocalHomologyTable>,
     penalize_term_gaps: bool,
     memsave_dp: bool,
+    c_compat: bool,
+    use_cache: bool,
 ) -> f64 {
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
@@ -817,14 +943,34 @@ fn merge_step_cached(
     let key1 = sorted_key(group1);
     let key2 = sorted_key(group2);
 
-    let (prof1, eff1) = if let Some(cached) = cache.get(&key1) {
+    // C-compat path: when enabled, build prof1 via `from_aligned_with_memo`
+    // so the thread-local CPMX_MEMO incrementally updates when conditions
+    // match C's `reuseprofiles` (Salignmm.c:1446-1450). For C, only the
+    // FIRST cluster (cluster1) participates in the memo — cluster2 is
+    // always rebuilt from scratch (`cpmx_calc_new(seq2, ...)` at
+    // Salignmm.c:1555). Mirror that asymmetry here.
+    // C MAFFT only uses the cpmxhist cache in pass 0 (`treebase`); pass 1+
+    // (`dooneiteration`) sets `cpmxchild0/1 = NULL` and falls through to
+    // `cpmx_calc_new` (Salignmm.c:1473-1505 fallback path,
+    // disttbfast.c:2288-2289). The cached blend (`createcpmxresult`) omits
+    // the eff*1.0 gap-insertion contribution to `cpmx[24][j]` ("tsukawanai"
+    // comment at Salignmm.c:624), so reusing it across passes diverges from
+    // a fresh build — this surfaces as the BB20018 / BB40046 step-50
+    // pass-1 divergences. `use_cache=false` here forces fresh
+    // `from_aligned` rebuilds in refinement passes to match C.
+    let try_cache = use_cache;
+    let (prof1, eff1) = if try_cache && cache.get(&key1).is_some() {
+        let cached = cache.get(&key1).unwrap();
         (cached.profile.clone(), cached.eff)
+    } else if c_compat {
+        build_profile_with_memo(group1, aligned, weights, scoring)
     } else {
         let (prof, eff) = build_profile_from_seqs(group1, aligned, weights, scoring);
         (prof, eff)
     };
 
-    let (prof2, eff2) = if let Some(cached) = cache.get(&key2) {
+    let (prof2, eff2) = if try_cache && cache.get(&key2).is_some() {
+        let cached = cache.get(&key2).unwrap();
         (cached.profile.clone(), cached.eff)
     } else {
         let (prof, eff) = build_profile_from_seqs(group2, aligned, weights, scoring);
@@ -1069,13 +1215,42 @@ fn build_profile_from_seqs(
     (prof, sum)
 }
 
+/// `--c-compat` variant of `build_profile_from_seqs` that uses
+/// `Profile::from_aligned_with_memo` so the thread-local cpmx memo
+/// can fire when conditions match. `firstmem` is `group[0]` (the
+/// global leaf index of the cluster's first member, matching C's
+/// `localmem[0][0]`); `icyc` is the cluster size; `lgth` is the
+/// per-sequence width.
+fn build_profile_with_memo(
+    group: &[usize],
+    aligned: &[Vec<u8>],
+    weights: &[f64],
+    scoring: &ScoringContext,
+) -> (Profile, f64) {
+    let seqs: Vec<&[u8]> = group.iter().map(|&i| aligned[i].as_slice()).collect();
+    let w: Vec<f64> = group.iter().map(|&i| weights[i]).collect();
+    let sum: f64 = w.iter().sum();
+    let wn: Vec<f64> = if sum > 0.0 { w.iter().map(|v| v / sum).collect() } else { vec![1.0; group.len()] };
+    let firstmem = group[0] as i32;
+    let icyc = group.len();
+    let lgth = seqs.first().map_or(0, |s| s.len());
+    let prof = Profile::from_aligned_with_memo(
+        &seqs, &wn, &scoring.amino_map, scoring.nalphabets,
+        firstmem, icyc, lgth,
+    );
+    (prof, sum)
+}
+
 /// Blend two profiles using C's exact createcpmxresult + creategapfreqresult +
 /// createogresult + createfgresult logic (MSalignmm.c lines 283-467).
 ///
 /// The ogcp/fgcp blending handles gap positions specially: at block boundaries
 /// (gap→non-gap or non-gap→gap), the value is interpolated from the source
 /// profile's nongap_freq. Within a gap block, the value is 0.
-fn blend_profiles_exact(
+/// Blend two profiles. Exposed `pub` for FFI cross-validation against
+/// C's `createcpmxresult + creategapfreqresult + createogresult +
+/// createfgresult` (`Salignmm.c:608-823`).
+pub fn blend_profiles_exact(
     prof1: &Profile,
     prof2: &Profile,
     eff1: f64,

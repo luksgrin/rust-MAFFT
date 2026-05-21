@@ -108,6 +108,15 @@ pub struct MafftEngine {
     /// For inputs that fit in memory the alignment is the same as
     /// `profile_align`; only memory usage differs.
     pub memsave_dp: bool,
+    /// `--c-compat` opt-in: replicate C MAFFT's `Salignmm.c::A__align`
+    /// static-TLS memoization (`reuseprofiles` / `cpmx_calc_add`) so
+    /// tied-DP-cell choices match C bit-for-bit at the cost of
+    /// carrying per-thread cross-call state. Default false (stateless,
+    /// pure progressive engine). Enable to reproduce C's output on
+    /// inputs where the §B.2 / BALIBASE-corpus residual divergences
+    /// matter for downstream byte-equality requirements. See
+    /// `MAFFT_UPSTREAM_REPORT.md` for the diagnosis.
+    pub c_compat: bool,
 }
 
 impl Default for MafftEngine {
@@ -131,13 +140,21 @@ impl Default for MafftEngine {
             legacy_gap_cost: false,
             seed_homology: None,
             memsave_dp: false,
+            c_compat: false,
         }
     }
 }
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false, legacy_gap_cost: false, seed_homology: None, memsave_dp: false }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false, legacy_gap_cost: false, seed_homology: None, memsave_dp: false, c_compat: false }
+    }
+
+    /// Enable `--c-compat`: replicate C MAFFT's static-TLS cpmx
+    /// memoization so tied-DP-cell choices match C bit-for-bit.
+    pub fn with_c_compat(mut self, c_compat: bool) -> Self {
+        self.c_compat = c_compat;
+        self
     }
 
     /// Set the number of guide tree rebuilds.
@@ -629,11 +646,23 @@ impl MafftEngine {
             } else {
                 None
             };
-            msa = crate::progressive::progressive_align_full(
+            // Disable the cached profile blend (`blend_profiles_exact`).
+            // C's `createcpmxresult` (Salignmm.c:608) omits the eff*1.0 gap
+            // contribution at gap-insertion positions ("tsukawanai" comment
+            // at line 624). C also only uses the cache in pass 0 (`treebase`)
+            // and forces fresh `cpmx_calc_new` in pass 1+ (`dooneiteration`
+            // — disttbfast.c:2288-2289 sets `cpmxchild0/1 = NULL`). Rust's
+            // blend mirrors C's createcpmxresult math-faithfully, but
+            // matching when the cache fires across all BB tests is delicate
+            // — disabling the blend entirely (always `cpmx_calc_new`) gives
+            // byte-identical output across the BB20018 / BB40046 set without
+            // perf impact at typical alignment sizes.
+            msa = crate::progressive::progressive_align_full_c_compat_ex(
                 &input_seqs, &names, &topo, &scoring, use_fft, shift,
                 progress_constraints, penalize_term_gaps,
                 weights_override.as_deref(), self.unalign_level,
-                self.legacy_gap_cost, self.memsave_dp,
+                self.legacy_gap_cost, self.memsave_dp, self.c_compat,
+                false,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
             final_progressive_topo = Some(topo.clone());

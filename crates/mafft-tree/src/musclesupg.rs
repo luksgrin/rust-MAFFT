@@ -27,7 +27,17 @@ impl ClusterMethod {
             Self::Average => (d1 + d2) * 0.5,
             Self::Minimum => d1.min(d2),
             Self::Mix { sueff } => {
-                d1.min(d2) * (1.0 - sueff) + (d1 + d2) * 0.5 * sueff
+                // Match C `mltaln9.c::cluster_mix_double`:
+                //   return MIN(d1,d2) * sueff1 + (d1 + d2) * sueff05;
+                // Apple clang at -O3 with FP_CONTRACT=on fuses the second product
+                // into the add: `fma(d1+d2, sueff05, MIN*sueff1)`. Plain Rust
+                // `a*b + c*d` does NOT auto-contract, producing 1-ULP drift in
+                // the result. The explicit `mul_add` matches clang's choice and
+                // restores bit-identical tree lengths (BB20027 §B-class fix).
+                let sueff1 = 1.0 - sueff;
+                let sueff05 = sueff * 0.5;
+                let p = (d1 + d2) * sueff05;
+                d1.min(d2).mul_add(sueff1, p)
             }
         }
     }
@@ -136,7 +146,7 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
         });
 
         // Update distances: merge jm into im  (C lines 8248-8298)
-        mindisfrom[im] = 999.9; // C uses 999.9, not f64::MAX
+        mindisfrom[im] = 999.9; // C uses 999.9 (mltaln9.c:8249)
 
         let mut idx = Some(first_active);
         while let Some(i) = idx {

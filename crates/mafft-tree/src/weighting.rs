@@ -27,18 +27,18 @@ pub fn sequence_weights(topo: &Topology) -> Vec<f64> {
     let mut rootnode = vec![0.0f64; n];
     let mut eff = vec![1.0f64; n];
 
-    // FMA: matches gcc `-O3` fusion of C's `rootnode[s1] += len[i][0] * eff[s1]`
-    // (`mltaln9.c:9893,9902`). Without FMA the per-sequence weight accumulates
-    // 1-ULP differences for non-trivial trees; that drift flows into
-    // `Profile::from_aligned` and from there into the DP, where it can flip
-    // tie-breaks for flat-landscape matrices (TM PAM 200 — §B.2).
+    // Match C `mltaln9.c:9893,9902`: rootnode[s] += len * eff[s].
+    // Apple clang -O3 on arm64 does NOT fuse this `+= a*b` to FMA by default;
+    // earlier code here used `mul_add` (=explicit FMA) which produced 1-ULP
+    // drift vs C for non-trivial trees (BB20027 — surfaced by cpmx diff at
+    // call=23). Use plain mul+add to match C on this platform.
     for step in &topo.steps {
         for &s in &step.left {
-            rootnode[s] = step.left_length.mul_add(eff[s], rootnode[s]);
+            rootnode[s] += step.left_length * eff[s];
             eff[s] *= 0.5;
         }
         for &s in &step.right {
-            rootnode[s] = step.right_length.mul_add(eff[s], rootnode[s]);
+            rootnode[s] += step.right_length * eff[s];
             eff[s] *= 0.5;
         }
     }

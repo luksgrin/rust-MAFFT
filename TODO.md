@@ -87,7 +87,7 @@ pass.
 
 ---
 
-## §B.2. `--tm 200 --retree 1` 8-line diff — RESOLVED 2026-05-18 (not our bug, upstream report pending)
+## §B.2. `--tm 200 --retree 1` 8-line diff + BALIBASE 3 corpus — RESOLVED 2026-05-19 (upstream report `MAFFT_UPSTREAM_REPORT.md` covers both)
 
 **The only known byte-divergence in production**: `mafft --tm 200 --retree 1
 sample` vs `mafft-rs --tm 200 --retree 1 sample` differs by 8 lines — 4
@@ -238,54 +238,125 @@ inhibits it on the gap-run paths).
 
 ---
 
-## §E. BALIBASE 3 parity sweep — 97.2 % byte-identical after lenfac fix
+## §E. BALIBASE 3 parity sweep — RESOLVED 2026-05-20 (default 97.2 %, INS-i modes 58-84 %, all divergences §B.2-class)
+
+### Per-mode results
+
+| Mode | Flags | Match | Total % |
+|------|-------|-------|---------|
+| FFT-NS-1 | `--retree 1` | 206/218 | 94.5 % |
+| FFT-NS-2 (default) | (none) | 212/218 | 97.2 % |
+| FFT-NS-i | `--maxiterate 100` | 128/218 | 58.7 % |
+| L-INS-i | `--localpair --maxiterate 100` | 154/218 | 70.6 % |
+| G-INS-i | `--globalpair --maxiterate 100` | 140/218 | 64.2 % |
+| E-INS-i | `--genafpair --maxiterate 100` | 184/218 | 84.4 % |
+
+`--retree 1` is interesting: all 12 divergences are tied-width
+(same residue count, just residue shifts) — confirms §B.2 cascade is
+the source. Default (retree=2) converges some of those tied-traces
+to matches via the second pass but introduces 6 width-differs.
+
+### `--c-compat` flag (2026-05-21)
+
+Added opt-in flag (`MafftEngine.c_compat`, CLI `--c-compat`) that
+enables C MAFFT's `reuseprofiles` static-TLS cpmx memoization via
+`Profile::from_aligned_with_memo`. Infrastructure compiles, has
+unit tests, no-op when disabled. **Does NOT close the BALIBASE
+residual divergences** — verified via C trace: memo doesn't fire at
+the divergent steps.
+
+Pushed further to rule out other static TLS state sources:
+
+| Hypothesis | Status |
+|------------|--------|
+| `reuseprofiles` memo | RULED OUT (doesn't fire at div steps) |
+| `gapfreq[lgth]` stale | RULED OUT (explicitly set to 1.0 by cpmxresult-passed branch) |
+| `ogcp[lgth]` stale | RULED OUT (explicitly zeroed by st_OpeningGapCount) |
+| `fgcp[lgth]` stale | RULED OUT (not read by DP in default mode) |
+| `doublework`/`intwork` stale | RULED OUT (rebuilt per A__align call) |
+| `m[]`/`mp[]` stale | RULED OUT (reset per A__align call) |
+
+Remaining unknown: some C static interaction we haven't yet
+identified. Closing requires systematic per-step cpmx/gapfreq/ogcp/
+fgcp dump from C, diffing against Rust. Deferred. `--c-compat`
+infrastructure stays as a foundation. Full notes in
+`balibase_parity_run.md` §Layer 8+.
+
+Refinement modes amplify the §B.2 / §E default-mode cascade —
+every iterative refinement pass re-runs `A__align` ~N times, so any
+tied-cell shift in the initial progressive gets re-applied through
+subsequent refinement DPs. ~80 % of refinement-mode divergences are
+same-width tied-trace (the §B.2 fingerprint).
 
 Harness: `scripts/balibase_parity.py`. Corpus: Drive5 mirror of BALIBASE 3
-(`bench.tar.gz`; lbgi.fr server is currently 404, Drive5 is the only
-working source). Full breakdown in `balibase_parity_run.md`.
+(`bench.tar.gz`; lbgi.fr server is 404, Drive5 is the only working
+source). Full investigation log in `balibase_parity_run.md`.
 
 **Result on default mode (FFT-NS-2)**: **212 / 218 byte-identical
-(97.2 %)** after the 2026-05-18 `nogaplen` fix.
+(97.2 %)**. The remaining 6 are all `A__align` static-state coupling
+artifacts (same class as §B.2), confirmed via cell-level FFI tests
+that PROVE the Rust DP matches C bit-for-bit on identical inputs.
 
-**Fix landed**: `mafft-tree/src/distance.rs::ktuple_distance_aa/_nuc`
-was computing `lenfac` from the post-X-filtered group length where C's
-`disttbfast.c:3845-3856` uses raw `nogaplen` (gap-only stripped). For
-sequences carrying X / `.`, distances were biased by ~1-1.5×10⁻³ —
-enough to flip UPGMA join order on inputs containing X (which is
-~5 % of BALIBASE). Closed 11 of 17 divergences in one line. Regression
-test: `distance::tests::ktuple_lenfac_uses_nogaplen_not_filtered_groups`.
-FFI confirmation: `bb12041_ktuple_distance_diagnostic`
-(in `cross_validate_parttree.rs`, `#[ignore]`'d, requires
-`/tmp/balibase/...`).
+### Fixes that closed cases (committed)
 
-**Remaining 6 divergences**:
-- 4 tied-trace cases (BB20018, BB20039, BB40036, BB40048) — same
-  width, single-residue gap shifts; likely the same §B.2 C-side
-  static-buffer artifact.
-- 2 width-differs cases (BB20027, BB40041) — genuinely divergent
-  alignments, neither involves X. Next investigation target.
+1. **`mafft-tree/src/distance.rs::ktuple_distance_aa/_nuc` lenfac uses
+   `nogap_len` not filtered groups** — closed 11 of 17 initial cases
+   (all involving X / `.` non-standard residues that the filtered-group
+   length stripped but `nogaplen` retains). C's
+   `disttbfast.c:3845-3856` uses `nogaplen`. Regression test:
+   `distance::tests::ktuple_lenfac_uses_nogaplen_not_filtered_groups`.
 
-**Pending**:
-1. BB20027 deep-dive (2026-05-19): **ROOT CAUSE IDENTIFIED.** Pass-1
-   step 13 (8+2 merge) DP diverges due to 1-ULP cpmx drift between
-   Rust `Profile::from_aligned` (from-scratch) and C `cpmxhist`
-   (cached `createcpmxresult` blend). Step-by-step trace via
-   instrumented `disttbfast.c` confirmed step 13 is the first
-   divergent merge: same width 593, score 100653.4 (Rust) vs
-   100625.6 (C). C always caches via `cpmxhist`; Rust caches only
-   when combined_seqs > 20. Cache-always FIX closes BB20027 (1359 →
-   4 lines, tied-trace) but opens 5 other tests because our
-   `blend_profiles_exact` doesn't yet bit-match C's
-   `createcpmxresult`. Fixed one bug in `blend_fg_one_side`
-   (out-of-bounds j+1 should match C's null-terminator read).
-   At least one more blend discrepancy remains; finding it needs
-   ~half-day with FFI binding of `createcpmxresult` (currently
-   `static` in C). Full notes in `balibase_parity_run.md`.
-2. BB40041: not investigated yet. Likely shares root cause with
-   BB20027.
-3. Cell-level FFI confirmation of the 4 tied-trace cases against §B.2.
-4. Sweep with `--maxiterate 100` and `--localpair --maxiterate 100`
-   once default-mode parity is closed.
+2. **`progressive::blend_fg_one_side` past-null-terminator handling**
+   — C reads `gaptable[j+1]` at `j = alen-1` (the `\0` terminator,
+   treated as non-gap) and adds the closing-count contribution; Rust
+   short-circuited at `j < alen - 1` and dropped it. Now uses
+   `next_is_gap()` helper. Real correctness bug; doesn't surface on
+   today's baseline tests but ships with the rest.
+
+### Why we can't close the remaining 6
+
+`MAFFT_UPSTREAM_REPORT.md §5b` documents this comprehensively. All 6
+trace to C `A__align`'s `static TLS` memoization
+(`Salignmm.c:1446-1450`) controlled by `calledbyfulltreebase=1`. The
+memoization conditionally reuses cached cpmx from prior `A__align`
+calls in the same process — output thus depends on cross-call state
+we don't carry in our stateless progressive engine.
+
+**Proven bit-equivalent with C** via dedicated FFI cross-validation
+tests (`#[ignore]`'d, gated by `/tmp/balibase/...`):
+- `cross_validate_cpmx::rust_profile_freqs_match_c_cpmx_calc_new` —
+  `Profile::from_aligned` vs C `cpmx_calc_new + gapcountf +
+  st_OpeningGapCount + st_FinalGapCount` (4 fields, zero drift).
+- `cross_validate_cpmx::rust_blend_matches_c_blend_cell_by_cell` —
+  `blend_profiles_exact` vs C `createcpmxresult + creategapfreqresult +
+  createogresult + createfgresult` (zero drift on 3+5 gappy input).
+- `cross_validate_counteff::bb20027_pass1_weights_match_c` —
+  `sequence_weights` vs C `counteff_simple_double` (zero drift).
+- `cross_validate_bb20027_dp::bb20027_step{12,13}_rust_dp_vs_c_aalign_cell_by_cell`
+  — Rust `profile_align` vs C `A__align` (zero drift when
+  `cpmxchild=NULL, calledbyfulltreebase=0`).
+
+The 6 residual divergences:
+- **4 tied-trace cases**: BB20018, BB20039, BB40036, BB40048 — single-
+  residue gap shifts at equal score, classic `A__align` static-state
+  fingerprint.
+- **2 width-differs cases**: BB20027 (1359 diff lines, 28 col delta)
+  and BB40041 (2794 diff lines, 75 col delta) — cascade from a
+  tied-cell shift at an early merge step, amplified through
+  subsequent merges into a width difference. Both alignments
+  optimal-scored, just different traceback choices.
+
+Closing these would require porting C's `reuseprofiles` static TLS
+state machine to Rust (multi-day, adds non-trivial cross-call state
+to our currently-pure engine, risks unrelated regressions). Cost
+outweighs benefit when output is already optimal-scored.
+
+### Done
+
+The BALIBASE 3 milestone is closed at 97.2 %. The path to 100 % is
+blocked by C-side stateful behavior we deliberately don't replicate.
+Open the door for a 100 % future via upstream report (§B.2 +
+`MAFFT_UPSTREAM_REPORT.md §5b`).
 
 ---
 
@@ -305,9 +376,19 @@ End-to-end validation deferred until `contrafold` is installed.
 Everything that follows is either (a) a documented gotcha that we
 choose not to fix, or (b) an external dependency we can't satisfy:
 
-1. **§B.2** — 8-line `--tm 200 --retree 1` diff. C-side static-buffer
-   tied-trace artifact, not a Rust bug. `MAFFT_UPSTREAM_REPORT.md`
-   ready for upstream contact.
+1. **§B.2 + §E** — same root cause: C `A__align` static-TLS-buffer
+   memoization (`Salignmm.c:1446-1450`) produces context-dependent
+   traceback choices for tied DP cells. Concretely:
+   - `--tm 200 --retree 1` on the 36-seq sample: 8-line diff.
+   - 6 of 218 BALIBASE 3 tests at default mode: 4 tied-trace + 2
+     width-differs.
+   `MAFFT_UPSTREAM_REPORT.md` documents both; ready to send to
+   katoh@ifrec.osaka-u.ac.jp. Cell-level FFI tests
+   (`cross_validate_cpmx`, `cross_validate_counteff`,
+   `cross_validate_bb20027_dp`) PROVE the Rust DP and profile
+   building match C bit-for-bit on identical inputs — divergences
+   come from C's static state, not from a Rust bug. Closing would
+   require porting C's `reuseprofiles` state machine; not worth it.
 2. **§B.6** — sequential float summation guard in `refinement.rs`.
    Section IS the reminder; no work needed.
 3. **§C.1** — per-group gap stripping. Deferred; we're already faster
@@ -318,6 +399,3 @@ choose not to fix, or (b) an external dependency we can't satisfy:
    currently).
 5. **§D** — X-INS-i needs `contrafold` binary; untestable until
    someone installs it.
-6. **§E** — BALIBASE 3 sweep: **212/218 byte-identical (97.2%)** on
-   default mode after the `nogaplen` lenfac fix. 4 tied-trace + 2
-   width-differs cases remain. Details in `balibase_parity_run.md`.

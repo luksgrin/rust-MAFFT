@@ -350,8 +350,11 @@ fn ktuple_distance_aa(seq1: &[u8], seq2: &[u8], k: usize) -> f64 {
     let len2 = nogap_len(seq2) as f64;
     let lenfac = compute_lenfac(len1, len2, 0.01, 10000.0, 10000.0, 0.1);
 
-    let dist = (1.0 - common as f64 / ss1.min(ss2) as f64) * lenfac * 2.0;
-    dist.clamp(0.0, 2.0)
+    // C `disttbfast.c:3894` stores `(1 - common/min(ss1,ss2)) * lenfac * 2`
+    // without clamping. Distances > 2.0 occur for very-different-length
+    // pairs and affect UPGMA tie-breaks. Earlier clamping caused BB40041
+    // (mixed-length 105..1084 family) to build a different tree.
+    (1.0 - common as f64 / ss1.min(ss2) as f64) * lenfac * 2.0
 }
 
 /// DNA k-tuple distance with C's exact algorithm.
@@ -385,8 +388,8 @@ fn ktuple_distance_nuc(seq1: &[u8], seq2: &[u8], k: usize) -> f64 {
     let len2 = nogap_len(seq2) as f64;
     let lenfac = compute_lenfac(len1, len2, 0.01, 2500.0, 2500.0, 0.1);
 
-    let dist = (1.0 - common as f64 / ss1.min(ss2) as f64) * lenfac * 2.0;
-    dist.clamp(0.0, 2.0)
+    // No clamp — C doesn't cap (see ktuple_distance_aa comment).
+    (1.0 - common as f64 / ss1.min(ss2) as f64) * lenfac * 2.0
 }
 
 fn nogap_len(seq: &[u8]) -> usize {

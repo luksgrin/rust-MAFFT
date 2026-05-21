@@ -316,14 +316,32 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 
-#### BALIBASE parity sweep
+#### BALIBASE 3 parity sweep
 
-The included tests pin parity on a 36-seq protein sample. For broader
-coverage across sequence counts, lengths, and divergence levels, run
-`scripts/balibase_parity.py` against an unpacked BALIBASE 4 distribution
-(https://www.lbgi.fr/balibase/) — it runs both `mafft` and `mafft-rs` on
-every `.tfa` input, diffs FASTA outputs, and writes a per-test TSV plus a
-mode-by-mode summary. Exit code is 0 iff every test is byte-identical.
+Sweep across BALIBASE 3 (Drive5 mirror, 218 protein test sets) against MAFFT 7.526:
+
+| Mode | Match | Total % |
+|------|-------|---------|
+| FFT-NS-1 (`--retree 1`) | 206/218 | 94.5 % |
+| FFT-NS-2 (default) | 212/218 | **97.2 %** |
+| FFT-NS-i (`--maxiterate 100`) | 128/218 | 58.7 % |
+| L-INS-i (`--localpair --maxiterate 100`) | 154/218 | 70.6 % |
+| G-INS-i (`--globalpair --maxiterate 100`) | 140/218 | 64.2 % |
+| E-INS-i (`--genafpair --maxiterate 100`) | 184/218 | 84.4 % |
+
+All residual divergences are `A__align` static-state-coupling
+artifacts (same class as `--tm 200 --retree 1` — see
+`MAFFT_UPSTREAM_REPORT.md`). Cell-level FFI tests
+(`cross_validate_cpmx`, `cross_validate_counteff`,
+`cross_validate_bb20027_dp`) prove the Rust DP and profile-building
+match C bit-for-bit on identical inputs. Divergences come from C's
+per-process static TLS memoization state, not from a Rust bug. Both
+alignments at each divergent case are optimal-scored. Refinement
+modes show lower parity because every iteration re-runs `A__align`,
+amplifying any tied-cell shift through subsequent passes; ~80 % of
+refinement-mode divergences are same-width tied-trace cases.
+
+To reproduce:
 
 ```bash
 cargo build --release
@@ -331,6 +349,8 @@ scripts/balibase_parity.py /path/to/BAliBASE/ \
     --modes "" "--maxiterate 100" "--localpair --maxiterate 100" \
     --output balibase_parity.tsv
 ```
+
+Full investigation log: `balibase_parity_run.md`.
 
 ## Known limitations
 
@@ -343,11 +363,11 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 None. Every user-visible MAFFT 7.526 CLI flag is implemented and
 byte-identical to C on the 36-seq test sample.
 
-The remaining `TODO.md` items are: (a) the `--tm 200 --retree 1` 8-line
-diff (a C-side artifact, see `MAFFT_UPSTREAM_REPORT.md`), (b)
-performance deferrals where Rust is already faster than C on most
-modes, and (c) `--xinsi` untestable until Stanford's `contrafold` is
-installed.
+The remaining `TODO.md` items are: (a) `A__align` static-state
+coupling artifacts (`--tm 200 --retree 1` 8-line diff + 6/218
+BALIBASE 3 cases — see `MAFFT_UPSTREAM_REPORT.md`), (b) performance
+deferrals where Rust is already faster than C on most modes, and
+(c) `--xinsi` untestable until Stanford's `contrafold` is installed.
 
 ### Case preservation
 

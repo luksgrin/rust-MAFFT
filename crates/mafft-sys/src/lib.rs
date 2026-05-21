@@ -243,6 +243,47 @@ unsafe extern "C" {
         ss1: c_int, ss2: c_int,
     ) -> c_double;
 
+    /// FFI wrappers for `Salignmm.c::createcpmxresult / creategapfreqresult
+    /// / createogresult / createfgresult` (all `static`). Bodies copied
+    /// verbatim into `wrappers/blend_helpers.c`. Used by
+    /// `cross_validate_cpmx::rust_blend_matches_c_blend` to confirm Rust's
+    /// `blend_profiles_exact` is bit-identical to the C blend cascade.
+    pub fn rs_createcpmxresult(
+        cpmxresult: *mut *mut c_double,
+        limk: c_int,
+        eff1: c_double, eff2: c_double,
+        cpmx1: *mut *mut *mut c_double,
+        cpmx2: *mut *mut *mut c_double,
+        gaptable1: *mut c_char,
+        gaptable2: *mut c_char,
+    );
+    pub fn rs_creategapfreqresult(
+        gapfresult: *mut *mut c_double,
+        limk: c_int,
+        eff1: c_double, eff2: c_double,
+        gapf1: *mut c_double, gapf2: *mut c_double,
+        gaptable1: *mut c_char,
+        gaptable2: *mut c_char,
+    );
+    pub fn rs_createogresult(
+        gapfresult: *mut *mut c_double,
+        limk: c_int,
+        eff1: c_double, eff2: c_double,
+        ori1: *mut c_double, ori2: *mut c_double,
+        gf1: *mut c_double, gf2: *mut c_double,
+        gaptable1: *mut c_char,
+        gaptable2: *mut c_char,
+    );
+    pub fn rs_createfgresult(
+        gapfresult: *mut *mut c_double,
+        limk: c_int,
+        eff1: c_double, eff2: c_double,
+        ori1: *mut c_double, ori2: *mut c_double,
+        gf1: *mut c_double, gf2: *mut c_double,
+        gaptable1: *mut c_char,
+        gaptable2: *mut c_char,
+    );
+
     /// FFI wrapper for `disttbfast.c::compactdisthalfmtxthread` (static).
     /// Fills `mindist[nseq]` / `mindistfrom[nseq]` with the smallest-pair
     /// distance from each i to any j < i (one-sided sweep). Body copied
