@@ -221,14 +221,20 @@ impl BranchWeights {
                 nodes[subroot].length[2] = combined;
                 nodes[subroot].members[2] = nodes[root].members[sibling_dir].clone();
 
-                // sibling → subroot (replace its link to root)
-                for d in 0..3 {
-                    if nodes[sibling].children[d] == root as i32 {
-                        nodes[sibling].children[d] = subroot as i32;
-                        nodes[sibling].length[d] = combined;
-                        break;
-                    }
-                }
+                // sibling slot 2 → subroot.
+                // C `treeOperation.c:246-249` *sets* `stopol[tmpint].children[2]`
+                // without clearing the original sibling→root link in slots [0,1].
+                // The sibling thus has the root in its original slot AND subroot
+                // in slot 2 simultaneously. `calcW`/`syntheticLength` skip the
+                // "opposite" slot via `op != ob->children[i]`, so the redundant
+                // root link is naturally ignored — but only when the caller
+                // passes `op = subroot`, which it does post-restructure. An
+                // earlier Rust port REPLACED the link in [0,1] instead of
+                // adding at [2]; the slot index drove synthetic_len recursion
+                // into the wrong subtree and produced ~0.1% drift in branch
+                // weights (BB11002 refinement iter 2).
+                nodes[sibling].children[2] = subroot as i32;
+                nodes[sibling].length[2] = combined;
             }
         }
 
@@ -391,12 +397,20 @@ fn calc_w(nodes: &[WNode], ob: usize, op: usize, nseq: usize) -> f64 {
 
 /// C's syntheticLength: harmonic mean of children's lengths + branch to parent.
 fn synthetic_len(nodes: &[WNode], ob: usize, op: usize, nseq: usize) -> f64 {
+    // C `treeOperation.c:308-313` returns `ob->length[0]` for leaves —
+    // the *original* parent edge length, NOT the edge to `op`. For true
+    // leaves these coincide (one neighbour). But the root-restructured
+    // sibling (`ob >= nseq`, with children=[old_root, -1, subroot]) has
+    // length[0]=old-to-root and length[2]=combined-to-subroot; C still
+    // returns length[0] because `isLeaf` only checks children[1]. An
+    // earlier port returned the (correct) `len_to_op` for the
+    // post-restructure case and produced 0.1% branch-weight drift on
+    // refinement (BB11002 --maxiterate 100, iter 2). Mirror C exactly.
+    if ob >= nseq { return nodes[ob].length[0]; }
     let len_to_op = (0..3)
         .find(|&d| nodes[ob].children[d] == op as i32)
         .map(|d| nodes[ob].length[d])
         .unwrap_or(0.0);
-
-    if ob >= nseq { return len_to_op; } // leaf
 
     let mut child_lens = Vec::new();
     for d in 0..3 {
