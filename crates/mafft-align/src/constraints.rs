@@ -736,8 +736,13 @@ pub fn build_homology_table_with_unalign(
             // The genL__align11 score is used only to derive the alignment;
             // the distance uses the naive sum-of-pairs over that alignment.
             //
-            // For L-INS-i / G-INS-i, the alignment score is used directly.
-            let score_for_dist: f64 = if matches!(aligner, PairAligner::GeneralizedAffine) {
+            // For L-INS-i / G-INS-i, the alignment score is used directly,
+            // EXCEPT when either input has X residues. C strips X via
+            // `removex` (`pairlocalalign.c:3277`) then recomputes pscore via
+            // `L__align11_noalign` (`pairlocalalign.c:2139`). To match, we
+            // recompute the score on X-stripped sequences when needed; the
+            // alignment regions still come from the X-containing run.
+            let mut score_for_dist: f64 = if matches!(aligner, PairAligner::GeneralizedAffine) {
                 // commongappick + sum amino_dis at matched columns; gaps free.
                 let mut s = 0.0f64;
                 let n_alpha = matrix.len();
@@ -755,6 +760,29 @@ pub fn build_homology_table_with_unalign(
             } else {
                 alignment.score
             };
+
+            // X-override for L/G aligners only (matches C `pairlocalalign.c:2139,2197`).
+            if matches!(aligner, PairAligner::Local | PairAligner::Global) {
+                let has_x_i = sequences[i].iter().any(|&c| c == b'X' || c == b'x');
+                let has_x_j = sequences[j].iter().any(|&c| c == b'X' || c == b'x');
+                if has_x_i || has_x_j {
+                    let strip = |s: &[u8]| -> Vec<u8> {
+                        s.iter().copied().filter(|&c| c != b'X' && c != b'x').collect()
+                    };
+                    let s1 = strip(sequences[i]);
+                    let s2 = strip(sequences[j]);
+                    let stripped_score = match aligner {
+                        PairAligner::Local => {
+                            local_align(&s1, &s2, matrix, amino_map, gap, score_offset).alignment.score
+                        }
+                        PairAligner::Global => {
+                            crate::global::global_align(&s1, &s2, matrix, amino_map, gap, true, true).score
+                        }
+                        _ => score_for_dist,
+                    };
+                    score_for_dist = stripped_score;
+                }
+            }
 
             if score_for_dist <= 0.0 {
                 return PairResult { i, j, distance: 2.0, regions: Vec::new() };
@@ -784,6 +812,7 @@ pub fn build_homology_table_with_unalign(
                 matrix, amino_map, offset1 as i32, offset2 as i32, b'h',
             );
 
+            let _ = bunbo; // bunbo retained for diagnostic builds, unused in release
             PairResult { i, j, distance: d, regions }
         })
         .collect();
