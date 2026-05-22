@@ -784,15 +784,17 @@ pub fn build_homology_table_with_unalign(
                 }
             }
 
-            if score_for_dist <= 0.0 {
-                return PairResult { i, j, distance: 2.0, regions: Vec::new() };
-            }
-
-            // C's `score2dist` (`pairlocalalign.c:1931-1944`):
+            // C's `score2dist` (`mltaln9.c:4329-4342` / `pairlocalalign.c:1931-1944`):
             //   bunbo = min(selfscore[i], selfscore[j])
             //   dist = bunbo == 0           ? 2.0
             //        : bunbo < pscore       ? 0.0
             //        : (1 - pscore / bunbo) * 2
+            // Note: C does NOT clamp the result, so negative pscores produce
+            // dist > 2.0 (e.g. BB40037 pair (3,21) at G-INS-i: pscore ≈ -145,
+            // bunbo ≈ 60074 → dist ≈ 2.0048). UPGMA reads these as more-distant
+            // pairs; capping at 2.0 changes downstream branch lengths. An
+            // earlier `if score_for_dist <= 0.0 { return 2.0 }` guard here
+            // diverged from C on pairs with poor-quality global alignments.
             let bunbo = selfscore[i].min(selfscore[j]);
             let d = if bunbo == 0.0 {
                 2.0
@@ -812,7 +814,6 @@ pub fn build_homology_table_with_unalign(
                 matrix, amino_map, offset1 as i32, offset2 as i32, b'h',
             );
 
-            let _ = bunbo; // bunbo retained for diagnostic builds, unused in release
             PairResult { i, j, distance: d, regions }
         })
         .collect();
