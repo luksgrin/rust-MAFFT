@@ -52,6 +52,15 @@ pub fn sequence_weights(topo: &Topology) -> Vec<f64> {
             *w /= total;
         }
     }
+    if let Ok(f) = std::env::var("RS_WEIGHTS") {
+        use std::io::Write;
+        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            for (i, w) in rootnode.iter().enumerate() {
+                let _ = writeln!(fp, "weight[{}]={:.18e}", i, w);
+            }
+            let _ = writeln!(fp, "---");
+        }
+    }
     rootnode
 }
 

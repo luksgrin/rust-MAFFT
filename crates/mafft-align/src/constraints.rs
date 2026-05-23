@@ -103,6 +103,27 @@ pub fn build_imp_matrix(
             }
         }
     }
+    if let Ok(f) = std::env::var("RS_IMPMTX_DUMP") {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALL_NO: AtomicUsize = AtomicUsize::new(0);
+        let n = CALL_NO.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            let mut sum = 0.0f64;
+            let mut nonzero = 0usize;
+            for row in &imp {
+                for &v in row {
+                    if v != 0.0 { sum += v; nonzero += 1; }
+                }
+            }
+            let d = lgth1.min(lgth2);
+            let mut diag_sum = 0.0f64;
+            for k in 0..d { diag_sum += imp[k][k]; }
+            let imp00 = if lgth1 > 0 && lgth2 > 0 { imp[0][0] } else { 0.0 };
+            let _ = writeln!(fp, "call={} lgth1={} lgth2={} nonzero={} sum={:.18e} diag_sum={:.18e} imp00={:.18e}",
+                n, lgth1, lgth2, nonzero, sum, diag_sum, imp00);
+        }
+    }
     imp
 }
 
@@ -528,6 +549,10 @@ struct PairResult {
     j: usize,
     distance: f64,
     regions: Vec<HomologyRegion>,
+    #[allow(dead_code)]
+    _debug_pscore: f64,
+    #[allow(dead_code)]
+    _debug_bunbo: f64,
 }
 
 /// Which pairwise aligner to drive `build_homology_table` with.
@@ -814,9 +839,34 @@ pub fn build_homology_table_with_unalign(
                 matrix, amino_map, offset1 as i32, offset2 as i32, b'h',
             );
 
-            PairResult { i, j, distance: d, regions }
+            PairResult { i, j, distance: d, regions, _debug_pscore: score_for_dist, _debug_bunbo: bunbo }
         })
         .collect();
+
+    if let Ok(f) = std::env::var("RS_LINSI_DUMP") {
+        use std::io::Write;
+        if let Ok(mut fp) = std::fs::File::create(&f) {
+            let mut sorted: Vec<&PairResult> = results.iter().collect();
+            sorted.sort_by_key(|r| (r.i, r.j));
+            for r in &sorted {
+                let _ = writeln!(fp, "pair[{},{}] pscore={:.18e} bunbo={:.18e} dist={:.18e}", r.i, r.j, r._debug_pscore, r._debug_bunbo, r.distance);
+            }
+        }
+    }
+    if let Ok(f) = std::env::var("RS_LINSI_HAT3") {
+        use std::io::Write;
+        if let Ok(mut fp) = std::fs::File::create(&f) {
+            let mut sorted: Vec<&PairResult> = results.iter().collect();
+            sorted.sort_by_key(|r| (r.i, r.j));
+            for r in &sorted {
+                for region in &r.regions {
+                    let _ = writeln!(fp, "{} {} {} {:7.5} {} {} {} {} h",
+                        r.i, r.j, region.overlapaa, region.opt,
+                        region.start1, region.end1, region.start2, region.end2);
+                }
+            }
+        }
+    }
 
     // Apply results to table and distance matrix (sequential)
     let mut table = LocalHomologyTable::new(nseq);

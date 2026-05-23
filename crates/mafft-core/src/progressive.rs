@@ -856,6 +856,22 @@ pub fn progressive_align_full_c_compat_ex(
             eprintln!("RDBG {} {} {} {} {:.4}",
                 step_idx, step.left.len(), step.right.len(), width, last_score);
         }
+        if let Ok(f) = std::env::var("RS_PROGRESSIVE_TRACE") {
+            use std::io::Write;
+            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                let m1 = step.left[0];
+                let m2 = step.right[0];
+                let mut h: u64 = 5381;
+                for &i in &step.left {
+                    for &c in &aligned[i] { h = h.wrapping_mul(33).wrapping_add(c as u64); }
+                }
+                for &i in &step.right {
+                    for &c in &aligned[i] { h = h.wrapping_mul(33).wrapping_add(c as u64); }
+                }
+                let _ = writeln!(fp, "step={} m1={} m2={} clus1={} clus2={} width={} pscore={:.6} hash={:x}",
+                    step_idx, m1, m2, step.left.len(), step.right.len(), width, last_score, h);
+            }
+        }
         if std::env::var("RDBG_PT_STEPS").is_ok() {
             eprintln!("RDBG_PT step={} clus1={} clus2={} width={} mem1={:?} mem2={:?}",
                 step_idx, step.left.len(), step.right.len(), width, step.left, step.right);

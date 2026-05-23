@@ -1124,49 +1124,67 @@ pub fn profile_align_imp_with_boundary(
         }
     }
 
-    // Tail gap handling — exact port of C's `Atracking` in Salignmm.c:891-925.
-    // C uses STRICT `>` on each scan, initializes wm BELOW the corner value,
-    // scans last row (j = lgth2-2 down to 0), then last column (i = lgth1-2
-    // down to 0), then explicitly checks if the corner cell wins.
+    // Tail gap handling.
     //
-    // With STRICT `>` and decreasing-index scans, among tied-score cells:
-    //   - within the last row, the HIGHEST j wins (first encountered).
-    //   - within the last column, the HIGHEST i wins.
-    //   - the corner wins ONLY if strictly greater than both row and column.
+    // C has TWO different scan implementations:
+    //   - `Atracking` (Salignmm.c:891-925, no-constraint path): strict `>`,
+    //     wm initialized BELOW corner, scans row+col EXCLUDING corner with
+    //     decreasing indices, then explicit corner fallback. Among tied
+    //     cells the HIGHEST index wins; corner wins only if strictly greater.
+    //   - `Atracking_localhom` (Salignmm.c:434-457, constraint path): `>=`,
+    //     wm initialized to lastverticalw[0], scans col+row INCLUDING corner
+    //     with increasing indices. Among tied cells the LATEST update wins
+    //     — i.e. the corner (scanned last in the row pass) wins all ties.
     //
-    // The earlier `>=` ascending-scan version produced different traceback
-    // endpoints on inputs with tied last-row/column cells (e.g. BL50 step
-    // 24 — see TODO §4 close 2026-05-08).
+    // The progressive merge for L-INS-i / G-INS-i / E-INS-i uses the
+    // constraint path (`A__align` with constraint != 0), so we must mirror
+    // `Atracking_localhom` when `impmtx` is supplied. The non-constraint
+    // path keeps `Atracking` semantics — this was the BL50 step 24 fix.
     //
     // TERMGAPFAC and TERMGAPFAC_EX are both 0.0 (Salignmm.c:12-13), so the
     // additive correction terms drop out.
     if !tail_gap {
-        // lasthorizontalw is the last row of h: h[n-1][j] for j=0..m-1.
-        // lastverticalw is the last column of h: h[i][m-1] for i=0..n-1.
-        let last_row_corner = h[n - 1][m - 1]; // = lasthorizontalw[lgth2-1]
-        let mut wm = last_row_corner - 1.0;
-        // Scan last row (j = m-2 down to 0).
-        for j in (0..m - 1).rev() {
-            let g = h[n - 1][j];
-            if g > wm {
-                wm = g;
-                ijp[n][m] = -((m - j) as i32);
+        let last_row_corner = h[n - 1][m - 1];
+        if impmtx.is_some() {
+            // Atracking_localhom port: forward scan, `>=`, includes corner.
+            let mut wm = lastverticalw[0];
+            for i in 0..n {
+                if lastverticalw[i] >= wm {
+                    wm = lastverticalw[i];
+                    ijp[n][m] = (n - i) as i32;
+                }
             }
-        }
-        // Scan last column (i = n-2 down to 0). lastverticalw[i] = h[i][m-1].
-        for i in (0..n - 1).rev() {
-            let g = lastverticalw[i];
-            if g > wm {
-                wm = g;
-                ijp[n][m] = (n - i) as i32;
+            for j in 0..m {
+                if h[n - 1][j] >= wm {
+                    wm = h[n - 1][j];
+                    ijp[n][m] = -((m - j) as i32);
+                }
             }
+            h[n][m] = wm;
+        } else {
+            // Atracking port: reverse scan, strict `>`, excludes corner,
+            // then corner fallback.
+            let mut wm = last_row_corner - 1.0;
+            for j in (0..m - 1).rev() {
+                let g = h[n - 1][j];
+                if g > wm {
+                    wm = g;
+                    ijp[n][m] = -((m - j) as i32);
+                }
+            }
+            for i in (0..n - 1).rev() {
+                let g = lastverticalw[i];
+                if g > wm {
+                    wm = g;
+                    ijp[n][m] = (n - i) as i32;
+                }
+            }
+            if last_row_corner > wm {
+                wm = last_row_corner;
+                ijp[n][m] = 0;
+            }
+            h[n][m] = wm;
         }
-        // Corner fallback: prefer the corner if strictly greater.
-        if last_row_corner > wm {
-            wm = last_row_corner;
-            ijp[n][m] = 0;
-        }
-        h[n][m] = wm;
     }
 
     // Traceback  (C lines 581-617)
@@ -1262,6 +1280,37 @@ pub fn profile_align_imp_with_boundary(
     }
 
     let best_score = h[n][m];
+
+    if let Ok(f) = std::env::var("RS_DP_CORNER") {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALL_NO: AtomicUsize = AtomicUsize::new(0);
+        let cn = CALL_NO.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            let corner = h[n - 1][m - 1];
+            let _ = writeln!(fp, "call={} constraint={} wm={:.18e} h[n-1][m-1]={:.18e} h[n][m]={:.18e}",
+                cn, if impmtx.is_some() {1} else {0}, best_score, corner, h[n][m]);
+        }
+    }
+    if let Ok(prefix) = std::env::var("RS_IJP_DUMP_PREFIX") {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALL_NO2: AtomicUsize = AtomicUsize::new(0);
+        let cn = CALL_NO2.fetch_add(1, Ordering::SeqCst);
+        let target_call: usize = std::env::var("RS_IJP_DUMP_CALL")
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if cn == target_call {
+            let fname = format!("{}_call_{}.txt", prefix, cn);
+            if let Ok(mut fp) = std::fs::File::create(&fname) {
+                let _ = writeln!(fp, "n={} m={} corner_h={:.18e} best={:.18e}", n, m, h[n-1][m-1], best_score);
+                for i in 0..=n {
+                    for j in 0..=m {
+                        let _ = writeln!(fp, "ijp[{}][{}]={} h[{}][{}]={:.18e}", i, j, ijp[i][j], i, j, h[i][j]);
+                    }
+                }
+            }
+        }
+    }
 
     // Return h/ijp to the thread-local pools so the next call avoids
     // re-allocating them. (See the §C.2 path-(1) comment at the top of

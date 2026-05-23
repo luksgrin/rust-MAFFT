@@ -868,13 +868,21 @@ impl MafftEngine {
                     legacy_gap_cost: self.legacy_gap_cost,
                     ..Default::default()
                 };
-                iterative_refine(
-                    &mut msa,
-                    &topo,
-                    &scoring,
-                    &params,
-                    local_hom.as_ref(),
-                );
+                // C `dvtditr.c:882` switches to segmented refinement (split
+                // the alignment at high-conservation anchors, refine each
+                // segment independently) whenever `constraint == 0` and
+                // `bunkatsu != 0` — i.e. FFT-NS-i but not the *-INS-i modes,
+                // which set `constraint=2` and stay single-segment.
+                let use_segmented = matches!(self.mode, AlignmentMode::FftNsi { .. });
+                if use_segmented {
+                    crate::refinement::segmented_iterative_refine(
+                        &mut msa, &topo, &scoring, &params, local_hom.as_ref(),
+                    );
+                } else {
+                    iterative_refine(
+                        &mut msa, &topo, &scoring, &params, local_hom.as_ref(),
+                    );
+                }
             }
         }
 

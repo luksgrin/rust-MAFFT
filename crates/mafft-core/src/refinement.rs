@@ -1150,6 +1150,155 @@ fn pairwise_score(seq1: &[u8], seq2: &[u8], scoring: &ScoringContext) -> f64 {
     score
 }
 
+/// Find anchor column positions for segmenting a multiple alignment, mirroring
+/// C `searchAnchors` (`mltaln9.c:11318`).
+///
+/// For each column, computes the average pairwise substitution score. Slides a
+/// window of `div_win_size` (=20) columns; where the windowed sum exceeds
+/// `div_threshold_pct/100 * 600 * div_win_size` (=7800 by default), marks an
+/// anchor region. Returns the centers of those regions, framed by `[0, len]`
+/// so consecutive entries define the segment boundaries dvtditr.c:1085 uses.
+fn search_anchors_aa(
+    sequences: &[Vec<u8>],
+    matrix: &[Vec<i32>],
+    amino_map: &[u8; 256],
+    div_win_size: usize,
+    div_threshold_pct: i32,
+) -> Vec<usize> {
+    const SEGMENTSIZE: usize = 150;
+
+    let nseq = sequences.len();
+    let len = sequences.first().map_or(0, |s| s.len());
+    if nseq < 2 || len < div_win_size + 2 {
+        return vec![0, len];
+    }
+    let threshold = (div_threshold_pct as f64 / 100.0) * 600.0 * div_win_size as f64;
+    let n_pairs = (nseq * (nseq - 1) / 2) as f64;
+    let mtx_size = matrix.len();
+
+    // Per-column average pairwise substitution score (stra[i] in C).
+    let mut stra = vec![0.0f64; len];
+    for i in 0..len {
+        let mut sum = 0.0f64;
+        for k in 0..(nseq - 1) {
+            let ki = amino_map[sequences[k][i] as usize] as usize;
+            for j in (k + 1)..nseq {
+                let ji = amino_map[sequences[j][i] as usize] as usize;
+                if ki < mtx_size && ji < mtx_size {
+                    sum += matrix[ki][ji] as f64;
+                }
+            }
+        }
+        stra[i] = sum / n_pairs;
+    }
+
+    let mut centers: Vec<usize> = Vec::new();
+    let mut score: f64 = stra[..div_win_size].iter().sum();
+    let mut status = false;
+    let mut start_i: usize = 0;
+    let mut length: usize = 0;
+
+    // C loops `for( i=1; i<len-divWinSize; i++ )` and leaves `i` reachable
+    // after the loop for the trailing flush; we keep `last_i` for parity.
+    let mut last_i = 1usize;
+    for i in 1..(len - div_win_size) {
+        last_i = i;
+        score = score - stra[i - 1] + stra[i + div_win_size - 1];
+        if score > threshold {
+            if !status {
+                status = true;
+                start_i = i;
+                length = 0;
+            }
+            length += 1;
+        }
+        if score <= threshold || length > SEGMENTSIZE {
+            if status {
+                let end_i = i;
+                let center = (start_i + end_i + div_win_size) / 2;
+                centers.push(center);
+                length = 0;
+                status = false;
+            }
+        }
+    }
+    if status {
+        let center = (start_i + last_i + div_win_size) / 2;
+        centers.push(center);
+    }
+
+    let mut anchors: Vec<usize> = Vec::with_capacity(centers.len() + 2);
+    anchors.push(0);
+    anchors.extend(centers.into_iter().filter(|&c| c < len));
+    anchors.push(len);
+    anchors.dedup();
+    anchors
+}
+
+/// Iteratively refine a multiple alignment, mirroring C MAFFT's FFT-NS-i
+/// behaviour: split the alignment at high-conservation anchors and run
+/// `iterative_refine` on each column-slice independently, then re-concatenate.
+///
+/// Mirrors the segmented loop in `dvtditr.c:1085` driven by `searchAnchors`.
+/// Falls back to whole-alignment refinement when no anchors are found.
+///
+/// `constraints` is intentionally not sliced — C's segmented path uses
+/// `kobetsubunkatsu=1` which goes single-segment whenever `constraint != 0`,
+/// so this function is only called from non-constraint modes (FFT-NS-i).
+pub fn segmented_iterative_refine(
+    alignment: &mut MultipleAlignment,
+    topology: &Topology,
+    scoring: &ScoringContext,
+    params: &RefinementParams,
+    constraints: Option<&LocalHomologyTable>,
+) -> usize {
+    let nseq = alignment.nseq();
+    if nseq <= 2 || topology.steps.is_empty() {
+        return 0;
+    }
+
+    let anchors = search_anchors_aa(
+        &alignment.sequences,
+        &scoring.substitution_matrix,
+        &scoring.amino_map,
+        20, 65,
+    );
+    if anchors.len() <= 2 {
+        // No anchors found → behave like single-segment refinement.
+        return iterative_refine(alignment, topology, scoring, params, constraints);
+    }
+
+    let mut total_iters = 0usize;
+    let mut concat: Vec<Vec<u8>> = vec![Vec::new(); nseq];
+
+    for w in anchors.windows(2) {
+        let (start, end) = (w[0], w[1]);
+        if start >= end { continue; }
+
+        let seg_seqs: Vec<Vec<u8>> = alignment.sequences.iter()
+            .map(|s| s[start..end].to_vec())
+            .collect();
+        let mut seg_msa = MultipleAlignment {
+            sequences: seg_seqs,
+            names: alignment.names.clone(),
+            score: 0.0,
+            step_trace: Vec::new(),
+            guide_tree: None,
+            first_pass_sequences: None,
+        };
+
+        let iters = iterative_refine(&mut seg_msa, topology, scoring, params, constraints);
+        total_iters += iters;
+
+        for (i, seq) in seg_msa.sequences.iter().enumerate() {
+            concat[i].extend_from_slice(seq);
+        }
+    }
+
+    alignment.sequences = concat;
+    total_iters
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
