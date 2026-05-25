@@ -1124,6 +1124,46 @@ pub fn profile_align_imp_with_boundary(
         }
     }
 
+    if let Ok(path) = std::env::var("RS_H_DUMP") {
+        use std::io::Write;
+        let shape_ok = std::env::var("RS_H_DUMP_SHAPE")
+            .ok()
+            .and_then(|s| {
+                let parts: Vec<&str> = s.split(',').collect();
+                if parts.len() == 4 {
+                    let sn: usize = parts[0].parse().ok()?;
+                    let sm: usize = parts[1].parse().ok()?;
+                    Some(n == sn && m == sm)
+                } else { None }
+            })
+            .unwrap_or(false);
+        if shape_ok {
+            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                // Dump prof1.freqs[0] and prof2.freqs[0] for input diffing.
+                let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
+                let _ = write!(fp, "R_PROF1_F0");
+                for k in 0..nalpha { let _ = write!(fp, " {:.17e}", prof1.freqs[0][k]); }
+                let _ = writeln!(fp);
+                let _ = write!(fp, "R_PROF2_F0");
+                for k in 0..nalpha { let _ = write!(fp, " {:.17e}", prof2.freqs[0][k]); }
+                let _ = writeln!(fp);
+                let _ = write!(fp, "R_MATRIX_R0");
+                for k in 0..nalpha { let _ = write!(fp, " {:.17e}", matrix[0][k]); }
+                let _ = writeln!(fp);
+                // EFF cannot be dumped here — profile_align_imp_with_boundary
+                // doesn't see the weights vector. They're captured upstream
+                // (refinement.rs) into prof.freqs.
+                for ii in 1..=n {
+                    let _ = write!(fp, "R_H i={}", ii);
+                    for jj in 0..m {
+                        let _ = write!(fp, " {:.17e}", h[ii][jj]);
+                    }
+                    let _ = writeln!(fp);
+                }
+            }
+        }
+    }
+
     // Tail gap handling.
     //
     // C has TWO different scan implementations:

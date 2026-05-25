@@ -162,11 +162,33 @@ pub fn iterative_refine(
             for (side, group1, group2) in &branch_map[step_idx] {
                 let branch_id: BranchId = (step_idx, *side);
 
+                if let Ok(f) = std::env::var("RS_PRE_BRANCH") {
+                    use std::io::Write;
+                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                        let _ = writeln!(fp, "R_PREBR iter={} step={} side={} clus1={} clus2={}", iter, step_idx, side, group1.len(), group2.len());
+                        for (i, s) in alignment.sequences.iter().enumerate() {
+                            let mut h: u64 = 5381;
+                            for &c in s { h = h.wrapping_mul(33).wrapping_add(c as u64); }
+                            let _ = writeln!(fp, "  R_seq[{}] len={} hash={:x}", i, s.len(), h);
+                        }
+                    }
+                }
+
                 let weights = if use_global_weights {
                     global_weights.clone()
                 } else {
                     branch_weights.weights_for_branch(topology, step_idx, *side)
                 };
+
+                if let Ok(f) = std::env::var("RS_BRANCH_WEIGHTS") {
+                    use std::io::Write;
+                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                        let _ = writeln!(fp, "R_BW iter={} step={} side={}", iter, step_idx, side);
+                        for (i, &w) in weights.iter().enumerate() {
+                            let _ = writeln!(fp, "  R_bw[{}]={:.17e}", i, w);
+                        }
+                    }
+                }
 
                 // Group-local sum-1 normalized weights (matches C's
                 // fastconjuction_noname). Used both for `compute_impmatch_diagonal`
@@ -235,12 +257,30 @@ pub fn iterative_refine(
                         }
                         if tscore > threshold {
                             alignment.sequences = new_seqs;
+                            if let Ok(f) = std::env::var("RS_ALIGN_HASH") {
+                                use std::io::Write;
+                                if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                                    let mut h: u64 = 5381;
+                                    for s in &alignment.sequences {
+                                        for &c in s { h = h.wrapping_mul(33).wrapping_add(c as u64); }
+                                    }
+                                    let w = alignment.sequences.first().map_or(0, |s| s.len());
+                                    let _ = writeln!(fp, "ACCEPT iter={} step={} side={} width={} hash={:x}", iter, step_idx, side, w, h);
+                                }
+                            }
                             any_change = true;
                             converged_count = 0;
+                            iter_scores.insert(branch_id, tscore);
                         } else {
                             converged_count += 1;
+                            // C `tditeration.c:2336`: on reject, `tscore = mscore`
+                            // before `history[iterate][l][k] = tscore`. Storing the
+                            // (unchanged) mscore makes oscillation detection fire
+                            // when the same branch's mscore equals an earlier
+                            // iteration's mscore — which is what closes BB12019 /
+                            // BB12029 / BB30018 / BB40043's 4-line residuals.
+                            iter_scores.insert(branch_id, old_score);
                         }
-                        iter_scores.insert(branch_id, tscore);
                     }
                 } else {
                     iter_scores.insert(branch_id, old_score);
@@ -275,9 +315,15 @@ pub fn iterative_refine(
 
         history.push(iter_scores);
 
-        if !any_change {
-            return iteration;
-        }
+        // C's `TreeDependentIteration` does NOT exit on "no branches accepted
+        // this iteration". It keeps iterating until either the cumulative
+        // `converged` counter hits `nseq*2` (line 250 above) or oscillation
+        // triggers (line 270). Adding an early `!any_change` exit here makes
+        // Rust skip iterations C would have run — sometimes including one with
+        // identical branches that don't change the score but still bump the
+        // converged counter. The BB12019 / BB12029 / BB30018 / BB40043
+        // 4-line FFT-NS-i divergences come from that early exit.
+        let _ = any_change;
     }
 
     iteration
@@ -329,6 +375,33 @@ fn realign_all(
     let sum2: f64 = w2.iter().sum();
     let w1n: Vec<f64> = if sum1 > 0.0 { w1.iter().map(|w| w / sum1).collect() } else { vec![1.0; group1.len()] };
     let w2n: Vec<f64> = if sum2 > 0.0 { w2.iter().map(|w| w / sum2).collect() } else { vec![1.0; group2.len()] };
+
+    if let Ok(path) = std::env::var("RS_H_DUMP") {
+        if let Ok(shape) = std::env::var("RS_H_DUMP_SHAPE") {
+            let parts: Vec<&str> = shape.split(',').collect();
+            if parts.len() == 4 {
+                let sc1: usize = parts[2].parse().unwrap_or(0);
+                let sc2: usize = parts[3].parse().unwrap_or(0);
+                if group1.len() == sc1 && group2.len() == sc2 {
+                    use std::io::Write;
+                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                        let _ = write!(fp, "R_EFF1");
+                        for &w in &w1n { let _ = write!(fp, " {:.17e}", w); }
+                        let _ = writeln!(fp);
+                        let _ = write!(fp, "R_EFF2");
+                        for &w in &w2n { let _ = write!(fp, " {:.17e}", w); }
+                        let _ = writeln!(fp);
+                        let _ = write!(fp, "R_GROUP2_GLOBAL_IDX");
+                        for &g in group2 { let _ = write!(fp, " {}", g); }
+                        let _ = writeln!(fp);
+                        let _ = write!(fp, "R_WEIGHTS_RAW");
+                        for &g in group2 { let _ = write!(fp, " {:.17e}", weights[g]); }
+                        let _ = writeln!(fp);
+                    }
+                }
+            }
+        }
+    }
 
     // Build stripped sequences and profiles (used for FFT anchor detection
     // and as fallback for unconstrained non-FFT alignment).
@@ -445,10 +518,22 @@ fn realign_all(
         cuts.sort();
         cuts.dedup();
 
+        if let Ok(f) = std::env::var("RS_FFT_CUTS") {
+            use std::io::Write;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CALL_NO: AtomicUsize = AtomicUsize::new(0);
+            let cn = CALL_NO.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                let cuts_str: Vec<String> = cuts.iter().map(|c| c.to_string()).collect();
+                let _ = writeln!(fp, "R_FALIGN call={} clus1={} clus2={} len={} nsegs={} cut={}",
+                    cn, group1.len(), group2.len(), width, cuts.len(), cuts_str.join(","));
+            }
+        }
+
         // Step 4-5: Per-segment strip + align, then concatenate.
         let mut new_sequences: Vec<Vec<u8>> = vec![Vec::new(); sequences.len()];
         let mut total_score = 0.0f64;
-        for win in cuts.windows(2) {
+        for (seg_idx, win) in cuts.windows(2).enumerate() {
             let a = win[0];
             let b = win[1];
             if a >= b { continue; }
@@ -493,6 +578,23 @@ fn realign_all(
 
             let s1_refs: Vec<&[u8]> = stripped_seg1.iter().map(|s| s.as_slice()).collect();
             let s2_refs: Vec<&[u8]> = stripped_seg2.iter().map(|s| s.as_slice()).collect();
+            if let Ok(f) = std::env::var("RS_FFT_CUTS") {
+                use std::io::Write;
+                if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                    let mut h1: u64 = 5381;
+                    let mut h2: u64 = 5381;
+                    for s in &stripped_seg1 { for &c in s { h1 = h1.wrapping_mul(33).wrapping_add(c as u64); } }
+                    for s in &stripped_seg2 { for &c in s { h2 = h2.wrapping_mul(33).wrapping_add(c as u64); } }
+                    let _ = writeln!(fp, "R_FSEG seg={} c1raw={} c2raw={} w1strip={} w2strip={} h1={:x} h2={:x}",
+                        seg_idx, b - a, b - a, stripped_seg1[0].len(), stripped_seg2[0].len(), h1, h2);
+                    for (j, s) in stripped_seg2.iter().enumerate() {
+                        let mut ph: u64 = 5381;
+                        for &c in s { ph = ph.wrapping_mul(33).wrapping_add(c as u64); }
+                        let first10: String = s.iter().take(10).map(|&c| c as char).collect();
+                        let _ = writeln!(fp, "  R_clus2[{}] len={} hash={:x} first10={}", j, s.len(), ph, first10);
+                    }
+                }
+            }
             let mut prof_seg1 = Profile::from_aligned(&s1_refs, &w1n, &scoring.amino_map, scoring.nalphabets);
             let mut prof_seg2 = Profile::from_aligned(&s2_refs, &w2n, &scoring.amino_map, scoring.nalphabets);
 
@@ -553,6 +655,11 @@ fn realign_all(
             // C's Falign segment loop (lines 1521-1522):
             //   headgp = (i==0) ? outgap : 1   ;   tailgp = (i==count-2) ? outgap : 1
             // outgap=1 in dvtditr.c:73, so headgp=tailgp=1 for every segment.
+            //
+            // C Falign per-segment uses A__align (Falign.c:718, 1704), NOT
+            // partA__align — verified 2026-05-25 after broad sweep regressed
+            // with strict_part_tiebreak=true. A__align uses `>=` mi/mjpt
+            // update (Salignmm.c:1928,1948).
             let seg_aln = profile_align(
                 &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap, true, true,
             );

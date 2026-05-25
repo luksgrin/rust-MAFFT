@@ -398,10 +398,26 @@ fn calc_w(nodes: &[WNode], ob: usize, op: usize, nseq: usize) -> f64 {
     if c == 0.0 { return 1.0; }
     if a == 0.0 || b == 0.0 { return 0.01; }
 
-    let s = b * c + c * a + a * b;
+    // C `treeOperation.c:400` `s = b*c + c*a + a*b` — Apple clang at -O3 with
+    // FP_CONTRACT=on fuses `c*a + (b*c)` into `fma(c, a, b*c)` and then
+    // `a*b + prev` into `fma(a, b, prev)`. Plain Rust `+` doesn't auto-FMA,
+    // producing a 1-2 ULP drift in `s` that cascades into calcW's value and
+    // (since calcW feeds branch_weight which multiplies through every leaf
+    // path) into the per-cluster eff used for cpmx — surfaces as the
+    // BB30018/BB40043/BB40010 1-column residue shifts.
+    let s = a.mul_add(b, c.mul_add(a, b * c));
     if s == 0.0 { return 1.0; }
 
-    (a * b * (c + a) * (c + b) / (c * (a + b) * s)).sqrt()
+    let value = (a * b * (c + a) * (c + b) / (c * (a + b) * s)).sqrt();
+
+    if let Ok(f) = std::env::var("RS_CALCW") {
+        use std::io::Write;
+        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            let _ = writeln!(fp, "R_CALCW ob={} op={} a={:.17e} b={:.17e} c={:.17e} s={:.17e} value={:.17e}", ob, op, a, b, c, s, value);
+        }
+    }
+
+    value
 }
 
 /// C's syntheticLength: harmonic mean of children's lengths + branch to parent.
