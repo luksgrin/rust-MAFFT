@@ -839,13 +839,9 @@ fn diagnostic_retree_widths() {
 
 #[test]
 fn diagnostic_merge_widths() {
-    use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, sequence_weights};
-    use mafft_scoring::build_context;
-    use mafft_types::{ScoringModel, SeqType};
-    use mafft_align::{Profile, profile_align, GapModel};
+    use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance};
 
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let scoring = build_context(ScoringModel::Jtt(200), SeqType::Protein);
     let nseq = input.nseq();
 
     // Build distance matrix and tree
@@ -857,9 +853,9 @@ fn diagnostic_merge_widths() {
     }
     let topo = musclesupg(&dm, ClusterMethod::default());
 
-    // Manually trace merge steps  
+    // Manually trace merge steps
     let max_len = input.sequences.iter().map(|s| s.data.len()).max().unwrap_or(0);
-    let mut aligned: Vec<Vec<u8>> = input.sequences.iter()
+    let aligned: Vec<Vec<u8>> = input.sequences.iter()
         .map(|s| { let mut p = s.data.clone(); p.resize(max_len, b'-'); p })
         .collect();
 

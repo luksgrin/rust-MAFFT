@@ -1269,14 +1269,12 @@ pub fn profile_align_imp_with_boundary(
                 l -= 1;
                 gaptable1.push(b'o');
                 gaptable2.push(b'-');
-                k += 1;
             }
             let mut l = jin;
             while l > 0 {
                 l -= 1;
                 gaptable1.push(b'-');
                 gaptable2.push(b'o');
-                k += 1;
             }
             break;
         }
