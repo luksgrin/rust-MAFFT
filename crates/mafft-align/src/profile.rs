@@ -927,11 +927,16 @@ pub fn profile_align_imp_with_boundary(
     }
     if head_gap {
         for j in 1..=m {
-            currentw[j] = fgcp2[j - 1].mul_add(
-                gf1_0,
-                ogcp2[0].mul_add(hgf1, currentw[j]),
-            );
-            // C `Salignmm.c:1727`: `currentw[j] += fpenalty_ex * j;`
+            // C `Salignmm.c:1747`:
+            //   currentw[j] += (ogcp2[0]*headgapfreq1 + fgcp2[j-1]*gapfreq1pt[0]);
+            // Apple clang at -O3 with FP_CONTRACT=on lowers this to:
+            //   fmul d3, fgcp2, gapfreq1pt0   ; t1 = fgcp2[j-1] * gapfreq1pt[0] (plain mul)
+            //   fmadd d0, ogcp2, hgf1, d3     ; t2 = ogcp2[0]*hgf1 + t1 (single FMA)
+            //   fadd d0, currentw, d0         ; currentw += t2 (plain add)
+            let t1 = fgcp2[j - 1] * gf1_0;
+            let t2 = ogcp2[0].mul_add(hgf1, t1);
+            currentw[j] += t2;
+            // C `Salignmm.c:1749`: `currentw[j] += fpenalty_ex * j;`
             currentw[j] = gap.extend.mul_add(j as f64, currentw[j]);
         }
     }

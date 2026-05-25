@@ -399,13 +399,16 @@ fn calc_w(nodes: &[WNode], ob: usize, op: usize, nseq: usize) -> f64 {
     if a == 0.0 || b == 0.0 { return 0.01; }
 
     // C `treeOperation.c:400` `s = b*c + c*a + a*b` — Apple clang at -O3 with
-    // FP_CONTRACT=on fuses `c*a + (b*c)` into `fma(c, a, b*c)` and then
-    // `a*b + prev` into `fma(a, b, prev)`. Plain Rust `+` doesn't auto-FMA,
+    // FP_CONTRACT=on lowers this to AArch64 instructions:
+    //   fmul  d3, a, c                  ;  a*c (plain)
+    //   fmadd d2, b, c, d3              ;  b*c + a*c
+    //   fmadd d0, a, b, d2              ;  a*b + (b*c + a*c)
+    // i.e. fma(a, b, fma(b, c, a*c)). Plain Rust `+` doesn't auto-FMA,
     // producing a 1-2 ULP drift in `s` that cascades into calcW's value and
     // (since calcW feeds branch_weight which multiplies through every leaf
     // path) into the per-cluster eff used for cpmx — surfaces as the
     // BB30018/BB40043/BB40010 1-column residue shifts.
-    let s = a.mul_add(b, c.mul_add(a, b * c));
+    let s = a.mul_add(b, b.mul_add(c, a * c));
     if s == 0.0 { return 1.0; }
 
     let value = (a * b * (c + a) * (c + b) / (c * (a + b) * s)).sqrt();

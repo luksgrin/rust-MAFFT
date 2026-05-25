@@ -609,59 +609,78 @@ fn realign_all(
             // (gc starts at 0), so we correct the first/last counts here.
             let sgap_inside = a > 0;
             let egap_inside = b < width;
-            if sgap_inside || egap_inside {
+            if sgap_inside {
                 if !prof_seg1.ogcp.is_empty() {
                     for (k, &idx) in group1.iter().enumerate() {
-                        if sgap_inside
-                            && sequences[idx][a - 1] == b'-'
+                        if sequences[idx][a - 1] == b'-'
                             && !stripped_seg1[k].is_empty()
                             && stripped_seg1[k][0] == b'-'
                         {
                             prof_seg1.ogcp[0] -= w1n[k];
                         }
-                        let l1 = stripped_seg1[k].len();
-                        if egap_inside
-                            && l1 > 0
-                            && stripped_seg1[k][l1 - 1] == b'-'
-                            && sequences[idx][b] == b'-'
-                        {
-                            let last = prof_seg1.fgcp.len() - 1;
-                            prof_seg1.fgcp[last] -= w1n[k];
-                        }
                     }
                 }
                 if !prof_seg2.ogcp.is_empty() {
                     for (k, &idx) in group2.iter().enumerate() {
-                        if sgap_inside
-                            && sequences[idx][a - 1] == b'-'
+                        if sequences[idx][a - 1] == b'-'
                             && !stripped_seg2[k].is_empty()
                             && stripped_seg2[k][0] == b'-'
                         {
                             prof_seg2.ogcp[0] -= w2n[k];
                         }
-                        let l2 = stripped_seg2[k].len();
-                        if egap_inside
-                            && l2 > 0
-                            && stripped_seg2[k][l2 - 1] == b'-'
-                            && sequences[idx][b] == b'-'
-                        {
-                            let last = prof_seg2.fgcp.len() - 1;
-                            prof_seg2.fgcp[last] -= w2n[k];
-                        }
                     }
                 }
             }
+            // NOTE: do NOT correct fgcp[last] for the egap boundary. C's
+            // `new_FinalGapCount` (mltaln9.c:12794-12828, the compiled
+            // `#if 1` branch) effectively ignores `egappat` at the last
+            // position — its post-loop block is dead code because the
+            // inner loop's final iteration reads the null terminator
+            // and sets gc=0, so `gb && !gc` never fires.
+            // `Profile::from_aligned`'s closing-tail increment already
+            // matches the resulting C value (= sum of weights for
+            // sequences ending in a gap). The earlier code that did
+            // `prof_seg.fgcp[last] -= wn[k]` mirrored the *disabled*
+            // `#if 0` C branch and over-subtracted at the segment tail.
 
             // C's Falign segment loop (lines 1521-1522):
             //   headgp = (i==0) ? outgap : 1   ;   tailgp = (i==count-2) ? outgap : 1
             // outgap=1 in dvtditr.c:73, so headgp=tailgp=1 for every segment.
             //
-            // C Falign per-segment uses A__align (Falign.c:718, 1704), NOT
-            // partA__align — verified 2026-05-25 after broad sweep regressed
-            // with strict_part_tiebreak=true. A__align uses `>=` mi/mjpt
-            // update (Salignmm.c:1928,1948).
-            let seg_aln = profile_align(
-                &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap, true, true,
+            // Boundary frequencies (Salignmm.c:1585-1622):
+            //   outgapcount(headgapfreq, sgap, eff) is the weighted gap
+            //   fraction at the segment's left/right boundary column in
+            //   the parent, then inverted to non-gap fraction
+            //   (legacygapcost=0). Used by the inner DP at `g_iskip` and
+            //   head_gap initialization. `BoundaryFreqs::default() = 1.0`
+            //   is correct only for the first segment (where sgap[*]='o'
+            //   so outgapcount=0 → invert=1.0). Inner segments need the
+            //   actual gap fraction at the parent's a-1 / b columns to
+            //   match C bit-for-bit (BB30013 86-seq divergence cause).
+            let outgap_count = |grp: &[usize], col: Option<usize>| -> f64 {
+                match col {
+                    None => 1.0,
+                    Some(c) => {
+                        let wn: &[f64] = if std::ptr::eq(grp.as_ptr(), group1.as_ptr()) { &w1n } else { &w2n };
+                        let mut gap_frac = 0.0f64;
+                        for (k, &idx) in grp.iter().enumerate() {
+                            if sequences[idx][c] == b'-' { gap_frac += wn[k]; }
+                        }
+                        1.0 - gap_frac
+                    }
+                }
+            };
+            let left_col = if a > 0 { Some(a - 1) } else { None };
+            let right_col = if b < width { Some(b) } else { None };
+            let bf = BoundaryFreqs {
+                head1: outgap_count(group1, left_col),
+                head2: outgap_count(group2, left_col),
+                tail1: outgap_count(group1, right_col),
+                tail2: outgap_count(group2, right_col),
+            };
+            let seg_aln = profile_align_imp_with_boundary(
+                &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap,
+                true, true, None, false, bf,
             );
             total_score += seg_aln.score;
 
