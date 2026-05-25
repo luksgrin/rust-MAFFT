@@ -32,16 +32,6 @@ use crate::topology::{JoinStep, Topology};
 /// `sueff05 = SUEFF * 0.5 = 0.05`.
 pub const SUEFF: f64 = 0.1;
 
-/// `mltaln9.c:2935` cluster_mix_double — the mix linkage used by
-/// memsavetree. With `SUEFF = 0.1` this is
-/// `0.9 * min(d1, d2) + 0.05 * (d1 + d2)`.
-#[inline]
-fn cluster_mix_double(d1: f64, d2: f64) -> f64 {
-    let sueff1 = 1.0 - SUEFF;
-    let sueff05 = SUEFF * 0.5;
-    let mn = d1.min(d2);
-    mn * sueff1 + (d1 + d2) * sueff05
-}
 
 /// `disttbfast.c:867` preferenceval — a tiny 1e-14 tie-breaker added to
 /// pairwise distances during the initial-pair scan so that ties resolve
@@ -127,123 +117,6 @@ fn initial_mindist(
     }
 
     (mindist, nearest)
-}
-
-/// Reconstruct the full ordered member list for a subtree rooted at
-/// step `step_idx` (`hist[cluster] = step_idx`) by recursing into the
-/// child steps. Mirrors C's "smaller-first" rule from
-/// `mltaln9.c:5687-5712`: at each merge, the child subtree whose
-/// `topol[child][0][0]` (smallest leaf) is smaller is concatenated
-/// FIRST. With our convention of always merging `im < jm`, this means
-/// the existing `JoinStep.left ++ right` is already in the correct
-/// order, and we just need to deep-flatten.
-fn flatten_members(topo: &Topology, cluster_leaf: usize, hist: &[i32]) -> Vec<usize> {
-    let step = hist[cluster_leaf];
-    if step < 0 {
-        return vec![cluster_leaf];
-    }
-    let step = step as usize;
-    let mut out = Vec::with_capacity(topo.steps[step].left.len() + topo.steps[step].right.len());
-    out.extend_from_slice(&topo.steps[step].left);
-    out.extend_from_slice(&topo.steps[step].right);
-    out
-}
-
-/// Generic memsavetree driver — the main loop with on-the-fly distance
-/// recomputation. Independent of how distances are derived: callers
-/// supply `initial_mindist`/`initial_nearest` (the precomputed
-/// nearest-neighbor scan), `selfscore` (each cluster's representative
-/// self-score, used as a stable identity), and a `pair_distance(i, j)`
-/// callback the algorithm uses to recompute distances after each merge.
-///
-/// `pair_distance(im, i)` should return `distcompact(im, i)` —
-/// `(1 - common / min(ss)) * lf * 2.0` for the k-mer path, or
-/// `(1 - naivepairscorefast(seq_im, seq_i) / min(ss)) * 2.0` for the
-/// MSA path (mirrors C `distcompact_msa`, `mltaln9.c:15423`).
-fn memsavetree_with_distance<F>(
-    nseq: usize,
-    mut mindist: Vec<f64>,
-    mut nearest: Vec<i32>,
-    mut pair_distance: F,
-) -> Topology
-where
-    F: FnMut(usize, usize) -> f64,
-{
-    let mut topo = Topology::new(nseq);
-    if nseq <= 1 {
-        return topo;
-    }
-
-    let mut active = vec![true; nseq];
-    let mut hist = vec![-1_i32; nseq];
-    let mut tmptmplen = vec![0.0_f64; nseq];
-
-    for k in 0..(nseq - 1) {
-        // Find the active cluster with smallest mindist.
-        //
-        // C `mltaln9.c:5647` iterates `for( acpti=ac; acpti->next!=NULL; ...)`
-        // — the condition `acpti->next != NULL` EXCLUDES the last node in
-        // the chain. That looks like a bug at first glance (the last
-        // active sequence is never considered as `im`), but it's C MAFFT's
-        // intentional behaviour and we must mirror it bit-for-bit, or the
-        // tree topology diverges starting at the first step where the
-        // last-active happens to have the smallest mindist.
-        let last_active = (0..nseq).rev().find(|&i| active[i]).expect("at least one active");
-        let mut im: usize = 0;
-        let mut minscore = f64::INFINITY;
-        for i in 0..nseq {
-            if active[i] && i != last_active && mindist[i] < minscore {
-                im = i;
-                minscore = mindist[i];
-            }
-        }
-        let mut jm = nearest[im] as usize;
-        if jm < im {
-            std::mem::swap(&mut im, &mut jm);
-        }
-
-        let half = minscore * 0.5;
-        let len0 = (half - tmptmplen[im]).max(0.0);
-        let len1 = (half - tmptmplen[jm]).max(0.0);
-
-        let left = flatten_members(&topo, im, &hist);
-        let right = flatten_members(&topo, jm, &hist);
-        topo.steps.push(JoinStep {
-            left, right,
-            left_length: len0,
-            right_length: len1,
-        });
-
-        tmptmplen[im] = half;
-        hist[im] = k as i32;
-        mindist[im] = 999.9;
-        active[jm] = false;
-
-        let mut best_new = f64::INFINITY;
-        let mut best_new_i: i32 = -1;
-        for i in 0..nseq {
-            if !active[i] || i == im || i == jm { continue; }
-            let d1 = pair_distance(im, i);
-            let d2 = pair_distance(jm, i);
-            let d_merged = cluster_mix_double(d1, d2);
-            if d_merged < mindist[i] {
-                mindist[i] = d_merged;
-                nearest[i] = im as i32;
-            }
-            if nearest[i] == jm as i32 {
-                nearest[i] = im as i32;
-            }
-            if d_merged < best_new {
-                best_new = d_merged;
-                best_new_i = i as i32;
-            }
-        }
-        if best_new_i >= 0 {
-            mindist[im] = best_new;
-            nearest[im] = best_new_i;
-        }
-    }
-    topo
 }
 
 /// Port of C MAFFT `mltaln9.c::compacttreegivendist` (lines 5221-5331).
@@ -436,7 +309,7 @@ fn flatten_members_for_givendist(
 /// encoding.
 pub fn memsavetree(seqs: &[&[u8]], is_dna: bool) -> Topology {
     let nseq = seqs.len();
-    let mut topo = Topology::new(nseq);
+    let topo = Topology::new(nseq);
     if nseq <= 1 {
         return topo;
     }

@@ -172,6 +172,33 @@ fn fftnsi_byte_identical_to_c() {
     assert_eq!(mismatches, 0, "{mismatches} sequence(s) differ from C's FFT-NS-i output");
 }
 
+/// Regression guard for the FFT-segmented refinement boundary-frequencies
+/// fix (`refinement.rs::realign_all` use_fft branch, 2026-05-25). BB12019
+/// (BALIBASE 3, 5 sequences, 883 columns after iter=5) is the smallest
+/// BALIBASE input where the unfixed `BoundaryFreqs::default() = 1.0`
+/// produces a 4-line traceback shift vs C. With C's per-segment
+/// `outgapcount(sgap/egap)` boundary frequencies wired up, output is
+/// bit-identical to `mafft --maxiterate 5 BB12019`.
+///
+/// Companion to the (much larger) BB30013 BALIBASE case, which exercises
+/// the same code path on 86 sequences — kept out of fixtures for size.
+#[test]
+fn fftnsi_segmented_boundary_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("bali3.BB12019.fftnsi.iter5")).unwrap();
+    let input = read_fasta(fixture_path("bali3.BB12019.fa")).unwrap();
+
+    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 5 }).align(&input);
+
+    assert_eq!(msa.nseq(), c_ref.nseq(), "nseq mismatch");
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --maxiterate 5 BB12019 output \
+             (FFT-segmented refinement boundary-frequencies regression)",
+        );
+    }
+}
+
 
 /// Every NW-NS-2 merge step's `(clus1, clus2, width, score)` must match C's.
 ///

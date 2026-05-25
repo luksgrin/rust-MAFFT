@@ -105,25 +105,6 @@ impl Default for GapModel {
     }
 }
 
-/// Score a substitution using a matrix indexed by internal residue codes.
-///
-/// `amino_map` converts an ASCII character to an internal index.
-/// Returns the score from `matrix[idx1][idx2]`.
-pub fn score_pair(
-    a: u8,
-    b: u8,
-    matrix: &[Vec<f64>],
-    amino_map: &[u8; 256],
-) -> f64 {
-    let i = amino_map[a as usize] as usize;
-    let j = amino_map[b as usize] as usize;
-    if i < matrix.len() && j < matrix[0].len() {
-        matrix[i][j]
-    } else {
-        0.0
-    }
-}
-
 /// Convert an integer substitution matrix to f64 (used to bridge from
 /// `ScoringContext.substitution_matrix: Vec<Vec<i32>>` to the DP layer
 /// which now operates on `Vec<Vec<f64>>` for the per-step / per-pair

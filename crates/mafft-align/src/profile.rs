@@ -1029,7 +1029,6 @@ pub fn profile_align_imp_with_boundary(
             let gf2_jm1 = prof2.nongap_freq[j - 1];
 
             let mut wm = previousw[j - 1];
-            let wm_diag = wm;
             ijp[i][j] = 0;
 
             let g_jskip = fgcp2[j - 1].mul_add(gf1_i, mi);
@@ -1396,12 +1395,6 @@ pub fn pairwise_align11(
     }
 
     let nalpha = matrix.len();
-
-    // Build amino_dynamicmtx[char][char] (C line 1128-1129)
-    // For direct character lookup without going through amino_map during DP
-    let mut amino_mtx = vec![vec![0.0f64; 256]; 256];
-    // We need the reverse map: index -> char. Build from amino_map.
-    // Actually, just use amino_map inline during match_calc.
 
     // match_calc_mtx: score = amino_dynamicmtx[seq1[i]][seq2[j]]
     // Which equals matrix[amino_map[seq1[i]]][amino_map[seq2[j]]]

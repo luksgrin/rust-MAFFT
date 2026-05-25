@@ -73,9 +73,6 @@ fn build_fft_matrix(matrix: &[Vec<i32>], offset: i32, nscored: usize) -> Vec<Vec
     fft
 }
 
-fn build_dna_context() -> ScoringContext {
-    build_dna_context_with_kimura(2)
-}
 
 fn build_dna_context_with_kimura(kimura_r: i32) -> ScoringContext {
     let gap = default_dna_gap_params();

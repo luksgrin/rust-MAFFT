@@ -8,7 +8,7 @@
 
 use mafft_fft::{
     alignable_segments, block_align, get_top_candidates,
-    multichannel_correlate, AlignableSegment, SegmentParams,
+    multichannel_correlate, SegmentParams,
 };
 
 use crate::dp::{Alignment, GapModel};

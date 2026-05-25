@@ -18,8 +18,6 @@
 ///   traverse backward (N-1 → 0). Within each step, k always goes 0→1.
 /// - Total branches per iteration: (nseq-1)*2 - 1.
 
-use rayon::prelude::*;
-
 use mafft_align::{
     profile_align, profile_align_imp,
     profile_align_imp_with_boundary, BoundaryFreqs,
@@ -608,7 +606,6 @@ fn realign_all(
             // `Profile::from_aligned` applies `st_OpeningGapCount` semantics
             // (gc starts at 0), so we correct the first/last counts here.
             let sgap_inside = a > 0;
-            let egap_inside = b < width;
             if sgap_inside {
                 if !prof_seg1.ogcp.is_empty() {
                     for (k, &idx) in group1.iter().enumerate() {
@@ -1079,49 +1076,6 @@ fn build_result_from_stripped(
                 let oc2 = kept2[c2];
                 for &i in group1 { new_sequences[i].push(b'-'); }
                 for &i in group2 { new_sequences[i].push(sequences[i][oc2]); }
-                c2 += 1;
-            }
-        }
-    }
-    Some((new_sequences, aln.score))
-}
-
-/// Build result sequences from an alignment on non-stripped (full) profiles.
-/// Cursors index directly into the full-width sequences.
-fn build_result_from_full(
-    aln: &mafft_align::Alignment,
-    group1: &[usize],
-    group2: &[usize],
-    sequences: &[Vec<u8>],
-    prof1: &Profile,
-    prof2: &Profile,
-) -> Option<(Vec<Vec<u8>>, f64)> {
-    let consumed1 = aln.operations.iter()
-        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete)).count();
-    let consumed2 = aln.operations.iter()
-        .filter(|op| matches!(op, AlignOp::Match | AlignOp::Insert)).count();
-    if consumed1 != prof1.length || consumed2 != prof2.length {
-        return None;
-    }
-
-    let mut new_sequences = vec![Vec::with_capacity(aln.operations.len()); sequences.len()];
-    let mut c1 = 0usize;
-    let mut c2 = 0usize;
-    for op in &aln.operations {
-        match op {
-            AlignOp::Match => {
-                for &i in group1 { new_sequences[i].push(sequences[i][c1]); }
-                for &i in group2 { new_sequences[i].push(sequences[i][c2]); }
-                c1 += 1; c2 += 1;
-            }
-            AlignOp::Delete => {
-                for &i in group1 { new_sequences[i].push(sequences[i][c1]); }
-                for &i in group2 { new_sequences[i].push(b'-'); }
-                c1 += 1;
-            }
-            AlignOp::Insert => {
-                for &i in group1 { new_sequences[i].push(b'-'); }
-                for &i in group2 { new_sequences[i].push(sequences[i][c2]); }
                 c2 += 1;
             }
         }

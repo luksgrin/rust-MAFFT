@@ -25,11 +25,9 @@ pub struct GapParams {
 // C defaults (pre-scaling "p" values)
 const DEFAULTGOP_N: f64 = -1530.0;
 const DEFAULTGEP_N: f64 = 0.0;
-const DEFAULTOFS_N: f64 = -369.0;
 
 const DEFAULTGOP_B: f64 = -1530.0;
 const DEFAULTGEP_B: f64 = 0.0;
-const DEFAULTOFS_B: f64 = -123.0;
 
 /// Scaling factor for DNA penalties: 3 * 600 / 1000.
 const DNA_SCALE: f64 = 3.0 * 600.0 / 1000.0;

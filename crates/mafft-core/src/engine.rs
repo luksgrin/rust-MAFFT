@@ -8,9 +8,9 @@ use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, sco
 use mafft_tree::parttree_split::{build_parttree_topology};
 use mafft_tree::parttree_pivot::PtSeqKind;
 use mafft_align::{build_local_homology_table, GapModel};
-use mafft_types::{ScoringModel, SeqType, SequenceSet, LocalHomologyTable};
+use mafft_types::{ScoringModel, SequenceSet, LocalHomologyTable};
 
-use crate::progressive::{progressive_align, progressive_align_with_constraints, MultipleAlignment};
+use crate::progressive::MultipleAlignment;
 use crate::refinement::{iterative_refine, RefinementParams};
 use crate::add::{add_sequences, add_sequences_keeplength};
 
@@ -873,7 +873,11 @@ impl MafftEngine {
                 // segment independently) whenever `constraint == 0` and
                 // `bunkatsu != 0` — i.e. FFT-NS-i but not the *-INS-i modes,
                 // which set `constraint=2` and stay single-segment.
-                let use_segmented = matches!(self.mode, AlignmentMode::FftNsi { .. });
+                // `--seed` adds local homology constraints (constraint != 0),
+                // so seeded FFT-NS-i must also stay on the single-segment
+                // refinement path — gate on `local_hom.is_none()`.
+                let use_segmented = matches!(self.mode, AlignmentMode::FftNsi { .. })
+                    && local_hom.is_none();
                 if use_segmented {
                     crate::refinement::segmented_iterative_refine(
                         &mut msa, &topo, &scoring, &params, local_hom.as_ref(),

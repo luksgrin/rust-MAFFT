@@ -13,3 +13,9 @@ readme = "../../README.md"
 
 [dependencies]
 num-complex = "0.4"
+mafft-sys = { path = "../mafft-sys", optional = true }
+
+[features]
+# Enable FFI conversions between Rust types and the C `mafft_sys` bindings.
+# Off by default — only needed for the FFI-bridged build path.
+ffi = ["dep:mafft-sys"]

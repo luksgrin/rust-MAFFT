@@ -14,11 +14,11 @@
 use rayon::prelude::*;
 
 use mafft_tree::{
-    DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, JoinStep, Topology,
+    DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, Topology,
 };
 use mafft_types::ScoringContext;
 
-use crate::progressive::{progressive_align_with_mergeoralign, MergeOrAlign, MultipleAlignment};
+use crate::progressive::{MergeOrAlign, MultipleAlignment};
 
 /// Add new sequences to an existing alignment.
 ///
@@ -251,6 +251,7 @@ fn compute_ktuple_dm(sequences: &[Vec<u8>]) -> DistanceMatrix {
 mod tests {
     use super::*;
     use mafft_scoring::build_context;
+    use mafft_tree::JoinStep;
     use mafft_types::{ScoringModel, SeqType};
 
     fn make_existing_alignment() -> MultipleAlignment {

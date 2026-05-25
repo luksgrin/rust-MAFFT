@@ -439,6 +439,7 @@ dependencies = [
 name = "mafft-types"
 version = "0.1.0"
 dependencies = [
+ "mafft-sys",
  "num-complex",
 ]
 

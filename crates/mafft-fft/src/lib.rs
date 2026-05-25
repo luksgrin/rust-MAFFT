@@ -14,7 +14,7 @@ pub use correlation::{cross_correlate, inner_product};
 pub use segments::{alignable_segments, AlignableSegment, SegmentParams};
 pub use candidates::get_top_candidates;
 pub use vectorize::{
-    sequences_to_channels, sequences_to_property_channels,
-    multichannel_correlate, PROTEIN_CHANNELS, DNA_CHANNELS, PROPERTY_CHANNELS,
+    sequences_to_channels,
+    multichannel_correlate, PROTEIN_CHANNELS, DNA_CHANNELS,
 };
 pub use block_align::{block_align, block_align3};

@@ -8,12 +8,10 @@
 /// accounts for all residue types simultaneously.
 
 use num_complex::Complex64;
-use rustfft::FftPlanner;
 
 /// Number of channels for different sequence types.
 pub const PROTEIN_CHANNELS: usize = 20;
 pub const DNA_CHANNELS: usize = 4;
-pub const PROPERTY_CHANNELS: usize = 2; // polarity + volume
 
 /// Convert a sequence group into per-channel complex vectors.
 ///
@@ -36,35 +34,6 @@ pub fn sequences_to_channels(
             let idx = amino_map[ch as usize] as usize;
             if idx < num_channels {
                 channels[idx][pos] += Complex64::new(w, 0.0);
-            }
-        }
-    }
-
-    channels
-}
-
-/// Convert a sequence group into property-based channels (polarity + volume).
-///
-/// Used in the 2-channel FFT mode. Each position gets weighted polarity
-/// and volume values instead of per-residue indicators.
-pub fn sequences_to_property_channels(
-    sequences: &[&[u8]],
-    weights: &[f64],
-    amino_map: &[u8; 256],
-    polarity: &[f64; 256],
-    volume: &[f64; 256],
-    fft_size: usize,
-) -> Vec<Vec<Complex64>> {
-    let mut channels = vec![vec![Complex64::new(0.0, 0.0); fft_size]; PROPERTY_CHANNELS];
-
-    for (seq, &w) in sequences.iter().zip(weights.iter()) {
-        for (pos, &ch) in seq.iter().enumerate() {
-            if pos >= fft_size { break; }
-            let pol = polarity[ch as usize];
-            let vol = volume[ch as usize];
-            if pol != 0.0 || vol != 0.0 {
-                channels[0][pos] += Complex64::new(w * pol, 0.0);
-                channels[1][pos] += Complex64::new(w * vol, 0.0);
             }
         }
     }

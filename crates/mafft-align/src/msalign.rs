@@ -656,7 +656,6 @@ fn backward_dp(
     }
 
     // Storage for split-point detection.
-    let mut maxwm = f64::NEG_INFINITY;
     let mut jmid: usize = 0;
     let mut jumpi: usize = imid.saturating_sub(1);
     let mut jumpj: usize = 0;
@@ -817,7 +816,7 @@ fn backward_dp(
 
         // At i == imid - 1, decide jmid + (jumpi, jumpj) and break.
         if di == imid.saturating_sub(1) {
-            maxwm = midw.get(1).copied().unwrap_or(f64::NEG_INFINITY);
+            let mut maxwm = midw.get(1).copied().unwrap_or(f64::NEG_INFINITY);
             jmid = 0;
             for j in 2..lgth2.saturating_sub(1) {
                 if let Some(&w) = midw.get(j) {

@@ -13,7 +13,7 @@
 // negligible cost (cache size is bounded by `nseq`, keys are small
 // `Vec<usize>`).
 use std::collections::BTreeMap;
-use mafft_align::{profile_align, pairwise_align11, fft_profile_align, Profile, GapModel, Alignment, AlignOp, FftAlignParams};
+use mafft_align::{profile_align, pairwise_align11, fft_profile_align, Profile, GapModel, AlignOp, FftAlignParams};
 use mafft_tree::{Topology, sequence_weights, compute_distfromtip};
 use mafft_types::ScoringContext;
 
@@ -545,52 +545,6 @@ fn build_other_post_restore_row(
     let l_strip = anchor_positions.len();
     for &k_pre in &gap_cols_before[l_strip] {
         out.push(other_pre.get(k_pre).copied().unwrap_or(b'-'));
-    }
-    out
-}
-
-/// Walk `pre` and `post` together to find columns of `post` that are
-/// gaps inserted by the merge. Returns positions in `post`-coordinates
-/// where a gap was inserted (relative to the pre-merge alignment). Both
-/// `pre` and `post` are assumed to contain the SAME residue sequence
-/// (same row of the alignment, before and after the merge), with `post`
-/// possibly having extra gap columns inserted.
-fn diff_new_gap_positions(pre: &[u8], post: &[u8]) -> Vec<usize> {
-    let mut positions = Vec::new();
-    let mut pi = 0usize;
-    for (qi, &c) in post.iter().enumerate() {
-        if pi < pre.len() && pre[pi] == c {
-            pi += 1;
-        } else {
-            // Either `c` is an inserted-gap column, or there's a
-            // mismatch we don't expect. Treat as new-gap insertion.
-            positions.push(qi);
-        }
-    }
-    positions
-}
-
-/// Insert gap characters into `seq` at the specified `post`-coordinate
-/// positions, returning the expanded sequence.
-fn insert_gaps_at(seq: &[u8], positions: &[usize]) -> Vec<u8> {
-    if positions.is_empty() { return seq.to_vec(); }
-    let new_len = seq.len() + positions.len();
-    let mut out = Vec::with_capacity(new_len);
-    let mut pos_iter = positions.iter().copied();
-    let mut next_pos = pos_iter.next();
-    let mut src = 0usize;
-    let mut dst = 0usize;
-    while dst < new_len {
-        if Some(dst) == next_pos {
-            out.push(b'-');
-            next_pos = pos_iter.next();
-        } else if src < seq.len() {
-            out.push(seq[src]);
-            src += 1;
-        } else {
-            out.push(b'-');
-        }
-        dst += 1;
     }
     out
 }
@@ -1344,12 +1298,12 @@ pub fn blend_profiles_exact(
     nongap_freq[alen] = 1.0; // C: gapfresult[j] = 1.0 at tail
 
     // createogresult: blend opening gap counts with block-boundary handling
-    blend_og_one_side(&mut ogcp, &prof1.ogcp, &prof1.nongap_freq, gaptable1, eff1, prof1.length);
-    blend_og_one_side(&mut ogcp, &prof2.ogcp, &prof2.nongap_freq, gaptable2, eff2, prof2.length);
+    blend_og_one_side(&mut ogcp, &prof1.ogcp, &prof1.nongap_freq, gaptable1, eff1);
+    blend_og_one_side(&mut ogcp, &prof2.ogcp, &prof2.nongap_freq, gaptable2, eff2);
 
     // createfgresult: blend closing gap counts with block-boundary handling
-    blend_fg_one_side(&mut fgcp, &prof1.fgcp, &prof1.nongap_freq, gaptable1, eff1, prof1.length);
-    blend_fg_one_side(&mut fgcp, &prof2.fgcp, &prof2.nongap_freq, gaptable2, eff2, prof2.length);
+    blend_fg_one_side(&mut fgcp, &prof1.fgcp, &prof1.nongap_freq, gaptable1, eff1);
+    blend_fg_one_side(&mut fgcp, &prof2.fgcp, &prof2.nongap_freq, gaptable2, eff2);
 
     // Compute gap_freq from nongap_freq
     let gap_freq: Vec<f64> = nongap_freq[..alen].iter().map(|&nf| (1.0 - nf).max(0.0)).collect();
@@ -1373,7 +1327,6 @@ fn blend_og_one_side(
     gf: &[f64],      // nongap_freq
     gaptable: &[u8],
     eff: f64,
-    prof_len: usize,
 ) {
     let alen = result.len();
     let mut p = 0usize;
@@ -1413,7 +1366,6 @@ fn blend_fg_one_side(
     gf: &[f64],      // nongap_freq
     gaptable: &[u8],
     eff: f64,
-    prof_len: usize,
 ) {
     let alen = result.len();
     let mut p = 0usize;
@@ -1439,18 +1391,6 @@ fn blend_fg_one_side(
             p += 1;
         }
     }
-}
-
-fn group_all_gap_columns(group: &[usize], aligned: &[Vec<u8>], width: usize) -> Vec<bool> {
-    let mut all_gap = vec![true; width];
-    for &idx in group {
-        for (col, &ch) in aligned[idx].iter().enumerate() {
-            if ch != b'-' && ch != b'.' {
-                all_gap[col] = false;
-            }
-        }
-    }
-    all_gap
 }
 
 #[cfg(test)]

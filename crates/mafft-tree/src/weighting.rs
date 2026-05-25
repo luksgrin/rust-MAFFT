@@ -259,7 +259,7 @@ impl BranchWeights {
         // For leaves: compute weight for the edge from leaf to parent.
         for seq_idx in 0..nseq {
             let leaf = nseq + seq_idx;
-            let (pstep, plor) = search_parent(topo, seq_idx, 0, nseq - 1);
+            let (pstep, _) = search_parent(topo, seq_idx, 0, nseq - 1);
             if pstep == root { continue; } // skip root edges
             let w = calc_branch_weight(&nodes, pstep, leaf, nseq);
             // Store on both endpoints

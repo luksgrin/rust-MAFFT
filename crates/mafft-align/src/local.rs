@@ -2,7 +2,7 @@
 ///
 /// Ports the C `L__align11()` from Lalign11.c.
 
-use crate::dp::{score_pair, AlignOp, Alignment, GapModel};
+use crate::dp::{AlignOp, Alignment, GapModel};
 
 /// Result of a local alignment, including the offsets into original sequences.
 #[derive(Debug, Clone)]
