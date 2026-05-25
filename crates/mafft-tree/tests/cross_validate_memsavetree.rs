@@ -89,7 +89,7 @@ fn distcompact_matches_c_for_every_pair() {
     let mut c_points: Vec<Vec<i32>> = stripped.iter().map(|s| unsafe { c_pointt(s) }).collect();
 
     // Self-scores via C commonsextet_p (already cross-validated).
-    let mut selfscore: Vec<i32> = (0..nseq).map(|i| {
+    let selfscore: Vec<i32> = (0..nseq).map(|i| {
         let mut tbl = vec![0i32; 46656];
         unsafe { mafft_sys::makecompositiontable_p(tbl.as_mut_ptr(), c_points[i].as_mut_ptr()); }
         unsafe { mafft_sys::commonsextet_p(tbl.as_mut_ptr(), c_points[i].as_mut_ptr()) }

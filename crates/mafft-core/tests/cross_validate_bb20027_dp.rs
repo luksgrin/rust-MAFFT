@@ -8,7 +8,6 @@
 //! and Rust's `profile_align_imp_with_boundary`, then compares output
 //! alignments cell-by-cell to pinpoint where the DP differs.
 
-use std::ffi::CString;
 use std::os::raw::{c_char, c_double, c_int};
 
 use mafft_core::progressive::progressive_align_partial;
@@ -36,7 +35,6 @@ unsafe fn init_c_protein() {
 /// null-terminated copy of `seqs[i]`. Returns (top_ptr, row_buf_handles
 /// to keep alive).
 unsafe fn alloc_c_char_mtx(seqs: &[Vec<u8>], capacity: usize) -> (Vec<*mut c_char>, Vec<Vec<u8>>) {
-    let nseq = seqs.len();
     let cap = capacity.max(seqs.iter().map(|s| s.len()).max().unwrap_or(0)) + 16;
     let mut rows: Vec<Vec<u8>> = seqs.iter()
         .map(|s| {

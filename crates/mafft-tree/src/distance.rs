@@ -437,12 +437,9 @@ mod tests {
 
     #[test]
     fn ktuple_different() {
-        // Use clearly protein sequences (W, F are not DNA bases)
-        let d = ktuple_distance(b"WWWWWWWWWWWW", b"FFFFFFFFFFF", 6);
-        // Both map to aromatic group 4, but different amino acids → same group
-        // So use sequences from different groups:
+        // ACDEFGHIKLMN spans many k-tuple groups; WWWWWWWWWWWW is all-aromatic
+        // (group 4). No common 6-tuples → distance > 1.0.
         let d = ktuple_distance(b"ACDEFGHIKLMN", b"WWWWWWWWWWWW", 6);
-        // No common 6-tuples (mixed groups vs all-aromatic) → distance > 1.0
         assert!(d > 1.0, "distance should be high for unrelated, got {d}");
     }
 

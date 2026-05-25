@@ -93,7 +93,6 @@ mod tests {
 
         let map = DNA_ALPHABET.build_amino_map();
         let a = map[b'a' as usize] as usize;
-        let g = map[b'g' as usize] as usize;
         let r = map[b'r' as usize] as usize;
 
         // R vs A = (A-A + G-A) / 2 = (1000 + 600) / 2 = 800

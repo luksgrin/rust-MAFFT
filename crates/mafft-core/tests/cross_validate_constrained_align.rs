@@ -1,10 +1,16 @@
-/// Cross-validate `profile_align_imp(impmtx)` against C's
-/// `A__align(constraint=1)` for the same input + same impmtx.
-///
-/// The C side uses `imp_match_init_strict` to populate its internal
-/// `impmtx` from a hand-built `LocalHom***` table. The Rust side uses
-/// `build_imp_matrix` over an equivalent `LocalHomologyTable`. If the
-/// resulting alignment scores or trace differ, the bug is in our DP.
+//! Cross-validate `profile_align_imp(impmtx)` against C's
+//! `A__align(constraint=1)` for the same input + same impmtx.
+//!
+//! The C side uses `imp_match_init_strict` to populate its internal
+//! `impmtx` from a hand-built `LocalHom***` table. The Rust side uses
+//! `build_imp_matrix` over an equivalent `LocalHomologyTable`. If the
+//! resulting alignment scores or trace differ, the bug is in our DP.
+//!
+//! Test function names deliberately mirror the C function being validated
+//! (`G__align11`, `gen_L__align11`, etc.) — the double underscore is part
+//! of the upstream MAFFT identifier. Allow the non-snake_case style here.
+
+#![allow(non_snake_case)]
 
 use std::os::raw::{c_char, c_double, c_int};
 use std::sync::Mutex;
@@ -46,7 +52,7 @@ unsafe fn init_c_protein() {
     }
 }
 
-unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<f64>]) -> *mut *mut c_double {
+unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<f64>]) -> *mut *mut c_double { unsafe {
     let nalpha = scoring_matrix.len() as c_int;
     let mtx = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
     for i in 0..scoring_matrix.len() {
@@ -55,7 +61,7 @@ unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<f64>]) -> *mut *mut c_double 
         }
     }
     mtx
-}
+}}
 
 #[test]
 fn constrained_align_matches_c_a_align() {
@@ -1174,11 +1180,9 @@ fn rust_global_align_matches_c_g__align11_warp() {
     let cc_int = |x: f64, mul: f64| -> i32 { ((x * mul) - 0.5) as i32 };
     let cc_scale = |ppen: i32, scale: f64| -> i32 { ((scale * ppen as f64) + 0.5) as i32 };
     let p_open = cc_int(-2.00, 1000.0);
-    let p_ext  = cc_int(-0.100, 1000.0);
-    let p_offset = cc_int(0.100, 1000.0);
     let pair_open_f = cc_scale(p_open, scale_protein) as f64;
-    let pair_ext_f  = cc_scale(p_ext,  scale_protein) as f64;
-    // With --allowshift / --unalignlevel > 0: lexp=laof=0 (script:1469-1473).
+    // With --allowshift / --unalignlevel > 0: lexp=laof=0 (script:1469-1473),
+    // so the usual pair_ext_f / pair_offset_int aren't computed here.
     let pair_ext_f_unalign = 0.0;
     let pair_offset_int_unalign: i32 = 0;
     // penalty_shift = (int)(spfactor * penalty) (constants.c:318), spfactor = 2.0.

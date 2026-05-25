@@ -82,7 +82,7 @@ unsafe fn init_c_protein() {
 
 /// Build a C topology from a Rust Topology.
 /// Returns a 3D int array suitable for C's weightFromABranch.
-unsafe fn build_c_topol(topo: &mafft_tree::Topology) -> *mut *mut *mut c_int {
+unsafe fn build_c_topol(topo: &mafft_tree::Topology) -> *mut *mut *mut c_int { unsafe {
     let nsteps = topo.steps.len();
     let topol: *mut *mut *mut c_int = alloc_zeroed(nsteps * std::mem::size_of::<*mut *mut c_int>()) as _;
     for k in 0..nsteps {
@@ -105,9 +105,9 @@ unsafe fn build_c_topol(topo: &mafft_tree::Topology) -> *mut *mut *mut c_int {
         *topol.add(k) = row;
     }
     topol
-}
+}}
 
-unsafe fn build_c_len(topo: &mafft_tree::Topology) -> *mut *mut c_double {
+unsafe fn build_c_len(topo: &mafft_tree::Topology) -> *mut *mut c_double { unsafe {
     let nsteps = topo.steps.len();
     let len: *mut *mut c_double = alloc_zeroed(nsteps * std::mem::size_of::<*mut c_double>()) as _;
     for k in 0..nsteps {
@@ -117,7 +117,7 @@ unsafe fn build_c_len(topo: &mafft_tree::Topology) -> *mut *mut c_double {
         *len.add(k) = row;
     }
     len
-}
+}}
 
 #[test]
 fn trace_first_branch_vs_c() {
@@ -219,7 +219,7 @@ fn trace_first_branch_vs_c() {
 
         // Determine group1 and group2 for this branch.
         let group1: Vec<usize> = topo.steps[0].left.clone();
-        let mut group2: Vec<usize> = (0..nseq).filter(|i| !group1.contains(i)).collect();
+        let group2: Vec<usize> = (0..nseq).filter(|i| !group1.contains(i)).collect();
         eprintln!("group1 ({}): {:?}", group1.len(), group1);
         eprintln!("group2 ({}): first 5 = {:?}", group2.len(), &group2[..5.min(group2.len())]);
 
@@ -2482,7 +2482,7 @@ fn full_iter0_profile_align_vs_msalignmm() {
         .expect("load sample.fftns2");
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
     let nseq = input.sequences.len();
-    let mut sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+    let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
 
     let penalty_dist = scoring.gap.open;
     let mut dm = DistanceMatrix::new(nseq);

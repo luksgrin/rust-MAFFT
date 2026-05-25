@@ -44,7 +44,12 @@ jobs:
         run: cargo test --workspace --lib
 
       - name: Run Rust integration tests (release)
-        run: cargo test -p mafft-core --release --test end_to_end
+        # `--tests` runs every `tests/*.rs` integration binary across the
+        # workspace (end_to_end + cross_validate_* + trace_refinement,
+        # etc.). Prior to this, only the named `end_to_end` binary ran, so
+        # the cross-validate FFI tests + the imp_matrix correctness tests
+        # were silently uncovered by CI.
+        run: cargo test --workspace --release --tests
 
       - name: Smoke test Rust binary
         run: |

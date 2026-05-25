@@ -23,7 +23,7 @@ static C_MUTEX: Mutex<()> = Mutex::new(());
 /// Setting poffset=0 here matches the production invocation path that our
 /// Rust `build_context()` targets. Other parameters are left NOTSPECIFIED so
 /// `constants()` applies its usual defaults for them.
-unsafe fn init_c_globals() {
+unsafe fn init_c_globals() { unsafe {
     mafft_sys::initglobalvariables();
     std::ptr::addr_of_mut!(mafft_sys::ppenalty).write(mafft_sys::NOTSPECIFIED);
     std::ptr::addr_of_mut!(mafft_sys::ppenalty_ex).write(mafft_sys::NOTSPECIFIED);
@@ -33,10 +33,10 @@ unsafe fn init_c_globals() {
     std::ptr::addr_of_mut!(mafft_sys::poffset).write(0); // mafft.tmpl: -h 0.000
     std::ptr::addr_of_mut!(mafft_sys::kimuraR).write(mafft_sys::NOTSPECIFIED);
     std::ptr::addr_of_mut!(mafft_sys::pamN).write(mafft_sys::NOTSPECIFIED);
-}
+}}
 
 /// Call C constants() with a dummy sequence.
-unsafe fn call_c_constants(dorp: u8, scoremtx: i32, nblosum: i32) {
+unsafe fn call_c_constants(dorp: u8, scoremtx: i32, nblosum: i32) { unsafe {
     std::ptr::addr_of_mut!(mafft_sys::dorp).write(dorp as i32);
     std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(scoremtx);
     std::ptr::addr_of_mut!(mafft_sys::nblosum).write(nblosum);
@@ -46,12 +46,12 @@ unsafe fn call_c_constants(dorp: u8, scoremtx: i32, nblosum: i32) {
     let mut seq_ptr = seq_data.as_ptr() as *mut i8;
     let seq_arr: *mut *mut i8 = &mut seq_ptr;
     mafft_sys::constants(1, seq_arr);
-}
+}}
 
 /// Call C constants() in JTT/TM mode (scoremtx=0). `is_tm` flips
 /// `TMorJTT` so the constants pipeline picks the TM frequency table.
 /// `pam_n` mirrors `--jtt N`/`--tm N`.
-unsafe fn call_c_constants_jtt(is_tm: bool, pam_n: i32) {
+unsafe fn call_c_constants_jtt(is_tm: bool, pam_n: i32) { unsafe {
     std::ptr::addr_of_mut!(mafft_sys::dorp).write(b'p' as i32);
     std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(0);
     std::ptr::addr_of_mut!(mafft_sys::pamN).write(pam_n);
@@ -63,10 +63,10 @@ unsafe fn call_c_constants_jtt(is_tm: bool, pam_n: i32) {
     let mut seq_ptr = seq_data.as_ptr() as *mut i8;
     let seq_arr: *mut *mut i8 = &mut seq_ptr;
     mafft_sys::constants(1, seq_arr);
-}
+}}
 
 /// Read the C n_dis matrix into a Vec<Vec<i32>>.
-unsafe fn read_c_n_dis() -> Vec<Vec<i32>> {
+unsafe fn read_c_n_dis() -> Vec<Vec<i32>> { unsafe {
     let nalpha = addr_of!(mafft_sys::nalphabets).read() as usize;
     let n_dis_ptr = addr_of!(mafft_sys::n_dis).read();
 
@@ -78,10 +78,10 @@ unsafe fn read_c_n_dis() -> Vec<Vec<i32>> {
         }
     }
     matrix
-}
+}}
 
 /// Read the C n_disFFT matrix into a Vec<Vec<i32>>.
-unsafe fn read_c_n_dis_fft() -> Vec<Vec<i32>> {
+unsafe fn read_c_n_dis_fft() -> Vec<Vec<i32>> { unsafe {
     let nalpha = addr_of!(mafft_sys::nalphabets).read() as usize;
     let ptr = addr_of!(mafft_sys::n_disFFT).read();
     if ptr.is_null() {
@@ -96,7 +96,7 @@ unsafe fn read_c_n_dis_fft() -> Vec<Vec<i32>> {
         }
     }
     matrix
-}
+}}
 
 // ---------------------------------------------------------------------------
 // Basic validation tests (no FFI)

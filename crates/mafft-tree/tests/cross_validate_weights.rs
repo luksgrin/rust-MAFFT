@@ -10,7 +10,7 @@ use mafft_tree::{Topology, BranchWeights, musclesupg, ClusterMethod, DistanceMat
 /// + weightFromABranch, and return the per-branch weight vectors.
 ///
 /// This is the ground truth from C.
-unsafe fn c_branch_weights(topo: &Topology) -> Vec<Vec<Vec<f64>>> {
+unsafe fn c_branch_weights(topo: &Topology) -> Vec<Vec<Vec<f64>>> { unsafe {
     let nseq = topo.nseq as c_int;
     let nsteps = topo.steps.len();
 
@@ -102,12 +102,12 @@ unsafe fn c_branch_weights(topo: &Topology) -> Vec<Vec<Vec<f64>>> {
 
     // Cleanup (leak for now — test only)
     all_weights
-}
+}}
 
-unsafe fn libc_alloc_zeroed(size: usize) -> *mut u8 {
+unsafe fn libc_alloc_zeroed(size: usize) -> *mut u8 { unsafe {
     let layout = std::alloc::Layout::from_size_align(size.max(8), 8).unwrap();
     std::alloc::alloc_zeroed(layout)
-}
+}}
 
 #[test]
 fn branch_weights_match_c_6seq() {
@@ -181,7 +181,6 @@ fn branch_weights_match_c_6seq() {
 /// Test that our per-group normalization matches C's fastconjuction_noname.
 #[test]
 fn per_group_normalization_matches_c() {
-    use std::ffi::CString;
     use std::os::raw::c_char;
 
     let nseq = 6;
@@ -215,8 +214,6 @@ fn per_group_normalization_matches_c() {
             *eff_mut.add(i) = w;
         }
 
-        let d1 = CString::new("").unwrap();
-        let d2 = CString::new("").unwrap();
         let d1_buf: *mut c_char = libc_alloc_zeroed(200) as _;
         let d2_buf: *mut c_char = libc_alloc_zeroed(200) as _;
 

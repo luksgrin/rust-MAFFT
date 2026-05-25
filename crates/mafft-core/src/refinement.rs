@@ -1473,17 +1473,7 @@ mod tests {
     /// iteration 0 (forward) and iteration 1 (reverse).
     #[test]
     fn alternating_direction_between_iterations() {
-        let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
-        let seqs = vec![
-            b"ACDEFGHIKLMNPQR".to_vec(),
-            b"ACDEFHIKLMNPQR".to_vec(),
-            b"ACDEHIKLMNPQR".to_vec(),
-            b"ACDHIKLMNPQR".to_vec(),
-            b"ACDHIKLMNP".to_vec(),
-            b"ACDHIKLM".to_vec(),
-        ];
-        let names: Vec<String> = (0..6).map(|i| format!("s{i}")).collect();
-        let (topo, nseq) = make_6seq_topology();
+        let (topo, _) = make_6seq_topology();
         let nsteps = topo.steps.len();
 
         // Verify the step_order logic directly.

@@ -1,6 +1,8 @@
-/// Cross-validate profile_align against C's MSalignmm.
+// Test function names deliberately mirror the C function being validated
+// (`A__align`, etc.) — the double underscore is part of the upstream MAFFT
+// identifier. Allow the non-snake_case style here.
+#![allow(non_snake_case)]
 
-use std::ffi::CString;
 use std::os::raw::{c_char, c_double, c_int};
 use std::sync::Mutex;
 
@@ -39,7 +41,7 @@ unsafe fn init_c_protein() {
 }
 
 /// Build a C-style n_dynamicmtx (double** indexed by char codes).
-unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<i32>]) -> *mut *mut c_double {
+unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<i32>]) -> *mut *mut c_double { unsafe {
     // C's n_dynamicmtx is indexed by [0..nalphabets-1][0..nalphabets-1] like n_dis.
     let nalpha = scoring_matrix.len() as c_int;
     let mtx = mafft_sys::AllocateDoubleMtx(nalpha, nalpha);
@@ -49,7 +51,7 @@ unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<i32>]) -> *mut *mut c_double 
         }
     }
     mtx
-}
+}}
 
 #[test]
 fn profile_align_matches_c_msalignmm() {
@@ -84,22 +86,9 @@ fn profile_align_matches_c_msalignmm() {
     unsafe {
         init_c_protein();
 
-        // Build sequences in writable buffers with enough alloclen.
+        // MSalignmm modifies the sequence buffers in place — allocate
+        // writable boxed buffers (with extra capacity per `alloclen`).
         let alloclen = (len1 + len2) * 10;
-        let c_seqs1_buf: Vec<Vec<u8>> = group1.iter().map(|s| {
-            let mut v = s.to_vec();
-            v.resize(alloclen, 0);
-            v
-        }).collect();
-        let c_seqs2_buf: Vec<Vec<u8>> = group2.iter().map(|s| {
-            let mut v = s.to_vec();
-            v.resize(alloclen, 0);
-            v
-        }).collect();
-        let mut c_seq1_ptrs: Vec<*mut c_char> = c_seqs1_buf.iter().map(|v| v.as_ptr() as *mut c_char).collect();
-        let mut c_seq2_ptrs: Vec<*mut c_char> = c_seqs2_buf.iter().map(|v| v.as_ptr() as *mut c_char).collect();
-
-        // Actually we need writable buffers since MSalignmm modifies them.
         let c_seq1_boxed: Vec<Box<[u8]>> = group1.iter().map(|s| {
             let mut v = s.to_vec();
             v.resize(alloclen + 1, 0);
