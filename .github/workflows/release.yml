@@ -26,7 +26,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: mafft-rs.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
 
@@ -50,7 +50,7 @@ jobs:
           7z a ../../../mafft-rs-${{ matrix.target }}.zip ${{ matrix.binary }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: mafft-rs-${{ matrix.target }}
           path: mafft-rs-${{ matrix.target }}.*
