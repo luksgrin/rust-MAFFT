@@ -336,6 +336,18 @@ fn rust_blend_matches_c_blend_cell_by_cell() {
     assert!(ngmax < 1e-13, "nongap blend drift: {:.3e}", ngmax);
     assert!(ogmax < 1e-13, "ogcp blend drift: {:.3e}", ogmax);
     assert!(fgmax < 1e-13, "fgcp blend drift: {:.3e}", fgmax);
+
+    // Free all C-allocated buffers from the `rs_create*` wrappers. They
+    // `calloc` per row; leaving them dangling trips Linux glibc's heap
+    // checker on process teardown (`free(): invalid pointer` SIGABRT).
+    unsafe {
+        for ptr in &c_blend_freqs_rows {
+            if !ptr.is_null() { libc::free(*ptr as *mut std::ffi::c_void); }
+        }
+        if !c_blend_nongap.is_null() { libc::free(c_blend_nongap as *mut std::ffi::c_void); }
+        if !c_blend_og.is_null() { libc::free(c_blend_og as *mut std::ffi::c_void); }
+        if !c_blend_fg.is_null() { libc::free(c_blend_fg as *mut std::ffi::c_void); }
+    }
 }
 
 #[test]

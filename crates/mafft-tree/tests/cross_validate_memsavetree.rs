@@ -338,19 +338,14 @@ fn cluster_mix_for_first_divergent_step() {
     assert!((c_cluster_mix - r_cluster_mix).abs() < 1e-12);
 }
 
-/// Drive C's full `compacttree_memsaveselectable` and compare every
-/// merge step's (im, jm) pick + branch lengths against our
-/// `memsavetree`'s output.
-///
-/// Currently `#[ignore]` because the FFI wrapper segfaults inside
-/// `compacttree_memsaveselectable` — likely a missing global
-/// initialization (TLS, partmtx, or one of the singlettable* paths).
-/// The other three cross-validate tests in this file already prove that
-/// distcompact, initial mindist, and cluster_mix all match C — so the
-/// per-pair primitives are correct. The remaining tree-topology
-/// divergence (§B.9) must come from the per-step bookkeeping; FFI'ing
-/// the C compacttree call directly would localize it, but the wrapper
-/// needs more setup work first.
+/// Drive C's `compacttreegivendist` (the algorithm `--memsavetree`
+/// actually uses) via the `rs_compacttreegivendist` wrapper and compare
+/// every merge step's (im, jm) pick + branch lengths against our
+/// `memsavetree`'s output. Earlier this test FFI'd
+/// `compacttree_memsaveselectable` directly and segfaulted on missing
+/// global state; replacing the FFI surface with the lighter-weight
+/// `rs_compacttreegivendist` (which takes precomputed mindist/nearest
+/// arrays) makes the comparison robust.
 #[test]
 fn memsavetree_topol_matches_c_step_by_step() {
     let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());

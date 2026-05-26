@@ -596,18 +596,14 @@ fn parttree_upgma_matches_c() {
 /// BB12041 diagnostic: dump per-pair distance from Rust's `ktuple_distance`
 /// against C's `commonsextet_p`-based pipeline value, using the
 /// `disttbfast.c` recipe (raw nogaplen, NOT filtered-group len, for
-/// lenfac). Run only when the BB12041 fixture is present.
+/// lenfac).
 #[test]
-#[ignore]
 fn bb12041_ktuple_distance_diagnostic() {
     use mafft_tree::ktuple_distance;
-    let path = std::path::Path::new("/tmp/balibase/bench1.0/bali3/in/BB12041");
-    if !path.exists() {
-        eprintln!("BB12041 fixture missing; skipping. expected at {}", path.display());
-        return;
-    }
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/bali3.BB12041.fa");
     let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-    let input = read_fasta(path).expect("load BB12041");
+    let input = read_fasta(&path).expect("load BB12041");
     let nseq = input.sequences.len();
     println!("BB12041: {} sequences", nseq);
     for (i, s) in input.sequences.iter().enumerate() {

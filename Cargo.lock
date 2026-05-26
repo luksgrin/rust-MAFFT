@@ -379,6 +379,7 @@ dependencies = [
 name = "mafft-core"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mafft-align",
  "mafft-fft",
  "mafft-io",

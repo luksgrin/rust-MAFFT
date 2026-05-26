@@ -6,13 +6,14 @@
 //! +28 col delta) is caused by per-leaf weight drift. Pass-1 Newick
 //! is byte-identical between C and Rust, so if weights also match, the
 //! bug is in profile blending / DP — not weights.
-//!
-//! Currently `#[ignore]`'d because it depends on `/tmp/balibase/...`
-//! being present. Run with:
-//!     cargo test -p mafft-core --test cross_validate_counteff \
-//!         --release -- --ignored --nocapture
 
 use std::os::raw::{c_double, c_int};
+use std::path::PathBuf;
+
+fn bb20027_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/bali3.BB20027.fa")
+}
 
 use mafft_tree::{Topology, sequence_weights};
 
@@ -72,15 +73,10 @@ unsafe fn c_counteff(topo: &Topology) -> Vec<f64> {
 }
 
 #[test]
-#[ignore]
 fn bb20027_pass1_widths_step_by_step() {
     // Run the engine on BB20027 and capture msa.step_trace from pass 0 + pass 1.
-    let path = std::path::Path::new("/tmp/balibase/bench1.0/bali3/in/BB20027");
-    if !path.exists() {
-        eprintln!("BB20027 fixture missing");
-        return;
-    }
-    let input = mafft_io::read_fasta(path).expect("read BB20027");
+    let path = bb20027_fixture();
+    let input = mafft_io::read_fasta(&path).expect("read BB20027");
     let engine = mafft_core::MafftEngine::new(mafft_core::AlignmentMode::FftNs2);
     let msa = engine.align(&input);
     let nsteps_per_pass = msa.sequences.len() - 1; // 28 for BB20027
@@ -97,14 +93,9 @@ fn bb20027_pass1_widths_step_by_step() {
 }
 
 #[test]
-#[ignore]
 fn bb20027_pass1_weights_match_c() {
-    let path = std::path::Path::new("/tmp/balibase/bench1.0/bali3/in/BB20027");
-    if !path.exists() {
-        eprintln!("BB20027 fixture missing; expected at {}", path.display());
-        return;
-    }
-    let input = mafft_io::read_fasta(path).expect("read BB20027");
+    let path = bb20027_fixture();
+    let input = mafft_io::read_fasta(&path).expect("read BB20027");
     let engine = mafft_core::MafftEngine::new(mafft_core::AlignmentMode::FftNs2);
     let msa = engine.align(&input);
     let topo = msa.guide_tree.expect("guide_tree missing");
