@@ -59,12 +59,19 @@ fn fft_port_matches_c_random_input() {
         mafft_sys::fft(n as i32, c_fwd.as_mut_ptr(), 0);
     }
 
+    // Tolerance: a length-n radix-2 FFT does O(n log n) FP ops, each
+    // adding ~1 ULP of error. For n=64 and |x| ≤ ~50 (so ULP(x) ≈ 1.1e-14),
+    // the cross-platform difference budget is roughly n × ULP(max) ≈ 7e-13.
+    // 1e-12 gives a small safety margin while still catching any genuine
+    // algorithmic drift between our FFT port and C's `fft.c`.
+    const FFT_ABS_TOL: f64 = 1e-12;
+
     let mut max_diff = 0.0_f64;
     for i in 0..n {
         let dr = (rust_fwd[i].re - c_fwd[i].R).abs();
         let di = (rust_fwd[i].im - c_fwd[i].I).abs();
         max_diff = max_diff.max(dr).max(di);
-        assert!(dr < 1e-15 && di < 1e-15,
+        assert!(dr < FFT_ABS_TOL && di < FFT_ABS_TOL,
             "forward FFT [{i}] differs: rust=({}, {}) c=({}, {}) dr={dr:e} di={di:e}",
             rust_fwd[i].re, rust_fwd[i].im, c_fwd[i].R, c_fwd[i].I);
     }
@@ -86,7 +93,7 @@ fn fft_port_matches_c_random_input() {
         let dr = (rust_inv[i].re - c_inv[i].R).abs();
         let di = (rust_inv[i].im - c_inv[i].I).abs();
         max_diff_inv = max_diff_inv.max(dr).max(di);
-        assert!(dr < 1e-15 && di < 1e-15,
+        assert!(dr < FFT_ABS_TOL && di < FFT_ABS_TOL,
             "inverse FFT [{i}] differs: rust=({}, {}) c=({}, {}) dr={dr:e} di={di:e}",
             rust_inv[i].re, rust_inv[i].im, c_inv[i].R, c_inv[i].I);
     }
