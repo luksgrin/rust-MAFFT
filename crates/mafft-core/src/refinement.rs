@@ -217,7 +217,7 @@ pub fn iterative_refine(
                     constraints, params.use_fft,
                 );
 
-                if let Some((new_seqs, _new_score)) = new_seqs {
+                if let Some((new_seqs, _new_score, dp_impmatch)) = new_seqs {
                     // C's identity check (tditeration.c:2184-2185): compare only
                     // the representative sequences s1=memlist1[0], s2=memlist2[0]
                     // (from OneClusterAndTheOther_fast in tddis.c:834-835).
@@ -249,9 +249,18 @@ pub fn iterative_refine(
                             group1, group2, &new_seqs, &weights, scoring,
                         );
                         let new_imp = if let Some(lh) = constraints {
-                            compute_impmatch_diagonal(
+                            // Prefer the impmatch accumulated DURING the
+                            // segmented DP (C's `Falign_localhom` totalimpmatch:
+                            // per-segment backward sum, forward across segments).
+                            // This reproduces C's FP summation order exactly,
+                            // unlike a global diagonal sum which merges all
+                            // segments into one sweep (BB30028 fingerprint).
+                            // Fall back to the global diagonal sum only on the
+                            // non-FFT path (dvtditr always uses -F, so the
+                            // fallback is not hit by default L-INS-i).
+                            dp_impmatch.unwrap_or_else(|| compute_impmatch_diagonal(
                                 group1, group2, &new_seqs, &w1n, &w2n, lh,
-                            )
+                            ))
                         } else { 0.0 };
                         let tscore = new_sub + new_imp;
 
@@ -370,7 +379,7 @@ fn realign_all(
     gap: &GapModel,
     constraints: Option<&LocalHomologyTable>,
     use_fft: bool,
-) -> Option<(Vec<Vec<u8>>, f64)> {
+) -> Option<(Vec<Vec<u8>>, f64, Option<f64>)> {
     let width = sequences[0].len();
 
     // Per-group gap stripping.
@@ -445,7 +454,7 @@ fn realign_all(
             return realign_all_constrained_fft(
                 group1, group2, sequences, &w1n, &w2n,
                 scoring, gap, lh_table,
-            );
+            ).map(|(seqs, score, imp)| (seqs, score, Some(imp)));
         }
         // Non-FFT constraint path (L-INS-i without -F, single full DP).
         // Mirrors C's `A__align(..., constraint=1, ...)` (Salignmm.c:1086):
@@ -469,10 +478,14 @@ fn realign_all(
             true, true,
             Some(&imp),
         );
+        // Non-FFT constraint path: impmatch is folded into the DP score,
+        // not accumulated separately, so return None — caller falls back to
+        // `compute_impmatch_diagonal`. (dvtditr always passes -F, so this
+        // path is not exercised by the default L-INS-i pipeline.)
         return build_result_from_stripped(
             &aln, group1, group2, sequences, &kept1, &kept2,
             &stripped_prof1, &stripped_prof2,
-        );
+        ).map(|(seqs, score)| (seqs, score, None));
     }
 
     if use_fft {
@@ -733,7 +746,7 @@ fn realign_all(
             }
         }
 
-        return Some((new_sequences, total_score));
+        return Some((new_sequences, total_score, None));
     }
 
     // Non-FFT path: profile_align on stripped profiles.
@@ -744,7 +757,7 @@ fn realign_all(
     build_result_from_stripped(
         &aln, group1, group2, sequences, &kept1, &kept2,
         &stripped_prof1, &stripped_prof2,
-    )
+    ).map(|(seqs, score)| (seqs, score, None))
 }
 
 /// Constraint-aware FFT-segmented refinement, port of C's
@@ -771,7 +784,7 @@ fn realign_all_constrained_fft(
     scoring: &ScoringContext,
     gap: &GapModel,
     lh_table: &LocalHomologyTable,
-) -> Option<(Vec<Vec<u8>>, f64)> {
+) -> Option<(Vec<Vec<u8>>, f64, f64)> {
     let width = sequences[group1[0]].len();
     if width == 0 { return None; }
 
@@ -829,6 +842,13 @@ fn realign_all_constrained_fft(
 
     let mut new_sequences: Vec<Vec<u8>> = vec![Vec::new(); sequences.len()];
     let mut total_score = 0.0f64;
+    // C `Falign_localhom.c:816`: `*totalimpmatch += impmatch` per FFT
+    // segment, summed forward across segments. Within each segment C's
+    // `Atracking_localhom` accumulates `impmtx` at match cells in BACKWARD
+    // traceback order. We reproduce that exact FP order here so `new_imp`
+    // matches C bit-for-equivalent (closes BB30028; a global diagonal sum
+    // diverges by ~7 ULP because it merges all segments into one sweep).
+    let mut total_impmatch = 0.0f64;
     for win in cuts.windows(2) {
         let a = win[0];
         let b = win[1];
@@ -990,6 +1010,30 @@ fn realign_all_constrained_fft(
         );
         total_score += seg_aln.score;
 
+        // Per-segment impmatch: C's `Atracking_localhom` (Dalignmm.c:564)
+        // adds `impmtx[iin][jin]` at each match cell during the BACKWARD
+        // traceback. Collect this segment's match cells (stripped-local
+        // positions) and sum `local_imp` over them in reverse op order to
+        // reproduce that summation order; then add to `total_impmatch`
+        // (forward across segments, matching Falign_localhom.c:816).
+        {
+            let mut mi1 = 0usize;
+            let mut mi2 = 0usize;
+            let mut match_cells: Vec<(usize, usize)> = Vec::new();
+            for op in &seg_aln.operations {
+                match op {
+                    AlignOp::Match => { match_cells.push((mi1, mi2)); mi1 += 1; mi2 += 1; }
+                    AlignOp::Delete => { mi1 += 1; }
+                    AlignOp::Insert => { mi2 += 1; }
+                }
+            }
+            let mut seg_imp = 0.0f64;
+            for &(ci, cj) in match_cells.iter().rev() {
+                seg_imp += local_imp[ci][cj];
+            }
+            total_impmatch += seg_imp;
+        }
+
         // Reconstruct segment output by applying ops to stripped segments.
         let mut i1 = 0usize;
         let mut i2 = 0usize;
@@ -1046,7 +1090,7 @@ fn realign_all_constrained_fft(
         }
     }
 
-    Some((new_sequences, total_score))
+    Some((new_sequences, total_score, total_impmatch))
 }
 
 /// Build result sequences from an alignment on stripped profiles.
