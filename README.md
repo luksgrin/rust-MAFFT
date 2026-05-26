@@ -95,16 +95,18 @@ The binary is at `target/release/mafft-rs`.
 ### Run tests
 
 ```bash
-# Full Rust suite (all crates, 269 tests as of 2026-05-12)
-cargo test --workspace --exclude pymafft --release
+# All integration tests across the workspace (357 tests, release build,
+# pulls in mafft-sys for FFI cross-validation)
+cargo test --workspace --release --tests
 
-# Just unit tests (faster)
-cargo test --workspace --exclude pymafft --lib
+# Just unit tests (158 tests, faster; no mafft-sys / no C build)
+cargo test --workspace --lib
 
-# End-to-end integration tests (58 tests, requires release build)
+# Just the end-to-end binary (89 tests, release build)
 cargo test -p mafft-core --release --test end_to_end
 
-# Build C reference for cross-validation (optional)
+# Build C reference for cross-validation (optional; cargo test --tests
+# triggers this automatically via mafft-sys's build.rs)
 make -C mafft-upstream/core
 ```
 
@@ -302,44 +304,47 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-`cargo test --workspace --exclude pymafft --release`: **349 passed, 0 failed, 0 ignored**:
+`cargo test --workspace --release --tests`: **357 passed, 0 failed,
+5 ignored** (5 are deliberate diagnostic/bisection tools, annotated
+at the call site). Lib tests separately: `cargo test --workspace
+--lib`: **158 passed**. Python: 32 tests pass.
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust unit tests (`--lib`) | 157 | All crates, all modules (incl. 7 `msalign` Hirschberg DP tests + 4 `parse_hat3_seed` tests) |
+| Rust lib tests (`--lib`, all crates) | 158 | All `#[cfg(test)] mod tests` blocks (incl. 7 `msalign` Hirschberg DP tests + 4 `parse_hat3_seed` tests) |
 | Rust binary tests (`mafft-rs`) | 10 | CLI helper functions (`decide_auto`, `replace_unusual`, etc.) |
-| Rust integration tests (`end_to_end`) | 88 | Byte-level parity with C across all supported modes + DP diagnostics (incl. 4 `--seedtable` and 7 `--retree N` byte-equal tests) |
-| Rust FFI cross-validation tests | 68 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline, memsavetree, `MSalignmm` Hirschberg DP, MSalignmm profile alignment |
-| Rust other integration tests | 25 | `trace_refinement` (15), `integration` mafft-io (7), `imp_*` (3) |
+| Rust integration tests (`end_to_end`) | 89 | Byte-level parity with C across all supported modes + DP diagnostics (incl. 4 `--seedtable` and 7 `--retree N` byte-equal tests + the BB30013 boundary-frequencies regression guard) |
+| Rust FFI cross-validation tests | ~190 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline, memsavetree, `MSalignmm` Hirschberg DP, MSalignmm profile alignment, BB20027 weight-equality, BB12041 distance-equality |
+| Rust other integration tests | ~25 | `trace_refinement` (15), `integration` mafft-io (7), `imp_*` (3) |
 | Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust** | **349** | |
+| **Total Rust integration** | **357** | |
 
 Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
 
 #### BALIBASE 3 parity sweep
 
-Sweep across BALIBASE 3 (Drive5 mirror, 218 protein test sets) against MAFFT 7.526:
+Sweep across BALIBASE 3 (RV11–RV50, 386 protein test sets) against MAFFT 7.526:
 
-| Mode | Match | Total % |
-|------|-------|---------|
-| FFT-NS-1 (`--retree 1`) | 206/218 | 94.5 % |
-| FFT-NS-2 (default) | 212/218 | **97.2 %** |
-| FFT-NS-i (`--maxiterate 100`) | 128/218 | 58.7 % |
-| L-INS-i (`--localpair --maxiterate 100`) | 154/218 | 70.6 % |
-| G-INS-i (`--globalpair --maxiterate 100`) | 140/218 | 64.2 % |
-| E-INS-i (`--genafpair --maxiterate 100`) | 184/218 | 84.4 % |
+| Mode | Flags | Match | Total % | Residuals |
+|------|-------|-------|---------|-----------|
+| FFT-NS-i | `--maxiterate 100` | **386/386** | **100.0 %** | none |
+| L-INS-i  | `--localpair --maxiterate 100` | 384/386 | 99.5 % | BB30028, BB50001 |
+| G-INS-i  | `--globalpair --maxiterate 100` | 385/386 | 99.7 % | BB20004 |
 
-All residual divergences are `A__align` static-state-coupling
-artifacts (same class as `--tm 200 --retree 1` — see
-`MAFFT_UPSTREAM_REPORT.md`). Cell-level FFI tests
-(`cross_validate_cpmx`, `cross_validate_counteff`,
+The 3 residuals are all pre-existing tied-trace / cascade cases
+(same class as `--tm 200 --retree 1` — see `MAFFT_UPSTREAM_REPORT.md`).
+Cell-level FFI tests (`cross_validate_cpmx`, `cross_validate_counteff`,
 `cross_validate_bb20027_dp`) prove the Rust DP and profile-building
 match C bit-for-bit on identical inputs. Divergences come from C's
 per-process static TLS memoization state, not from a Rust bug. Both
-alignments at each divergent case are optimal-scored. Refinement
-modes show lower parity because every iteration re-runs `A__align`,
-amplifying any tied-cell shift through subsequent passes; ~80 % of
-refinement-mode divergences are same-width tied-trace cases.
+alignments at each residual are optimal-scored.
+
+FFT-NS-i reached 100 % via the §B.10 FFT-segmented refinement
+boundary-frequencies fix (2026-05-25): closed BB30013's 3843-line
+residual by computing per-segment `headgapfreq{1,2}` /
+`gapfreq{1,2}[lgth]` from `sgap`/`egap` via `outgapcount` (mirroring
+C `Salignmm.c:1585-1622`) instead of defaulting `BoundaryFreqs` to
+1.0. Full writeup in `TODO.md §B.10`.
 
 To reproduce:
 
@@ -364,10 +369,11 @@ None. Every user-visible MAFFT 7.526 CLI flag is implemented and
 byte-identical to C on the 36-seq test sample.
 
 The remaining `TODO.md` items are: (a) `A__align` static-state
-coupling artifacts (`--tm 200 --retree 1` 8-line diff + 6/218
-BALIBASE 3 cases — see `MAFFT_UPSTREAM_REPORT.md`), (b) performance
-deferrals where Rust is already faster than C on most modes, and
-(c) `--xinsi` untestable until Stanford's `contrafold` is installed.
+coupling artifacts (`--tm 200 --retree 1` 8-line diff + 3/386
+BALIBASE 3 INS-i cases: BB30028, BB50001 L-INS-i; BB20004 G-INS-i
+— see `MAFFT_UPSTREAM_REPORT.md`), (b) performance deferrals where
+Rust is already faster than C on most modes, and (c) `--xinsi`
+untestable until Stanford's `contrafold` is installed.
 
 ### Case preservation
 

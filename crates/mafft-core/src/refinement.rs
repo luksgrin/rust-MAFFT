@@ -233,6 +233,13 @@ pub fn iterative_refine(
                     if !changed {
                         // Identical — no change, count toward convergence
                         let tscore = old_score;
+                        if let Ok(f) = std::env::var("RS_REFINE_TRACE") {
+                            use std::io::Write;
+                            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                                let _ = writeln!(fp, "NOTHREAD pid={} niter={} iter={} l={} k={} clus1={} clus2={} mscore={:.6} tscore={:.6} accept=0",
+                                    std::process::id(), params.max_iterations, iter, step_idx, side, group1.len(), group2.len(), old_score, tscore);
+                            }
+                        }
                         iter_scores.insert(branch_id, tscore);
                         converged_count += 1;
                     } else {
@@ -252,6 +259,14 @@ pub fn iterative_refine(
                         if std::env::var("RUST_MAFFT_TRACE").is_ok() {
                             eprintln!("ACCEPT iter={iter} step={step_idx} side={side} old={:.3} new={:.3} accept={}",
                                 old_score, tscore, tscore > threshold);
+                        }
+                        if let Ok(f) = std::env::var("RS_REFINE_TRACE") {
+                            use std::io::Write;
+                            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                                let _ = writeln!(fp, "NOTHREAD pid={} niter={} iter={} l={} k={} clus1={} clus2={} mscore={:.6} tscore={:.6} accept={}",
+                                    std::process::id(), params.max_iterations, iter, step_idx, side, group1.len(), group2.len(), old_score, tscore,
+                                    if tscore > threshold { 1 } else { 0 });
+                            }
                         }
                         if tscore > threshold {
                             alignment.sequences = new_seqs;
@@ -1155,12 +1170,22 @@ fn compute_split_score(
     // Sequential sum to match C's deterministic accumulation order.
     // par_iter gives non-deterministic summation order, which causes
     // small FP divergence that cascades into accept/reject decisions.
+    //
+    // FMA: clang at -O3 with FP_CONTRACT=on lowers
+    //   total += score * wi * wj
+    // to one plain mul (score * wi) plus one fma (acc += (score*wi)*wj),
+    // i.e. 2 roundings. Plain Rust `*` and `+=` give 3 roundings, and
+    // the resulting sub-ULP per-pair drift accumulates over (clus1 *
+    // clus2) pairs into a multi-unit mscore drift that flips
+    // accept/reject decisions late in iterative refinement (BB30028
+    // L-INS-i iter=3 l=5 k=1 fingerprint).
     let mut total = 0.0f64;
     for (i_local, &i) in group1.iter().enumerate() {
         let wi = w1n[i_local];
         for (j_local, &j) in group2.iter().enumerate() {
             let wj = w2n[j_local];
-            total += pairwise_score(&sequences[i], &sequences[j], scoring) * wi * wj;
+            let s_wi = pairwise_score(&sequences[i], &sequences[j], scoring) * wi;
+            total = s_wi.mul_add(wj, total);
         }
     }
     total

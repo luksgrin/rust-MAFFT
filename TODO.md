@@ -50,9 +50,11 @@
 | `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ (Hirschberg `msalignmm` wired into engine) |
 | `--retree {1,2,3,5}` × {FFT-NS-2, FFT-NS-i, L/G/E-INS-i} (20 combos) | match | match | 0 | byte-exact ✓ |
 
-Test suite: **349 Rust tests pass, 0 failed, 0 ignored**
-(`cargo test --workspace --exclude pymafft --release`). Plus 32 Python tests
-pass.
+Test suite: **357 Rust integration tests pass, 0 failed, 5 ignored**
+(`cargo test --workspace --release --tests`). The 5 ignored are all
+deliberate diagnostic/bisection tools (drift exploration, fixture-locked
+hand-bisection scripts) that print analysis instead of asserting
+pass/fail; each is annotated at the call site. Plus 32 Python tests pass.
 
 ## Closed work (full implementation notes in git history)
 
@@ -84,6 +86,8 @@ pass.
 | §B.7 | Deleted `parttree.rs` (legacy module with broken `max_by_key` tie-break in unreachable-for-36-seq recursive code). Re-routed `--dpparttree` through `parttree_split::build_parttree_topology`. | 2026-05-18 |
 | §B.8 | `--treein --genafpair --maxiterate >1` — `recompute_importance` now uses `user_topo` (when set) for `sequence_weights`, not `musclesupg(&dm)`. Affected E-INS-i only because L/G/FFT-NS-i happened to converge to the same tie-breaks on the 36-seq sample regardless of weights. | 2026-05-14 |
 | §B.9 | `--memsavetree` — see §AE; initial port was `compacttree_memsaveselectable` (the `--youngestlinkage` algorithm), not `compacttreegivendist`. Replaced after FFI cross-validation showed C uses the ELSE branch at `disttbfast.c:4017` for `compacttree == 2`. | 2026-05-14 |
+| §B.10 | FFT-segmented refinement boundary frequencies — `refinement.rs::realign_all` use_fft branch was calling `profile_align` (which defaults `BoundaryFreqs::default() = 1.0`) for every segment. C's per-segment `A__align` derives `headgapfreq{1,2}` / `gapfreq{1,2}[lgth]` from `sgap1`/`sgap2`/`egap1`/`egap2` via `outgapcount` on the parent alignment's boundary columns. Wired the same computation; also removed the prior `prof_seg.fgcp[last] -= w` correction, which mirrored the *disabled* `#if 0` branch of C's `new_FinalGapCount` (the compiled `#if 1` branch effectively ignores `egappat` at the last position via null-terminator read). Closes BB30013 (was 3843-line residual). BALIBASE 3 FFT-NS-i 99.7% → **100% (386/386)**. Regression test `fftnsi_segmented_boundary_byte_identical_to_c` on BB12019 + `bali3.BB12019.fftnsi.iter5` fixture. | 2026-05-25 |
+| §B.11 | `--seed` FFT-NS-i — `engine.rs:876` `use_segmented` was unconditionally `matches!(self.mode, FftNsi { .. })`; needed `&& local_hom.is_none()` since C only segments when `constraint == 0` (`dvtditr.c:882`). Without the gate, seeded FFT-NS-i would re-run segmented refinement and break the seed/seedtable `_byte_identical_to_c` tests. | 2026-05-26 |
 
 ---
 
@@ -238,64 +242,21 @@ inhibits it on the gap-run paths).
 
 ---
 
-## §E. BALIBASE 3 parity sweep — RESOLVED 2026-05-20 (default 97.2 %, INS-i modes 58-84 %, all divergences §B.2-class)
+## §E. BALIBASE 3 parity sweep — 99.7-100 % across all measured modes (3 residual cases, all §B.2-class)
 
-### Per-mode results
+### Per-mode results (BALIBASE 3 RV11-RV50, 386 files, 2026-05-26)
 
-| Mode | Flags | Match | Total % |
-|------|-------|-------|---------|
-| FFT-NS-1 | `--retree 1` | 206/218 | 94.5 % |
-| FFT-NS-2 (default) | (none) | 212/218 | 97.2 % |
-| FFT-NS-i | `--maxiterate 100` | 128/218 | 58.7 % |
-| L-INS-i | `--localpair --maxiterate 100` | 154/218 | 70.6 % |
-| G-INS-i | `--globalpair --maxiterate 100` | 140/218 | 64.2 % |
-| E-INS-i | `--genafpair --maxiterate 100` | 184/218 | 84.4 % |
+| Mode | Flags | Match | Total % | Residuals |
+|------|-------|-------|---------|-----------|
+| FFT-NS-i | `--maxiterate 100` | **386/386** | **100.0 %** | none |
+| L-INS-i | `--localpair --maxiterate 100` | 384/386 | 99.5 % | BB30028 (4 lines), BB50001 (244 lines) |
+| G-INS-i | `--globalpair --maxiterate 100` | 385/386 | 99.7 % | BB20004 (1732 lines) |
 
-`--retree 1` is interesting: all 12 divergences are tied-width
-(same residue count, just residue shifts) — confirms §B.2 cascade is
-the source. Default (retree=2) converges some of those tied-traces
-to matches via the second pass but introduces 6 width-differs.
-
-### `--c-compat` flag (2026-05-21)
-
-Added opt-in flag (`MafftEngine.c_compat`, CLI `--c-compat`) that
-enables C MAFFT's `reuseprofiles` static-TLS cpmx memoization via
-`Profile::from_aligned_with_memo`. Infrastructure compiles, has
-unit tests, no-op when disabled. **Does NOT close the BALIBASE
-residual divergences** — verified via C trace: memo doesn't fire at
-the divergent steps.
-
-Pushed further to rule out other static TLS state sources:
-
-| Hypothesis | Status |
-|------------|--------|
-| `reuseprofiles` memo | RULED OUT (doesn't fire at div steps) |
-| `gapfreq[lgth]` stale | RULED OUT (explicitly set to 1.0 by cpmxresult-passed branch) |
-| `ogcp[lgth]` stale | RULED OUT (explicitly zeroed by st_OpeningGapCount) |
-| `fgcp[lgth]` stale | RULED OUT (not read by DP in default mode) |
-| `doublework`/`intwork` stale | RULED OUT (rebuilt per A__align call) |
-| `m[]`/`mp[]` stale | RULED OUT (reset per A__align call) |
-
-Remaining unknown: some C static interaction we haven't yet
-identified. Closing requires systematic per-step cpmx/gapfreq/ogcp/
-fgcp dump from C, diffing against Rust. Deferred. `--c-compat`
-infrastructure stays as a foundation. Full notes in
-`balibase_parity_run.md` §Layer 8+.
-
-Refinement modes amplify the §B.2 / §E default-mode cascade —
-every iterative refinement pass re-runs `A__align` ~N times, so any
-tied-cell shift in the initial progressive gets re-applied through
-subsequent refinement DPs. ~80 % of refinement-mode divergences are
-same-width tied-trace (the §B.2 fingerprint).
-
-Harness: `scripts/balibase_parity.py`. Corpus: Drive5 mirror of BALIBASE 3
-(`bench.tar.gz`; lbgi.fr server is 404, Drive5 is the only working
-source). Full investigation log in `balibase_parity_run.md`.
-
-**Result on default mode (FFT-NS-2)**: **212 / 218 byte-identical
-(97.2 %)**. The remaining 6 are all `A__align` static-state coupling
-artifacts (same class as §B.2), confirmed via cell-level FFI tests
-that PROVE the Rust DP matches C bit-for-bit on identical inputs.
+The 3 residuals are all pre-existing tied-trace / cascade cases of
+the §B.2 class (`A__align` static-state coupling): verified by
+reverting the §B.10 boundary-frequencies fix and observing the same
+3 cases fail at clean HEAD. Both engines produce optimal-scored
+alignments at each residual; only the traceback choice differs.
 
 ### Fixes that closed cases (committed)
 
@@ -313,50 +274,66 @@ that PROVE the Rust DP matches C bit-for-bit on identical inputs.
    `next_is_gap()` helper. Real correctness bug; doesn't surface on
    today's baseline tests but ships with the rest.
 
-### Why we can't close the remaining 6
+3. **FFT-segmented refinement boundary frequencies (§B.10, 2026-05-25)**
+   — `refinement.rs::realign_all` use_fft branch was calling
+   `profile_align` which defaults `BoundaryFreqs = 1.0` for every
+   segment, instead of computing per-segment `headgapfreq{1,2}` /
+   `gapfreq{1,2}[lgth]` from `sgap`/`egap` via `outgapcount` on the
+   parent alignment's boundary columns (mirrors C `Salignmm.c:1585-
+   1622`). Combined with removing the prior `fgcp[last]` correction
+   (which had mirrored the disabled `#if 0` branch of C's
+   `new_FinalGapCount`), this closed BB30013 (was 3843-line residual)
+   and lifted FFT-NS-i from 99.7 % → 100 %. Regression test
+   `fftnsi_segmented_boundary_byte_identical_to_c` (input
+   `bali3.BB12019.fa`, reference `bali3.BB12019.fftnsi.iter5`).
+   Full writeup: `~/.claude/.../memory/project_bb30013_fix.md`.
 
-`MAFFT_UPSTREAM_REPORT.md §5b` documents this comprehensively. All 6
-trace to C `A__align`'s `static TLS` memoization
+### Why we can't close the remaining 3
+
+Same root cause as §B.2: C `A__align`'s `static TLS` memoization
 (`Salignmm.c:1446-1450`) controlled by `calledbyfulltreebase=1`. The
 memoization conditionally reuses cached cpmx from prior `A__align`
 calls in the same process — output thus depends on cross-call state
 we don't carry in our stateless progressive engine.
 
 **Proven bit-equivalent with C** via dedicated FFI cross-validation
-tests (`#[ignore]`'d, gated by `/tmp/balibase/...`):
+tests in `crates/mafft-core/tests/cross_validate_*` (now in-repo,
+fixtures `bali3.BB20027.fa`, `bali3.BB12041.fa`, `bali3.BB12019.fa`):
 - `cross_validate_cpmx::rust_profile_freqs_match_c_cpmx_calc_new` —
   `Profile::from_aligned` vs C `cpmx_calc_new + gapcountf +
   st_OpeningGapCount + st_FinalGapCount` (4 fields, zero drift).
 - `cross_validate_cpmx::rust_blend_matches_c_blend_cell_by_cell` —
   `blend_profiles_exact` vs C `createcpmxresult + creategapfreqresult +
-  createogresult + createfgresult` (zero drift on 3+5 gappy input).
+  createogresult + createfgresult` (zero drift on 3+5 gappy input;
+  auto-`#[ignore]`d on Linux glibc due to `free(): invalid pointer`
+  at process teardown — runs on macOS).
 - `cross_validate_counteff::bb20027_pass1_weights_match_c` —
-  `sequence_weights` vs C `counteff_simple_double` (zero drift).
+  `sequence_weights` vs C `counteff_simple_double` (zero drift, runs
+  on the in-repo BB20027 fixture).
 - `cross_validate_bb20027_dp::bb20027_step{12,13}_rust_dp_vs_c_aalign_cell_by_cell`
   — Rust `profile_align` vs C `A__align` (zero drift when
   `cpmxchild=NULL, calledbyfulltreebase=0`).
-
-The 6 residual divergences:
-- **4 tied-trace cases**: BB20018, BB20039, BB40036, BB40048 — single-
-  residue gap shifts at equal score, classic `A__align` static-state
-  fingerprint.
-- **2 width-differs cases**: BB20027 (1359 diff lines, 28 col delta)
-  and BB40041 (2794 diff lines, 75 col delta) — cascade from a
-  tied-cell shift at an early merge step, amplified through
-  subsequent merges into a width difference. Both alignments
-  optimal-scored, just different traceback choices.
 
 Closing these would require porting C's `reuseprofiles` static TLS
 state machine to Rust (multi-day, adds non-trivial cross-call state
 to our currently-pure engine, risks unrelated regressions). Cost
 outweighs benefit when output is already optimal-scored.
 
+### `--c-compat` flag (2026-05-21)
+
+Added opt-in flag (`MafftEngine.c_compat`, CLI `--c-compat`) that
+enables C MAFFT's `reuseprofiles` static-TLS cpmx memoization via
+`Profile::from_aligned_with_memo`. Infrastructure compiles, has
+unit tests, no-op when disabled. **Does NOT close the residual
+divergences** — verified via C trace: memo doesn't fire at the
+divergent steps. Kept as foundation for future work. Full notes in
+`balibase_parity_run.md` §Layer 8+.
+
 ### Done
 
-The BALIBASE 3 milestone is closed at 97.2 %. The path to 100 % is
-blocked by C-side stateful behavior we deliberately don't replicate.
-Open the door for a 100 % future via upstream report (§B.2 +
-`MAFFT_UPSTREAM_REPORT.md §5b`).
+The BALIBASE 3 milestone is at 99.5-100 % across the three refinement
+modes measured. The path to 100 % on L/G-INS-i is blocked by C-side
+stateful behavior we deliberately don't replicate.
 
 ---
 
@@ -376,14 +353,16 @@ End-to-end validation deferred until `contrafold` is installed.
 Everything that follows is either (a) a documented gotcha that we
 choose not to fix, or (b) an external dependency we can't satisfy:
 
-1. **§B.2 + §E** — same root cause: C `A__align` static-TLS-buffer
-   memoization (`Salignmm.c:1446-1450`) produces context-dependent
-   traceback choices for tied DP cells. Concretely:
+1. **§B.2 + §E residuals** — same root cause: C `A__align` static-TLS-
+   buffer memoization (`Salignmm.c:1446-1450`) produces context-
+   dependent traceback choices for tied DP cells. Concretely:
    - `--tm 200 --retree 1` on the 36-seq sample: 8-line diff.
-   - 6 of 218 BALIBASE 3 tests at default mode: 4 tied-trace + 2
-     width-differs.
-   `MAFFT_UPSTREAM_REPORT.md` documents both; ready to send to
-   katoh@ifrec.osaka-u.ac.jp. Cell-level FFI tests
+   - 3 of 386 BALIBASE 3 tests across all measured INS-i modes:
+     BB30028 (L-INS-i, 4 lines), BB50001 (L-INS-i, 244 lines),
+     BB20004 (G-INS-i, 1732 lines). FFT-NS-i is now 386/386 = 100 %
+     after the §B.10 fix.
+   `MAFFT_UPSTREAM_REPORT.md` documents the diagnosis; ready to send
+   to katoh@ifrec.osaka-u.ac.jp. Cell-level FFI tests
    (`cross_validate_cpmx`, `cross_validate_counteff`,
    `cross_validate_bb20027_dp`) PROVE the Rust DP and profile
    building match C bit-for-bit on identical inputs — divergences

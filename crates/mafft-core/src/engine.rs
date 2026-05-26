@@ -487,8 +487,38 @@ impl MafftEngine {
             // With `--treein`, C uses the loaded user tree's branch lengths
             // for `counteff_simple` weights (tbfast.c:2967). Without it, the
             // pairwise-distance UPGMA tree is used. Mirror that branch.
+            //
+            // C's `dvtditr` reads the `hat2` distance matrix via
+            // `readhat2_pointer` (dvtditr.c:751-753) and rebuilds the
+            // refinement tree from it. `hat2` is written with `DFORMAT =
+            // "%#6.3f"` (mltaln.h:55, io.c:3103) — 3 decimal places. So
+            // dvtditr's tree is built from a 3-decimal-truncated distance
+            // matrix, NOT the in-memory full-precision matrix that the
+            // progressive `tbfast` used. The resulting tree differs from
+            // the progressive one, weights from `counteff_simple` differ,
+            // and `calcimportance_half`'s `ieff = eff / totaleff` differs
+            // — cascading into a per-region `mean * opt` importance drift
+            // that flips one accept/reject decision late in iterative
+            // refinement (BB30028 L-INS-i fingerprint).
+            //
+            // Mirror the round-trip: truncate `dm` to 3 decimals before
+            // building the topology used for refinement weights.
+            let dm_for_refinement = if user_topo.is_some() {
+                dm.clone()
+            } else {
+                let mut m = dm.clone();
+                let n = m.nseq;
+                for i in 0..n {
+                    for j in (i + 1)..n {
+                        let v = m.get(i, j);
+                        let truncated = (v * 1000.0).round() / 1000.0;
+                        m.set(i, j, truncated);
+                    }
+                }
+                m
+            };
             let initial_topo = user_topo.clone()
-                .unwrap_or_else(|| musclesupg(&dm, ClusterMethod::default()));
+                .unwrap_or_else(|| musclesupg(&dm_for_refinement, ClusterMethod::default()));
             let weights = mafft_tree::sequence_weights(&initial_topo);
             let seq_refs: Vec<&[u8]> = input.sequences.iter()
                 .map(|s| s.data.as_slice()).collect();

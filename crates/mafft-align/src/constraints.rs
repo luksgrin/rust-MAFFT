@@ -86,7 +86,16 @@ pub fn build_imp_matrix(
                     let c2 = seq2[k2];
                     if c1 != b'-' && c2 != b'-' {
                         if k1 < lgth1 && k2 < lgth2 {
-                            imp[k1][k2] += region.importance * effij;
+                            // C `mltaln9.c:15665`:
+                            //   impmtx[k1][k2] += tmpptr->importance * effij;
+                            // gcc -O3 fuses into a single `fmadd` (single
+                            // rounding). Plain Rust `+=` is 2 roundings, and
+                            // the resulting per-cell ULP drift accumulates
+                            // over the diagonal sum into a multi-unit
+                            // impmatch drift that flips accept/reject
+                            // decisions late in iterative refinement
+                            // (BB30028 L-INS-i iter=3 fingerprint).
+                            imp[k1][k2] = region.importance.mul_add(effij, imp[k1][k2]);
                         }
                         k1 += 1;
                         k2 += 1;
@@ -211,8 +220,23 @@ pub fn extract_putlocalhom2_regions(
         sumoverlap += end2 - start2 + 1;
     }
 
+    // C MAFFT serializes opt through a `%7.5f` hat3 text file in
+    // pairlocalalign.c:3101:
+    //   fprintf(hat3p, "%d %d %d %7.5f ...", overlapaa, opt, ...)
+    // where `opt = isumscore * 5.8 / (600 * sumoverlap)` (io.c:861).
+    // dvtditr then reads opt and rescales it back via
+    // io.c:4451: `tmpptr->opt = (opt + 0.00) / 5.8 * 600`.
+    // The 5-decimal text round-trip introduces ~1e-5 precision loss
+    // relative to the pure-FP `isumscore / sumoverlap` formula.
+    // Mirror that loss to stay byte-identical with C — without this,
+    // BB30028 / BB50001 L-INS-i diverge by 4 / 244 lines because the
+    // ~5e-6-per-region drift accumulates over impmatch_diagonal sums
+    // and flips one accept/reject decision late in refinement.
     let opt = if sumoverlap > 0 {
-        isumscore / sumoverlap as f64
+        let opt_pre = isumscore * 5.8 / (600.0 * sumoverlap as f64);
+        // Round to 5 decimals (mimics C `%7.5f` format).
+        let opt_file = (opt_pre * 1e5).round() / 1e5;
+        opt_file / 5.8 * 600.0
     } else { 0.0 };
     let provisional_importance =
         if sumoverlap > 0 { opt / sumoverlap as f64 } else { 0.0 };
@@ -440,8 +464,17 @@ pub fn recompute_importance(
 
     let nogaplen: Vec<usize> = sequences.iter()
         .map(|s| s.iter().filter(|&&c| c != b'-').count()).collect();
-    let totaleff: f64 = (0..nseq)
-        .filter(|&i| nogaplen[i] > 0).map(|i| eff[i]).sum();
+    // C `mltaln9.c:11806-11814` totaleff computation mirrors:
+    //   totaleff = 0.0;
+    //   for(i=0; i<nseq; i++) {
+    //     ieff[i] = (nogaplen[i] > 0) ? eff[i] : 0.0;
+    //     totaleff += ieff[i];
+    //   }
+    // Sequential `+=` to match C's accumulation order exactly.
+    let mut totaleff = 0.0f64;
+    for i in 0..nseq {
+        if nogaplen[i] > 0 { totaleff += eff[i]; }
+    }
     if totaleff <= 0.0 { return; }
     let ieff: Vec<f64> = (0..nseq).map(|i| {
         if nogaplen[i] > 0 { eff[i] / totaleff } else { 0.0 }
