@@ -233,9 +233,20 @@ pub fn extract_putlocalhom2_regions(
     // ~5e-6-per-region drift accumulates over impmatch_diagonal sums
     // and flips one accept/reject decision late in refinement.
     let opt = if sumoverlap > 0 {
+        // Mirror C's hat3 round-trip:
+        //   tbfast.c:2218: opt = opt / 5.8 * 600        (in-memory rescale)
+        //   tbfast.c:2265: fprintf %7.5f of opt/600*5.8 (write hat3)
+        //   io.c:4451:     opt = parsed / 5.8 * 600      (read hat3)
+        // The 5-decimal rounding uses C's printf which is **round-half-
+        // to-even** on macOS/glibc. Rust's `f64::round()` is round-half-
+        // away-from-zero — they disagree at exact half-points like the
+        // BB20004 (31,36) case where opt_pre*1e5 = 197620.5 exactly.
+        // Using `format!("{:.5}", v).parse()` reproduces printf's banker's
+        // rounding.
         let opt_pre = isumscore * 5.8 / (600.0 * sumoverlap as f64);
-        // Round to 5 decimals (mimics C `%7.5f` format).
-        let opt_file = (opt_pre * 1e5).round() / 1e5;
+        let opt_rescaled = opt_pre / 5.8 * 600.0;
+        let hat3_value = opt_rescaled / 600.0 * 5.8;
+        let opt_file: f64 = format!("{:.5}", hat3_value).parse().unwrap();
         opt_file / 5.8 * 600.0
     } else { 0.0 };
     let provisional_importance =

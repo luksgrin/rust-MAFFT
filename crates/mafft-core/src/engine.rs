@@ -501,8 +501,12 @@ impl MafftEngine {
             // that flips one accept/reject decision late in iterative
             // refinement (BB30028 L-INS-i fingerprint).
             //
-            // Mirror the round-trip: truncate `dm` to 3 decimals before
-            // building the topology used for refinement weights.
+            // Mirror the round-trip ONLY for the refinement-weights tree.
+            // The progressive tree (built later from full-precision `dm`)
+            // intentionally diverges from C — Rust's tbfast port has FP
+            // ordering quirks that compensate for the full-precision tree
+            // but not the truncated one (verified empirically: truncating
+            // both trees regresses BB30013 0 -> 4144 and BB40004 0 -> 2636).
             let dm_for_refinement = if user_topo.is_some() {
                 dm.clone()
             } else {
@@ -511,8 +515,7 @@ impl MafftEngine {
                 for i in 0..n {
                     for j in (i + 1)..n {
                         let v = m.get(i, j);
-                        let truncated = (v * 1000.0).round() / 1000.0;
-                        m.set(i, j, truncated);
+                        m.set(i, j, (v * 1000.0).round() / 1000.0);
                     }
                 }
                 m

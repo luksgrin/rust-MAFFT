@@ -1138,8 +1138,12 @@ fn compute_impmatch_diagonal(
         width, width,
         FASTATHRESHOLD_DEFAULT,
     );
+    // C `tditeration.c:891`: `for(i=length-1; i>=0; i--) oimpmatchdouble += imp_match_out_scD(i,i);`
+    // — sums BACKWARD. Match the iteration direction; FP addition is not
+    // associative, and forward summation drifts by ~1 ULP per step, which
+    // cascades into a flipped accept/reject at BB20004 iter=4 l=36 k=1.
     let mut total = 0.0f64;
-    for i in 0..width {
+    for i in (0..width).rev() {
         if let Some(row) = imp.get(i) {
             if let Some(&v) = row.get(i) {
                 total += v;
