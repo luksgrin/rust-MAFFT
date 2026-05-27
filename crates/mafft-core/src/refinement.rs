@@ -20,7 +20,8 @@
 
 use mafft_align::{
     profile_align, profile_align_imp,
-    profile_align_imp_with_boundary, BoundaryFreqs,
+    profile_align_imp_with_boundary, profile_align_imp_multimtx,
+    BoundaryFreqs, MultiMtx,
     build_imp_matrix, FASTATHRESHOLD_DEFAULT,
     Profile, GapModel, AlignOp,
 };
@@ -44,6 +45,16 @@ pub struct RefinementParams {
     /// the inner `GapModel` so the profile DP treats every column as
     /// fully nongap (`legacygapcost = 1`, `Salignmm.c:1604-1610`).
     pub legacy_gap_cost: bool,
+    /// `--allowshift` warp/shift penalty for the refinement DP. C's
+    /// `dvtditr` receives `-Q 2.0` → `penalty_shift_factor = 2.0` (< 10)
+    /// → `trywarp = 1`, so the warp DP fires in refinement with
+    /// `penalty_shift = 2.0 * penalty`. `None` = no warp (default).
+    pub shift: Option<f64>,
+    /// `--allowshift` `specificityconsideration` (C `dvtditr -s 0.8`).
+    /// When `> 0`, each refinement branch scores sequence pairs with
+    /// distance-binned matrices (the `_variousdist` multi-matrix DP).
+    /// 0.0 = disabled (single matrix).
+    pub unalign_level: f64,
 }
 
 impl Default for RefinementParams {
@@ -53,8 +64,36 @@ impl Default for RefinementParams {
             cut: 0.0,
             use_fft: false,
             legacy_gap_cost: false,
+            shift: None,
+            unalign_level: 0.0,
         }
     }
+}
+
+/// Per-branch input for the `--allowshift` multi-distance-class refinement
+/// DP. `distarr[leaf]` is the tree distance from each leaf to the branch
+/// being refined (`BranchWeights::dist_from_a_branch`); pairs are binned by
+/// `distarr[g1[i]] + distarr[g2[j]]` (C `smalldistmtx`, `USEDISTONTREE=1`).
+struct MultiMtxInput<'a> {
+    distarr: &'a [f64],
+    unalign_level: f64,
+}
+
+/// Per-branch multi-distance-class context (C `makescoringmatrices` +
+/// `classifypairs` + masklists), computed once per `realign_all_constrained_fft`
+/// and reused across all FFT segments. Only the per-segment cpmx column
+/// profiles (`cpmx1s`/`cpmx2s`), which depend on the stripped segment, are
+/// rebuilt per segment; class assignment and matrices are branch-global.
+struct MmBranchCtx {
+    /// `matrices[c]` — substitution matrix for distance class `c`.
+    matrices: Vec<Vec<Vec<f64>>>,
+    /// `eff1s[c][i]` / `eff2s[c][j]` — per-class member weights (0 if member
+    /// is in no pair of class `c`).
+    eff1s: Vec<Vec<f64>>,
+    eff2s: Vec<Vec<f64>>,
+    /// Spurious-pair masks per class for `match_calc_del`.
+    mask1: Vec<Vec<usize>>,
+    mask2: Vec<Vec<usize>>,
 }
 
 /// A branch identifier for oscillation tracking: (step_index, side).
@@ -129,8 +168,11 @@ pub fn iterative_refine(
     let branch_weights = BranchWeights::new(topology);
     let global_weights = mafft_tree::sequence_weights(topology);
     let use_global_weights = std::env::var("RUST_MAFFT_GLOBAL_WEIGHTS").is_ok();
-    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64)
+    let mut gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64)
         .with_legacy_gap_cost(params.legacy_gap_cost);
+    if let Some(s) = params.shift {
+        gap = gap.with_shift(s);
+    }
 
 
     let mut converged_count = 0usize;
@@ -159,6 +201,16 @@ pub fn iterative_refine(
         for &step_idx in &step_order {
             for (side, group1, group2) in &branch_map[step_idx] {
                 let branch_id: BranchId = (step_idx, *side);
+
+                if let Ok(f) = std::env::var("RS_DISTARR_DUMP") {
+                    use std::io::Write;
+                    let da = branch_weights.dist_from_a_branch(topology, step_idx, *side);
+                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                        let _ = write!(fp, "DISTARR iter={} l={} k={}:", iter, step_idx, side);
+                        for v in &da { let _ = write!(fp, " {:.17e}", v); }
+                        let _ = writeln!(fp);
+                    }
+                }
 
                 if let Ok(f) = std::env::var("RS_PRE_BRANCH") {
                     use std::io::Write;
@@ -212,9 +264,23 @@ pub fn iterative_refine(
                 } else { 0.0 };
                 let old_score = old_sub + old_imp;
 
+                // `--allowshift`: per-branch distances-from-tip drive the
+                // multi-distance-class matrix selection (C `distFromABranch`
+                // + `classifypairs`). Computed here where `branch_weights`,
+                // `topology`, and the branch `(step_idx, side)` are in scope.
+                let mm_distarr: Option<Vec<f64>> = if params.unalign_level > 0.0 {
+                    Some(branch_weights.dist_from_a_branch(topology, step_idx, *side))
+                } else {
+                    None
+                };
+                let mm_input = mm_distarr.as_ref().map(|d| MultiMtxInput {
+                    distarr: d,
+                    unalign_level: params.unalign_level,
+                });
+
                 let new_seqs = realign_all(
                     group1, group2, &alignment.sequences, &weights, scoring, &gap,
-                    constraints, params.use_fft,
+                    constraints, params.use_fft, mm_input.as_ref(),
                 );
 
                 if let Some((new_seqs, _new_score, dp_impmatch)) = new_seqs {
@@ -379,6 +445,7 @@ fn realign_all(
     gap: &GapModel,
     constraints: Option<&LocalHomologyTable>,
     use_fft: bool,
+    mm_input: Option<&MultiMtxInput>,
 ) -> Option<(Vec<Vec<u8>>, f64, Option<f64>)> {
     let width = sequences[0].len();
 
@@ -453,7 +520,7 @@ fn realign_all(
             // index to position within the segment).
             return realign_all_constrained_fft(
                 group1, group2, sequences, &w1n, &w2n,
-                scoring, gap, lh_table,
+                scoring, gap, lh_table, mm_input,
             ).map(|(seqs, score, imp)| (seqs, score, Some(imp)));
         }
         // Non-FFT constraint path (L-INS-i without -F, single full DP).
@@ -784,6 +851,7 @@ fn realign_all_constrained_fft(
     scoring: &ScoringContext,
     gap: &GapModel,
     lh_table: &LocalHomologyTable,
+    mm_input: Option<&MultiMtxInput>,
 ) -> Option<(Vec<Vec<u8>>, f64, f64)> {
     let width = sequences[group1[0]].len();
     if width == 0 { return None; }
@@ -839,6 +907,42 @@ fn realign_all_constrained_fft(
         width, width,
         FASTATHRESHOLD_DEFAULT,
     );
+
+    // `--allowshift`: precompute this branch's multi-distance-class context
+    // (C `makescoringmatrices` + `classifypairs` + masklists). Class
+    // assignment uses member-level tree distances `distarr[group{1,2}[·]]`,
+    // which are constant across FFT segments; only the per-segment cpmx
+    // profiles differ, so this is built once here.
+    let mm_ctx: Option<MmBranchCtx> = mm_input.map(|mi| {
+        let n1 = group1.len();
+        let n2 = group2.len();
+        let max_dc = crate::varidist::calc_max_dist_class(mi.unalign_level);
+        let gap_idx = scoring.amino_map[b'-' as usize] as usize;
+        let matrices = crate::varidist::make_scoring_matrices(
+            &scoring.consweight_matrix, mi.unalign_level, gap_idx, max_dc,
+        );
+        // smalldist[i][j] = distFromABranch(group1[i]) + distFromABranch(group2[j])
+        // (C `OneClusterAndTheOther_fast` with `USEDISTONTREE = 1`).
+        let smalldist: Vec<Vec<f64>> = (0..n1)
+            .map(|i| (0..n2).map(|j| mi.distarr[group1[i]] + mi.distarr[group2[j]]).collect())
+            .collect();
+        let pc = crate::varidist::classify_pairs(w1n, w2n, &smalldist, max_dc);
+        // Spurious-pair masks: pairs landing in class c's cpmx product whose
+        // true class differs (subtracted by `match_calc_del`). i-major, j-minor.
+        let mut mask1 = vec![Vec::new(); max_dc];
+        let mut mask2 = vec![Vec::new(); max_dc];
+        for c in 0..max_dc {
+            for i in 0..n1 {
+                for j in 0..n2 {
+                    if pc.eff1s[c][i] * pc.eff2s[c][j] != 0.0 && c != pc.matnum[i][j] {
+                        mask1[c].push(i);
+                        mask2[c].push(j);
+                    }
+                }
+            }
+        }
+        MmBranchCtx { matrices, eff1s: pc.eff1s, eff2s: pc.eff2s, mask1, mask2 }
+    });
 
     let mut new_sequences: Vec<Vec<u8>> = vec![Vec::new(); sequences.len()];
     let mut total_score = 0.0f64;
@@ -1004,10 +1108,45 @@ fn realign_all_constrained_fft(
             1.0 - s
         } else { 1.0 };
         let boundary = BoundaryFreqs { head1, head2, tail1, tail2 };
-        let seg_aln = profile_align_imp_with_boundary(
-            &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap,
-            true, true, Some(&local_imp), true, boundary,
-        );
+        let seg_aln = if let Some(ctx) = mm_ctx.as_ref() {
+            // `--allowshift`: build this segment's per-class cpmx profiles
+            // (weighted by eff{1,2}s[c], same accumulation as the single
+            // matrix Profile so the c=0 class is bit-identical), then run
+            // the multi-distance-class DP (C `partA__align_variousdist`).
+            let nc = ctx.matrices.len();
+            let cpmx1s: Vec<Vec<Vec<f64>>> = (0..nc)
+                .map(|c| Profile::from_aligned(
+                    &s1_refs, &ctx.eff1s[c], &scoring.amino_map, scoring.nalphabets,
+                ).freqs)
+                .collect();
+            let cpmx2s: Vec<Vec<Vec<f64>>> = (0..nc)
+                .map(|c| Profile::from_aligned(
+                    &s2_refs, &ctx.eff2s[c], &scoring.amino_map, scoring.nalphabets,
+                ).freqs)
+                .collect();
+            let mm = MultiMtx {
+                matrices: &ctx.matrices,
+                cpmx1s: &cpmx1s,
+                cpmx2s: &cpmx2s,
+                mask1: &ctx.mask1,
+                mask2: &ctx.mask2,
+                seq1: &s1_refs,
+                seq2: &s2_refs,
+                eff1: w1n,
+                eff2: w2n,
+                amino_map: &scoring.amino_map,
+                nalpha: scoring.nalphabets,
+            };
+            profile_align_imp_multimtx(
+                &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap,
+                true, true, Some(&local_imp), true, boundary, Some(&mm),
+            )
+        } else {
+            profile_align_imp_with_boundary(
+                &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap,
+                true, true, Some(&local_imp), true, boundary,
+            )
+        };
         total_score += seg_aln.score;
 
         // Per-segment impmatch: C's `Atracking_localhom` (Dalignmm.c:564)

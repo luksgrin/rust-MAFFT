@@ -369,6 +369,64 @@ impl BranchWeights {
             }
         }
     }
+
+    /// Distance from each leaf to the branch `(step, side)` on the tree.
+    /// Port of C `treeOperation.c::distFromABranch` (`USEDISTONTREE=1` path):
+    /// sum of edge lengths from each leaf down to the given branch. Used by
+    /// `--allowshift` refinement to classify sequence pairs into distance
+    /// bins (`smalldistmtx[i][j] = distarr[i] + distarr[j]`,
+    /// `tddis.c::OneClusterAndTheOther_fast`).
+    pub fn dist_from_a_branch(&self, topo: &Topology, step: usize, side: usize) -> Vec<f64> {
+        let nseq = self.nseq;
+        if nseq == 2 {
+            // C: result[0] = len[0][0], result[1] = len[0][1].
+            let s = &topo.steps[0];
+            return vec![s.left_length, s.right_length];
+        }
+        let mut result = vec![0.0f64; nseq];
+        if nseq <= 2 || self.nodes.is_empty() {
+            return result;
+        }
+        if step == nseq - 2 {
+            let top = self.nodes[nseq - 2].children[0];
+            let btm = (nseq - 3) as i32;
+            if top >= 0 && btm >= 0 {
+                self.dist_rec(&mut result, btm as usize, top as usize);
+                self.dist_rec(&mut result, top as usize, btm as usize);
+            }
+            return result;
+        }
+        let target = if side == 0 { &topo.steps[step].left } else { &topo.steps[step].right };
+        let first_member = target[0] as i32;
+        let mut btm_dir = 0;
+        for d in 0..3 {
+            if self.nodes[step].members[d].first().copied() == Some(first_member) {
+                btm_dir = d;
+                break;
+            }
+        }
+        let btm = self.nodes[step].children[btm_dir];
+        if btm < 0 { return result; }
+        self.dist_rec(&mut result, btm as usize, step);
+        self.dist_rec(&mut result, step, btm as usize);
+        result
+    }
+
+    fn dist_rec(&self, result: &mut [f64], node: usize, from: usize) {
+        if node >= self.nseq { return; } // leaf
+        for d in 0..3 {
+            let child = self.nodes[node].children[d];
+            if child >= 0 && child as usize != from {
+                let len = self.nodes[node].length[d];
+                for &s in &self.nodes[node].members[d] {
+                    if s >= 0 && (s as usize) < self.nseq {
+                        result[s as usize] += len;
+                    }
+                }
+                self.dist_rec(result, child as usize, node);
+            }
+        }
+    }
 }
 
 /// Compute branch weight = calcW(top) * calcW(btm).

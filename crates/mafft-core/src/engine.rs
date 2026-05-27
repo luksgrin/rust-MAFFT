@@ -879,10 +879,24 @@ impl MafftEngine {
                 // C's mafft script always passes -F (use_fft=1) to dvtditr
                 // for refinement (scripts/mafft line 1531: rnaoptit=" -F "),
                 // regardless of whether progressive alignment used FFT.
+                // `--allowshift`: C's dvtditr gets `-Q 2.0` →
+                // `penalty_shift_factor = 2.0` → `trywarp = 1`, with
+                // `penalty_shift = (int)(penalty_shift_factor * penalty)`
+                // (constants.c:318). The refinement `penalty` is the scaled
+                // gap-open (`scoring.gap.open`). Pass it so the refinement
+                // profile DP enables the warp/shift state (already ported in
+                // `profile_align_imp_with_boundary` via `gap.shift`).
+                let refine_shift = if self.allowshift {
+                    Some((2.0 * scoring.gap.open as f64) as i32 as f64)
+                } else {
+                    None
+                };
                 let params = RefinementParams {
                     max_iterations: capped_iterations,
                     use_fft: true,
                     legacy_gap_cost: self.legacy_gap_cost,
+                    shift: refine_shift,
+                    unalign_level: if self.allowshift { self.unalign_level } else { 0.0 },
                     ..Default::default()
                 };
                 // C `dvtditr.c:882` switches to segmented refinement (split

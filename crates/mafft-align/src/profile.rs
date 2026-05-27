@@ -713,6 +713,28 @@ pub fn profile_align_imp_with_boundary(
     strict_part_tiebreak: bool,
     boundary: BoundaryFreqs,
 ) -> Alignment {
+    profile_align_imp_multimtx(prof1, prof2, matrix, gap, head_gap, tail_gap, impmtx, strict_part_tiebreak, boundary, None)
+}
+
+/// `profile_align_imp_with_boundary` with an optional multi-distance-class
+/// match context (`--allowshift` refinement, C `partA__align_variousdist`).
+/// When `multi` is `Some`, the per-cell substitution score comes from
+/// [`crate::multimtx::MultiMtx::match_row`] (per-class cpmx add + spurious-pair
+/// del) instead of the single `matrix`; everything else (gaps, imp, warp,
+/// traceback) is identical. When `None`, behaviour is byte-for-byte the
+/// original single-matrix path.
+pub fn profile_align_imp_multimtx(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<f64>],
+    gap: &GapModel,
+    head_gap: bool,
+    tail_gap: bool,
+    impmtx: Option<&[Vec<f64>]>,
+    strict_part_tiebreak: bool,
+    boundary: BoundaryFreqs,
+    multi: Option<&crate::multimtx::MultiMtx>,
+) -> Alignment {
     let n = prof1.length;
     let m = prof2.length;
 
@@ -802,6 +824,17 @@ pub fn profile_align_imp_with_boundary(
     // C's match_calc writes to output[0..lgth2-1] (0-based, no +1 shift).
     // At the tail row (row_pos == n), C's over-allocated arrays give zeros.
     let match_calc_row = |row_pos: usize, output: &mut [f64]| {
+        if let Some(mm) = multi {
+            // Multi-distance-class match (C partA__align_variousdist). C's
+            // calloc'd arrays give zeros for row_pos >= n (tail row).
+            if row_pos >= n {
+                for j in 0..m { output[j] = 0.0; }
+            } else {
+                let row = mm.match_row(row_pos, m);
+                output[..m].copy_from_slice(&row[..m]);
+            }
+            return;
+        }
         if row_pos >= n {
             // Out-of-bounds: C's calloc'd arrays produce zeros here
             for j in 0..m {
@@ -865,7 +898,11 @@ pub fn profile_align_imp_with_boundary(
     // matrices accumulate 1-ULP boundary differences that flip DP
     // tie-breaks in the first retree pass (§B.2).
     let mut initverticalw = vec![0.0f64; n + 1];
-    {
+    if let Some(mm) = multi {
+        // C `partSalignmm.c:1764-1769`: fillzero + swapped per-class add/del.
+        let col = mm.match_col(n);
+        initverticalw[..n].copy_from_slice(&col[..n]);
+    } else {
         let mut scarr = vec![0.0f64; nalpha];
         for l in 0..nalpha {
             scarr[l] = 0.0;
@@ -904,7 +941,10 @@ pub fn profile_align_imp_with_boundary(
     // C fills currentw[0..lgth2-1] (0-based), then adds gap to [1..lgth2].
     // Result: [0] = pure match score (no gap), [1..m-1] = match + gap, [m] = 0 + gap.
     let mut currentw = vec![0.0f64; m + 1];
-    {
+    if let Some(mm) = multi {
+        let row = mm.match_row(0, m);
+        currentw[..m].copy_from_slice(&row[..m]);
+    } else {
         let mut scarr = vec![0.0f64; nalpha];
         for l in 0..nalpha {
             scarr[l] = 0.0;

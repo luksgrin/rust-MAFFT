@@ -10,6 +10,7 @@
 //! `addonetip()` from `addfunctions.c`.
 
 pub mod progressive;
+mod varidist;
 mod refinement;
 mod engine;
 mod add;

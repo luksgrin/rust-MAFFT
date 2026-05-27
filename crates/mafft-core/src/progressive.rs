@@ -19,7 +19,7 @@ use mafft_types::ScoringContext;
 
 /// C `mltaln9.c::dist2offset`: offset = min(0, dist*0.5 - specificityconsideration).
 /// `dist` is `2 * distfromtip` so the result is `min(0, distfromtip - sc)`.
-fn dist2offset(dist: f64, sc: f64) -> f64 {
+pub(crate) fn dist2offset(dist: f64, sc: f64) -> f64 {
     let v = dist * 0.5 - sc;
     if v > 0.0 { 0.0 } else { v }
 }
@@ -36,7 +36,7 @@ fn dist2offset(dist: f64, sc: f64) -> f64 {
 /// per-step path even when input has no gap characters, because the static
 /// `amino_dynamicmtx` in C is char-indexed and the unshifted '-' row/col
 /// participates in the boundary handling.
-fn make_dynamic_matrix(base: &[Vec<f64>], distfromtip: f64, unalign_level: f64, gap_idx: usize) -> Vec<Vec<f64>> {
+pub(crate) fn make_dynamic_matrix(base: &[Vec<f64>], distfromtip: f64, unalign_level: f64, gap_idx: usize) -> Vec<Vec<f64>> {
     let offset = dist2offset(distfromtip * 2.0, unalign_level);
     if offset == 0.0 {
         return base.iter().map(|r| r.clone()).collect();
