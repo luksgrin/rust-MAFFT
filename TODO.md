@@ -242,21 +242,95 @@ inhibits it on the gap-run paths).
 
 ---
 
-## §E. BALIBASE 3 parity sweep — 99.7-100 % across all measured modes (3 residual cases, all §B.2-class)
+## §E. BALIBASE 3 parity sweep — all four INS-i modes 386/386 (100%)
 
-### Per-mode results (BALIBASE 3 RV11-RV50, 386 files, 2026-05-26)
+### Per-mode results (BALIBASE 3 RV11-RV50, 386 files)
 
 | Mode | Flags | Match | Total % | Residuals |
 |------|-------|-------|---------|-----------|
-| FFT-NS-i | `--maxiterate 100` | **386/386** | **100.0 %** | none |
-| L-INS-i | `--localpair --maxiterate 100` | 384/386 | 99.5 % | BB30028 (4 lines), BB50001 (244 lines) |
-| G-INS-i | `--globalpair --maxiterate 100` | 385/386 | 99.7 % | BB20004 (1732 lines) |
+| FFT-NS-i | `--maxiterate 100` | **386/386** | **100.0 %** | none (2026-05-25) |
+| L-INS-i | `--localpair --maxiterate 100` | **386/386** | **100.0 %** | none (2026-05-27) |
+| G-INS-i | `--globalpair --maxiterate 100` | **386/386** | **100.0 %** | none (2026-05-27) |
+| E-INS-i | `--genafpair --maxiterate 100` | **386/386** | **100.0 %** | none (2026-05-27) |
 
-The 3 residuals are all pre-existing tied-trace / cascade cases of
-the §B.2 class (`A__align` static-state coupling): verified by
-reverting the §B.10 boundary-frequencies fix and observing the same
-3 cases fail at clean HEAD. Both engines produce optimal-scored
-alignments at each residual; only the traceback choice differs.
+**All four INS-i modes are 386/386.** §E.3 (below) records how the last
+residual, E-INS-i BB40004, was closed.
+
+### §E.3 E-INS-i BB40004 — CLOSED 2026-05-27 (phase-split importance)
+
+Surfaced by the first full E-INS-i sweep. Investigation chain (all
+proven, not guessed):
+- E-INS-1 (`--maxiterate 0`) already diverged 588 lines → bug is in the
+  progressive phase, not refinement. G-INS-1 was byte-exact.
+- Feeding C's guide tree via `--treein` → diff=0 → the divergence is
+  *entirely* in the guide tree / its derived weights, nothing else.
+- The genaffine pairwise alignment and distances are bit-identical to C
+  (instrumented C `pairlocalalign` score2dist dump: 0/2211 pscore
+  mismatches at full `%.18e` precision). So NOT a genaffine trace tie.
+- UPGMA-trace comparison: Rust's *progressive* tree (block 1) is a
+  66/66 bit-exact match with C. The divergent blocks were the
+  *importance* tree (built from rounded dm).
+- Root cause: C computes constraint `importance` TWICE with different
+  trees — tbfast (progressive) from the FULL-PRECISION in-memory
+  `iscore` tree (`tbfast.c:2193`+`2926`, no hat2 round-trip there),
+  dvtditr (refinement) from the 3-decimal `hat2` tree
+  (`readhat2_pointer`). Rust used the rounded tree for BOTH. L/G-INS-i
+  tolerated it (full vs rounded importance tree happened to give the
+  same progressive merge); E-INS-i BB40004 had a near-tie that flipped.
+
+Fix (`engine.rs`): the pre-progressive `recompute_importance` now uses
+the full-precision `dm` tree (phase 1); a second `recompute_importance`
+on `local_hom` from the rounded refinement tree runs just before
+`iterative_refine` (phase 2). Gated to the pairwise INS-i path
+(`pairwise_for_constraints.is_some() && user_topo.is_none() &&
+!uses_rna_constraints`). Verified: E/L/G-INS-i all 386/386 full sweeps;
+89 end_to_end byte-identity tests pass (incl. all --seed/--seedtable/
+--treein INS-i combos). A&B-tested both directions: rounded-tree
+progressive regresses BB40004 (588 lines); full-tree refinement
+regresses BB50001 (244 lines) — confirming the split is required.
+
+**The 2026-05-26 conclusion below ("why we can't close the remaining 3,"
+blamed on `A__align` static-TLS coupling) was WRONG and is retained only
+as a record of the dead end.** The L-INS-i residuals BB30028 + BB50001,
+and the G-INS-i residual BB20004, were all closed on 2026-05-27 by
+fixing four floating-point summation-order mismatches in the constrained
+refinement path — found by instrumenting C MAFFT and diffing values at
+`%.18e`. None involved static-TLS memoization.
+
+### §E.1 The four FP-ordering fixes (2026-05-27, `refinement.rs` + earlier `engine.rs`/`constraints.rs`)
+
+1. **`hat2` 3-decimal truncation for the refinement-weights tree**
+   (`engine.rs`). C's `dvtditr` rebuilds the refinement tree from the
+   3-decimal `hat2` file (`readhat2_pointer`, `DFORMAT="%#6.3f"`), not
+   the in-memory full-precision distance matrix. Truncate `dm` to 3
+   decimals before `musclesupg` for the weights tree only (the
+   progressive tree keeps full precision — truncating it regresses
+   BB30013/BB40004). Closed BB50001 (244 lines).
+2. **printf banker's rounding for `opt`** (`constraints.rs`). C's hat3
+   `%7.5f` write + `atof` read rounds half-to-even; Rust's
+   `(v*1e5).round()/1e5` rounds half-away-from-zero. They disagree at
+   exact `x.x005` half-points (BB20004 pair (31,36): `opt_pre*1e5 =
+   197620.5` exactly). `format!("{:.5}", v).parse()` reproduces printf.
+   Makes the importance table bit-identical to C (0/12694 region diffs).
+3. **backward diagonal sum for `old_imp`** (`compute_impmatch_diagonal`).
+   C `tditeration.c:891` sums `imp_match_out_scD(i,i)` from `i=length-1`
+   down. FP add is non-associative; forward summation drifts ~1 ULP.
+   Closed BB20004 (10 lines).
+4. **per-segment forward `impmatch` for `new_imp`**
+   (`realign_all_constrained_fft`). C's `Falign_localhom` accumulates
+   each FFT segment's impmatch (backward within segment, via
+   `Atracking_localhom`) then sums forward across segments
+   (`Falign_localhom.c:816`). A single global diagonal sweep diverges
+   ~7 ULP and flips one tied accept/reject. Threaded the segment-
+   accumulated value out through `realign_all` and used it for
+   `new_imp` (falls back to the global sum only on the non-FFT path,
+   which `dvtditr -F` never takes). Closed BB30028 (4 lines).
+
+A naive global *forward* sum (instead of per-segment) closed BB30028
+but regressed 6 other files (BB30010 catastrophically) — the
+segmentation *structure*, not a global direction, is what matches C.
+
+### §E.2 Superseded dead-end analysis (kept for the record)
 
 ### Fixes that closed cases (committed)
 
@@ -288,7 +362,12 @@ alignments at each residual; only the traceback choice differs.
    `bali3.BB12019.fa`, reference `bali3.BB12019.fftnsi.iter5`).
    Full writeup: `~/.claude/.../memory/project_bb30013_fix.md`.
 
-### Why we can't close the remaining 3
+### Why we can't close the remaining 3 — SUPERSEDED 2026-05-27 (was wrong; see §E.1)
+
+> This hypothesis was disproven. The residuals were FP summation-order
+> bugs (§E.1), not static-TLS coupling. The cell-level FFI equivalence
+> tests below remain valid and useful; the *conclusion* that closing the
+> cases required porting `reuseprofiles` was incorrect.
 
 Same root cause as §B.2: C `A__align`'s `static TLS` memoization
 (`Salignmm.c:1446-1450`) controlled by `calledbyfulltreebase=1`. The
@@ -314,10 +393,12 @@ fixtures `bali3.BB20027.fa`, `bali3.BB12041.fa`, `bali3.BB12019.fa`):
   — Rust `profile_align` vs C `A__align` (zero drift when
   `cpmxchild=NULL, calledbyfulltreebase=0`).
 
-Closing these would require porting C's `reuseprofiles` static TLS
-state machine to Rust (multi-day, adds non-trivial cross-call state
-to our currently-pure engine, risks unrelated regressions). Cost
-outweighs benefit when output is already optimal-scored.
+~~Closing these would require porting C's `reuseprofiles` static TLS
+state machine to Rust~~ — **NO.** This was the wrong conclusion. The
+cases were closed on 2026-05-27 via the four FP summation-order fixes
+in §E.1, with the engine still pure (no cross-call state added). The
+FFI equivalence tests above remain valid; only the inference from them
+was mistaken.
 
 ### `--c-compat` flag (2026-05-21)
 
@@ -331,9 +412,11 @@ divergent steps. Kept as foundation for future work. Full notes in
 
 ### Done
 
-The BALIBASE 3 milestone is at 99.5-100 % across the three refinement
-modes measured. The path to 100 % on L/G-INS-i is blocked by C-side
-stateful behavior we deliberately don't replicate.
+FFT-NS-i, L-INS-i, G-INS-i, and E-INS-i are **all 386/386 (100 %)** on
+the full BALIBASE 3 sweep (2026-05-27). The INS-i refinement residuals
+closed via FP summation-order parity (§E.1); the last one, E-INS-i
+BB40004, closed via phase-split constraint importance (§E.3). The engine
+stays stateless — no `reuseprofiles` port needed.
 
 ---
 

@@ -328,18 +328,53 @@ Sweep across BALIBASE 3 (RV11–RV50, 386 protein test sets) against MAFFT 7.526
 | Mode | Flags | Match | Total % | Residuals |
 |------|-------|-------|---------|-----------|
 | FFT-NS-i | `--maxiterate 100` | **386/386** | **100.0 %** | none |
-| L-INS-i  | `--localpair --maxiterate 100` | 384/386 | 99.5 % | BB30028, BB50001 |
-| G-INS-i  | `--globalpair --maxiterate 100` | 385/386 | 99.7 % | BB20004 |
+| L-INS-i  | `--localpair --maxiterate 100` | **386/386** | **100.0 %** | none |
+| G-INS-i  | `--globalpair --maxiterate 100` | **386/386** | **100.0 %** | none |
+| E-INS-i  | `--genafpair --maxiterate 100` | **386/386** | **100.0 %** | none |
 
-The 3 residuals are all pre-existing tied-trace / cascade cases
-(same class as `--tm 200 --retree 1` — see `MAFFT_UPSTREAM_REPORT.md`).
+**All four INS-i modes are now 386/386.** Every previously-documented
+residual (BB30028, BB50001 L-INS-i; BB20004 G-INS-i; BB40004 E-INS-i)
+is closed. None was the C-side static-TLS artifact once suspected.
+Four were floating-point summation-order mismatches in the constrained
+refinement path; the fifth (E-INS-i BB40004) was a constraint-importance
+tree-phase mismatch. All were found by instrumenting C MAFFT and
+comparing bit patterns at `%.18e`:
+
+1. **`hat2` 3-decimal truncation** for the refinement-weights tree
+   (`engine.rs`) — C's `dvtditr` rebuilds the tree from the 3-decimal
+   `hat2` file, not the in-memory full-precision matrix. Closed
+   BB50001 (244-line residual).
+2. **printf banker's rounding for `opt`** (`constraints.rs`) — C's
+   `%7.5f` hat3 serialization rounds half-to-even; Rust's `f64::round`
+   rounds half-away-from-zero. At exact half-points (`x.x005`) they
+   disagree by 1 ULP. `format!("{:.5}", v).parse()` matches C, making
+   the importance table bit-identical (12694/12694 regions).
+3. **backward diagonal sum for `old_imp`** (`refinement.rs`) — C's
+   `tditeration.c:891` reads `imp_match_out_scD` from `i=length-1`
+   down; FP addition is non-associative, so direction matters. Closed
+   BB20004 (10-line residual).
+4. **per-segment forward `impmatch` accumulation for `new_imp`**
+   (`refinement.rs`) — C's `Falign_localhom` sums each FFT segment's
+   impmatch (backward within a segment) then accumulates forward
+   across segments (`Falign_localhom.c:816`); a single global diagonal
+   sweep diverges by ~7 ULP. Closed BB30028 (4-line residual).
+5. **phase-split constraint importance** (`engine.rs`) — C computes the
+   constraint `importance` twice with *different* trees: tbfast
+   (progressive) uses the full-precision in-memory `iscore` tree, while
+   dvtditr (refinement) re-reads the 3-decimal `hat2` tree. Rust used
+   the rounded tree for both. The progressive phase now uses the
+   full-precision tree; a second `recompute_importance` from the rounded
+   refinement tree runs before `iterative_refine`. The E-INS-i BB40004
+   divergence was purely this (the genaffine alignment + distances were
+   already bit-identical; `--treein` with C's tree gave diff=0). Closed
+   BB40004 (2901-line residual); the per-phase split also makes L/G-INS-i
+   robustly correct rather than coincidentally matching.
+
 Cell-level FFI tests (`cross_validate_cpmx`, `cross_validate_counteff`,
 `cross_validate_bb20027_dp`) prove the Rust DP and profile-building
-match C bit-for-bit on identical inputs. Divergences come from C's
-per-process static TLS memoization state, not from a Rust bug. Both
-alignments at each residual are optimal-scored.
+match C bit-for-bit on identical inputs.
 
-FFT-NS-i reached 100 % via the §B.10 FFT-segmented refinement
+FFT-NS-i reached 100 % earlier via the §B.10 FFT-segmented refinement
 boundary-frequencies fix (2026-05-25): closed BB30013's 3843-line
 residual by computing per-segment `headgapfreq{1,2}` /
 `gapfreq{1,2}[lgth]` from `sgap`/`egap` via `outgapcount` (mirroring
@@ -368,12 +403,15 @@ Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not
 None. Every user-visible MAFFT 7.526 CLI flag is implemented and
 byte-identical to C on the 36-seq test sample.
 
-The remaining `TODO.md` items are: (a) `A__align` static-state
-coupling artifacts (`--tm 200 --retree 1` 8-line diff + 3/386
-BALIBASE 3 INS-i cases: BB30028, BB50001 L-INS-i; BB20004 G-INS-i
-— see `MAFFT_UPSTREAM_REPORT.md`), (b) performance deferrals where
-Rust is already faster than C on most modes, and (c) `--xinsi`
-untestable until Stanford's `contrafold` is installed.
+The remaining `TODO.md` items are: (a) the `--tm 200 --retree 1`
+8-line diff + `--tm 200 --treeout` first-pass branch-length drift
+(default `--tm 200 --retree 2` is byte-exact — see
+`MAFFT_UPSTREAM_REPORT.md`) and `--allowshift --globalpair` final
+width drift, (b) performance deferrals where Rust is already faster
+than C on most modes, and (c) `--xinsi` untestable until Stanford's
+`contrafold` is installed. All BALIBASE 3 INS-i residuals
+(BB30028, BB50001, BB20004, BB40004) are now closed — FFT-NS-i,
+L-INS-i, G-INS-i, and E-INS-i are all 386/386.
 
 ### Case preservation
 

@@ -484,44 +484,28 @@ impl MafftEngine {
         // C's post-`tbfast.c:2202` scale (`isumscore / sumoverlap`), so
         // the impmtx contributions match C's numerically.
         if pairwise_for_constraints.is_some() && !use_parttree {
-            // With `--treein`, C uses the loaded user tree's branch lengths
-            // for `counteff_simple` weights (tbfast.c:2967). Without it, the
-            // pairwise-distance UPGMA tree is used. Mirror that branch.
+            // C computes the constraint `importance` TWICE, with DIFFERENT
+            // trees, and the two phases must be mirrored separately:
             //
-            // C's `dvtditr` reads the `hat2` distance matrix via
-            // `readhat2_pointer` (dvtditr.c:751-753) and rebuilds the
-            // refinement tree from it. `hat2` is written with `DFORMAT =
-            // "%#6.3f"` (mltaln.h:55, io.c:3103) — 3 decimal places. So
-            // dvtditr's tree is built from a 3-decimal-truncated distance
-            // matrix, NOT the in-memory full-precision matrix that the
-            // progressive `tbfast` used. The resulting tree differs from
-            // the progressive one, weights from `counteff_simple` differ,
-            // and `calcimportance_half`'s `ieff = eff / totaleff` differs
-            // — cascading into a per-region `mean * opt` importance drift
-            // that flips one accept/reject decision late in iterative
-            // refinement (BB30028 L-INS-i fingerprint).
+            //  1. tbfast (progressive) calls `calcimportance` using weights
+            //     from the FULL-PRECISION in-memory `iscore` UPGMA tree
+            //     (`tbfast.c:2926` builds it from the un-rounded distance
+            //     matrix). This importance drives the progressive merge.
+            //  2. dvtditr (refinement) RE-reads the original hat3 and calls
+            //     `calcimportance` again, this time with weights from the
+            //     3-decimal `hat2` tree (`readhat2_pointer`, dvtditr.c:753).
             //
-            // Mirror the round-trip ONLY for the refinement-weights tree.
-            // The progressive tree (built later from full-precision `dm`)
-            // intentionally diverges from C — Rust's tbfast port has FP
-            // ordering quirks that compensate for the full-precision tree
-            // but not the truncated one (verified empirically: truncating
-            // both trees regresses BB30013 0 -> 4144 and BB40004 0 -> 2636).
-            let dm_for_refinement = if user_topo.is_some() {
-                dm.clone()
-            } else {
-                let mut m = dm.clone();
-                let n = m.nseq;
-                for i in 0..n {
-                    for j in (i + 1)..n {
-                        let v = m.get(i, j);
-                        m.set(i, j, (v * 1000.0).round() / 1000.0);
-                    }
-                }
-                m
-            };
+            // This block is phase (1): use the full-precision `dm` tree.
+            // Phase (2) is mirrored just before `iterative_refine` below,
+            // where `local_hom`'s importance is recomputed from the rounded
+            // refinement tree. Using the rounded tree here instead would
+            // regress E-INS BB40004 (progressive merge diverges, 588 lines);
+            // using the full tree for refinement would regress BB50001
+            // (244 lines). Verified both directions empirically.
+            //
+            // With `--treein`, C uses the loaded user tree for both phases.
             let initial_topo = user_topo.clone()
-                .unwrap_or_else(|| musclesupg(&dm_for_refinement, ClusterMethod::default()));
+                .unwrap_or_else(|| musclesupg(&dm, ClusterMethod::default()));
             let weights = mafft_tree::sequence_weights(&initial_topo);
             let seq_refs: Vec<&[u8]> = input.sequences.iter()
                 .map(|s| s.data.as_slice()).collect();
@@ -728,7 +712,7 @@ impl MafftEngine {
             self.mode,
             AlignmentMode::QInsi { .. } | AlignmentMode::XInsi { .. }
         );
-        let local_hom = if uses_rna_constraints {
+        let mut local_hom = if uses_rna_constraints {
             // RNA modes: compute base-pair probabilities using external tools,
             // then use them as constraints for iterative refinement.
             let bpp_result = match &self.mode {
@@ -909,6 +893,28 @@ impl MafftEngine {
                 // `--seed` adds local homology constraints (constraint != 0),
                 // so seeded FFT-NS-i must also stay on the single-segment
                 // refinement path — gate on `local_hom.is_none()`.
+                // Phase (2) of the C importance computation (see the long
+                // comment at the progressive-phase `recompute_importance`
+                // above): dvtditr RE-computes `importance` from the 3-decimal
+                // `hat2` refinement tree before iterating. `topo` here is that
+                // rounded tree (built from the hat2-rounded `dm` / dndpre
+                // distances just above, or the user tree). Recompute
+                // `local_hom`'s importance from it so refinement sees the
+                // same constraint weights C's dvtditr does. The progressive
+                // merge already consumed the full-precision-tree importance.
+                // Skipped under `--treein` (user_topo) since both phases use
+                // the same loaded tree, and for RNA modes (importance there
+                // is not distance-tree-derived).
+                if local_hom.is_some() && pairwise_for_constraints.is_some()
+                    && user_topo.is_none() && !uses_rna_constraints
+                {
+                    let weights = mafft_tree::sequence_weights(&topo);
+                    let seq_refs: Vec<&[u8]> = msa.sequences.iter()
+                        .map(|s| s.as_slice()).collect();
+                    if let Some(ref mut lh) = local_hom {
+                        mafft_align::recompute_importance(lh, &seq_refs, &weights);
+                    }
+                }
                 let use_segmented = matches!(self.mode, AlignmentMode::FftNsi { .. })
                     && local_hom.is_none();
                 if use_segmented {
