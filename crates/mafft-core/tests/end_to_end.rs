@@ -2159,6 +2159,30 @@ fn leavegappyregion_byte_identical_to_c() {
     }
 }
 
+/// `--allowshift --globalpair --maxiterate 1000` (G-INS-i with the warp DP
+/// + multi-distance-class refinement, C `partA__align_variousdist`) must be
+/// byte-identical to C MAFFT. `--allowshift` sets `unalign_level = 0.8` and
+/// enables the warp/shift DP. Reference is the upstream-shipped
+/// `mafft-upstream/test/sample.ginsi.allowshift`.
+#[test]
+fn allowshift_ginsi_byte_identical_to_c() {
+    let c_ref = read_fasta(test_data_path("sample.ginsi.allowshift"))
+        .expect("missing mafft-upstream/test/sample.ginsi.allowshift");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 1000 });
+    engine.allowshift = true;
+    engine.unalign_level = 0.8;
+    let msa = engine.align(&input);
+
+    assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "width differs for --allowshift G-INS-i: Rust={} C={}",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len());
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
+            "seq {i} differs from C's --allowshift G-INS-i output");
+    }
+}
+
 /// `--memsavetree` must reproduce C MAFFT byte-for-byte on the 36-seq
 /// sample (covers both pass 0 k-mer-distance tree-build via
 /// `compacttreegivendist` and pass 1 MSA-distance rebuild).

@@ -721,11 +721,29 @@ pub fn build_homology_table_with_unalign(
                         // terminal-gap treatment. The script for G-INS-i
                         // doesn't pass `-O`, so `outgap` defaults to 1 →
                         // both head and tail gaps are penalized.
+                        if let Ok(p) = std::env::var("RS_PAIR_TRACE") {
+                            use std::io::Write;
+                            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+                                let _ = writeln!(
+                                    fp,
+                                    "R_PAIR i={} j={} n={} m={} gap.shift={:?}",
+                                    i, j, sequences[i].len(), sequences[j].len(), gap.shift,
+                                );
+                            }
+                        }
                         let r = crate::global::global_align(
                             sequences[i], sequences[j],
                             mat, amino_map, gap,
                             true, true,
                         );
+                        if let Ok(p) = std::env::var("RS_PAIR_TRACE") {
+                            use std::io::Write;
+                            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+                                let s1 = std::str::from_utf8(&r.seq1).unwrap_or("?");
+                                let s2 = std::str::from_utf8(&r.seq2).unwrap_or("?");
+                                let _ = writeln!(fp, "R_PAIR_SCORE i={} j={} score={:.17e} aln1={} aln2={}", i, j, r.score, s1, s2);
+                            }
+                        }
                         (r, 0, 0)
                     }
                     PairAligner::GeneralizedAffine => {
@@ -774,17 +792,50 @@ pub fn build_homology_table_with_unalign(
                     // / global DP reads matrix[gap_idx][...] on certain code
                     // paths (e.g. via amino_dynamicmtx char-indexing in C).
                     let gap_idx = amino_map[b'-' as usize] as usize;
-                    let delta = off * 600.0;
+                    // C `mltaln9.c::makedynamicmtx` computes
+                    //     out[i][j] = in[i][j] + offset * 600
+                    // per cell, which clang at -O3 with the default
+                    // FP_CONTRACT=on lowers to a single FMA
+                    // `fmadd(offset, 600, in[i][j])`. Precomputing
+                    // `delta = off * 600` and doing `v + delta` is two
+                    // rounded ops and drifts ~1 ULP per cell — enough to
+                    // flip a tied DP cell (BB12003 first-divergent cell
+                    // (2, 18) in the warp pairwise DP). Use mul_add to
+                    // mirror C's FMA fusion exactly. Same fix shape as
+                    // §B.10 (calcW) and the other FP_CONTRACT divergences.
                     let dyn_matrix: Vec<Vec<f64>> = matrix
                         .iter().enumerate()
                         .map(|(i, row)| {
                             row.iter().enumerate()
                                 .map(|(j, &v)| {
-                                    if i == gap_idx || j == gap_idx { v } else { v + delta }
+                                    if i == gap_idx || j == gap_idx {
+                                        v
+                                    } else {
+                                        off.mul_add(600.0, v)
+                                    }
                                 })
                                 .collect()
                         })
                         .collect();
+                    // §E.1 forensic: dump dist / off / delta / dyn_matrix
+                    // row M (12) to compare with C's makedynamicmtx output.
+                    if let Ok(p) = std::env::var("RS_DYNMTX_DUMP") {
+                        use std::io::Write;
+                        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+                            let _ = writeln!(fp, "R_DYNMTX_INPUTS i={} j={} selfi={:.17e} selfj={:.17e} bunbo={:.17e} pscore={:.17e}",
+                                i, j, selfscore[i], selfscore[j], bunbo, alignment.score);
+                            // delta is no longer pre-computed (now fused via mul_add per cell);
+                            // print off*600 as the reference for diffing.
+                            let _ = writeln!(fp, "R_DYNMTX_OUTPUT dist={:.17e} off={:.17e} delta={:.17e}",
+                                dist_for_offset, off, off * 600.0);
+                            let _ = write!(fp, "R_DYNMTX_R12");
+                            for k in 0..dyn_matrix[12].len() { let _ = write!(fp, " {:.17e}", dyn_matrix[12][k]); }
+                            let _ = writeln!(fp);
+                            let _ = write!(fp, "R_DYNMTX_R0");
+                            for k in 0..dyn_matrix[0].len() { let _ = write!(fp, " {:.17e}", dyn_matrix[0][k]); }
+                            let _ = writeln!(fp);
+                        }
+                    }
                     let original_score = alignment.score;
                     let (re_aln, re_off1, re_off2) = run_align(&dyn_matrix);
                     alignment = re_aln;

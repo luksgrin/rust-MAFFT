@@ -959,6 +959,31 @@ pub fn profile_align_imp_multimtx(
             }
         }
     }
+    // §E.1 forensic: dump currentw[0..5] BEFORE imp_match_out_vead so the
+    // impmtx[0][·] contribution can be isolated (= post-imp minus pre-imp).
+    // Mirrors C `Salignmm.c` `C_INITROW_PREIMP` instrumentation.
+    if let Ok(path) = std::env::var("RS_H_DUMP") {
+        let shape_ok = std::env::var("RS_H_DUMP_SHAPE")
+            .ok()
+            .and_then(|s| {
+                let parts: Vec<&str> = s.split(',').collect();
+                if parts.len() >= 2 {
+                    let sn: usize = parts[0].parse().ok()?;
+                    let sm: usize = parts[1].parse().ok()?;
+                    Some(n == sn && m == sm)
+                } else { None }
+            })
+            .unwrap_or(false);
+        if shape_ok {
+            use std::io::Write;
+            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let lim = m.min(5);
+                let _ = write!(fp, "R_INITROW_PREIMP");
+                for k in 0..lim { let _ = write!(fp, " {:.17e}", currentw[k]); }
+                let _ = writeln!(fp);
+            }
+        }
+    }
     // C: imp_match_out_vead(currentw, 0, lgth2) — add impmtx[0][j] to currentw[j].
     if let Some(imp) = impmtx {
         for j in 0..m {
@@ -994,6 +1019,77 @@ pub fn profile_align_imp_multimtx(
         // PAM 200), and that drift propagates into tie-break decisions.
         mj[j] = ogcp1[1].mul_add(gf2_jm1, currentw[j - 1]);
         mpj[j] = 0;
+    }
+
+    // §E.1-style FP-ordering forensic: dump the pre-loop DP state at
+    // full %.17e precision so the C/Rust divergence source can be
+    // pinned. Gated on RS_H_DUMP + RS_H_DUMP_SHAPE. Mirrors the C-side
+    // dumps so each value can be diffed directly by prefix.
+    if let Ok(path) = std::env::var("RS_H_DUMP") {
+        use std::io::Write;
+        let shape_ok = std::env::var("RS_H_DUMP_SHAPE")
+            .ok()
+            .and_then(|s| {
+                let parts: Vec<&str> = s.split(',').collect();
+                if parts.len() >= 2 {
+                    let sn: usize = parts[0].parse().ok()?;
+                    let sm: usize = parts[1].parse().ok()?;
+                    Some(n == sn && m == sm)
+                } else { None }
+            })
+            .unwrap_or(false);
+        if shape_ok {
+            if let Ok(mut fp) = std::fs::OpenOptions::new()
+                .create(true).append(true).open(&path)
+            {
+                fn dump_vec(fp: &mut std::fs::File, label: &str, v: &[f64]) {
+                    let _ = write!(fp, "{}", label);
+                    for x in v { let _ = write!(fp, " {:.17e}", x); }
+                    let _ = writeln!(fp);
+                }
+                fn dump_scalar(fp: &mut std::fs::File, label: &str, x: f64) {
+                    let _ = writeln!(fp, "{} {:.17e}", label, x);
+                }
+                dump_vec(&mut fp, "R_INITROW", &currentw[..m]);
+                dump_vec(&mut fp, "R_INITVERT", &initverticalw[..n]);
+                dump_vec(&mut fp, "R_OGCP1", &ogcp1[..n]);
+                dump_vec(&mut fp, "R_FGCP1", &fgcp1[..n]);
+                dump_vec(&mut fp, "R_OGCP2", &ogcp2[..m]);
+                dump_vec(&mut fp, "R_FGCP2", &fgcp2[..m]);
+                dump_vec(&mut fp, "R_NONGAP1", &prof1.nongap_freq[..n]);
+                dump_vec(&mut fp, "R_NONGAP2", &prof2.nongap_freq[..m]);
+                dump_scalar(&mut fp, "R_FPENALTY", penalty);
+                dump_scalar(&mut fp, "R_FPENALTY_EX", gap.extend);
+                dump_scalar(&mut fp, "R_FPENALTY_SHIFT", gap.shift.unwrap_or(0.0));
+                dump_scalar(&mut fp, "R_HGF1", hgf1);
+                dump_scalar(&mut fp, "R_HGF2", hgf2);
+                dump_vec(&mut fp, "R_MJ_INIT", &mj[1..=m]);
+                // impmtx is added to currentw inside the if-let above (line
+                // ~963). Dump impmtx[0][0..5] and impmtx[i][0] for a few i
+                // to compare against C's imp_match_out_vead behaviour.
+                if let Some(imp) = impmtx {
+                    if !imp.is_empty() {
+                        let row0 = &imp[0];
+                        let n0 = row0.len().min(5);
+                        dump_vec(&mut fp, "R_IMP_ROW0_HEAD", &row0[..n0]);
+                    }
+                    let nrows = imp.len().min(5);
+                    let mut col0: Vec<f64> = Vec::with_capacity(nrows);
+                    for i in 0..nrows {
+                        col0.push(imp[i].first().copied().unwrap_or(0.0));
+                    }
+                    dump_vec(&mut fp, "R_IMP_COL0_HEAD", &col0);
+                }
+                // Verify the cpmx col-0 weight at residue 12 (M) is exactly 1.0
+                // for our 1-seq cluster; if not, weight scaling is the source.
+                if !prof1.freqs.is_empty() && prof1.freqs[0].len() > 12 {
+                    dump_scalar(&mut fp, "R_PROF1_F0_M", prof1.freqs[0][12]);
+                }
+                if !prof2.freqs.is_empty() && prof2.freqs[0].len() > 12 {
+                    dump_scalar(&mut fp, "R_PROF2_F0_M", prof2.freqs[0][12]);
+                }
+            }
+        }
     }
 
     for i in 0..=n { ijp[i][0] = i as i32 + 1; }
@@ -1193,6 +1289,13 @@ pub fn profile_align_imp_multimtx(
                 let _ = writeln!(fp);
                 let _ = write!(fp, "R_MATRIX_R0");
                 for k in 0..nalpha { let _ = write!(fp, " {:.17e}", matrix[0][k]); }
+                let _ = writeln!(fp);
+                // Row 12 = M (col-0 residue of both BB12003 seq3/seq4):
+                // if MATRIX_R0 matches but R12 differs, makedynamicmtx is
+                // applying a non-uniform shift; if R12 also matches, the
+                // divergence is in the match_calc summation order.
+                let _ = write!(fp, "R_MATRIX_R12");
+                for k in 0..nalpha { let _ = write!(fp, " {:.17e}", matrix[12][k]); }
                 let _ = writeln!(fp);
                 // EFF cannot be dumped here — profile_align_imp_with_boundary
                 // doesn't see the weights vector. They're captured upstream

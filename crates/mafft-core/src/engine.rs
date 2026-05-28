@@ -896,7 +896,15 @@ impl MafftEngine {
                     use_fft: true,
                     legacy_gap_cost: self.legacy_gap_cost,
                     shift: refine_shift,
-                    unalign_level: if self.allowshift { self.unalign_level } else { 0.0 },
+                    // Multi-distance-class DP gates on `unalign_level > 0`, not
+                    // on `--allowshift`: C `scripts/mafft:1436` enables the
+                    // `-s #` (specificityconsideration) path whenever
+                    // `unalignlevel != 0.0`, whether set via `--allowshift`
+                    // (→ 0.8) or `--unalignlevel #` directly. Only the warp/
+                    // shift DP (`refine_shift` above) is allowshift-specific
+                    // (it needs `spfactor < 10`, which `--unalignlevel` alone
+                    // does not set).
+                    unalign_level: self.unalign_level,
                     ..Default::default()
                 };
                 // C `dvtditr.c:882` switches to segmented refinement (split

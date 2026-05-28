@@ -261,6 +261,42 @@ pub fn global_align(
         }
     }
 
+    // §E.1 forensic: dump full ijp matrix (forward DP traceback codes) when
+    // RS_IJP_DUMP is set and shape matches RS_IJP_SHAPE="n,m". Allows cell-
+    // level diff vs C's ijp to find the first divergent tie-break.
+    if let Ok(path) = std::env::var("RS_IJP_DUMP") {
+        let shape_ok = std::env::var("RS_IJP_SHAPE")
+            .ok()
+            .and_then(|s| {
+                let p: Vec<&str> = s.split(',').collect();
+                if p.len() >= 2 {
+                    let sn: usize = p[0].parse().ok()?;
+                    let sm: usize = p[1].parse().ok()?;
+                    Some(n == sn && m == sm)
+                } else { None }
+            }).unwrap_or(false);
+        if shape_ok {
+            use std::io::Write;
+            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = writeln!(fp, "R_IJP_CALL n={} m={} warpn={}", n, m, warpn);
+                for i in 1..=n {
+                    let _ = write!(fp, "R_IJP i={}", i);
+                    for j in 1..=m {
+                        let _ = write!(fp, " {}", ijp[i][j]);
+                    }
+                    let _ = writeln!(fp);
+                }
+                // Also dump warpis/warpjs for reference (warp anchors).
+                let _ = write!(fp, "R_WARPIS");
+                for k in 0..warpis.len() { let _ = write!(fp, " {}", warpis[k]); }
+                let _ = writeln!(fp);
+                let _ = write!(fp, "R_WARPJS");
+                for k in 0..warpjs.len() { let _ = write!(fp, " {}", warpjs[k]); }
+                let _ = writeln!(fp);
+            }
+        }
+    }
+
     // Atracking (Galign11.c:84-260): walk ijp from (n, m) back to (0, 0)
     // following the codes. For !tailgp, before tracking C scans the last
     // row and last column to find the best endpoint with terminal-gap-free
