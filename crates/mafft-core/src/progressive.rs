@@ -41,13 +41,17 @@ pub(crate) fn make_dynamic_matrix(base: &[Vec<f64>], distfromtip: f64, unalign_l
     if offset == 0.0 {
         return base.iter().map(|r| r.clone()).collect();
     }
-    let delta = offset * 600.0;
+    // C `mltaln9.c::makedynamicmtx` computes `out[i][j] = in[i][j] + offset * 600`
+    // per cell; clang -O3 with FP_CONTRACT=on fuses this into a single FMA.
+    // Pre-computing `delta = offset * 600.0` then `v + delta` is two rounded ops
+    // and drifts ~1 ULP per cell. See [[project_allowshift_pairwise_fp]] for the
+    // BB12003 bisection. Same shape fix as `constraints.rs` `dyn_matrix` build.
     base.iter()
         .enumerate()
         .map(|(i, row)| {
             row.iter().enumerate()
                 .map(|(j, &v)| {
-                    if i == gap_idx || j == gap_idx { v } else { v + delta }
+                    if i == gap_idx || j == gap_idx { v } else { offset.mul_add(600.0, v) }
                 })
                 .collect()
         })
