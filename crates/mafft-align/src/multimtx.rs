@@ -32,6 +32,15 @@ pub struct MultiMtx<'a> {
     pub cpmx1s: &'a [Vec<Vec<f64>>],
     /// Per-class column profiles of cluster 2: `cpmx2s[c][col][alpha]`.
     pub cpmx2s: &'a [Vec<Vec<f64>>],
+    /// Sparse representation of `cpmx1s` / `cpmx2s` — per class, per column,
+    /// `Vec<(alpha_index, value)>` of the non-zero alphabet entries only.
+    /// Iterating these instead of the dense `0..nalpha` skips zero-weight
+    /// alphabet positions, which is a large win for single- or few-residue
+    /// clusters (typical in refinement). FP order preserved because the
+    /// dense iteration's zero contributions are `x.mul_add(0, acc) = acc`,
+    /// so dropping them is mathematically identical.
+    pub cpmx1s_sparse: &'a [Vec<Vec<(u8, f64)>>],
+    pub cpmx2s_sparse: &'a [Vec<Vec<(u8, f64)>>],
     /// Spurious-pair masks per class (pairs in the class's cpmx product whose
     /// true class differs). `mask1[c]`/`mask2[c]` index cluster-1/2 members.
     pub mask1: &'a [Vec<usize>],
@@ -64,6 +73,8 @@ impl<'a> MultiMtx<'a> {
             matrices: self.matrices,
             cpmx1s: self.cpmx2s,
             cpmx2s: self.cpmx1s,
+            cpmx1s_sparse: self.cpmx2s_sparse,
+            cpmx2s_sparse: self.cpmx1s_sparse,
             mask1: self.mask2,
             mask2: self.mask1,
             seq1: self.seq2,
@@ -90,32 +101,50 @@ impl<'a> MultiMtx<'a> {
     /// all-adds-then-all-dels (matters for byte-identity, not math).
     pub fn match_row(&self, i1: usize, lgth2: usize) -> Vec<f64> {
         let mut out = vec![0.0f64; lgth2];
-        let mut scarr = vec![0.0f64; self.nalpha];
+        self.match_row_into(i1, &mut out);
+        out
+    }
+
+    /// Same as [`match_row`] but writes into a caller-provided buffer to
+    /// avoid the per-call `vec![0.0; lgth2]` allocation in hot DP loops.
+    /// `out.len()` must equal `lgth2`; the buffer is zeroed on entry so the
+    /// `+=` accumulation across distance classes starts from zero (matches
+    /// the freshly-allocated-Vec behavior of [`match_row`]).
+    pub fn match_row_into(&self, i1: usize, out: &mut [f64]) {
+        for v in out.iter_mut() { *v = 0.0; }
+        let lgth2 = out.len();
+        let nalpha = self.nalpha;
+        let mut scarr = vec![0.0f64; nalpha];
 
         for c in 0..self.nclass() {
             let mtx = &self.matrices[c];
             let cpmx1 = &self.cpmx1s[c];
-            let cpmx2 = &self.cpmx2s[c];
+            let cpmx1_sparse = &self.cpmx1s_sparse[c];
+            let cpmx2_sparse = &self.cpmx2s_sparse[c];
 
             // --- match_calc_add(matrices[c], out, cpmx1s[c], cpmx2s[c], i1) ---
             if i1 < cpmx1.len() {
                 // scarr[l] = Σ_j mtx[j][l] * cpmx1[i1][j]   (FMA).
-                for l in 0..self.nalpha {
+                // Sparse: iterate only the non-zero `j` of cpmx1[i1].
+                // FP-identical to dense iteration since
+                // `x.mul_add(0, s) = s`. For 1-residue clusters, this is
+                // O(nalpha) ops total instead of O(nalpha²).
+                let sp = &cpmx1_sparse[i1];
+                for l in 0..nalpha {
                     let mut s = 0.0f64;
-                    for j in 0..self.nalpha {
-                        s = mtx[j][l].mul_add(cpmx1[i1][j], s);
+                    for &(j_u8, v) in sp {
+                        s = mtx[j_u8 as usize][l].mul_add(v, s);
                     }
                     scarr[l] = s;
                 }
-                // out[k] += Σ_l scarr[l] * cpmx2[k][l]  (sparse, ascending l).
+                // out[k] += Σ_l scarr[l] * cpmx2[k][l]. Sparse over `l`:
+                // skip zero alphabet positions. FP-identical to dense
+                // (zero contributions are no-ops).
                 for k in 0..lgth2 {
-                    let col = &cpmx2[k];
+                    let sp2 = &cpmx2_sparse[k];
                     let mut acc = out[k];
-                    for l in 0..self.nalpha {
-                        let v = col[l];
-                        if v != 0.0 {
-                            acc = scarr[l].mul_add(v, acc);
-                        }
+                    for &(l_u8, v) in sp2 {
+                        acc = scarr[l_u8 as usize].mul_add(v, acc);
                     }
                     out[k] = acc;
                 }
@@ -129,20 +158,15 @@ impl<'a> MultiMtx<'a> {
                         let j = self.mask2[c][m];
                         let b1 = self.seq1[i][i1];
                         let b2 = self.seq2[j][k];
-                        if b1 == b'-' || b2 == b'-' {
-                            continue;
-                        }
+                        if b1 == b'-' || b2 == b'-' { continue; }
                         let c1 = self.amino_map[b1 as usize] as usize;
                         let c2 = self.amino_map[b2 as usize] as usize;
-                        if c1 >= self.nalpha || c2 >= self.nalpha {
-                            continue;
-                        }
+                        if c1 >= self.nalpha || c2 >= self.nalpha { continue; }
                         out[k] -= mtx[c1][c2] * self.eff1[i] * self.eff2[j];
                     }
                 }
             }
         }
-        out
     }
 }
 
@@ -224,9 +248,19 @@ mod tests {
         }}}
         let cpmx1s: Vec<Vec<Vec<f64>>> = (0..2).map(|c| build_cpmx(&seq1, &eff1s[c], &amino, nalpha, ncol)).collect();
         let cpmx2s: Vec<Vec<Vec<f64>>> = (0..2).map(|c| build_cpmx(&seq2, &eff2s[c], &amino, nalpha, ncol)).collect();
+        let sparsify = |dense: &Vec<Vec<Vec<f64>>>| -> Vec<Vec<Vec<(u8,f64)>>> {
+            dense.iter().map(|cls| cls.iter().map(|col| {
+                let mut v: Vec<(u8,f64)> = Vec::new();
+                for (l, &x) in col.iter().enumerate() { if x != 0.0 { v.push((l as u8, x)); } }
+                v
+            }).collect()).collect()
+        };
+        let cpmx1s_sparse = sparsify(&cpmx1s);
+        let cpmx2s_sparse = sparsify(&cpmx2s);
 
         let mm = MultiMtx {
             matrices: &matrices, cpmx1s: &cpmx1s, cpmx2s: &cpmx2s,
+            cpmx1s_sparse: &cpmx1s_sparse, cpmx2s_sparse: &cpmx2s_sparse,
             mask1: &mask1, mask2: &mask2,
             seq1: &seq1, seq2: &seq2, eff1: &eff1, eff2: &eff2,
             amino_map: &amino, nalpha,
@@ -255,9 +289,19 @@ mod tests {
         let eff1s = vec![vec![1.0]]; let eff2s = vec![vec![1.0]];
         let cpmx1s: Vec<Vec<Vec<f64>>> = vec![build_cpmx(&seq1, &eff1s[0], &amino, nalpha, ncol)];
         let cpmx2s: Vec<Vec<Vec<f64>>> = vec![build_cpmx(&seq2, &eff2s[0], &amino, nalpha, ncol)];
+        let sparsify = |dense: &Vec<Vec<Vec<f64>>>| -> Vec<Vec<Vec<(u8,f64)>>> {
+            dense.iter().map(|cls| cls.iter().map(|col| {
+                let mut v: Vec<(u8,f64)> = Vec::new();
+                for (l, &x) in col.iter().enumerate() { if x != 0.0 { v.push((l as u8, x)); } }
+                v
+            }).collect()).collect()
+        };
+        let cpmx1s_sparse = sparsify(&cpmx1s);
+        let cpmx2s_sparse = sparsify(&cpmx2s);
         let mask1 = vec![Vec::new()]; let mask2 = vec![Vec::new()];
         let mm = MultiMtx {
             matrices: &matrices, cpmx1s: &cpmx1s, cpmx2s: &cpmx2s,
+            cpmx1s_sparse: &cpmx1s_sparse, cpmx2s_sparse: &cpmx2s_sparse,
             mask1: &mask1, mask2: &mask2,
             seq1: &seq1, seq2: &seq2, eff1: &eff1, eff2: &eff2,
             amino_map: &amino, nalpha,

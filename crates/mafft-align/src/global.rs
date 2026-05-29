@@ -252,12 +252,11 @@ pub fn global_align(
         }
 
         // End of row: snapshot wmrecords/warpi/warpj for next row's warp lookup.
+        // copy_from_slice lowers to memcpy — measurable on long profiles.
         if try_warp {
-            for k in 0..=m {
-                prevwmrecords[k] = wmrecords[k];
-                prevwarpi[k] = warpi[k];
-                prevwarpj[k] = warpj[k];
-            }
+            prevwmrecords.copy_from_slice(&wmrecords);
+            prevwarpi.copy_from_slice(&warpi);
+            prevwarpj.copy_from_slice(&warpj);
         }
     }
 

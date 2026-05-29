@@ -721,27 +721,28 @@ pub fn build_homology_table_with_unalign(
                         // terminal-gap treatment. The script for G-INS-i
                         // doesn't pass `-O`, so `outgap` defaults to 1 →
                         // both head and tail gaps are penalized.
-                        if let Ok(p) = std::env::var("RS_PAIR_TRACE") {
-                            use std::io::Write;
-                            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-                                let _ = writeln!(
-                                    fp,
-                                    "R_PAIR i={} j={} n={} m={} gap.shift={:?}",
-                                    i, j, sequences[i].len(), sequences[j].len(), gap.shift,
-                                );
-                            }
-                        }
                         let r = crate::global::global_align(
                             sequences[i], sequences[j],
                             mat, amino_map, gap,
                             true, true,
                         );
                         if let Ok(p) = std::env::var("RS_PAIR_TRACE") {
+                            // Serialize the trace write via a global mutex so
+                            // parallel pairs don't interleave their lines.
                             use std::io::Write;
+                            use std::sync::{Mutex, OnceLock};
+                            static TRACE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+                            let lk = TRACE_LOCK.get_or_init(|| Mutex::new(()));
+                            let _guard = lk.lock().unwrap();
                             if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
                                 let s1 = std::str::from_utf8(&r.seq1).unwrap_or("?");
                                 let s2 = std::str::from_utf8(&r.seq2).unwrap_or("?");
-                                let _ = writeln!(fp, "R_PAIR_SCORE i={} j={} score={:.17e} aln1={} aln2={}", i, j, r.score, s1, s2);
+                                let _ = writeln!(
+                                    fp,
+                                    "R_PAIR i={} j={} n={} m={} gap.shift={:?}\nR_PAIR_SCORE i={} j={} score={:.17e} aln1={} aln2={}",
+                                    i, j, sequences[i].len(), sequences[j].len(), gap.shift,
+                                    i, j, r.score, s1, s2,
+                                );
                             }
                         }
                         (r, 0, 0)

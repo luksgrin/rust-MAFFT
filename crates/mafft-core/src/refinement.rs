@@ -1124,10 +1124,30 @@ fn realign_all_constrained_fft(
                     &s2_refs, &ctx.eff2s[c], &scoring.amino_map, scoring.nalphabets,
                 ).freqs)
                 .collect();
+            // Sparse (alpha_index, value) representations of cpmx1s/cpmx2s,
+            // skipping zero alphabet positions. Hot path for
+            // `MultiMtx::match_row_into` — for 1-residue clusters this turns
+            // an O(nalpha²) scarr build + O(nalpha·lgth2) accumulation into
+            // O(nalpha) + O(lgth2). nalpha < 256 so u8 indices suffice.
+            let sparsify = |dense: &Vec<Vec<Vec<f64>>>| -> Vec<Vec<Vec<(u8, f64)>>> {
+                dense.iter().map(|class| {
+                    class.iter().map(|col| {
+                        let mut v: Vec<(u8, f64)> = Vec::with_capacity(col.len());
+                        for (l, &x) in col.iter().enumerate() {
+                            if x != 0.0 { v.push((l as u8, x)); }
+                        }
+                        v
+                    }).collect()
+                }).collect()
+            };
+            let cpmx1s_sparse = sparsify(&cpmx1s);
+            let cpmx2s_sparse = sparsify(&cpmx2s);
             let mm = MultiMtx {
                 matrices: &ctx.matrices,
                 cpmx1s: &cpmx1s,
                 cpmx2s: &cpmx2s,
+                cpmx1s_sparse: &cpmx1s_sparse,
+                cpmx2s_sparse: &cpmx2s_sparse,
                 mask1: &ctx.mask1,
                 mask2: &ctx.mask2,
                 seq1: &s1_refs,

@@ -830,8 +830,9 @@ pub fn profile_align_imp_multimtx(
             if row_pos >= n {
                 for j in 0..m { output[j] = 0.0; }
             } else {
-                let row = mm.match_row(row_pos, m);
-                output[..m].copy_from_slice(&row[..m]);
+                // match_row_into reuses caller's buffer (avoids per-row
+                // Vec allocation; hot path in --allowshift refinement).
+                mm.match_row_into(row_pos, &mut output[..m]);
             }
             return;
         }
@@ -1145,6 +1146,10 @@ pub fn profile_align_imp_multimtx(
         currentw[0] = initverticalw[i];
 
         let gf1_im1 = prof1.nongap_freq[i - 1]; // i-1 in 0..n-1, always valid
+        // Per-row invariants — gf1_i and gf1_im1 do not depend on j; hoist
+        // out of the inner loop to save 2 bounds checks + 1 branch per cell.
+        // For long profiles (~hundreds of residues) this is a measurable win.
+        let gf1_i = if i < n { prof1.nongap_freq[i] } else { boundary.tail1 };
         // Use mul_add throughout — C compiled with `gcc -O3 -mfma` (or
         // equivalent) fuses `a + b * c` into FMA (single-rounding step);
         // matching this behavior is required for bit-identity to C's
@@ -1159,8 +1164,6 @@ pub fn profile_align_imp_multimtx(
             // values when partA__align is given sgap/egap (boundary.tail{1,2})
             // and 1.0 otherwise (when egap is NULL → C's `gapfreq[lgth]=0.0`
             // pre-flip → 1.0 post-flip).
-            let gf1_i = if i < n { prof1.nongap_freq[i] } else { boundary.tail1 };
-            let gf1_im1 = prof1.nongap_freq[i - 1];
             let gf2_j = if j < m { prof2.nongap_freq[j] } else { boundary.tail2 };
             let gf2_jm1 = prof2.nongap_freq[j - 1];
 
@@ -1254,13 +1257,11 @@ pub fn profile_align_imp_multimtx(
 
         // End of row: snapshot wmrecords/warpi/warpj to prev*
         // (`Salignmm.c:2017-2022`, `fltncpy(prevwmrecords, wmrecords, lastj)`
-        // where lastj = lgth2 + 1).
+        // where lastj = lgth2 + 1). copy_from_slice lowers to memcpy.
         if try_warp {
-            for k in 0..=m {
-                prevwmrecords[k] = wmrecords[k];
-                prevwarpi[k] = warpi[k];
-                prevwarpj[k] = warpj[k];
-            }
+            prevwmrecords.copy_from_slice(&wmrecords);
+            prevwarpi.copy_from_slice(&warpi);
+            prevwarpj.copy_from_slice(&warpj);
         }
     }
 
