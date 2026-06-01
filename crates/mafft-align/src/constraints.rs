@@ -846,6 +846,15 @@ pub fn build_homology_table_with_unalign(
             } else {
                 alignment.score
             };
+            // Apply the X-stripped score to alignment.score UNCONDITIONALLY
+            // (i.e. regardless of unalign_level). This matches C's flow where
+            // `pscore = G__align11_noalign(distseq, ...)` overwrites pscore
+            // BEFORE both the specificityconsideration block and the final
+            // `pscore = score2dist(pscore, ...)` (`pairlocalalign.c:2197,2210,2384`).
+            // For non-allowshift L/G-INS-i with X-containing inputs, this is
+            // the score used for the distance matrix → the guide tree → the
+            // entire progressive alignment.
+            alignment.score = pscore_for_dist;
 
             // Per-pair dynamic re-alignment (C `pairlocalalign.c:2199-2215`):
             // when `specificityconsideration > 0` and the initial alignment's
@@ -923,10 +932,10 @@ pub fn build_homology_table_with_unalign(
                     offset1 = re_off1;
                     offset2 = re_off2;
                     // Restore C's invariant: the distance comes from the
-                    // *original* score (line 2204 reads `pscore` from the
-                    // first alignment, not the re-aligned one). Use the
-                    // X-stripped score when applicable so the final dist
-                    // matches the dynmtx-feeding dist (and matches C).
+                    // *original* score (`pairlocalalign.c:2204` reads
+                    // `pscore` from the first alignment, not the re-aligned
+                    // one). `pscore_for_dist` is set above to the (possibly
+                    // X-stripped) first-call score.
                     alignment.score = pscore_for_dist;
                 }
             }
