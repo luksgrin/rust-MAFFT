@@ -131,6 +131,48 @@ pub fn build_imp_matrix(
             let imp00 = if lgth1 > 0 && lgth2 > 0 { imp[0][0] } else { 0.0 };
             let _ = writeln!(fp, "call={} lgth1={} lgth2={} nonzero={} sum={:.18e} diag_sum={:.18e} imp00={:.18e}",
                 n, lgth1, lgth2, nonzero, sum, diag_sum, imp00);
+            // Extended: dump eff + per-pair impmtx[0][0] contribution
+            // for the specific BB11005 step-5 shape gate.
+            if lgth1 == 355 && lgth2 == 367 {
+                let _ = writeln!(fp, "  effijx={:.18e}", effijx);
+                let _ = write!(fp, "  eff1=");
+                for v in eff1 { let _ = write!(fp, "{:.18e},", v); }
+                let _ = writeln!(fp);
+                let _ = write!(fp, "  eff2=");
+                for v in eff2 { let _ = write!(fp, "{:.18e},", v); }
+                let _ = writeln!(fp);
+                // Per-pair impmtx[0][0] contribution decomposition.
+                for (gi, &s1) in group1.iter().enumerate() {
+                    for (gj, &s2) in group2.iter().enumerate() {
+                        let regions = localhom.get(s1, s2);
+                        let effij = eff1[gi] * eff2[gj] * effijx;
+                        let mut hits_at_00 = 0usize;
+                        let mut sum_imp_at_00 = 0.0f64;
+                        for region in regions {
+                            // Mirror the walk; just check if (0,0) gets a hit
+                            let seq1 = g1_seqs[gi];
+                            let seq2 = g2_seqs[gj];
+                            let start1 = move_to_seq_pos(seq1, region.start1 as usize);
+                            let start2 = move_to_seq_pos(seq2, region.start2 as usize);
+                            if let (Some(s1p), Some(s2p)) = (start1, start2) {
+                                if s1p == 0 && s2p == 0 {
+                                    hits_at_00 += 1;
+                                    sum_imp_at_00 += region.importance;
+                                }
+                            }
+                        }
+                        let _ = writeln!(fp,
+                            "  pair[{},{}] gi={} gj={} effij={:.18e} regions={} hits_at(0,0)={} sum_imp_at(0,0)={:.18e}  contrib_to_imp00={:.18e}",
+                            s1, s2, gi, gj, effij, regions.len(), hits_at_00, sum_imp_at_00, sum_imp_at_00 * effij);
+                        // Per-region full dump for these specific pairs.
+                        for (rid, region) in regions.iter().enumerate() {
+                            let _ = writeln!(fp,
+                                "    R_REG pair=[{},{}] r={} s1={} e1={} s2={} e2={} opt={:.18e} overlap={} importance={:.18e}",
+                                s1, s2, rid, region.start1, region.end1, region.start2, region.end2, region.opt, region.overlapaa, region.importance);
+                        }
+                    }
+                }
+            }
         }
     }
     imp
@@ -507,6 +549,12 @@ pub fn recompute_importance(
                 }
             }
         }
+        if let Ok(f) = std::env::var("RS_SUPPORT_DUMP") {
+            use std::io::Write;
+            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                let _ = writeln!(fp, "R_SUPPORT i={} ieff={:?} support[0..5]={:?}", i, &ieff[..nseq.min(ieff.len())], &support[..5.min(support.len())]);
+            }
+        }
         for j in 0..nseq {
             if i == j { continue; }
             // Note: C iterates `for tmpptr = localhom[i]+j; tmpptr; tmpptr=tmpptr->next`
@@ -766,6 +814,39 @@ pub fn build_homology_table_with_unalign(
             };
             let (mut alignment, mut offset1, mut offset2) = run_align(matrix);
 
+            // C `pairlocalalign.c:2197`: when `thereisx`, pscore for distance
+            // is recomputed via `G__align11_noalign` on X-stripped sequences,
+            // BEFORE specificityconsideration / dynmtx construction. Rust
+            // previously did this strip AFTER the dynmtx re-run, causing the
+            // dynmtx to be built from the with-X (wrong) dist when sequences
+            // contained X residues. That mismatch propagated through the
+            // second G__align11 → wrong LH regions / opt / impmtx values
+            // (BB11005 step 5 impmtx[0][0] off by 12).
+            let pscore_for_dist: f64 = if matches!(aligner, PairAligner::Local | PairAligner::Global) {
+                let has_x_i = sequences[i].iter().any(|&c| c == b'X' || c == b'x');
+                let has_x_j = sequences[j].iter().any(|&c| c == b'X' || c == b'x');
+                if has_x_i || has_x_j {
+                    let strip = |s: &[u8]| -> Vec<u8> {
+                        s.iter().copied().filter(|&c| c != b'X' && c != b'x').collect()
+                    };
+                    let s1 = strip(sequences[i]);
+                    let s2 = strip(sequences[j]);
+                    match aligner {
+                        PairAligner::Local => {
+                            local_align(&s1, &s2, matrix, amino_map, gap, score_offset).alignment.score
+                        }
+                        PairAligner::Global => {
+                            crate::global::global_align(&s1, &s2, matrix, amino_map, gap, true, true).score
+                        }
+                        _ => alignment.score,
+                    }
+                } else {
+                    alignment.score
+                }
+            } else {
+                alignment.score
+            };
+
             // Per-pair dynamic re-alignment (C `pairlocalalign.c:2199-2215`):
             // when `specificityconsideration > 0` and the initial alignment's
             // distance falls under `2*unalign_level`, re-run the pairwise DP
@@ -773,14 +854,14 @@ pub fn build_homology_table_with_unalign(
             // * 600`. The original `alignment.score` is kept for the distance
             // matrix; only the alignment trace is replaced (used for the
             // local-homology region extraction below).
-            if unalign_level > 0.0 && alignment.score > 0.0 {
+            if unalign_level > 0.0 && pscore_for_dist > 0.0 {
                 let bunbo = selfscore[i].min(selfscore[j]);
                 let dist_for_offset = if bunbo == 0.0 {
                     2.0
-                } else if bunbo < alignment.score {
+                } else if bunbo < pscore_for_dist {
                     0.0
                 } else {
-                    (1.0 - alignment.score / bunbo) * 2.0
+                    (1.0 - pscore_for_dist / bunbo) * 2.0
                 };
                 let off = 0.5 * dist_for_offset - unalign_level;
                 if off < 0.0 {
@@ -837,15 +918,16 @@ pub fn build_homology_table_with_unalign(
                             let _ = writeln!(fp);
                         }
                     }
-                    let original_score = alignment.score;
                     let (re_aln, re_off1, re_off2) = run_align(&dyn_matrix);
                     alignment = re_aln;
                     offset1 = re_off1;
                     offset2 = re_off2;
                     // Restore C's invariant: the distance comes from the
                     // *original* score (line 2204 reads `pscore` from the
-                    // first alignment, not the re-aligned one).
-                    alignment.score = original_score;
+                    // first alignment, not the re-aligned one). Use the
+                    // X-stripped score when applicable so the final dist
+                    // matches the dynmtx-feeding dist (and matches C).
+                    alignment.score = pscore_for_dist;
                 }
             }
 
@@ -882,28 +964,14 @@ pub fn build_homology_table_with_unalign(
                 alignment.score
             };
 
-            // X-override for L/G aligners only (matches C `pairlocalalign.c:2139,2197`).
-            if matches!(aligner, PairAligner::Local | PairAligner::Global) {
-                let has_x_i = sequences[i].iter().any(|&c| c == b'X' || c == b'x');
-                let has_x_j = sequences[j].iter().any(|&c| c == b'X' || c == b'x');
-                if has_x_i || has_x_j {
-                    let strip = |s: &[u8]| -> Vec<u8> {
-                        s.iter().copied().filter(|&c| c != b'X' && c != b'x').collect()
-                    };
-                    let s1 = strip(sequences[i]);
-                    let s2 = strip(sequences[j]);
-                    let stripped_score = match aligner {
-                        PairAligner::Local => {
-                            local_align(&s1, &s2, matrix, amino_map, gap, score_offset).alignment.score
-                        }
-                        PairAligner::Global => {
-                            crate::global::global_align(&s1, &s2, matrix, amino_map, gap, true, true).score
-                        }
-                        _ => score_for_dist,
-                    };
-                    score_for_dist = stripped_score;
-                }
-            }
+            // X-override for L/G aligners: now computed upfront as
+            // `pscore_for_dist` and threaded through `alignment.score` via
+            // the restore. The downstream X-strip block previously here
+            // was redundant (computed the same value twice and applied it
+            // AFTER dynmtx construction, the source of the BB11005 bug).
+            // Kept as a no-op: pscore_for_dist is already in score_for_dist
+            // via the alignment.score restore.
+            let _ = pscore_for_dist; // anchor the binding visibly
 
             // C's `score2dist` (`mltaln9.c:4329-4342` / `pairlocalalign.c:1931-1944`):
             //   bunbo = min(selfscore[i], selfscore[j])

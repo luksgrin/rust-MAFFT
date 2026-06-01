@@ -133,16 +133,17 @@ pub fn musclesupg(dist: &DistanceMatrix, method: ClusterMethod) -> Topology {
         // Ensure im < jm for consistent half-matrix access
         let (im, jm) = if im < jm { (im, jm) } else { (jm, im) };
 
-        if let Ok(f) = std::env::var("RS_UPGMA_TRACE") {
-            use std::io::Write;
-            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-                let _ = writeln!(fp, "step={} im={} jm={} min_score={:.18e}", steps_done, im, jm, min_score);
-            }
-        }
         // Branch lengths (UPGMA-style)
         let node_height = min_score * 0.5;
         let left_len = node_height - tmplen[im];
         let right_len = node_height - tmplen[jm];
+        if let Ok(f) = std::env::var("RS_UPGMA_TRACE") {
+            use std::io::Write;
+            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                let _ = writeln!(fp, "step={} im={} jm={} min_score={:.18e} node_height={:.18e} left_len={:.18e} right_len={:.18e} tmplen_im={:.18e} tmplen_jm={:.18e}",
+                    steps_done, im, jm, min_score, node_height, left_len, right_len, tmplen[im], tmplen[jm]);
+            }
+        }
 
         topo.steps.push(JoinStep {
             left: members[im].clone(),
