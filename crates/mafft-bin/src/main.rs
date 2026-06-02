@@ -199,6 +199,92 @@ struct Args {
     #[arg(long)]
     treeout: bool,
 
+    /// Write the pairwise distance matrix used by the guide-tree
+    /// construction to `<INPUT>.hat2` (matches C MAFFT `--distout`).
+    /// Ignored when reading from stdin (no path to derive the output
+    /// name from). The matrix is whatever the engine actually used
+    /// for tree construction — k-mer for FFT-NS-2/FFT-NS-i, pairwise
+    /// alignment-score-derived for L-INS-i / G-INS-i / E-INS-i.
+    #[arg(long)]
+    distout: bool,
+
+    /// Print the unweighted sum-of-pairs score of the final alignment
+    /// to stderr (matches C MAFFT `--scoreout`'s
+    /// `Unweighted sum-of-pairs score = N.NNNNN` line).
+    #[arg(long)]
+    scoreout: bool,
+
+    /// Write the guide tree to `<INPUT>.tree` followed by a per-leaf
+    /// `Density:` section (matches C MAFFT `--nodeout`). Implies
+    /// `--treeout`. NOTE: the `Density:` section is not yet emitted
+    /// (only the Newick body); see `TODO.md` for the open item.
+    #[arg(long)]
+    nodeout: bool,
+
+    /// Pileup output format. Currently routes through standard FASTA
+    /// (the C `--pileup` invokes a DIFFERENT alignment strategy, not
+    /// just a different format — `treeext="pileup"` in
+    /// `scripts/mafft`). Wired at the CLI for completeness; the
+    /// distinct strategy is not yet ported. See `TODO.md`.
+    #[arg(long)]
+    pileup: bool,
+
+    /// Write the per-input-column mapping (gap-insertion positions)
+    /// to `<ADDFILE>.map`. Only meaningful with `--add` /
+    /// `--addfragments`. NOTE: the `--add` mapping plumbing is not yet
+    /// wired — flag is accepted for compatibility but no file is
+    /// written. See `TODO.md`.
+    #[arg(long)]
+    mapout: bool,
+
+    /// Compact form of `--mapout`. Same constraints — not yet wired.
+    #[arg(long)]
+    compactmapout: bool,
+
+    /// Filter input sequences whose ambiguous-residue fraction exceeds
+    /// N (range 0.0–1.0). Mirrors C MAFFT's `--maxambiguous`
+    /// (`filter.c`): for protein, ambiguous = anything outside
+    /// `ARNDCQEGHILKMFPSTWYV` (case-insensitive). For DNA/RNA,
+    /// ambiguous = anything outside `ATGCU`. Sequences exceeding the
+    /// threshold are removed before alignment; runs of N/X are
+    /// collapsed to a single character (`shortenN`). Default 1.0 (no
+    /// filtering).
+    #[arg(long, value_name = "F")]
+    maxambiguous: Option<f64>,
+
+    /// Floor for per-sequence weights used in refinement and
+    /// progressive merge. Mirrors C's `tbfast -W $minimumweight`
+    /// (`scripts/mafft:1029`). Sequences with weight below this floor
+    /// are clamped up to it. Default 0.00001.
+    #[arg(long, value_name = "F")]
+    minimumweight: Option<f64>,
+
+    /// Treat N (DNA/RNA ambiguous) as a wildcard that matches anything
+    /// positively (mirrors C MAFFT's `--nwildcard`, internal flag
+    /// `-:`). Currently accepted but the N-row scoring tweak is not
+    /// yet wired; affects only DNA workflows. See `TODO.md`.
+    #[arg(long)]
+    nwildcard: bool,
+
+    /// Treat N (DNA/RNA ambiguous) as scoring 0 against everything
+    /// (mirrors C MAFFT's `--nzero`). Currently accepted but the
+    /// N-row scoring tweak is not yet wired. See `TODO.md`.
+    #[arg(long)]
+    nzero: bool,
+
+    /// Exclude near-identical sequences during alignment (mirrors
+    /// `--excludehomologs`). Documented in C as "works with --dash
+    /// only"; we don't support `--dash`, so this flag is a no-op
+    /// for now.
+    #[arg(long)]
+    excludehomologs: bool,
+
+    /// Output only the original input sequences (mirrors C's
+    /// `--originalseqonly`). Documented as "works with --dash only";
+    /// no-op without `--dash`.
+    #[arg(long)]
+    originalseqonly: bool,
+
     /// Use a user-supplied guide tree (matches C MAFFT `--treein FILE`).
     /// FILE must be in MAFFT's internal tree format: nseq-1 lines of
     /// `im jm len0 len1` (1-indexed sequence numbers, im < jm). Convert
@@ -429,6 +515,18 @@ fn main() {
         }
     };
 
+    // `--maxambiguous F`: validate range only here. The filter itself
+    // runs against the `--add` / `--addfragments` file (matching C
+    // MAFFT's `scripts/mafft:1132-1140` — it only filters the addfile,
+    // never the primary input). Filter is applied below where the
+    // addfile is read.
+    if let Some(thresh) = args.maxambiguous {
+        if !(0.0..=1.0).contains(&thresh) {
+            eprintln!("The argument of --maxambiguous must be between 0.0 and 1.0");
+            std::process::exit(1);
+        }
+    }
+
     let user_nseq = input.nseq();
     if user_nseq == 0 {
         eprintln!("Error: no sequences found in input");
@@ -635,6 +733,7 @@ fn main() {
     engine.pair_gop = args.gop;
     engine.pair_gep = args.gep;
     engine.pair_gexp = args.gexp;
+    engine.minimum_weight = args.minimumweight;
     if let Some(bl) = args.bl {
         engine = engine.with_scoring_model(ScoringModel::Blosum(bl));
     }
@@ -765,13 +864,111 @@ fn main() {
             eprintln!("Error reading {}: {e}", add_path.display());
             std::process::exit(1);
         });
+        // `--maxambiguous F`: drop noisy sequences from the addfile
+        // before they reach the alignment. C `scripts/mafft:1132-1140`
+        // runs `filter -m F` only on `_addfile`, never on the primary
+        // input — we mirror that gating exactly.
+        let new_input = if let Some(thresh) = args.maxambiguous {
+            let seq_type = new_input.seq_type;
+            let (filtered, dropped) = apply_maxambiguous_filter(new_input, thresh);
+            if dropped > 0 && !args.quiet {
+                let kind = if matches!(seq_type, mafft_types::SeqType::Dna | mafft_types::SeqType::Rna) {
+                    "nucleotides"
+                } else {
+                    "amino acids"
+                };
+                eprintln!(
+                    "\n\nRemoved {dropped} sequence(s) where the frequency of ambiguous {kind} > {thresh:.3}\n\n"
+                );
+            }
+            filtered
+        } else {
+            new_input
+        };
         if !args.quiet {
             eprintln!("Adding {} sequences to existing alignment", new_input.nseq());
         }
         engine.add_to_alignment(&input, &new_input, args.keeplength)
     } else {
+        if args.maxambiguous.is_some() && !args.quiet {
+            // Match C's behaviour: --maxambiguous without --add is a
+            // no-op (the filter only runs on the addfile). Warn so
+            // users don't expect main-input filtering.
+            eprintln!("Note: --maxambiguous has no effect without --add / --addfragments");
+        }
         engine.align(&input)
     };
+
+    // --distout: write the engine's distance matrix to `<INPUT>.hat2`,
+    // mirroring C MAFFT's `cp $TMPFILE/hat2 $infilename.hat2`
+    // (`scripts/mafft:2824-2826`). Requires a file-backed input — when
+    // reading from stdin we have no path to derive the output name.
+    // The matrix is whatever the engine actually used (k-mer for
+    // FFT-NS-2 / FFT-NS-i, pairwise-score-derived for L/G/E-INS-i).
+    if args.distout {
+        match (&args.input, msa.distance_matrix.as_ref()) {
+            (Some(input_path), Some(dm)) => {
+                let hat2_path = {
+                    let mut p = input_path.clone();
+                    p.as_mut_os_string().push(".hat2");
+                    p
+                };
+                let names: Vec<String> = input.sequences.iter()
+                    .map(|s| s.name.clone()).collect();
+                let mut distances: Vec<Vec<f64>> = Vec::with_capacity(dm.nseq);
+                for i in 0..dm.nseq {
+                    let row_len = dm.nseq - i - 1;
+                    let mut row = Vec::with_capacity(row_len);
+                    for j in (i + 1)..dm.nseq {
+                        row.push(dm.get(i, j));
+                    }
+                    distances.push(row);
+                }
+                let hat2 = mafft_io::Hat2Matrix { names, distances };
+                match std::fs::File::create(&hat2_path) {
+                    Ok(mut f) => {
+                        if let Err(e) = mafft_io::write_hat2(&hat2, &mut f) {
+                            eprintln!("Error writing {}: {e}", hat2_path.display());
+                        } else if !args.quiet {
+                            eprintln!("Wrote distance matrix to {}", hat2_path.display());
+                        }
+                    }
+                    Err(e) => eprintln!("Could not create {}: {e}", hat2_path.display()),
+                }
+            }
+            (None, _) => {
+                eprintln!("Warning: --distout requires a file input (stdin not supported)");
+            }
+            (_, None) => {
+                eprintln!("Warning: --distout: engine did not produce a distance matrix \
+                          (likely --parttree or --treein path)");
+            }
+        }
+    }
+
+    // --scoreout: print the unweighted sum-of-pairs score to stderr,
+    // mirroring C MAFFT's `Unweighted sum-of-pairs score = N.NNNNN`
+    // line from the `-S -B` tbfast args (`scripts/mafft:1466-1467`).
+    // Computed over the final aligned MSA; gap columns contribute 0.
+    if args.scoreout {
+        let scoring_model = if input.seq_type.is_nucleotide() {
+            mafft_types::ScoringModel::Dna
+        } else {
+            match args.bl {
+                Some(n) => mafft_types::ScoringModel::Blosum(n),
+                None => match args.jtt {
+                    Some(p) => mafft_types::ScoringModel::Jtt(p),
+                    None => match args.tm {
+                        Some(p) => mafft_types::ScoringModel::Tm(p),
+                        None => mafft_types::ScoringModel::Blosum(62),
+                    },
+                },
+            }
+        };
+        let scoring = mafft_scoring::build_context(scoring_model, input.seq_type);
+        let sp = compute_unweighted_sp_score(&msa.sequences, &scoring);
+        eprintln!("Unweighted sum-of-pairs score = {sp:.5}");
+    }
 
     // `--anysymbol`: restore each aligned row to its original characters
     // (case and non-standard residues intact). Mirrors C `restoreu`
@@ -1094,6 +1291,137 @@ fn clustal_strategy_label(args: &Args) -> &'static str {
     } else {
         if args.nofft { "NW-NS-2" } else { "FFT-NS-2" }
     }
+}
+
+/// Filter input sequences whose ambiguous-residue fraction (after gap
+/// stripping) exceeds `threshold` (range 0.0–1.0). Direct port of
+/// C MAFFT's `filter.c` algorithm. Also collapses consecutive runs of
+/// the unknown character (`X` for protein, `n` for DNA) to a single
+/// character, matching C's `shortenN`.
+///
+/// Returns the filtered SequenceSet plus the number of sequences
+/// removed (for the stderr report `Removed N sequence(s) where the
+/// frequency of ambiguous ... > F`).
+fn apply_maxambiguous_filter(
+    input: SequenceSet,
+    threshold: f64,
+) -> (SequenceSet, usize) {
+    use mafft_types::SeqType;
+    let (usual, unknown): (&[u8], u8) = match input.seq_type {
+        SeqType::Dna | SeqType::Rna => (b"ATGCUatgcu-", b'n'),
+        _ => (b"ARNDCQEGHILKMFPSTWYVarndcqeghilkmfpstwyv-", b'X'),
+    };
+    let mut kept: Vec<Sequence> = Vec::with_capacity(input.sequences.len());
+    let mut dropped = 0usize;
+    for seq in input.sequences {
+        // gappick0: strip gaps before counting.
+        let ungapped: Vec<u8> = seq.data.iter()
+            .copied()
+            .filter(|&b| b != b'-')
+            .collect();
+        if ungapped.is_empty() {
+            // Empty after gap strip → unusual fraction = 0/0 = NaN; C
+            // treats this as "all ambiguous" via division-by-zero
+            // behavior, but in practice would-be-empty sequences are
+            // dropped by upstream code. Drop conservatively.
+            dropped += 1;
+            continue;
+        }
+        let unusual_count = ungapped.iter()
+            .filter(|&&b| !usual.contains(&b))
+            .count();
+        let frac = unusual_count as f64 / ungapped.len() as f64;
+        if frac > threshold {
+            dropped += 1;
+            continue;
+        }
+        // shortenN: collapse runs of the unknown character.
+        let mut collapsed: Vec<u8> = Vec::with_capacity(ungapped.len());
+        let unknown_u = unknown.to_ascii_uppercase();
+        let mut prev_was_unknown = false;
+        for b in ungapped {
+            if b.to_ascii_uppercase() == unknown_u {
+                if !prev_was_unknown {
+                    collapsed.push(unknown);
+                    prev_was_unknown = true;
+                }
+            } else {
+                collapsed.push(b);
+                prev_was_unknown = false;
+            }
+        }
+        kept.push(Sequence { name: seq.name, data: collapsed });
+    }
+    let filtered = SequenceSet { sequences: kept, seq_type: input.seq_type };
+    (filtered, dropped)
+}
+
+/// Unweighted sum-of-pairs score, matching C MAFFT's `sumofpairsscore`
+/// (`mltaln9.c:15411`): for each (i<j) pair, runs C's `naivepairscore11`
+/// (gap-run consume loop, single penalty per gap run, common-gap
+/// columns contribute 0) and sums the result divided by 600.
+///
+/// The divisor 600 unwinds C's scoring-matrix scaling (`consweight_matrix`
+/// values are 600× the canonical BLOSUM/JTT/etc. integers), so the
+/// reported number lines up with the canonical scoring-matrix units.
+fn compute_unweighted_sp_score(
+    seqs: &[Vec<u8>],
+    scoring: &mafft_types::ScoringContext,
+) -> f64 {
+    let nseq = seqs.len();
+    if nseq < 2 { return 0.0; }
+    let mut total = 0.0f64;
+    for i in 1..nseq {
+        for j in 0..i {
+            total += naivepairscore11(&seqs[i], &seqs[j], scoring) / 600.0;
+        }
+    }
+    total
+}
+
+/// Port of C's `naivepairscore11` (`mltaln9.c:13851`). Walks both
+/// sequences; common-gap columns are skipped; a gap in just one
+/// sequence charges `penalty` (`scoring.gap.open`) once and consumes
+/// the entire gap-run in THAT sequence (not the other — the asymmetry
+/// matches C's `while (*p1 == '-')` loop). Matches mostly use
+/// `consweight_matrix` (f64) for byte-identity with C's
+/// `(double)amino_dis[c1][c2]` cast.
+fn naivepairscore11(
+    seq1: &[u8],
+    seq2: &[u8],
+    scoring: &mafft_types::ScoringContext,
+) -> f64 {
+    let map = &scoring.amino_map;
+    let mtx = &scoring.consweight_matrix;
+    let mtx_size = mtx.len();
+    let penalty = scoring.gap.open as f64;
+    let len = seq1.len().min(seq2.len());
+    let mut score = 0.0f64;
+    let mut k = 0;
+    while k < len {
+        let a = seq1[k];
+        let b = seq2[k];
+        if a == b'-' && b == b'-' { k += 1; continue; }
+        if a == b'-' {
+            score += penalty;
+            k += 1;
+            while k < len && seq1[k] == b'-' { k += 1; }
+            continue;
+        }
+        if b == b'-' {
+            score += penalty;
+            k += 1;
+            while k < len && seq2[k] == b'-' { k += 1; }
+            continue;
+        }
+        let i = map[a as usize] as usize;
+        let j = map[b as usize] as usize;
+        if i < mtx_size && j < mtx_size {
+            score += mtx[i][j];
+        }
+        k += 1;
+    }
+    score
 }
 
 fn write_output<W: Write>(

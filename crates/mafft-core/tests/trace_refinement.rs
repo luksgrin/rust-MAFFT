@@ -1148,7 +1148,7 @@ fn real_rust_refine_vs_c_falign_iter0_bytediff() {
         sequences: initial.clone(),
         names: vec![String::new(); nseq],
         score: 0.0,
-        step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+        step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
     };
     let params = mafft_core::RefinementParams { max_iterations: 1, use_fft: true, ..Default::default() };
     mafft_core::iterative_refine(&mut msa_rust, &topo, &scoring, &params, None);
@@ -1828,7 +1828,7 @@ fn rust_refine_vs_c_direct_iter1() {
         sequences: initial.clone(),
         names: vec![String::new(); nseq],
         score: 0.0,
-        step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+        step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
     };
     // Build topology
     let penalty_dist = scoring.gap.open;

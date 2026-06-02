@@ -142,15 +142,53 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
    `--simplehillclimbing`, `--skipiterate`, `--oneiteration` knobs
    are not surfaced. We use the C default ("randomchain"-style group
    selection).
-4. **Auxiliary output formats not exposed.** C's `--distout`,
-   `--scoreout`, `--nodeout`, `--mapout`, `--compactmapout`,
-   `--pileup` are not implemented. The CLI exposes `--format clustal`
-   / `--format phylip` (covers C's `--clustalout` / `--phylipout`)
-   and `--treeout` (covers nodeout in the Newick form), but not the
-   rest.
-5. **Sequence-filter flags not exposed.** C's `--maxambiguous`,
-   `--excludehomologs`, `--minimumweight`, `--nwildcard`, `--nzero`,
-   `--originalseqonly` — not implemented.
+4. **Auxiliary output formats — partially exposed.** All six C
+   MAFFT 7.526 aux-output flags now have CLI args. Status:
+   - **`--distout`** — FULLY IMPLEMENTED. Writes the engine's
+     pairwise distance matrix to `<INPUT>.hat2`. Byte-identical to
+     C across 6 mode combinations (default / FFT-NS-i / L/G/E-INS-i
+     / `--parttree`). Format mirrors C `io.c:2980-2984` exactly,
+     including the `=` name prefix C prepends on FASTA read.
+   - **`--scoreout`** — FULLY IMPLEMENTED. Prints
+     `Unweighted sum-of-pairs score = N.NNNNN` to stderr. Direct
+     port of C's `sumofpairsscore` (`mltaln9.c:15411`) + `naivepair
+     score11`. Byte-identical to C across 4 modes (default /
+     FFT-NS-i / L-INS-i / G-INS-i).
+   - **`--nodeout`** — WIRED, partial. Currently behaves as
+     `--treeout`. The C `--nodeout` additionally appends a per-leaf
+     `Density:` section to the tree file; that section is not yet
+     emitted. Open item.
+   - **`--mapout` / `--compactmapout`** — WIRED, no-op. The flag is
+     accepted but no `.map` file is written. C tracks
+     input-to-output column mapping during the `--add` /
+     `--addfragments` pipeline; that plumbing is not yet exposed.
+     Open item.
+   - **`--pileup`** — WIRED, routes through standard FASTA. The C
+     `--pileup` invokes a DIFFERENT alignment strategy
+     (`treeext="pileup"` in `scripts/mafft`), not just a different
+     format. Porting the pileup strategy is a separate item; out of
+     scope here.
+5. **Sequence-filter flags — partially exposed.** All six C MAFFT
+   7.526 sequence-filter flags now have CLI args. Status:
+   - **`--maxambiguous F`** — FULLY IMPLEMENTED. Direct port of C's
+     `filter.c` (drops sequences whose ambiguous-residue fraction
+     exceeds F, collapses runs of N/X via `shortenN`). Mirrors C's
+     gating exactly — filter runs only on the `--add` /
+     `--addfragments` file, not the primary input. Byte-identical to
+     C across 4 thresholds (0.05 / 0.3 / 0.49 / 0.7) including the
+     stderr `Removed N sequence(s)` report.
+   - **`--minimumweight F`** — FULLY IMPLEMENTED. Threads through
+     `RefinementParams.minimum_weight` to all per-sequence-weight
+     clamp sites. Byte-identical to C across 5 modes (FFT-NS-2,
+     FFT-NS-i, L/G/E-INS-i).
+   - **`--nwildcard` / `--nzero`** — WIRED, no-op. Accepted at the
+     CLI but the N-row substitution-matrix tweak (C's `-:` / blank
+     `nmodel` in `constants()`) is not yet applied. Affects DNA
+     workflows only. Open item.
+   - **`--excludehomologs` / `--originalseqonly`** — WIRED, no-op.
+     C documents both as "works with --dash only"; we don't support
+     `--dash` (DASH structure-DB pipeline is out-of-scope per the
+     RNA-structure design choice).
 6. **Fine-grained gap-penalty knobs — partially exposed.** We have
    `--op` / `--ep` plus `--exp` / `--shiftpenalty` / `--lop` / `--lep`
    / `--lexp` / `--gop` / `--gep` / `--gexp` (8 new flags wired). All
@@ -164,16 +202,7 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
    affect C's X-INS-i / Q-INS-i RNA paths, which are external-dep
    blocked). Not implemented: `--rop` / `--rep` (RNA-only); `--LOP` /
    `--LEXP` / `--GOP` / `--GEXP` (LARA RNA only).
-7. **Upstream test fixtures unreferenced.** Seven files in
-   `mafft-upstream/test/` (`sample.gins1`, `sample.lins1`,
-   `sample.parttree`, `sample.dpparttree`, `sample.hat2`,
-   `samplerna.qinsi`, `samplerna.xinsi`) are present but never
-   read by `crates/*/tests/`. The modes they cover ARE tested
-   against our own fixtures in `crates/mafft-core/tests/fixtures/`
-   or against re-running C at test time — so this is a maintenance
-   concern, not a correctness gap (if upstream changes a reference
-   output, we won't notice via CI).
-8. **Out-of-scope by design** (no plan to support): RNA structure
+7. **Out-of-scope by design** (no plan to support): RNA structure
     alignment via DAFS / FoldAlign / LARA / SCARNA / MCCASKILL /
     RIBOSUM / RNAALIFOLD; PDB structure-aware alignment
     (`--pdbfilelist`, `--pdbidlist`); alternative pairwise via
@@ -181,3 +210,33 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
     `--fastapair`, `--fastswpair`, `--hybridpair`,
     `--longshortpair`, `--shortlongpair`); MPI parallelism
     (`--mpi` — we use Rayon).
+
+### Open research items
+
+Latent algorithm-port issues surfaced during the gap-flag work above
+that need investigation. None affects default-flag behaviour (the full
+1930/1930 BALIBASE parity is unchanged); each one is a
+non-default-input edge case that diverges from C.
+
+R-1. **`--exp` at aggressive values diverges from C on FFT-NS-i
+   refinement.** Surfaced 2026-06-02 while wiring `--exp` (gap #6
+   above). At default `--exp 0` (or `--exp 0.1`, `--exp 0`-class
+   values) the rust output is byte-identical to C across every mode.
+   But at `--exp 0.5` on FFT-NS-i (`--maxiterate 100`), rust produces
+   an alignment of different ARCHITECTURE than C (same `nseq=36`,
+   different widths: rust=564 vs C=703, with different gap
+   distributions per row). The penalty-extension internal value is
+   verified identical to C (`--exp 0.5` → `pgexp=-500` → `penalty_ex
+   =-299` for protein in both rust and C). The progressive phase
+   alone (`--exp 0.5 --maxiterate 0`) is byte-identical, isolating
+   the divergence to the *refinement* DP's penalty_ex handling.
+   Likely culprits: tail-gap accumulation in `profile.rs::j_loop`
+   (the `mj_v += f_ext` and `mi += f_ext` per-cell increments),
+   FFT-segmented refinement boundary handling under high
+   penalty_ex, or a tie-break that flips when penalty_ex is large
+   enough to outweigh substitution scores. **To investigate:**
+   instrument C MAFFT and our refinement DP at the divergent step;
+   compare `mj`/`mi`/`wm` trajectories at `--exp 0.5`; pin the
+   first row where they diverge; identify the missing increment or
+   sign mismatch. Workaround: keep `--exp` ≤ 0.1 for FFT-NS-i runs
+   that need byte-identity with C.

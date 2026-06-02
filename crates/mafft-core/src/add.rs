@@ -263,7 +263,7 @@ mod tests {
             ],
             names: vec!["s1".into(), "s2".into(), "s3".into()],
             score: 0.0,
-            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         }
     }
 

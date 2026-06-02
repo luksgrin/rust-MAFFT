@@ -66,18 +66,22 @@ pub fn read_hat2<R: Read>(reader: R) -> Result<Hat2Matrix, IoError> {
     // Line 3: scaled max (informational, we don't need it)
     lines.next().ok_or(IoError::Hat2Format("missing max line".into()))??;
 
-    // Lines 4..4+nseq: "   N. name"
+    // Lines 4..4+nseq: "   N. =name" or "   N. name".
     let mut names = Vec::with_capacity(nseq);
     for _ in 0..nseq {
         let line = lines
             .next()
             .ok_or(IoError::Hat2Format("truncated name section".into()))??;
-        // Format: "   1. sequence_name" -- extract everything after ". "
-        let name = if let Some(pos) = line.find(". ") {
-            line[pos + 2..].to_string()
+        // Format: "   1. <name>". C MAFFT prepends `=` to every name on
+        // FASTA read (`io.c:1513,1547,...`), so the disk form is
+        // typically "   1. =name". Strip the `. ` separator first, then
+        // the leading `=` so callers get the user-facing name back.
+        let raw = if let Some(pos) = line.find(". ") {
+            &line[pos + 2..]
         } else {
-            line.trim().to_string()
+            line.trim_start()
         };
+        let name = raw.strip_prefix('=').unwrap_or(raw).to_string();
         names.push(name);
     }
 
@@ -130,14 +134,25 @@ pub fn write_hat2<W: Write>(mat: &Hat2Matrix, writer: &mut W) -> Result<(), IoEr
         .cloned()
         .fold(0.0_f64, f64::max);
 
-    // Header
+    // Header. C `io.c:2980-2982` writes:
+    //   fprintf(hat2p, "%5d\n", 1);
+    //   fprintf(hat2p, "%5d\n", locnjob);
+    //   fprintf(hat2p, " %#6.3f\n", max * 2.5);
+    // The third line has a literal leading space PLUS the `%#6.3f`
+    // field (`#` forces a decimal point; width 6 right-aligns a
+    // 5-char value like "4.691" with 1 leading space → total "  4.691").
     writeln!(writer, "    1")?;
     writeln!(writer, "{nseq:5}")?;
-    writeln!(writer, " {:.3}", max_dist * 2.5)?;
+    writeln!(writer, " {:>6.3}", max_dist * 2.5)?;
 
-    // Names
+    // Names. C `io.c:2984` writes `%4d. %s\n` where C prepends an `=`
+    // prefix to every name when reading FASTA (`io.c:1513,1547,...
+    // name[i][0]='='`), so the `=` appears in the output even though
+    // there's no literal `=` in the format string. We mirror that by
+    // inserting `=` between the index dot and the (un-prefixed) name
+    // we hold internally — the on-disk output is the same.
     for (i, name) in mat.names.iter().enumerate() {
-        writeln!(writer, "{:>4}. {name}", i + 1)?;
+        writeln!(writer, "{:>4}. ={name}", i + 1)?;
     }
 
     // Distance values: upper triangle, rows 0..nseq-1

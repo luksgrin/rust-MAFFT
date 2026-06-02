@@ -79,6 +79,11 @@ pub struct MafftEngine {
     /// cost: `penalty_shift = (int)(spfactor * penalty)`. Default 2.0
     /// (the C `--allowshift` baseline). `None` keeps the default.
     pub shift_penalty_factor: Option<f64>,
+    /// `--minimumweight` floor applied to per-sequence weights in the
+    /// intergroup-score accumulation. Threaded into
+    /// `RefinementParams.minimum_weight`. `None` keeps the C default
+    /// (`0.00001`).
+    pub minimum_weight: Option<f64>,
     /// Disable FFT: force pure DP for all alignment steps.
     pub nofft: bool,
     /// Enable long-range gap shift penalty (--allowshift). In MAFFT 7.526 the
@@ -162,6 +167,7 @@ impl Default for MafftEngine {
             pair_gep: None,
             pair_gexp: None,
             shift_penalty_factor: None,
+            minimum_weight: None,
             nofft: false,
             allowshift: false,
             unalign_level: 0.0,
@@ -186,7 +192,7 @@ impl MafftEngine {
             gap_open: None, gap_offset: None, gap_extend: None,
             pair_lop: None, pair_lep: None, pair_lexp: None,
             pair_gop: None, pair_gep: None, pair_gexp: None,
-            shift_penalty_factor: None,
+            shift_penalty_factor: None, minimum_weight: None,
             nofft: false, allowshift: false, unalign_level: 0.0,
             kimura_r: None, parttree: false, dpparttree: false,
             groupsize: None, reorder_output: false, treein_path: None,
@@ -621,7 +627,7 @@ impl MafftEngine {
             sequences: sequences.clone(),
             names: names.clone(),
             score: 0.0,
-            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         };
         let mut accumulated_trace = Vec::new();
         let penalty_dist = scoring.gap.open;
@@ -979,6 +985,7 @@ impl MafftEngine {
                     // (it needs `spfactor < 10`, which `--unalignlevel` alone
                     // does not set).
                     unalign_level: self.unalign_level,
+                    minimum_weight: self.minimum_weight.unwrap_or(0.00001),
                     ..Default::default()
                 };
                 // C `dvtditr.c:882` switches to segmented refinement (split
@@ -1086,6 +1093,14 @@ impl MafftEngine {
         // and `--parttree --reorder` both need C MAFFT's `pre_1` to
         // reproduce CALL 2's tree / order generation.
         msa.first_pass_sequences = first_pass_msa;
+        // Expose the (post-musclesupg) distance matrix used by the
+        // progressive merge. `--distout` writes this to `<input>.hat2`,
+        // and `--scoreout` derives the unweighted SP score from it.
+        // Empty / None for paths that didn't compute a full dm
+        // (PartTree, `--treein` with a user tree, etc.).
+        if dm.nseq == nseq && dm.nseq > 0 {
+            msa.distance_matrix = Some(dm.clone());
+        }
 
         msa
     }
@@ -1143,7 +1158,7 @@ impl MafftEngine {
             sequences: existing_input.sequences.iter().map(|s| s.data.clone()).collect(),
             names: existing_input.sequences.iter().map(|s| s.name.clone()).collect(),
             score: 0.0,
-            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         };
 
         let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();

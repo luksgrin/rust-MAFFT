@@ -55,6 +55,12 @@ pub struct RefinementParams {
     /// distance-binned matrices (the `_variousdist` multi-matrix DP).
     /// 0.0 = disabled (single matrix).
     pub unalign_level: f64,
+    /// Floor for per-sequence weights in the intergroup-score
+    /// accumulation. Mirrors C's `tbfast -W $minimumweight`
+    /// (`scripts/mafft:1029` / default 0.00001). Sequences with weight
+    /// below this floor get clamped up. Set to the C default if not
+    /// otherwise overridden by `--minimumweight`.
+    pub minimum_weight: f64,
 }
 
 impl Default for RefinementParams {
@@ -66,6 +72,7 @@ impl Default for RefinementParams {
             legacy_gap_cost: false,
             shift: None,
             unalign_level: 0.0,
+            minimum_weight: 0.00001,
         }
     }
 }
@@ -242,10 +249,11 @@ pub fn iterative_refine(
 
                 // Group-local sum-1 normalized weights (matches C's
                 // fastconjuction_noname). Used both for `compute_impmatch_diagonal`
-                // and any future per-cluster averaging.
-                const MIN_W: f64 = 0.00001;
-                let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MIN_W)).collect();
-                let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MIN_W)).collect();
+                // and any future per-cluster averaging. Floor is C's
+                // `minimumweight` (`scripts/mafft:1029`, overridable via
+                // `--minimumweight`).
+                let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(params.minimum_weight)).collect();
+                let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(params.minimum_weight)).collect();
                 let s1w: f64 = w1.iter().sum();
                 let s2w: f64 = w2.iter().sum();
                 let w1n: Vec<f64> = if s1w > 0.0 { w1.iter().map(|w| w / s1w).collect() } else { vec![1.0; group1.len()] };
@@ -256,6 +264,7 @@ pub fn iterative_refine(
                 // over the current alignment's columns). We compute the same.
                 let old_sub = compute_split_score(
                     group1, group2, &alignment.sequences, &weights, scoring,
+                    params.minimum_weight,
                 );
                 let old_imp = if let Some(lh) = constraints {
                     compute_impmatch_diagonal(
@@ -281,6 +290,7 @@ pub fn iterative_refine(
                 let new_seqs = realign_all(
                     group1, group2, &alignment.sequences, &weights, scoring, &gap,
                     constraints, params.use_fft, mm_input.as_ref(),
+                    params.minimum_weight,
                 );
 
                 if let Some((new_seqs, _new_score, dp_impmatch)) = new_seqs {
@@ -313,6 +323,7 @@ pub fn iterative_refine(
                         // intergroup score + new alignment's impmatch.
                         let new_sub = compute_split_score(
                             group1, group2, &new_seqs, &weights, scoring,
+                            params.minimum_weight,
                         );
                         let new_imp = if let Some(lh) = constraints {
                             // Prefer the impmatch accumulated DURING the
@@ -446,6 +457,7 @@ fn realign_all(
     constraints: Option<&LocalHomologyTable>,
     use_fft: bool,
     mm_input: Option<&MultiMtxInput>,
+    min_weight: f64,
 ) -> Option<(Vec<Vec<u8>>, f64, Option<f64>)> {
     let width = sequences[0].len();
 
@@ -455,11 +467,11 @@ fn realign_all(
     let kept1: Vec<usize> = (0..width).filter(|&c| !gap1[c]).collect();
     let kept2: Vec<usize> = (0..width).filter(|&c| !gap2[c]).collect();
 
-    // C clamps per-sequence weights to minimumweight (0.00001 from mafft script,
-    // applied in fastconjuction_noname at tddis.c line 548).
-    const MINIMUM_WEIGHT: f64 = 0.00001;
-    let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
-    let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
+    // C clamps per-sequence weights to `minimumweight` (default 0.00001
+    // from `scripts/mafft:1029`, overridable via `--minimumweight`).
+    // Applied in `fastconjuction_noname` at `tddis.c:548`.
+    let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(min_weight)).collect();
+    let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(min_weight)).collect();
     let sum1: f64 = w1.iter().sum();
     let sum2: f64 = w2.iter().sum();
     let w1n: Vec<f64> = if sum1 > 0.0 { w1.iter().map(|w| w / sum1).collect() } else { vec![1.0; group1.len()] };
@@ -1362,13 +1374,15 @@ fn compute_split_score(
     sequences: &[Vec<u8>],
     weights: &[f64],
     scoring: &ScoringContext,
+    min_weight: f64,
 ) -> f64 {
     // Port of C's intergroup_score flow: weights are per-group normalized
     // by fastconjuction_noname (tddis.c line 548) before being passed.
     // Apply the same normalization here: each group's weights sum to 1.0.
-    const MINIMUM_WEIGHT: f64 = 0.00001;
-    let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
-    let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(MINIMUM_WEIGHT)).collect();
+    // `min_weight` is C's `minimumweight` (default 0.00001, overridable
+    // via `--minimumweight`).
+    let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(min_weight)).collect();
+    let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(min_weight)).collect();
     let s1: f64 = w1.iter().sum();
     let s2: f64 = w2.iter().sum();
     let w1n: Vec<f64> = if s1 > 0.0 { w1.iter().map(|w| w / s1).collect() } else { vec![1.0; group1.len()] };
@@ -1596,7 +1610,7 @@ pub fn segmented_iterative_refine(
             score: 0.0,
             step_trace: Vec::new(),
             guide_tree: None,
-            first_pass_sequences: None,
+            first_pass_sequences: None, distance_matrix: None,
         };
 
         let iters = iterative_refine(&mut seg_msa, topology, scoring, params, constraints);

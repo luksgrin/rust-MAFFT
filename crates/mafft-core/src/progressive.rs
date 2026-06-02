@@ -82,6 +82,13 @@ pub struct MultipleAlignment {
     /// here so the CLI can replay CALL 2's tree generation on the right
     /// input.
     pub first_pass_sequences: Option<Vec<Vec<u8>>>,
+    /// Pairwise distance matrix used by the engine for guide-tree
+    /// construction. Populated when the engine knows callers will need
+    /// it — currently `--distout` (writes `<input>.hat2`) and
+    /// `--scoreout` (computes the unweighted SP score). `None` for
+    /// paths that skip it (PartTree, --treein with a user-supplied
+    /// tree, tests building a MultipleAlignment directly).
+    pub distance_matrix: Option<mafft_tree::DistanceMatrix>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -214,12 +221,12 @@ pub fn progressive_align_with_mergeoralign_n(
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
-            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         };
     }
     if nseq == 1 {
         return MultipleAlignment {
-            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         };
     }
 
@@ -460,7 +467,7 @@ pub fn progressive_align_with_mergeoralign_n(
 
     MultipleAlignment {
         sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
-        guide_tree: None, first_pass_sequences: None,
+        guide_tree: None, first_pass_sequences: None, distance_matrix: None,
     }
 }
 
@@ -729,12 +736,12 @@ pub fn progressive_align_full_c_compat_ex(
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
-            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+            sequences: Vec::new(), names: Vec::new(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         };
     }
     if nseq == 1 {
         return MultipleAlignment {
-            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None,
+            sequences: sequences.to_vec(), names: names.to_vec(), score: 0.0, step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         };
     }
 
@@ -891,7 +898,7 @@ pub fn progressive_align_full_c_compat_ex(
 
     MultipleAlignment {
         sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
-        guide_tree: None, first_pass_sequences: None,
+        guide_tree: None, first_pass_sequences: None, distance_matrix: None,
     }
 }
 

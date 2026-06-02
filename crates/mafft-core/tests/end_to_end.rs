@@ -2634,3 +2634,126 @@ fn retree_3_einsi_byte_identical_to_c() {
     let msa = run_retree_engine(AlignmentMode::EInsi { iterations: 0 }, 3, "sample");
     assert_byte_equal_to_ref(&msa, "sample.retree3.einsi", "--retree 3 --genafpair");
 }
+
+// ===============================================================
+// Upstream-fixture regression tests (closes TODO gap "Upstream test
+// fixtures unreferenced"). These read the C-reference outputs C
+// MAFFT ships in `mafft-upstream/test/` and diff our engine's
+// output against them. Catches the case where upstream ships a new
+// MAFFT version with subtly different reference outputs — without
+// these, our existing `tests/fixtures/*` copies would silently
+// drift out of sync with upstream's committed expectations.
+
+fn assert_byte_equal_to_upstream_ref(
+    msa: &mafft_core::MultipleAlignment,
+    upstream_path: &str,
+    label: &str,
+) {
+    let c_ref = read_fasta(test_data_path(upstream_path))
+        .unwrap_or_else(|_| panic!("missing upstream fixture {upstream_path}"));
+    assert_eq!(msa.nseq(), c_ref.nseq(), "{label}: nseq mismatch");
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "{label}: seq {i} differs from upstream {upstream_path}",
+        );
+    }
+}
+
+/// G-INS-1 byte-identical to upstream `sample.gins1`.
+/// Reference: `mafft-upstream/test/sample.gins1`
+/// = `mafft --globalpair --maxiterate 0 mafft-upstream/test/sample`.
+#[test]
+fn upstream_sample_gins1_byte_identical() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::GInsi { iterations: 0 }).align(&input);
+    assert_byte_equal_to_upstream_ref(&msa, "sample.gins1", "upstream G-INS-1");
+}
+
+/// L-INS-1 byte-identical to upstream `sample.lins1`.
+/// Reference: `mafft-upstream/test/sample.lins1`
+/// = `mafft --localpair --maxiterate 0 mafft-upstream/test/sample`.
+#[test]
+fn upstream_sample_lins1_byte_identical() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 0 }).align(&input);
+    assert_byte_equal_to_upstream_ref(&msa, "sample.lins1", "upstream L-INS-1");
+}
+
+/// PartTree byte-identical to upstream `sample.parttree`.
+/// Reference: `mafft-upstream/test/sample.parttree`
+/// = `mafft --parttree mafft-upstream/test/sample` (no --reorder).
+#[test]
+fn upstream_sample_parttree_byte_identical() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.parttree = true;
+    let msa = engine.align(&input);
+    assert_byte_equal_to_upstream_ref(&msa, "sample.parttree", "upstream PartTree");
+}
+
+/// DP-PartTree byte-identical to upstream `sample.dpparttree`.
+/// Reference: `mafft-upstream/test/sample.dpparttree`
+/// = `mafft --dpparttree mafft-upstream/test/sample` (no --reorder).
+#[test]
+fn upstream_sample_dpparttree_byte_identical() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.dpparttree = true;
+    let msa = engine.align(&input);
+    assert_byte_equal_to_upstream_ref(&msa, "sample.dpparttree", "upstream DP-PartTree");
+}
+
+/// Sanity-read the upstream hat2 distance-matrix fixture and verify
+/// its structural invariants. We don't yet emit hat2 ourselves
+/// (`--distout` is TODO gap #4), so this is read-only — but it
+/// regression-guards the hat2 parser against an upstream format
+/// change. Reference: `mafft-upstream/test/sample.hat2`
+/// (= `mafft --distout sample` would produce this).
+#[test]
+fn upstream_sample_hat2_parses() {
+    use mafft_io::read_hat2;
+    use std::fs::File;
+    use std::io::BufReader;
+    let f = File::open(test_data_path("sample.hat2"))
+        .expect("missing upstream sample.hat2");
+    let m = read_hat2(BufReader::new(f))
+        .expect("upstream sample.hat2 parser failure");
+    let n = m.nseq();
+    // sample has 36 sequences → 36×36 (symmetric) distance matrix.
+    assert_eq!(n, 36, "expected 36 seqs in sample.hat2");
+    // Self-distances must be 0.0.
+    for i in 0..n {
+        assert_eq!(m.get(i, i), 0.0, "diagonal not zero at i={i}");
+    }
+    // Off-diagonal distances must be non-negative and finite.
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let d = m.get(i, j);
+            assert!(d.is_finite() && d >= 0.0, "bad distance at ({i},{j}): {d}");
+        }
+    }
+}
+
+/// Q-INS-i byte-identical to upstream `samplerna.qinsi`. Requires
+/// `mxscarnamod` in PATH (built from `mafft-upstream/extensions/`).
+/// Ignored by default; run via `cargo test -- --ignored` once the
+/// binary is installed.
+#[test]
+#[ignore = "Q-INS-i requires mxscarnamod from mafft-upstream/extensions"]
+fn upstream_samplerna_qinsi_byte_identical() {
+    let input = read_fasta(test_data_path("samplerna")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::QInsi { iterations: 1000 }).align(&input);
+    assert_byte_equal_to_upstream_ref(&msa, "samplerna.qinsi", "upstream Q-INS-i");
+}
+
+/// X-INS-i byte-identical to upstream `samplerna.xinsi`. Requires
+/// Stanford CONTRAfold v2.02+ in PATH. Ignored by default; run via
+/// `cargo test -- --ignored` once the binary is installed.
+#[test]
+#[ignore = "X-INS-i requires CONTRAfold v2.02+ (Stanford)"]
+fn upstream_samplerna_xinsi_byte_identical() {
+    let input = read_fasta(test_data_path("samplerna")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::XInsi { iterations: 1000 }).align(&input);
+    assert_byte_equal_to_upstream_ref(&msa, "samplerna.xinsi", "upstream X-INS-i");
+}
