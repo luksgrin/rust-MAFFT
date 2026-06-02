@@ -129,19 +129,44 @@ could plausibly bite a user.
 The following are known gaps that have not been actioned. None block
 the 1930/1930 BALIBASE parity or any documented user workflow.
 
-1. **DNA strand auto-detection not exposed.** C's
-   `--adjustdirection` / `--adjustdirectionaccurately` reverse-
-   complement sequences predicted to be on the opposite strand
-   before alignment. We support neither flag. Affects DNA users
-   only; protein workflows unaffected.
-2. **Tree-linkage variants not exposed.** C lets you choose between
-   `--averagelinkage` (default in some modes), `--minimumlinkage`,
-   `--mixedlinkage`, `--youngestlinkage`. We ship the C default and
-   don't expose the alternatives.
-3. **Iteration-strategy variants not exposed.** C's `--bestfirst`,
-   `--simplehillclimbing`, `--skipiterate`, `--oneiteration` knobs
-   are not surfaced. We use the C default ("randomchain"-style group
-   selection).
+1. **DNA strand auto-detection — wired as no-op stub.** Both
+   `--adjustdirection` and `--adjustdirectionaccurately` accept at
+   the CLI with an honest "not yet implemented" stderr note. The
+   k-mer-based detection algorithm itself (port of C's
+   `makedirectionlist.c`, ~1300 LOC) is tracked as research item
+   R-5 below. Affects DNA users only; protein workflows
+   unaffected.
+2. **Tree-linkage variants — partially exposed.** Three of the four
+   C tree-linkage flags are now wired and byte-identical to C MAFFT:
+   - **`--averagelinkage`** (sueff = 1.0), **`--minimumlinkage`**
+     (sueff = 0.0), **`--mixedlinkage F`** (sueff = F) all route to
+     the existing `mafft_tree::ClusterMethod::Mix` infrastructure
+     via `MafftEngine.cluster_method`. Verified byte-identical to C
+     across 9 linkage × mode combinations (default / FFT-NS-i /
+     L-INS-i × each linkage flag).
+   - **`--youngestlinkage`** is a separate algorithm in C
+     (`treeext="youngestlinkage"`, not a sueff value); accepted at
+     the CLI as a no-op with a warning. Porting the youngest-
+     linkage algorithm is an open item.
+3. **Iteration-strategy variants — partially exposed.** All four
+   C iteration-strategy flags now have CLI args. Status:
+   - **`--simplehillclimbing`** — FULLY HANDLED. Matches C's
+     `parallelizationstrategy=BAATARI2`, which is the default in
+     both C MAFFT and mafft-rs, so the flag is a true no-op
+     (byte-identical to C with or without it).
+   - **`--bestfirst`** — WIRED, no-op. C's `BESTFIRST` strategy
+     refines branches in score-order (best-first) rather than the
+     BAATARI2 hill-climbing default. Porting requires restructuring
+     the refinement loop to pre-score all branches per iteration.
+     See R-2 below.
+   - **`--skipiterate F`** — WIRED, no-op. C's `dvtditr -E
+     $fixthreshold` skips branches whose distance-from-tip exceeds
+     F. Porting requires adding the branch-skip gate to the
+     refinement loop. See R-3 below.
+   - **`--oneiteration`** — WIRED, no-op. C's `disttbfast -r`
+     forces a single iteration of distance recomputation. Our
+     distance recomputation is already gated by `--retree`; the
+     interaction needs investigation before mapping. See R-4 below.
 4. **Auxiliary output formats — partially exposed.** All six C
    MAFFT 7.526 aux-output flags now have CLI args. Status:
    - **`--distout`** — FULLY IMPLEMENTED. Writes the engine's
@@ -240,3 +265,84 @@ R-1. **`--exp` at aggressive values diverges from C on FFT-NS-i
    first row where they diverge; identify the missing increment or
    sign mismatch. Workaround: keep `--exp` ≤ 0.1 for FFT-NS-i runs
    that need byte-identity with C.
+
+R-2. **`--bestfirst` refinement strategy not implemented.** Surfaced
+   while wiring iteration-strategy flags. C's `BESTFIRST`
+   (`parallelizationstrategy=BESTFIRST` →
+   `dvtditr -p BESTFIRST`) restructures the iterative-refinement
+   loop: instead of BAATARI2's hill-climbing (refine each branch
+   sequentially, accept improvements as found), BESTFIRST scores
+   every branch first, sorts by score, then refines them in
+   score-order until no improvement. Porting requires (a)
+   surfacing per-branch baseline scores BEFORE attempting any
+   merge, (b) sorting branches by descending score per iteration,
+   (c) a second pass to actually refine in that order. Existing
+   refinement loop in `refinement.rs::iterative_refine` walks
+   branches in topology order (matching BAATARI2). **To
+   investigate:** add a `RefinementStrategy` enum to
+   `RefinementParams`; implement the BESTFIRST path as a separate
+   loop that pre-scores then re-orders; verify byte-identity
+   against C with `--bestfirst` on the 36-seq sample.
+
+R-3. **`--skipiterate F` branch-skip gate not implemented.**
+   Surfaced while wiring iteration-strategy flags. C's `dvtditr
+   -E $fixthreshold` skips refining branches where
+   `distFromABranch > F`. Conceptually a single conditional
+   inside the per-branch refinement loop. **To investigate:** add
+   `fix_threshold: Option<f64>` to `RefinementParams`; in
+   `iterative_refine`, compute `dist_from_a_branch` (already
+   exists for `--allowshift`) and skip if `> fix_threshold`;
+   verify byte-identity against C with `--skipiterate 0.5`.
+
+R-4. **`--oneiteration` interaction with `--retree` not yet
+   mapped.** Surfaced while wiring iteration-strategy flags. C's
+   `disttbfast -r` forces a single distance-recomputation
+   iteration. We already gate distance-recompute on `--retree`,
+   so the relationship between `--oneiteration` and `--retree` in
+   our engine needs investigation before wiring. **To investigate:**
+   build a small fixture where C `--oneiteration` and C
+   `--retree 1` produce different outputs; if they're identical
+   for the inputs we care about, document `--oneiteration` as a
+   `--retree 1` alias; otherwise port the `-r` semantics
+   specifically.
+
+R-5. **DNA strand auto-detection (`--adjustdirection` /
+   `--adjustdirectionaccurately`) not yet implemented.** Surfaced
+   while wiring gap #1. C MAFFT's strand-detection lives in
+   `mafft-upstream/core/makedirectionlist.c` (~1300 LOC) +
+   `setdirection.c` (~213 LOC). Algorithm sketch:
+   - For each input DNA sequence, build 6-mer count tables for
+     both forward orientation and reverse-complement.
+   - Compare each sequence against a reference (the longest or
+     most-conserved among the first `reflim` sequences) using
+     k-mer-derived similarity in both orientations.
+   - If the reverse-complement scores higher, mark the sequence
+     to be flipped and prepend `_R_` to its name in the output.
+   - `--adjustdirectionaccurately` (mode=2) uses `-r 100` (only
+     100 reference sequences) and `-d` (more accurate DP-based
+     scoring); `--adjustdirection` (mode=1) uses `-r 5000` and
+     the faster k-mer-only path.
+   - `setdirection` then walks the `_direction` file and applies
+     the orientation flip in place (reverse + complement the
+     residues).
+   **To investigate / port:**
+   1. Implement `reverse_complement` and `kmer_count` helpers in
+      a new `mafft-tree/src/direction.rs` (k-mer infrastructure
+      already exists for the existing ktuple distance code).
+   2. Pick a reference: longest sequence is a fine first cut;
+      C's `contrastsort` reference selection is a refinement
+      we can defer.
+   3. For each non-reference sequence, compute
+      `cosine_similarity(kmer_fwd, kmer_ref)` and
+      `cosine_similarity(kmer_rc, kmer_ref)`. If RC > FWD by a
+      threshold (`-t 0.00` in C = always flip when RC better),
+      mark for reversal.
+   4. In `main.rs` (after read, before align), if any sequence
+      is flagged, replace it with its reverse-complement and
+      prepend `_R_` to the name.
+   5. Validate byte-identity against C on a synthetic input
+      with mixed orientations. Note that C's reference-selection
+      and per-pair scoring is intricate enough that exact byte
+      identity will likely require iterative refinement of the
+      port; a "produces same final orientation choice" guarantee
+      is the realistic first milestone.

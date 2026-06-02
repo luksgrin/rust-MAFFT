@@ -84,6 +84,14 @@ pub struct MafftEngine {
     /// `RefinementParams.minimum_weight`. `None` keeps the C default
     /// (`0.00001`).
     pub minimum_weight: Option<f64>,
+    /// Tree-linkage method for UPGMA cluster joining. Mirrors C's
+    /// `tbfast -X $sueff` (`scripts/mafft:264,419,422,427`). Default
+    /// = `Mix { sueff: 0.1 }` (C default). `--averagelinkage` →
+    /// `Mix { sueff: 1.0 }` ≡ `Average`; `--minimumlinkage` → `Mix
+    /// { sueff: 0.0 }` ≡ `Minimum`; `--mixedlinkage F` → `Mix { sueff:
+    /// F }`. C's `--youngestlinkage` is a separate algorithm and is
+    /// NOT covered by this field (see `TODO.md`).
+    pub cluster_method: mafft_tree::ClusterMethod,
     /// Disable FFT: force pure DP for all alignment steps.
     pub nofft: bool,
     /// Enable long-range gap shift penalty (--allowshift). In MAFFT 7.526 the
@@ -168,6 +176,7 @@ impl Default for MafftEngine {
             pair_gexp: None,
             shift_penalty_factor: None,
             minimum_weight: None,
+            cluster_method: mafft_tree::ClusterMethod::default(),
             nofft: false,
             allowshift: false,
             unalign_level: 0.0,
@@ -193,6 +202,7 @@ impl MafftEngine {
             pair_lop: None, pair_lep: None, pair_lexp: None,
             pair_gop: None, pair_gep: None, pair_gexp: None,
             shift_penalty_factor: None, minimum_weight: None,
+            cluster_method: mafft_tree::ClusterMethod::default(),
             nofft: false, allowshift: false, unalign_level: 0.0,
             kimura_r: None, parttree: false, dpparttree: false,
             groupsize: None, reorder_output: false, treein_path: None,
@@ -583,7 +593,7 @@ impl MafftEngine {
             //
             // With `--treein`, C uses the loaded user tree for both phases.
             let initial_topo = user_topo.clone()
-                .unwrap_or_else(|| musclesupg(&dm, ClusterMethod::default()));
+                .unwrap_or_else(|| musclesupg(&dm, self.cluster_method));
             let weights = mafft_tree::sequence_weights(&initial_topo);
             let seq_refs: Vec<&[u8]> = input.sequences.iter()
                 .map(|s| s.data.as_slice()).collect();
@@ -686,7 +696,7 @@ impl MafftEngine {
             } else if pass == 0 && use_parttree {
                 parttree_topo.clone().unwrap()
             } else {
-                musclesupg(&dm, ClusterMethod::default())
+                musclesupg(&dm, self.cluster_method)
             };
 
             // C always progresses from raw input on each retree pass.
@@ -944,7 +954,7 @@ impl MafftEngine {
                 let topo = if let Some(ref t) = user_topo {
                     t.clone()
                 } else {
-                    musclesupg(&dm, ClusterMethod::default())
+                    musclesupg(&dm, self.cluster_method)
                 };
                 // C's `--treeout` writes the refinement tree built inside
                 // `dvtditr` (not the progressive tbfast tree). Override

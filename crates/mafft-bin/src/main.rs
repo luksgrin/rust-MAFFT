@@ -285,6 +285,78 @@ struct Args {
     #[arg(long)]
     originalseqonly: bool,
 
+    /// Use pure average linkage for UPGMA cluster joining (sueff = 1.0,
+    /// matches C `--averagelinkage` / `tbfast -X 1.0`). Mutually
+    /// exclusive with `--minimumlinkage` and `--mixedlinkage`.
+    #[arg(long, conflicts_with_all = ["minimumlinkage", "mixedlinkage"])]
+    averagelinkage: bool,
+
+    /// Use pure single-linkage (minimum) for UPGMA cluster joining
+    /// (sueff = 0.0, matches C `--minimumlinkage` / `tbfast -X 0.0`).
+    #[arg(long, conflicts_with_all = ["averagelinkage", "mixedlinkage"])]
+    minimumlinkage: bool,
+
+    /// Use a weighted mix of minimum and average linkage for UPGMA
+    /// cluster joining (`--mixedlinkage F` → sueff = F, matches C
+    /// `tbfast -X F`). Range 0.0–1.0. The C default is 0.1; this
+    /// flag is for explicit overrides.
+    #[arg(long, value_name = "F", conflicts_with_all = ["averagelinkage", "minimumlinkage"])]
+    mixedlinkage: Option<f64>,
+
+    /// Use the "youngest" linkage scheme (matches C
+    /// `--youngestlinkage`). C's `youngestlinkage` is a separate
+    /// algorithm, not just a `sueff` value, and is NOT yet ported.
+    /// Flag accepted as a no-op for compatibility. See `TODO.md`.
+    #[arg(long)]
+    youngestlinkage: bool,
+
+    /// Use C MAFFT's `BESTFIRST` parallelisation strategy for
+    /// iterative refinement — score every branch first, then refine
+    /// in score-order. Default is `BAATARI2` (simple hill climbing).
+    /// Currently accepted as a no-op; the BESTFIRST refinement loop
+    /// architecture is a separate port. See `TODO.md`.
+    #[arg(long)]
+    bestfirst: bool,
+
+    /// Use the simple hill-climbing refinement strategy (matches C
+    /// `--simplehillclimbing` → `parallelizationstrategy=BAATARI2`).
+    /// This IS the default in both C MAFFT and mafft-rs, so the flag
+    /// is a true no-op except when overriding a prior `--bestfirst`.
+    #[arg(long)]
+    simplehillclimbing: bool,
+
+    /// Skip refinement of branches whose distance-from-tip exceeds F
+    /// (matches C `--skipiterate F` → `dvtditr -E $fixthreshold`).
+    /// Currently accepted as a no-op; the branch-skip gate is not
+    /// yet wired into the refinement loop. See `TODO.md`.
+    #[arg(long, value_name = "F", allow_hyphen_values = true)]
+    skipiterate: Option<f64>,
+
+    /// Run only one iteration of the disttbfast distance refinement
+    /// (matches C `--oneiteration` → `disttbfast -r`). Currently
+    /// accepted as a no-op; our distance recomputation already
+    /// runs once per retree pass — closer investigation needed
+    /// before forcing a single iteration here. See `TODO.md`.
+    #[arg(long)]
+    oneiteration: bool,
+
+    /// Auto-detect input DNA strand orientation and reverse-complement
+    /// sequences on the wrong strand before alignment (matches C
+    /// `--adjustdirection`). Currently accepted at the CLI but the
+    /// k-mer-based detection algorithm (port of
+    /// `mafft-upstream/core/makedirectionlist.c`) is not yet
+    /// implemented. Affects DNA workflows only; protein inputs
+    /// silently bypass it. See `TODO.md`.
+    #[arg(long)]
+    adjustdirection: bool,
+
+    /// Slower, more accurate variant of `--adjustdirection` (matches
+    /// C `--adjustdirectionaccurately`, internally
+    /// `adjustdirection=2`). Same stub status — not yet
+    /// implemented.
+    #[arg(long, conflicts_with = "adjustdirection")]
+    adjustdirectionaccurately: bool,
+
     /// Use a user-supplied guide tree (matches C MAFFT `--treein FILE`).
     /// FILE must be in MAFFT's internal tree format: nseq-1 lines of
     /// `im jm len0 len1` (1-indexed sequence numbers, im < jm). Convert
@@ -734,6 +806,44 @@ fn main() {
     engine.pair_gep = args.gep;
     engine.pair_gexp = args.gexp;
     engine.minimum_weight = args.minimumweight;
+    // Tree-linkage selection. Default (no override) keeps the engine's
+    // C-matching `Mix { sueff: 0.1 }`. `--averagelinkage` → sueff 1.0
+    // (= Average); `--minimumlinkage` → sueff 0.0 (= Minimum);
+    // `--mixedlinkage F` → sueff F. `--youngestlinkage` is a separate
+    // algorithm (not exposed here, see TODO).
+    if args.averagelinkage {
+        engine.cluster_method = mafft_tree::ClusterMethod::Mix { sueff: 1.0 };
+    } else if args.minimumlinkage {
+        engine.cluster_method = mafft_tree::ClusterMethod::Mix { sueff: 0.0 };
+    } else if let Some(s) = args.mixedlinkage {
+        if !(0.0..=1.0).contains(&s) {
+            eprintln!("The argument of --mixedlinkage must be between 0.0 and 1.0");
+            std::process::exit(1);
+        }
+        engine.cluster_method = mafft_tree::ClusterMethod::Mix { sueff: s };
+    }
+    if args.youngestlinkage && !args.quiet {
+        eprintln!("Note: --youngestlinkage is not yet implemented (using default linkage)");
+    }
+    // Iteration-strategy stubs (gap #3 in TODO.md). All accepted at
+    // the CLI for compatibility; the actual algorithm changes are
+    // tracked separately. `--simplehillclimbing` is a TRUE no-op
+    // (matches the default in both C MAFFT and us), so emit no note.
+    if args.bestfirst && !args.quiet {
+        eprintln!("Note: --bestfirst is not yet implemented (using default BAATARI2 hill-climbing)");
+    }
+    if args.skipiterate.is_some() && !args.quiet {
+        eprintln!("Note: --skipiterate is not yet implemented (no branches will be skipped)");
+    }
+    if args.oneiteration && !args.quiet {
+        eprintln!("Note: --oneiteration is not yet implemented (using default distance recomputation)");
+    }
+    if (args.adjustdirection || args.adjustdirectionaccurately) && !args.quiet {
+        eprintln!(
+            "Note: --adjustdirection / --adjustdirectionaccurately is not yet implemented \
+             (sequences will be aligned in input orientation; see TODO.md R-5)"
+        );
+    }
     if let Some(bl) = args.bl {
         engine = engine.with_scoring_model(ScoringModel::Blosum(bl));
     }
