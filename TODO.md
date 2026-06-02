@@ -256,13 +256,16 @@ across measured inputs. Final timings (alternating runs, median):
 
 | Input | Size | C MAFFT 7.526 | mafft-rs (post-fix) | Δ vs C |
 |-------|------|---------------|---------------------|--------|
-| `mafft-upstream/test/sample` | 36 seqs / mixed | 0.756s | 0.738s | **rust 2.4 % faster** |
-| BB12019 | 5 seqs / 529 cols | 0.302s | 0.205s | **rust 32 % faster** |
-| BB30004 | 50 seqs / 383 cols | 1.344s | 1.381s | rust 2.8 % slower (within noise) |
+| `mafft-upstream/test/sample` (FFT-NS-i)    | 36 seqs / mixed   | 0.767s | 0.737s | **rust 4 % faster** |
+| `mafft-upstream/test/sample` (`--allowshift --globalpair --maxiterate 1000`) | 36 seqs / mixed   | 2.56s  | 1.73s  | **rust 32 % faster** |
+| BB12019 (FFT-NS-i)                         | 5 seqs / 529 cols | 0.302s | 0.205s | **rust 32 % faster** |
+| BB30004 (FFT-NS-i)                         | 50 seqs / 383 cols| 1.370s | 1.384s | rust 1 % slower (within noise) |
 
-Pre-fix baseline this session was rust 0.784s / 0.302s / 1.502s on the
-same three inputs — so the change landed ~6 % / ~32 % / ~9 % wins on
-top of the prior already-optimised state.
+Pre-fix baseline this session was rust 0.784s / N/A / 0.302s / 1.502s on the
+same four configurations — so the inner-loop pass + warp-state gating
+landed ~6 % / new-data / ~32 % / ~8 % wins on top of the prior
+already-optimised state. The `--allowshift` number is a new high-water
+mark for the warp DP path itself.
 
 **What landed** (`crates/mafft-align/src/profile.rs`, the inner j-loop
 of `profile_align_imp_multimtx`):
@@ -284,6 +287,17 @@ of `profile_align_imp_multimtx`):
    `mpj`, `previousw`, `currentw` to fixed-lifetime locals (`prof2_ngf`,
    `ogcp2_s`, …) so the compiler sees a slice with a known length-bound
    in concert with the `get_unchecked` calls.
+4. **Warp-state allocation gated on `try_warp`**. The six warp buffers
+   (`wmrecords`, `prevwmrecords`, `warpi`, `warpj`, `prevwarpi`,
+   `prevwarpj`) are now allocated only when `gap.shift.is_some()`. When
+   warp is off (the FFT-NS-i / L/G/E-INS-i default) the function skips
+   6 × (m+1) × {8|4}-byte allocs + memsets per DP call. The inner-loop
+   `get_unchecked` accesses inside `if try_warp { ... }` are statically
+   gated and never execute on the empty-Vec branch (which would be UB
+   otherwise). For BB30004 (~thousands of DP calls per refinement
+   sweep) this closes ~half the residual gap; for the warp-on case
+   (`--allowshift`) it is no-cost — same number of allocs as before,
+   just done via `vec![...; m+1]` inside the `try_warp == true` branch.
 
 The change preserves byte-identity to C MAFFT 7.526 on every regression
 fixture: 90/90 `end_to_end` tests pass (including

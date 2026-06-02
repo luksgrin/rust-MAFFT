@@ -436,9 +436,10 @@ Benchmark snapshot vs C MAFFT 7.526 (2026-06-02, macOS arm64):
 | Mode / input                                | C MAFFT | mafft-rs | Ratio              |
 |---------------------------------------------|---------|----------|--------------------|
 | default FFT-NS-2 (108-seq synthetic)        | 1.34s   | 1.16s    | **rust 1.16× faster** |
-| `--maxiterate 100` FFT-NS-i (36-seq sample) | 0.756s  | 0.738s   | **rust 1.02× faster** |
+| `--maxiterate 100` FFT-NS-i (36-seq sample) | 0.767s  | 0.737s   | **rust 1.04× faster** |
 | `--maxiterate 100` FFT-NS-i (BB12019)       | 0.302s  | 0.205s   | **rust 1.47× faster** |
-| `--maxiterate 100` FFT-NS-i (BB30004)       | 1.344s  | 1.381s   | rust 0.97× (within noise) |
+| `--maxiterate 100` FFT-NS-i (BB30004)       | 1.370s  | 1.384s   | rust 0.99× (within noise) |
+| `--allowshift --globalpair --maxiterate 1000` (36-seq) | 2.56s | 1.73s | **rust 1.48× faster** |
 | `--maxiterate 50 --localpair` (108-seq)     | 37.00s  | 22.93s   | **rust 1.61× faster** |
 | `--maxiterate 50 --globalpair` (108-seq)    | 35.32s  | 22.62s   | **rust 1.56× faster** |
 | `--parttree` (108-seq)                      | 1.70s   | 0.09s    | **rust 18× faster**   |
@@ -446,15 +447,19 @@ Benchmark snapshot vs C MAFFT 7.526 (2026-06-02, macOS arm64):
 
 FFT-NS-i closed 2026-06-02 — Rust is now at-or-better than C across the
 inputs we measure. The closing change was a focused pass over
-`profile_align_imp_multimtx`'s inner j-loop: `unsafe { get_unchecked }`
-on every hot read/write, hoisting of two loop-invariants (`fgcp1[i-1]`,
-`ogcp1[i]`) out of the inner loop, and slice-binding of the
-per-row-constant arrays to fixed-lifetime locals so the compiler can
-prove bounds. Each call site is annotated with the SAFETY invariant
+`profile_align_imp_multimtx`: `unsafe { get_unchecked }` on every hot
+inner-loop read/write, hoisting of two loop-invariants (`fgcp1[i-1]`,
+`ogcp1[i]`) out of the j-loop, slice-binding of the per-row-constant
+arrays to fixed-lifetime locals, and gating the six warp-state buffer
+allocations behind `try_warp` (so FFT-NS-i no longer pays for warp
+setup it never uses; the same gate turned out to be a 1.48× win on
+`--allowshift` itself by trimming setup time of the warp DP path too).
+Each `get_unchecked` call site is annotated with the SAFETY invariant
 that makes it sound. Full details in `TODO.md §C.2`; byte-identity to
 C MAFFT 7.526 was preserved at every step (90/90 end-to-end +
 15/15 cross-validate FFI cell-equality tests pass; direct binary diff
-is 0 on the 36-seq sample, BB12019, and BB30004).
+is 0 on the 36-seq sample for both FFT-NS-i and `--allowshift
+--globalpair --maxiterate 1000`, plus BB30004 and BB12019).
 
 Earlier-flagged §C.1 (per-group gap stripping) is documented as a
 **design choice** rather than deferred work — the modes it would have

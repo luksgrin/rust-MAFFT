@@ -1120,12 +1120,33 @@ pub fn profile_align_imp_multimtx(
     let mut warpjs: Vec<i32> = Vec::new();
     // C uses `AllocateFloatVec` (calloc) → zero-init, then explicitly sets
     // `wmrecords[i] = 0.0` / `prevwmrecords[i] = 0.0` (Salignmm.c:1276-1277).
-    let mut wmrecords: Vec<f64> = vec![0.0; m + 1];
-    let mut prevwmrecords: Vec<f64> = vec![0.0; m + 1];
-    let mut warpi: Vec<i32> = vec![neg_warpbase; m + 1];
-    let mut warpj: Vec<i32> = vec![neg_warpbase; m + 1];
-    let mut prevwarpi: Vec<i32> = vec![neg_warpbase; m + 1];
-    let mut prevwarpj: Vec<i32> = vec![neg_warpbase; m + 1];
+    //
+    // Gate the six warp-state buffer allocations behind `try_warp`. The DP
+    // inner loop reads/writes them only inside `if try_warp { ... }` blocks,
+    // so when warp is disabled (the FFT-NS-i / L/G/E-INS-i default) the
+    // buffers are never touched. Pre-fix this was 6 × (m+1) × {8|4} byte
+    // allocations + memsets *per DP call* — wasted work in the common case.
+    // Skipping them measurably tightens FFT-NS-i on inputs with many
+    // sequences (BB30004 50-seq runs ~thousands of DP calls per refinement
+    // sweep, so a few μs per call adds up to tens of ms total).
+    let (mut wmrecords, mut prevwmrecords, mut warpi, mut warpj,
+         mut prevwarpi, mut prevwarpj): (Vec<f64>, Vec<f64>, Vec<i32>, Vec<i32>, Vec<i32>, Vec<i32>) =
+        if try_warp {
+            (
+                vec![0.0; m + 1],
+                vec![0.0; m + 1],
+                vec![neg_warpbase; m + 1],
+                vec![neg_warpbase; m + 1],
+                vec![neg_warpbase; m + 1],
+                vec![neg_warpbase; m + 1],
+            )
+        } else {
+            // Empty Vecs — never read or written by the inner loop while
+            // `try_warp == false`. The `get_unchecked` accesses inside
+            // `if try_warp { ... }` would be UB on an empty Vec, but they
+            // are statically gated and never executed in this branch.
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        };
 
     // C pads gapfreq1pt[lgth1] = 1.0 and gapfreq2pt[lgth2] = 1.0 (tditeration.c's
     // `for(i=0;i<lgth+1;i++) gapfreq[i] = 1.0 - gapfreq[i];` with calloc'd 0 → 1).
