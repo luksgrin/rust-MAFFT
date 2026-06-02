@@ -1217,14 +1217,23 @@ pub fn profile_align_imp_multimtx(
     }
     if head_gap {
         for i in 1..=n {
-            // FMA throughout: matches C's `gcc -O3` fusion of `a + b*c`.
-            // Without FMA the boundary gap-init drifts by 1-ULP, which
-            // flips DP tie-breaks for flat-landscape matrices (e.g. TM).
-            initverticalw[i] = fgcp1[i - 1].mul_add(
-                gf2_0,
-                ogcp1[0].mul_add(hgf2, initverticalw[i]),
-            );
-            // C `Salignmm.c:1718`: `initverticalw[i] += fpenalty_ex * i;`
+            // C `Salignmm.c:1793`:
+            //   initverticalw[i] += (ogcp1[0]*headgapfreq2 + fgcp1[i-1]*gapfreq2pt[0]);
+            // Apple clang at -O3 with FP_CONTRACT=on lowers this to:
+            //   fmul d3, fgcp1, gapfreq2pt0   ; t1 = fgcp1[i-1] * gf2_0 (plain mul)
+            //   fmadd d0, ogcp1, hgf2, d3     ; t2 = ogcp1[0]*hgf2 + t1 (single FMA)
+            //   fadd d0, initvert, d0         ; initverticalw += t2 (plain add)
+            // The nested-mul_add form `fma(C,D, fma(A,B, init))` differs in
+            // FP rounding from clang's `init + (A*B + C*D)` order — and that
+            // 1-ULP boundary mismatch propagates into refinement DP
+            // tie-breaks when `--exp` is non-zero (which adds a per-row
+            // `fpenalty_ex * i` term that amplifies the drift). Match
+            // clang's order exactly here, identical to the `currentw`
+            // init below.
+            let t1 = fgcp1[i - 1] * gf2_0;
+            let t2 = ogcp1[0].mul_add(hgf2, t1);
+            initverticalw[i] += t2;
+            // C `Salignmm.c:1795`: `initverticalw[i] += fpenalty_ex * i;`
             initverticalw[i] = gap.extend.mul_add(i as f64, initverticalw[i]);
         }
     }

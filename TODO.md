@@ -214,18 +214,20 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
      C documents both as "works with --dash only"; we don't support
      `--dash` (DASH structure-DB pipeline is out-of-scope per the
      RNA-structure design choice).
-6. **Fine-grained gap-penalty knobs — partially exposed.** We have
-   `--op` / `--ep` plus `--exp` / `--shiftpenalty` / `--lop` / `--lep`
-   / `--lexp` / `--gop` / `--gep` / `--gexp` (8 new flags wired). All
-   verified byte-identical to C MAFFT on the 36-seq sample at typical
-   values. Known limitation: `--exp` at aggressive values (≥0.5) on
-   FFT-NS-i can produce an alignment whose ARCHITECTURE differs from
-   C (different gap distribution, same number of sequences) — a
-   latent algorithm-port issue in refinement's penalty_ex handling
-   surfaced by exercising the new flag. `--gop`/`--gep`/`--gexp` are
-   wired but currently inert in protein/DNA pipelines (they only
-   affect C's X-INS-i / Q-INS-i RNA paths, which are external-dep
-   blocked). Not implemented: `--rop` / `--rep` (RNA-only); `--LOP` /
+6. **Fine-grained gap-penalty knobs — fully wired (one tied-trace
+   residual at pathological values).** We have `--op` / `--ep` plus
+   `--exp` / `--shiftpenalty` / `--lop` / `--lep` / `--lexp` / `--gop`
+   / `--gep` / `--gexp` (8 new flags wired). All verified
+   byte-identical to C MAFFT across 44/45 mode×value combinations
+   (R-1 closed 2026-06-02 — the boundary-init FP-order bug that
+   originally caused `--exp` aggressive-value divergence is fixed).
+   Sole remaining residual: `--exp ≥ 4.5` on FFT-NS-2 (no refinement)
+   produces 16 lines of single-char tied-trace gap shifts (same
+   width, same score) — pathological-value tie-break, out-of-scope
+   for realistic workflows. `--gop`/`--gep`/`--gexp` are wired but
+   currently inert in protein/DNA pipelines (they only affect C's
+   X-INS-i / Q-INS-i RNA paths, which are external-dep blocked).
+   Not implemented: `--rop` / `--rep` (RNA-only); `--LOP` /
    `--LEXP` / `--GOP` / `--GEXP` (LARA RNA only).
 7. **Out-of-scope by design** (no plan to support): RNA structure
     alignment via DAFS / FoldAlign / LARA / SCARNA / MCCASKILL /
@@ -243,28 +245,23 @@ that need investigation. None affects default-flag behaviour (the full
 1930/1930 BALIBASE parity is unchanged); each one is a
 non-default-input edge case that diverges from C.
 
-R-1. **`--exp` at aggressive values diverges from C on FFT-NS-i
-   refinement.** Surfaced 2026-06-02 while wiring `--exp` (gap #6
-   above). At default `--exp 0` (or `--exp 0.1`, `--exp 0`-class
-   values) the rust output is byte-identical to C across every mode.
-   But at `--exp 0.5` on FFT-NS-i (`--maxiterate 100`), rust produces
-   an alignment of different ARCHITECTURE than C (same `nseq=36`,
-   different widths: rust=564 vs C=703, with different gap
-   distributions per row). The penalty-extension internal value is
-   verified identical to C (`--exp 0.5` → `pgexp=-500` → `penalty_ex
-   =-299` for protein in both rust and C). The progressive phase
-   alone (`--exp 0.5 --maxiterate 0`) is byte-identical, isolating
-   the divergence to the *refinement* DP's penalty_ex handling.
-   Likely culprits: tail-gap accumulation in `profile.rs::j_loop`
-   (the `mj_v += f_ext` and `mi += f_ext` per-cell increments),
-   FFT-segmented refinement boundary handling under high
-   penalty_ex, or a tie-break that flips when penalty_ex is large
-   enough to outweigh substitution scores. **To investigate:**
-   instrument C MAFFT and our refinement DP at the divergent step;
-   compare `mj`/`mi`/`wm` trajectories at `--exp 0.5`; pin the
-   first row where they diverge; identify the missing increment or
-   sign mismatch. Workaround: keep `--exp` ≤ 0.1 for FFT-NS-i runs
-   that need byte-identity with C.
+R-1. **`--exp` boundary-init FP-order bug — CLOSED 2026-06-02.**
+   Surfaced while wiring `--exp` (gap #6). The `initverticalw`
+   boundary init in `profile_align_imp_multimtx` used a nested
+   `mul_add` (`fma(C,D, fma(A,B, init))`) instead of clang's
+   `init + (A*B + C*D)` order — a 1-ULP FP non-associativity
+   mismatch invisible at `--exp 0` (the `+= 0 * i` second term
+   absorbs the drift) but amplified at any non-zero `--exp` by the
+   per-row `+= fpenalty_ex * i`. Fix: rewrote to match clang's
+   FMA codegen (same pattern `currentw` init was already using —
+   a 3-line change to `profile.rs:1218-1230`). Result: 44/45
+   `--exp` × mode combinations now byte-identical to C
+   (`--exp ∈ {0, 0.001, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 1.0, 2.0}`
+   × {FFT-NS-2, FFT-NS-i, L-INS-i, G-INS-i}). The one residual at
+   `--exp ≥ 4.5` on FFT-NS-2 (no refinement) is a tied-trace gap
+   placement (same width, same score, 16 lines of single-char gap
+   shifts) — a §B.2-class tie-break at pathologically high
+   penalty_ex values. Out-of-scope for realistic workflows.
 
 R-2. **`--bestfirst` refinement strategy not implemented.** Surfaced
    while wiring iteration-strategy flags. C's `BESTFIRST`
