@@ -27,8 +27,8 @@
 | JTT 200 / JTT 100 FFT (`--jtt N`)           | match   | match      | 0          | byte-exact ✓ |
 | TM 100 / TM 200 NW (`--tm N --nofft`)       | match   | match      | 0          | byte-exact ✓ |
 | TM 100 / TM 200 FFT (`--tm N`, default retree=2) | match | match    | 0          | byte-exact ✓ |
-| `--tm 200 --retree 1`                       | 717     | 717        | 8          | C-side tied-trace artifact ✓ (see §B.2) |
-| `--tm 200 --treeout`                        | match   | match      | 20         | C-side tied-trace artifact ✓ (pass-0 TM drift propagates into tree branches; see §B.2) |
+| `--tm 200 --retree 1`                       | 717     | 717        | 0          | byte-exact ✓ (closed 2026-06-02; see §B.2 — collateral from §B.14 FMA fusion fix) |
+| `--tm 200 --treeout`                        | match   | match      | 0          | byte-exact ✓ (same fix; §B.2) |
 | PartTree (`--parttree`)                     | 752     | 752        | 0          | byte-exact ✓ |
 | DP-PartTree (`--dpparttree`)                | 752     | 752        | 0          | byte-exact ✓ |
 | PartTree NW (`--parttree --nofft`)          | 752     | 752        | 0          | byte-exact ✓ |
@@ -37,6 +37,7 @@
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (needs `mxscarnamod`) |
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ |
+| `--allowshift --globalpair --maxiterate 1000` | 1060  | 1060       | 0          | byte-exact ✓ (full BALIBASE 3 also 386/386, see §E.4) |
 | `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ |
 | `--treeout` (FFT-NS-2, NW-NS-2, FFT-NS-i, L/G/E-INS-i, BL/JTT, parttree, dpparttree) | match | match | 0 | byte-exact ✓ |
 | `--treein` (FFT-NS-2, NW-NS-2, BL/JTT/TM, L/G/E-INS-i, FFT-NS-i, all non-parttree) | match | match | 0 | byte-exact ✓ |
@@ -50,8 +51,8 @@
 | `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ (Hirschberg `msalignmm` wired into engine) |
 | `--retree {1,2,3,5}` × {FFT-NS-2, FFT-NS-i, L/G/E-INS-i} (20 combos) | match | match | 0 | byte-exact ✓ |
 
-Test suite: **357 Rust integration tests pass, 0 failed, 5 ignored**
-(`cargo test --workspace --release --tests`). The 5 ignored are all
+Test suite: **364 Rust integration tests pass, 0 failed, 4 ignored**
+(`cargo test --workspace --release --tests`). The 4 ignored are all
 deliberate diagnostic/bisection tools (drift exploration, fixture-locked
 hand-bisection scripts) that print analysis instead of asserting
 pass/fail; each is annotated at the call site. Plus 32 Python tests pass.
@@ -88,10 +89,41 @@ pass/fail; each is annotated at the call site. Plus 32 Python tests pass.
 | §B.9 | `--memsavetree` — see §AE; initial port was `compacttree_memsaveselectable` (the `--youngestlinkage` algorithm), not `compacttreegivendist`. Replaced after FFI cross-validation showed C uses the ELSE branch at `disttbfast.c:4017` for `compacttree == 2`. | 2026-05-14 |
 | §B.10 | FFT-segmented refinement boundary frequencies — `refinement.rs::realign_all` use_fft branch was calling `profile_align` (which defaults `BoundaryFreqs::default() = 1.0`) for every segment. C's per-segment `A__align` derives `headgapfreq{1,2}` / `gapfreq{1,2}[lgth]` from `sgap1`/`sgap2`/`egap1`/`egap2` via `outgapcount` on the parent alignment's boundary columns. Wired the same computation; also removed the prior `prof_seg.fgcp[last] -= w` correction, which mirrored the *disabled* `#if 0` branch of C's `new_FinalGapCount` (the compiled `#if 1` branch effectively ignores `egappat` at the last position via null-terminator read). Closes BB30013 (was 3843-line residual). BALIBASE 3 FFT-NS-i 99.7% → **100% (386/386)**. Regression test `fftnsi_segmented_boundary_byte_identical_to_c` on BB12019 + `bali3.BB12019.fftnsi.iter5` fixture. | 2026-05-25 |
 | §B.11 | `--seed` FFT-NS-i — `engine.rs:876` `use_segmented` was unconditionally `matches!(self.mode, FftNsi { .. })`; needed `&& local_hom.is_none()` since C only segments when `constraint == 0` (`dvtditr.c:882`). Without the gate, seeded FFT-NS-i would re-run segmented refinement and break the seed/seedtable `_byte_identical_to_c` tests. | 2026-05-26 |
+| §B.12 | **`--allowshift` X-strip ordering** (`constraints.rs::build_homology_table_with_unalign`) — C's `pairlocalalign.c:2197` runs `G__align11_noalign` on X-stripped seqs *before* `score2dist`/`makedynamicmtx`. Rust ran the X-strip recompute *after* the dynmtx re-alignment, so for X-containing pairs the dynamic matrix was built from the with-X (wrong) distance. Fix: compute `pscore_for_dist` upfront, apply `alignment.score = pscore_for_dist` unconditionally for L/G aligners. **Closed all 45 remaining BALIBASE 3 `--allowshift` residuals (88.1 % → 100 %)** without regressing any other mode. Also definitively disproved the previously-suspected static-TLS hypothesis (instrumented C with TLS-zero-on-entry produces byte-identical output to vanilla C). | 2026-06-01 |
+| §B.13 | **`--allowshift` warp DP performance** — refinement was ~4.6× slower than C on large inputs (BB40002/47/49 hit the 600s sweep timeout). Closed via: (a) precomputed sparse `cpmx1s`/`cpmx2s` representations in `MultiMtx`, (b) branch removal in `match_row_into` outer dense loop, (c) `match_row_into` caller-owned buffer (no per-row Vec alloc), (d) `copy_from_slice` for the end-of-row warp state in `profile.rs` + `global.rs`. BB20041 maxit=100: 5m32s → 47s (**~7× speedup**). All 3 timeout files now complete in 205–384s under the 600s sweep cap. | 2026-05-30 |
+| §B.14 | **FMA-fusion fixes** (`constraints.rs::dyn_matrix`, `progressive.rs::make_dynamic_matrix`) — C's `makedynamicmtx` computes `out[i][j] = in[i][j] + offset * 600` per cell; clang at -O3 with FP_CONTRACT=on fuses to a single FMA. Rust was precomputing `delta = off * 600.0` then `v + delta` — two rounded ops vs C's single FMA, drifting ~1 ULP per cell. Fix: use `off.mul_add(600.0, v)` to match C's FMA fusion exactly. Closed BB12003 + BB20035 outright, dramatically reduced others; first big jump in this allowshift parity push (79.3 % → 87.6 %). | 2026-05-29 |
+| §B.15 | **`--unalignlevel N` gating fix** (`engine.rs:899`) — refinement params previously gated multi-distance-class DP on `self.allowshift`, zeroing `--unalignlevel` whenever `--allowshift` wasn't also set. C `scripts/mafft:1436` enables the `-s #` path whenever `unalignlevel != 0.0` regardless of allowshift. Fixed to pass `self.unalign_level` directly. `--unalignlevel N` is now functional. | 2026-05-28 |
 
 ---
 
-## §B.2. `--tm 200 --retree 1` 8-line diff + BALIBASE 3 corpus — RESOLVED 2026-05-19 (upstream report `MAFFT_UPSTREAM_REPORT.md` covers both)
+## §B.2. `--tm 200 --retree 1` 8-line diff — CLOSED 2026-06-02 (collateral from §B.14 FMA fusion)
+
+> **Status:** closed. The 8-line diff on the 36-seq sample and the related
+> `--tm 200 --treeout` ~20-line branch-length drift are both byte-exact now.
+> No targeted fix was needed for §B.2 itself — the divergence vanished as
+> collateral from the §B.14 FMA fusion fixes (the `mul_add(600, v)` change
+> in `makedynamicmtx` / `dyn_matrix`). `--tm 200` is the flat-landscape
+> matrix where 1-ULP drifts most readily surface, so fixing the FMA-fusion
+> discrepancy upstream in matrix construction closed the surface-level
+> symptom too. A 21-mode sanity sweep on the 36-seq sample is 21/21 OK.
+>
+> **The "static-TLS state machine" diagnosis that previously dominated this
+> section was DEFINITIVELY DISPROVEN on 2026-06-01.** A Stage 1 forensic
+> (instrumented C MAFFT to memset every static-TLS buffer at `A__align`
+> entry) showed C(zero-TLS) is byte-identical to C(vanilla) on BB11005 —
+> TLS residue does NOT bias C's tied-cell selection. The 45 BALIBASE 3
+> `--allowshift` residuals that were previously dismissed as "unfixable §B.2
+> tied-traces" turned out to be a single FP-input-ordering bug (§B.12). The
+> remaining `--tm 200 --retree 1` 8-line diff turned out to be the §B.14
+> FMA-fusion bug. The "static-TLS / not worth closing" verdict was wrong
+> twice; the lesson generalizes: **when faced with a "tied-trace, both
+> alignments optimal-scored" pattern, suspect a hidden FP-input-ordering
+> bug, not C-side state.**
+>
+> The pre-disproof narrative below is preserved for historical context but
+> should NOT be cited as the actual cause.
+
+---
 
 **The only known byte-divergence in production**: `mafft --tm 200 --retree 1
 sample` vs `mafft-rs --tm 200 --retree 1 sample` differs by 8 lines — 4
@@ -172,89 +204,192 @@ non-deterministic refinement accept/reject decisions.
 | `--parttree`                             | 1.70s   | 0.09s    | Rust **18× faster**   |
 | `--dpparttree`                           | 7.24s   | 0.08s    | Rust **90× faster**   |
 
-### §C.1. Per-group gap stripping — DEFERRED
+### §C.1. Per-group gap stripping — DESIGN CHOICE (not deferred)
 
-Pre-2026-05-18 theory: C strips per group via `commongappick()`, we
-strip globally — for a 500-column MSA with `kept1=100, kept2=120` C
-DPs 12,000 cells while we DP up to 250,000. *Empirical reality*: we're
-already faster than C on the modes this would help (default 1.16×,
-L-INS-i 1.61×, G-INS-i 1.56×, PartTree 18-90×). The cell-count
-theory doesn't translate to wall-clock because most refinement
-branches don't have wildly different `kept1`/`kept2` columns in
-practice. Implementing per-group stripping requires porting C's
-`insertnewgaps()` round-trip from `addfunctions.c` — high cost, no
-measurable benefit. Reconsider only if a real workload surfaces a
-progressive-alignment bottleneck.
+**Decision:** rust-MAFFT will NOT port C's per-group `commongappick()`
+gap-stripping. This is a deliberate architectural choice, not a
+deferred TODO item.
 
-### §C.2. FFT-NS-i ~18% gap — DEFERRED (profile data captured in `PROFILING.md`)
+**Theoretical argument that originally motivated the work**: C strips
+per group via `commongappick()`; we strip globally. For a 500-column
+MSA with `kept1=100, kept2=120` C DPs 12,000 cells while we DP up to
+250,000. On paper a 20× cell-count reduction.
 
-FFT-NS-i is the only mode where Rust is slower than C. Per the
-profile (macOS `sample`, full recipe in `PROFILING.md`):
+**Empirical reality**: we are **already faster than C** on every mode
+this optimization would target (post-2026-05-18 benchmark on 108-seq
+synthetic input):
 
-| Self-time samples | Function | % main thread |
-|-------------------|----------|---------------|
-| 509 | `profile_align_imp_with_boundary` (inner DP cell update) | **55%** |
-| 97  | `compute_split_score`             | 11% |
-| 89  | `Profile::from_aligned`           | 10% |
-| 26  | `Profile::match_score`            | 3% |
-| 22% rest | rayon, alloc, traversal | — |
+| Mode | C MAFFT | mafft-rs | Ratio |
+|------|---------|----------|-------|
+| FFT-NS-2 (default) | 1.34s | 1.16s | rust 1.16× faster |
+| L-INS-i (`--localpair --maxiterate 50`) | 37.0s | 22.9s | rust 1.61× faster |
+| G-INS-i (`--globalpair --maxiterate 50`) | 35.3s | 22.6s | rust 1.56× faster |
+| PartTree | 1.70s | 0.09s | rust 18× faster |
+| DP-PartTree | 7.24s | 0.08s | rust 90× faster |
 
-**Attempts (2026-05-18)**:
+The cell-count theory doesn't translate to wall-clock because:
 
-- **`Profile::from_aligned` 3-pass → single-pass fusion** —
-  *LANDED* (`profile.rs::Profile::from_aligned`). Per-sequence walk
-  now updates freqs, gap_freq, opening_count, closing_count in one
-  pass via a `gc_prev` state byte (vs 3 separate walks before).
-  Tail-end semantics preserved for sequences shorter than `length`.
-  Wall-clock impact within noise; code-cleanliness win, no behavior
-  change.
-- **`h` / `ijp` thread-local pool** — *LANDED* (`profile.rs` top:
-  `DP_H_POOL`, `DP_IJP_POOL`). Take the two big 2D DP matrices from
-  thread-local pools at the top of `profile_align_imp_with_boundary`,
-  swap back before returning. Grow-only resize, no per-cell zero —
-  every read cell is unconditionally written by boundary init or DP
-  body before any traceback read. Re-profile confirmed
-  `raw_vec::grow_one` samples inside the DP function dropped from
-  ~80 to ~20-30. Wall-clock impact within noise on macOS (malloc/free
-  is already fast); kept for code-cleanliness + symmetry with C
-  `A__align`'s `static TLS` buffer reuse.
+1. Real refinement branches rarely have wildly different
+   `kept1`/`kept2` columns in practice — the worst-case cell ratio
+   doesn't surface on biological inputs.
+2. Our globally-stripped DP is straight-line code over a single
+   contiguous matrix, which the LLVM vectorizer and CPU prefetcher
+   handle better than C's per-call gap-stripping bookkeeping.
+3. The per-group approach in C requires `insertnewgaps()` round-trip
+   bookkeeping (`addfunctions.c`) on every merge, adding constant
+   overhead that erases the cell-count win on typical inputs.
+
+**Trade-off accepted**: simpler code path (one DP shape, not two),
+better cache locality, no per-merge stripping bookkeeping. The cost
+is theoretically more cells DPed on pathological inputs — empirically
+not observable.
+
+**Re-open this only if** a production workload surfaces a
+progressive-alignment bottleneck where the cell-count advantage would
+plausibly cross the constant-overhead threshold. As of 2026-06-02 no
+such workload exists in our benchmark suite.
+
+### §C.2. FFT-NS-i perf gap — CLOSED 2026-06-02 (inner DP `get_unchecked` + invariant hoisting)
+
+**Status:** closed. Rust now matches or beats C MAFFT 7.526 on FFT-NS-i
+across measured inputs. Final timings (alternating runs, median):
+
+| Input | Size | C MAFFT 7.526 | mafft-rs (post-fix) | Δ vs C |
+|-------|------|---------------|---------------------|--------|
+| `mafft-upstream/test/sample` | 36 seqs / mixed | 0.756s | 0.738s | **rust 2.4 % faster** |
+| BB12019 | 5 seqs / 529 cols | 0.302s | 0.205s | **rust 32 % faster** |
+| BB30004 | 50 seqs / 383 cols | 1.344s | 1.381s | rust 2.8 % slower (within noise) |
+
+Pre-fix baseline this session was rust 0.784s / 0.302s / 1.502s on the
+same three inputs — so the change landed ~6 % / ~32 % / ~9 % wins on
+top of the prior already-optimised state.
+
+**What landed** (`crates/mafft-align/src/profile.rs`, the inner j-loop
+of `profile_align_imp_multimtx`):
+
+1. **`unsafe { get_unchecked }`** on every hot inner-loop array read
+   and write — `prev_s[j-1]`, `cur_s[j]`, `ogcp2_s[j]`, `fgcp2_s[j-1]`,
+   `mj_s[j]`, `mpj_s[j]`, `ijp_row[j]`, `h_row[j]`, `prof2_ngf[j-1]`
+   and `prof2_ngf[j]` (only when `j < m`), plus the warp-path
+   `prevwmrecords[j-1]` / `prevwarpi[j-1]` / `prevwarpj[j-1]` /
+   `wmrecords[j]` / `warpi[j]` / `warpj[j]` / `warpis[warpn-1]` /
+   `warpjs[warpn-1]`. Each call site has a SAFETY comment naming the
+   provable invariant (array size and loop-bound). Mirrors the existing
+   pattern at `profile.rs:122,244,411`.
+2. **Loop-invariant hoist** of `fgcp1[i-1]` (→ `fgcp1_im1`) and
+   `ogcp1[i]` (→ `ogcp1_i`) out of the j-loop. Both are constant for
+   the duration of the j-loop but were being re-read (and bounds-checked)
+   on every cell.
+3. **Slice-binding** of `prof2.nongap_freq`, `ogcp2`, `fgcp2`, `mj`,
+   `mpj`, `previousw`, `currentw` to fixed-lifetime locals (`prof2_ngf`,
+   `ogcp2_s`, …) so the compiler sees a slice with a known length-bound
+   in concert with the `get_unchecked` calls.
+
+The change preserves byte-identity to C MAFFT 7.526 on every regression
+fixture: 90/90 `end_to_end` tests pass (including
+`allowshift_ginsi_byte_identical_to_c`, the warp-path guard, plus
+`linsi_first36_iter2`, `seed_*`, `seedtable_*`, `treein_*`, `retree_*`,
+`rna_nofft_case_insensitive`), 15/15 cross-validate cell-equality tests
+pass, and direct binary diff vs C MAFFT 7.526 is `diff = 0` on the
+36-seq sample (FFT-NS-i and `--allowshift --globalpair --maxiterate
+1000`), BB30004, and BB12019.
+
+**Earlier session steps** (kept for the record — each within noise on
+wall-clock but cumulatively load-bearing):
+
+- **`Profile::from_aligned` 3-pass → single-pass fusion** — *LANDED*.
+  Per-sequence walk updates `freqs` / `gap_freq` / `opening_count` /
+  `closing_count` in one pass via a `gc_prev` state byte (was 3 separate
+  walks). Tail-end semantics preserved for sequences shorter than
+  `length`.
+- **`h` / `ijp` thread-local pool** — *LANDED* (`DP_H_POOL`,
+  `DP_IJP_POOL`). The two big 2D DP matrices come from thread-local
+  pools at the top of `profile_align_imp_with_boundary` and are swapped
+  back before returning. Grow-only resize, no per-cell zero (every read
+  cell is unconditionally written by boundary init or DP body before
+  any traceback read).
+- **`Cargo.toml [profile.release]` `lto = "fat"` + `codegen-units = 1`**
+  — *LANDED*. Enables cross-crate inlining of the hot DP path
+  (`profile_align_imp_multimtx` inlines into `iterative_refine`),
+  letting LLVM eliminate redundant bounds checks and hoist invariants
+  across the function boundary. ~30s extra link time on full builds.
+- **Pre-allocated gap-cost arrays + sparse cpmx representations** —
+  *LANDED*. `ogcp1` / `fgcp1` / `ogcp2` / `fgcp2` / `cpmx1_sparse` /
+  `cpmx2_sparse` now use `Vec::with_capacity(n+1)` + explicit push
+  instead of `.collect()` to skip the `RawVec::grow_one` realloc chain
+  the profiler had previously shown at ~5 % of total samples.
+- **Slice-binding of `h[i]` / `ijp[i]` to `h_row` / `ijp_row`** —
+  *LANDED*. Hoists the outer-Vec bounds check out of the inner loop,
+  amortising N×M checks to N.
 - **Branchless `compute_split_score`** — *ATTEMPTED, REVERTED*.
   Rewrote `pairwise_score` as a per-cell state-machine to remove the
-  `while (seq1[k] == '-')` consume loop. Failed 16 byte-identity
-  tests because C's consume loop crosses both-gap positions
-  (it only checks seq1), while a naive reset-on-both-gap rule
-  re-charges penalty when an A-gap-run is interrupted by a both-gap
-  column. The minimum correct branchless form is a 3-state machine
-  (Neutral / AGapRun / BGapRun) — still branchy, no clean SIMD path.
-  Reverted to the C-style structure with an explanatory comment.
+  `while (seq1[k] == '-')` consume loop. Failed 16 byte-identity tests
+  because C's consume loop crosses both-gap positions (it only checks
+  seq1); the minimum correct branchless form is a 3-state machine
+  (Neutral / AGapRun / BGapRun), still branchy, no clean SIMD path.
 
-**Remaining gap is in the inner DP cell-update arithmetic itself**
-(456/922 main-thread samples post-pool). Closing it requires the
-anti-diagonal SIMD rewrite — a multi-day project with byte-identity
-regression risk on the warp DP, gap-skip trackers, and traceback
-ordering. Deferred until a sustained FFT-NS-i workload justifies the
-cost.
+**Remaining headroom (not pursued — diminishing returns)**:
+
+- Const-generic specialisation of the inner j-loop on `try_warp` and
+  `strict_part_tiebreak` (eliminate ~30 lines of dead warp code from
+  the FFT-NS-i path, kill per-cell branches on what are runtime
+  constants). Would likely shave another 1–2 % on BB30004-like inputs
+  where the warp arrays still consume register pressure even when
+  `try_warp = false`. Skipped because (a) Rust is already at-or-better
+  than C on the inputs we measured, (b) the BB30004 residual is at the
+  system-noise floor (rust 1.381s vs C 1.344s, single-run variance
+  ±60 ms), and (c) the 4-way monomorphisation bloats the binary for a
+  sub-perceptible gain.
+- Anti-diagonal SIMD rewrite — the original §C.2 escalation path. Now
+  unnecessary: the inner-loop bottleneck has been closed without it.
 
 SIMD-friendly patterns in `match_score()`, `pairwise_score()`,
-`pairwise_identity_distance()` continue to auto-vectorize via LLVM
-where possible (the gap-run consume loop in `pairwise_score` still
-inhibits it on the gap-run paths).
+`pairwise_identity_distance()` continue to auto-vectorize via LLVM.
 
 ---
 
-## §E. BALIBASE 3 parity sweep — all four INS-i modes 386/386 (100%)
+## §E. BALIBASE 3 parity sweep — all five sweep modes 386/386 (100%)
 
 ### Per-mode results (BALIBASE 3 RV11-RV50, 386 files)
 
 | Mode | Flags | Match | Total % | Residuals |
 |------|-------|-------|---------|-----------|
-| FFT-NS-i | `--maxiterate 100` | **386/386** | **100.0 %** | none (2026-05-25) |
-| L-INS-i | `--localpair --maxiterate 100` | **386/386** | **100.0 %** | none (2026-05-27) |
-| G-INS-i | `--globalpair --maxiterate 100` | **386/386** | **100.0 %** | none (2026-05-27) |
-| E-INS-i | `--genafpair --maxiterate 100` | **386/386** | **100.0 %** | none (2026-05-27) |
+| FFT-NS-i | `--maxiterate 1000` | **386/386** | **100.0 %** | none (2026-05-25) |
+| L-INS-i | `--localpair --maxiterate 1000` | **386/386** | **100.0 %** | none (2026-05-27) |
+| G-INS-i | `--globalpair --maxiterate 1000` | **386/386** | **100.0 %** | none (2026-05-27) |
+| E-INS-i | `--genafpair --maxiterate 1000` | **386/386** | **100.0 %** | none (2026-05-27) |
+| **G-INS-i + allowshift** | `--globalpair --maxiterate 1000 --allowshift` | **386/386** | **100.0 %** | none (2026-06-01) — see §E.4 |
 
-**All four INS-i modes are 386/386.** §E.3 (below) records how the last
-residual, E-INS-i BB40004, was closed.
+**All five sweep modes — including the previously-problematic
+`--allowshift` G-INS-i — are now 386/386 byte-identical to C MAFFT 7.526.**
+Total: **1930/1930** alignments across the BALIBASE 3 protein corpus.
+§E.3 records the last INS-i residual (E-INS-i BB40004); §E.4 records the
+single fix that closed all 45 allowshift residuals at once.
+
+### §E.4 `--allowshift` G-INS-i — CLOSED 2026-06-01 (X-strip ordering fix)
+
+Allowshift trajectory across this cycle:
+
+| Stage | Pass rate | Trigger |
+|-------|-----------|---------|
+| Pre-cycle baseline | 79.3 % (306/386) | Pre-existing tied-trace dismissals |
+| Two FMA-fusion fixes (§B.14) | 87.6 % (339/386) | `makedynamicmtx` `+ offset*600` → `mul_add(600, v)` |
+| Warp DP perf (§B.13) | 88.1 % (341/387) | +2 of the 3 timeout files closed cleanly |
+| **X-strip ordering fix (§B.12)** | **100.0 % (386/386)** | The actual root cause: `pscore_for_dist` computed upfront, used for dynmtx + distance |
+
+The X-strip fix in §B.12 also **definitively disproved the long-standing
+"§B.2 static-TLS" hypothesis** that had been the documented basis for
+"not worth closing" verdicts on tied-trace residuals across this repo
+since 2026-05-18. Stage 1 forensic this cycle: instrumented C MAFFT to
+`memset` every static-TLS buffer in `A__align` at entry, ran on
+BB11005 (a previously-tied-trace case), and got **byte-identical output
+to vanilla C**. TLS residue does NOT bias C's tied-cell selection.
+The actual cause was a single FP-input-ordering bug in rust's
+`build_homology_table_with_unalign`. The previous "reuseprofiles port
+required" / "C-side artifact, ~zero benefit to close" verdicts were
+based on a wrong premise. **The lesson generalizes**: when faced with
+a "tied-trace, both alignments optimal-scored" pattern, suspect a
+hidden FP-input-ordering bug feeding the DP, not C-side state.
 
 ### §E.3 E-INS-i BB40004 — CLOSED 2026-05-27 (phase-split importance)
 
@@ -433,31 +568,31 @@ End-to-end validation deferred until `contrafold` is installed.
 
 ## Active items summary
 
-Everything that follows is either (a) a documented gotcha that we
-choose not to fix, or (b) an external dependency we can't satisfy:
+**Zero known correctness divergences.** All BALIBASE 3 sweep modes
+(FFT-NS-i, L-INS-i, G-INS-i, E-INS-i, `--allowshift` G-INS-i) are
+**386/386 byte-identical** at `--maxiterate 1000`, total 1930/1930.
+The 36-seq protein test sample is byte-identical to C MAFFT 7.526
+across all 21 sanity-sweep modes (FFT-NS-2 / NW-NS-2 / FFT-NS-i /
+INS-i family with maxit 0 and 1000 / BLOSUM 50 / BLOSUM 80 NW / JTT
+200 / TM 100 / TM 200 / TM 200 NW / TM 200 --retree 1 / TM 100
+--retree 1 / PartTree / DP-PartTree / allowshift maxit 0 / allowshift
+maxit 1000). Remaining items are non-correctness:
 
-1. **§B.2 + §E residuals** — same root cause: C `A__align` static-TLS-
-   buffer memoization (`Salignmm.c:1446-1450`) produces context-
-   dependent traceback choices for tied DP cells. Concretely:
-   - `--tm 200 --retree 1` on the 36-seq sample: 8-line diff.
-   - 3 of 386 BALIBASE 3 tests across all measured INS-i modes:
-     BB30028 (L-INS-i, 4 lines), BB50001 (L-INS-i, 244 lines),
-     BB20004 (G-INS-i, 1732 lines). FFT-NS-i is now 386/386 = 100 %
-     after the §B.10 fix.
-   `MAFFT_UPSTREAM_REPORT.md` documents the diagnosis; ready to send
-   to katoh@ifrec.osaka-u.ac.jp. Cell-level FFI tests
-   (`cross_validate_cpmx`, `cross_validate_counteff`,
-   `cross_validate_bb20027_dp`) PROVE the Rust DP and profile
-   building match C bit-for-bit on identical inputs — divergences
-   come from C's static state, not from a Rust bug. Closing would
-   require porting C's `reuseprofiles` state machine; not worth it.
-2. **§B.6** — sequential float summation guard in `refinement.rs`.
+1. **§B.6** — sequential float summation guard in `refinement.rs`.
    Section IS the reminder; no work needed.
-3. **§C.1** — per-group gap stripping. Deferred; we're already faster
+2. **§C.1** — per-group gap stripping. Deferred; we're already faster
    than C on the affected modes.
-4. **§C.2** — FFT-NS-i ~18% gap. Deferred; profile data in
-   `PROFILING.md`. Closing it requires the anti-diagonal SIMD
-   rewrite (multi-day project, no measurable production benefit
-   currently).
-5. **§D** — X-INS-i needs `contrafold` binary; untestable until
+3. **§C.2** — FFT-NS-i perf gap. **CLOSED 2026-06-02** via inner-DP
+   `unsafe { get_unchecked }` + invariant hoisting in
+   `profile_align_imp_multimtx` (no anti-diagonal SIMD needed). Rust is
+   now 2.4 % **faster** than C on the 36-seq sample, 32 % faster on
+   BB12019, and within noise (~2 %) on BB30004. All 90 `end_to_end`
+   byte-identity tests + 15 cross-validate FFI cell-equality tests
+   pass. See updated §C.2 above for the full change list.
+4. **§D** — X-INS-i needs `contrafold` binary; untestable until
    someone installs it.
+
+`MAFFT_UPSTREAM_REPORT.md` was drafted to report the §B.2 static-TLS
+hypothesis upstream; with that hypothesis definitively disproven and
+the surface symptom now byte-exact, the report should either be
+rewritten or shelved.

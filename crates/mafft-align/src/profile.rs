@@ -775,21 +775,22 @@ pub fn profile_align_imp_multimtx(
     // element accessed is ogcp2[lgth2] = 0.0. We add a trailing 0.0
     // to match this behavior.
     let penalty = gap.open;
-    let mut ogcp1: Vec<f64> = (0..n).map(|i| {
-        0.5 * (1.0 - prof1.ogcp[i]) * penalty * prof1.nongap_freq[i]
-    }).collect();
+    // Pre-allocate to exact final size (n+1, m+1) to skip the
+    // `RawVec::grow_one` realloc chain that profiling showed accounts
+    // for ~5 % of FFT-NS-i total time. The `.collect()` form did
+    // ~log2(n) reallocs as the Vec doubled; `with_capacity` is one
+    // alloc at the correct size.
+    let mut ogcp1: Vec<f64> = Vec::with_capacity(n + 1);
+    for i in 0..n { ogcp1.push(0.5 * (1.0 - prof1.ogcp[i]) * penalty * prof1.nongap_freq[i]); }
     ogcp1.push(0.0); // C's calloc padding
-    let mut fgcp1: Vec<f64> = (0..n).map(|i| {
-        0.5 * (1.0 - prof1.fgcp[i]) * penalty * prof1.nongap_freq[i]
-    }).collect();
+    let mut fgcp1: Vec<f64> = Vec::with_capacity(n + 1);
+    for i in 0..n { fgcp1.push(0.5 * (1.0 - prof1.fgcp[i]) * penalty * prof1.nongap_freq[i]); }
     fgcp1.push(0.0);
-    let mut ogcp2: Vec<f64> = (0..m).map(|j| {
-        0.5 * (1.0 - prof2.ogcp[j]) * penalty * prof2.nongap_freq[j]
-    }).collect();
+    let mut ogcp2: Vec<f64> = Vec::with_capacity(m + 1);
+    for j in 0..m { ogcp2.push(0.5 * (1.0 - prof2.ogcp[j]) * penalty * prof2.nongap_freq[j]); }
     ogcp2.push(0.0);
-    let mut fgcp2: Vec<f64> = (0..m).map(|j| {
-        0.5 * (1.0 - prof2.fgcp[j]) * penalty * prof2.nongap_freq[j]
-    }).collect();
+    let mut fgcp2: Vec<f64> = Vec::with_capacity(m + 1);
+    for j in 0..m { fgcp2.push(0.5 * (1.0 - prof2.fgcp[j]) * penalty * prof2.nongap_freq[j]); }
     fgcp2.push(0.0);
 
     // Exact port of C's MSalignmm_tanni (MSalignmm.c lines 770-888).
@@ -804,16 +805,18 @@ pub fn profile_align_imp_multimtx(
 
     // Build sparse representation of prof2 (C's cpmxpd/cpmxpdn, lines 196-212).
     // For each position j, store only non-zero (alphabet_index, frequency) pairs.
-    let cpmx2_sparse: Vec<Vec<(usize, f64)>> = (0..m).map(|j| {
-        let mut entries = Vec::new();
+    // Preallocated to skip RawVec::grow_one chain.
+    let mut cpmx2_sparse: Vec<Vec<(usize, f64)>> = Vec::with_capacity(m);
+    for j in 0..m {
+        let mut entries: Vec<(usize, f64)> = Vec::with_capacity(nalpha);
         for l in 0..nalpha {
             let v = prof2.freqs[j][l];
             if v != 0.0 {
                 entries.push((l, v));
             }
         }
-        entries
-    }).collect();
+        cpmx2_sparse.push(entries);
+    }
 
     // Batch match_calc: compute scarr once per row, dot with sparse prof2.
     // C's exact loop order (lines 216-223):
@@ -879,16 +882,19 @@ pub fn profile_align_imp_multimtx(
 
     // initverticalw (C line 776): match_calc with prof2 pos 0 vs all prof1 positions.
     // C calls match_calc with swapped profiles: cpmx2pt first, cpmx1pt second.
-    let cpmx1_sparse: Vec<Vec<(usize, f64)>> = (0..n).map(|i| {
-        let mut entries = Vec::new();
+    let mut cpmx1_sparse: Vec<Vec<(usize, f64)>> = Vec::with_capacity(n);
+    for i in 0..n {
+        // Sparse entries per col have at most `nalpha` non-zeros; preallocate
+        // to skip the `RawVec::grow_one` realloc chain.
+        let mut entries: Vec<(usize, f64)> = Vec::with_capacity(nalpha);
         for l in 0..nalpha {
             let v = prof1.freqs[i][l];
             if v != 0.0 {
                 entries.push((l, v));
             }
         }
-        entries
-    }).collect();
+        cpmx1_sparse.push(entries);
+    }
 
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
     // C fills initverticalw[0..lgth1-1] (0-based), then adds gap to [1..lgth1].
@@ -1146,16 +1152,56 @@ pub fn profile_align_imp_multimtx(
         currentw[0] = initverticalw[i];
 
         let gf1_im1 = prof1.nongap_freq[i - 1]; // i-1 in 0..n-1, always valid
-        // Per-row invariants — gf1_i and gf1_im1 do not depend on j; hoist
-        // out of the inner loop to save 2 bounds checks + 1 branch per cell.
-        // For long profiles (~hundreds of residues) this is a measurable win.
+        // Per-row invariants — gf1_i, gf1_im1, fgcp1_im1, ogcp1_i do not
+        // depend on j; hoist out of the inner loop to save bounds checks +
+        // branch per cell. For long profiles (~hundreds of residues) this
+        // is a measurable win. (fgcp1_im1 / ogcp1_i were previously read
+        // inside the j-loop and re-loaded every iteration.)
         let gf1_i = if i < n { prof1.nongap_freq[i] } else { boundary.tail1 };
+        let fgcp1_im1 = fgcp1[i - 1];
+        let ogcp1_i = ogcp1[i];
+        // Bind h[i] / ijp[i] to local mutable slices: hoists the outer-Vec
+        // bounds check out of the inner loop. Same for h[i-1] (read by the
+        // dump path only; not needed inside the hot loop since currentw
+        // already carries the row-i score). Per-cell inner-Vec bounds
+        // checks are still present but the outer-Vec ones are amortized
+        // to once per row instead of M times per row.
+        // SAFETY: i < lasti <= n+1 and h/ijp are sized (n+1) x (m+1).
+        // CONFIRMED MICRO-WIN ~ a few % on long FFT-NS-i inputs.
+        let h_row: &mut [f64] = &mut h[i];
+        let ijp_row: &mut [i32] = &mut ijp[i];
+        // Bind shared cold slices to locals so the inner loop sees them
+        // as `&[T]` of statically-known length-bound rather than re-deriving
+        // a slice pointer per access. This is purely about giving LLVM
+        // enough info to eliminate the per-access bounds check in concert
+        // with the `get_unchecked` calls below.
+        let prof2_ngf: &[f64] = &prof2.nongap_freq;
+        let ogcp2_s: &[f64] = &ogcp2;
+        let fgcp2_s: &[f64] = &fgcp2;
+        let mj_s: &mut [f64] = &mut mj;
+        let mpj_s: &mut [usize] = &mut mpj;
+        let prev_s: &mut [f64] = &mut previousw;
+        let cur_s: &mut [f64] = &mut currentw;
+        // SAFETY (the entire inner j-loop):
+        //   - j ranges 1..=m (loop bound below)
+        //   - prev_s, cur_s, ogcp2_s, fgcp2_s, mj_s, mpj_s, h_row, ijp_row
+        //     are all sized m+1, so indices in {0..=m} are in-bounds.
+        //   - prof2_ngf is sized m (== prof2.length); the gf2_j read at
+        //     index j is guarded `if j < m` (else uses boundary.tail2),
+        //     so the unchecked access is only used when j < m.
+        //   - prof2_ngf at index j-1 is always safe since j >= 1 means
+        //     j-1 in 0..=m-1 < m.
+        //   - prevwmrecords / prevwarpi / prevwarpj / wmrecords / warpi /
+        //     warpj are sized m+1; warpis / warpjs are only indexed at
+        //     warpn-1 inside the `warpn > 0` guard.
         // Use mul_add throughout — C compiled with `gcc -O3 -mfma` (or
         // equivalent) fuses `a + b * c` into FMA (single-rounding step);
         // matching this behavior is required for bit-identity to C's
         // A__align inner DP, which surfaces as tie-break divergences for
         // matrices with flatter score landscapes (e.g. BL50).
-        let mut mi = ogcp2[1].mul_add(gf1_im1, previousw[0]);
+        let mut mi = unsafe {
+            ogcp2_s.get_unchecked(1).mul_add(gf1_im1, *prev_s.get_unchecked(0))
+        };
         let mut mpi: usize = 0;
 
         for j in 1..=m {
@@ -1164,19 +1210,27 @@ pub fn profile_align_imp_multimtx(
             // values when partA__align is given sgap/egap (boundary.tail{1,2})
             // and 1.0 otherwise (when egap is NULL → C's `gapfreq[lgth]=0.0`
             // pre-flip → 1.0 post-flip).
-            let gf2_j = if j < m { prof2.nongap_freq[j] } else { boundary.tail2 };
-            let gf2_jm1 = prof2.nongap_freq[j - 1];
+            let gf2_j = if j < m {
+                unsafe { *prof2_ngf.get_unchecked(j) }
+            } else { boundary.tail2 };
+            // SAFETY: j >= 1 → j-1 in 0..=m-1 < m == prof2_ngf.len().
+            let gf2_jm1 = unsafe { *prof2_ngf.get_unchecked(j - 1) };
 
-            let mut wm = previousw[j - 1];
-            ijp[i][j] = 0;
+            // SAFETY: prev_s sized m+1, j-1 in 0..=m-1.
+            let prevw_jm1 = unsafe { *prev_s.get_unchecked(j - 1) };
+            let mut wm = prevw_jm1;
+            // SAFETY: ijp_row sized m+1, j in 1..=m.
+            unsafe { *ijp_row.get_unchecked_mut(j) = 0; }
 
-            let g_jskip = fgcp2[j - 1].mul_add(gf1_i, mi);
+            // SAFETY: fgcp2_s sized m+1, j-1 in 0..=m-1.
+            let g_jskip = unsafe { fgcp2_s.get_unchecked(j - 1).mul_add(gf1_i, mi) };
             if g_jskip > wm {
                 wm = g_jskip;
-                ijp[i][j] = -(j as i32 - mpi as i32);
+                unsafe { *ijp_row.get_unchecked_mut(j) = -(j as i32 - mpi as i32); }
             }
 
-            let g = ogcp2[j].mul_add(gf1_im1, previousw[j - 1]);
+            // SAFETY: ogcp2_s sized m+1, j in 1..=m.
+            let g = unsafe { ogcp2_s.get_unchecked(j).mul_add(gf1_im1, prevw_jm1) };
             let mi_update = if strict_part_tiebreak { g > mi } else { g >= mi };
             if mi_update {
                 mi = g;
@@ -1188,17 +1242,23 @@ pub fn profile_align_imp_multimtx(
             // overrides or future DNA-mode tunings would surface this.
             mi += f_ext;
 
-            let g_iskip = fgcp1[i - 1].mul_add(gf2_j, mj[j]);
+            // SAFETY: mj_s sized m+1, j in 1..=m. mpj_s likewise.
+            let mj_j = unsafe { *mj_s.get_unchecked(j) };
+            let g_iskip = fgcp1_im1.mul_add(gf2_j, mj_j);
             if g_iskip > wm {
                 wm = g_iskip;
-                ijp[i][j] = i as i32 - mpj[j] as i32;
+                unsafe {
+                    *ijp_row.get_unchecked_mut(j) = i as i32 - *mpj_s.get_unchecked(j) as i32;
+                }
             }
 
-            let g = ogcp1[i].mul_add(gf2_jm1, previousw[j - 1]);
-            let mj_update = if strict_part_tiebreak { g > mj[j] } else { g >= mj[j] };
+            let g = ogcp1_i.mul_add(gf2_jm1, prevw_jm1);
+            let mj_update = if strict_part_tiebreak { g > mj_j } else { g >= mj_j };
             if mj_update {
-                mj[j] = g;
-                mpj[j] = i - 1;
+                unsafe {
+                    *mj_s.get_unchecked_mut(j) = g;
+                    *mpj_s.get_unchecked_mut(j) = i - 1;
+                }
             }
             // C `Salignmm.c:1953`: `m[j] += fpenalty_ex;` — unconditional,
             // mirrors the row tracker increment above. C allocates `m` to
@@ -1207,7 +1267,7 @@ pub fn profile_align_imp_multimtx(
             // guarded with `if j < m`, but C has no such guard — the spurious
             // guard surfaces as 1-ULP drift on the trailing column and flips
             // tie-breaks for flat-landscape matrices (TM PAM 200).
-            mj[j] += f_ext;
+            unsafe { *mj_s.get_unchecked_mut(j) += f_ext; }
 
             // Warp candidate (`Salignmm.c:1957-2003`). Allows cell (i,j) to
             // jump back to an anchor (warpis[k], warpjs[k]) sourced from
@@ -1215,41 +1275,57 @@ pub fn profile_align_imp_multimtx(
             // * Manhattan_distance`. C uses scalar `fpenalty_ex` regardless of
             // profile position weighting — matches our `gap.extend`.
             if try_warp {
+                // SAFETY: prevwarpi/j sized m+1, j-1 in 0..=m-1.
+                let pwi_jm1 = unsafe { *prevwarpi.get_unchecked(j - 1) };
+                let pwj_jm1 = unsafe { *prevwarpj.get_unchecked(j - 1) };
+                let pwm_jm1 = unsafe { *prevwmrecords.get_unchecked(j - 1) };
                 let fpenalty_tmp = fpenalty_shift
-                    + f_ext * ((i as i32 - prevwarpi[j - 1]) as f64
-                             + (j as i32 - prevwarpj[j - 1]) as f64);
-                let g = prevwmrecords[j - 1] + fpenalty_tmp;
+                    + f_ext * ((i as i32 - pwi_jm1) as f64
+                             + (j as i32 - pwj_jm1) as f64);
+                let g = pwm_jm1 + fpenalty_tmp;
                 if g > wm {
                     if warpn > 0
-                        && prevwarpi[j - 1] == warpis[warpn - 1]
-                        && prevwarpj[j - 1] == warpjs[warpn - 1]
+                        // SAFETY: warpn > 0, so warpn-1 is in 0..warpn ==
+                        // warpis.len() == warpjs.len() (we push to both
+                        // together below).
+                        && pwi_jm1 == unsafe { *warpis.get_unchecked(warpn - 1) }
+                        && pwj_jm1 == unsafe { *warpjs.get_unchecked(warpn - 1) }
                     {
-                        ijp[i][j] = warpbase + (warpn as i32) - 1;
+                        unsafe { *ijp_row.get_unchecked_mut(j) = warpbase + (warpn as i32) - 1; }
                     } else {
-                        ijp[i][j] = warpbase + (warpn as i32);
-                        warpis.push(prevwarpi[j - 1]);
-                        warpjs.push(prevwarpj[j - 1]);
+                        unsafe { *ijp_row.get_unchecked_mut(j) = warpbase + (warpn as i32); }
+                        warpis.push(pwi_jm1);
+                        warpjs.push(pwj_jm1);
                         warpn += 1;
                     }
                     wm = g;
                 }
             }
 
-            currentw[j] += wm;
-            h[i][j] = currentw[j];
+            // SAFETY: cur_s sized m+1, j in 1..=m. h_row sized m+1.
+            unsafe {
+                let c = cur_s.get_unchecked_mut(j);
+                *c += wm;
+                *h_row.get_unchecked_mut(j) = *c;
+            }
 
             // Update wmrecords[j] / warpi[j] / warpj[j] (`Salignmm.c:1987-1998`).
             if try_warp {
-                if wmrecords[j - 1] > wmrecords[j] {
-                    wmrecords[j] = wmrecords[j - 1];
-                    warpi[j] = warpi[j - 1];
-                    warpj[j] = warpj[j - 1];
-                }
-                let curm = currentw[j];
-                if curm > wmrecords[j] {
-                    wmrecords[j] = curm;
-                    warpi[j] = i as i32;
-                    warpj[j] = j as i32;
+                // SAFETY: wmrecords / warpi / warpj sized m+1, j in 1..=m.
+                unsafe {
+                    let wmr_jm1 = *wmrecords.get_unchecked(j - 1);
+                    let wmr_j = wmrecords.get_unchecked_mut(j);
+                    if wmr_jm1 > *wmr_j {
+                        *wmr_j = wmr_jm1;
+                        *warpi.get_unchecked_mut(j) = *warpi.get_unchecked(j - 1);
+                        *warpj.get_unchecked_mut(j) = *warpj.get_unchecked(j - 1);
+                    }
+                    let curm = *cur_s.get_unchecked(j);
+                    if curm > *wmr_j {
+                        *wmr_j = curm;
+                        *warpi.get_unchecked_mut(j) = i as i32;
+                        *warpj.get_unchecked_mut(j) = j as i32;
+                    }
                 }
             }
         }
