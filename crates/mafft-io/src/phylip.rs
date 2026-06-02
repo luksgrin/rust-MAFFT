@@ -47,12 +47,14 @@ pub fn write_phylip<W: Write>(
         for &idx in order {
             let seq = &seqs.sequences[idx];
 
-            // Name field on first block only
+            // Name field on first block only. C `phylipout_pointer`
+            // uses `%-*.*s` which truncates AND pads to `namelen`; the
+            // Rust `{:<width$}` only pads, so we use a helper.
             if pos == 0 {
                 let first_word = seq.name.split_whitespace().next().unwrap_or(&seq.name);
-                write!(writer, "{:<width$}", first_word, width = name_len)?;
+                write_name_field(writer, first_word, name_len)?;
             } else {
-                write!(writer, "{:<width$}", "", width = name_len)?;
+                write_name_field(writer, "", name_len)?;
             }
 
             // Write groups of 10 residues separated by spaces
@@ -73,6 +75,22 @@ pub fn write_phylip<W: Write>(
         pos += LINE_WIDTH;
     }
 
+    Ok(())
+}
+
+/// Write a name field with C `%-*.*s` semantics: left-align, pad to
+/// `width` chars with spaces, AND truncate if longer than `width`.
+fn write_name_field<W: Write>(
+    writer: &mut W,
+    name: &str,
+    width: usize,
+) -> Result<(), IoError> {
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(width);
+    writer.write_all(&bytes[..len])?;
+    for _ in len..width {
+        writer.write_all(b" ")?;
+    }
     Ok(())
 }
 

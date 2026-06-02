@@ -46,13 +46,13 @@ Every progressive merge step matches in score and width and every refinement ite
 | BLOSUM 80 NW (`--bl 80 --nofft`)            | 712     | 712        | 0    | ✓ byte-exact |
 | JTT 100 / 200 (FFT)                         | match   | match      | 0    | ✓ byte-exact |
 | TM 100 / 200 (NW + FFT, default `--retree 2`) | match | match      | 0    | ✓ byte-exact |
-| TM 200 (`--retree 1`)                       | 717     | 717        | 0    | ✓ byte-exact (closed 2026-06-02 — was previously misdiagnosed as §B.2 static-TLS; collateral from §B.14 FMA fusion fix) |
+| TM 200 (`--retree 1`)                       | 717     | 717        | 0    | ✓ byte-exact |
 | `--parttree`, `--dpparttree`, `--parttree --nofft`, `--parttree --reorder` | 752 | 752 | 0 | ✓ byte-exact |
 | `--add` / `--add --nofft` / `--add --keeplength` (30+6 fixture) | match | match | 0 | ✓ byte-exact |
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 0‡   | ✓ byte-exact (case-insensitive) |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0‡   | ✓ byte-exact (needs `mxscarnamod`) |
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0    | ✓ byte-exact |
-| `--allowshift --globalpair --maxiterate 1000` | 1060   | 1060       | 0    | ✓ byte-exact (all 386 BALIBASE 3 files; X-strip ordering fix 2026-06-01) |
+| `--allowshift --globalpair --maxiterate 1000` | 1060   | 1060       | 0    | ✓ byte-exact (all 386 BALIBASE 3 files) |
 | `--reorder` (non-PartTree modes)            | match   | match      | 0    | ✓ byte-exact |
 
 ‡ For RNA / Q-INS-i: we uppercase residues; C preserves case. With `diff -i` RNA produces 0 lines.
@@ -60,8 +60,8 @@ Every progressive merge step matches in score and width and every refinement ite
 Every supported mode is byte-identical to C MAFFT 7.526 on both the
 36-seq protein test sample and the full BALIBASE 3 protein corpus
 (1930/1930 alignments across 5 modes). Remaining items in `TODO.md`
-are non-correctness gaps (performance deferrals and one
-external-dependency limitation), not active divergences.
+are non-correctness gaps (unwired CLI flags, external-dep-blocked
+modes), not active divergences.
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -81,7 +81,22 @@ cd rust-MAFFT
 cargo build --release
 ```
 
-The binary is at `target/release/mafft-rs`.
+The binary is at `target/release/mafft-rs`. To match C MAFFT's
+symlink-based shortcuts (`linsi` / `ginsi` / `einsi` / `fftns` /
+`fftnsi` / `nwns` / `nwnsi` / `qinsi` / `xinsi`), drop the binary on
+your `PATH` and create symlinks:
+
+```bash
+ln -s mafft-rs linsi
+ln -s mafft-rs ginsi
+ln -s mafft-rs einsi
+# ... etc.
+```
+
+`mafft-rs` reads its `argv[0]` basename (stripping an optional
+`mafft-` prefix) and applies the same defaults as C's shell script.
+Explicit flags still override (e.g. `linsi --maxiterate 5 ...`
+honours the override).
 
 ### Run tests
 
@@ -223,9 +238,14 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 | `mafft --localpair input.fa` | `mafft-rs --localpair input.fa` | L-INS-1 |
 | `mafft --localpair --maxiterate 1000 input.fa` | `mafft-rs --localpair --maxiterate 1000 input.fa` | L-INS-i |
 | `mafft --ep 0 --genafpair --maxiterate 1000 input.fa` | `mafft-rs --genafpair --maxiterate 1000 input.fa` | E-INS-i |
-| `linsi input.fa` | `mafft-rs --localpair --maxiterate 1000 input.fa` | L-INS-i shortcut |
-| `ginsi input.fa` | `mafft-rs --globalpair --maxiterate 1000 input.fa` | G-INS-i shortcut |
-| `einsi input.fa` | `mafft-rs --genafpair --maxiterate 1000 input.fa` | E-INS-i shortcut |
+| `linsi input.fa` | `linsi input.fa` (symlink) or `mafft-rs --localpair --maxiterate 1000 input.fa` | L-INS-i shortcut |
+| `ginsi input.fa` | `ginsi input.fa` (symlink) or `mafft-rs --globalpair --maxiterate 1000 input.fa` | G-INS-i shortcut |
+| `einsi input.fa` | `einsi input.fa` (symlink) or `mafft-rs --genafpair --maxiterate 1000 input.fa` | E-INS-i shortcut |
+| `fftnsi input.fa` | `fftnsi input.fa` (symlink) or `mafft-rs --maxiterate 2 input.fa` | FFT-NS-i shortcut (C default is `--maxiterate 2`, not 100) |
+| `nwns input.fa` | `nwns input.fa` (symlink) or `mafft-rs --nofft input.fa` | NW-NS-2 shortcut |
+| `nwnsi input.fa` | `nwnsi input.fa` (symlink) or `mafft-rs --nofft --maxiterate 2 input.fa` | NW-NS-i shortcut |
+| `qinsi input.fa` | `qinsi input.fa` (symlink) or `mafft-rs --qinsi --maxiterate 1000 input.fa` | Q-INS-i shortcut |
+| `xinsi input.fa` | `xinsi input.fa` (symlink) or `mafft-rs --xinsi --maxiterate 1000 input.fa` | X-INS-i shortcut |
 | `mafft --thread N input.fa` | `mafft-rs --thread N input.fa` | Multithreading |
 | `mafft --op 1.53 input.fa` | `mafft-rs --op 1.53 input.fa` | Gap opening penalty |
 | `mafft --ep 0.123 input.fa` | `mafft-rs --ep 0.123 input.fa` | Offset penalty |
@@ -285,9 +305,9 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 ### Key design decisions
 
 - **No global state.** The C code uses ~400 `extern` globals. Rust modules use owned `ScoringContext`, `Topology`, `Profile` structs passed explicitly.
-- **`num_complex::Complex64`** replaces the C `Fukusosuu` struct. A hand-ported bit-for-bit Cooley-Tukey FFT in `mafft-fft/src/fft_c_compat.rs` matches C's `fft.c` rounding exactly (replaced `rustfft` after BL50 / TM 200 FFT divergences were traced to 1-ULP correlation differences).
-- **`f64` DP matrices** (post 2026-05-10 migration). The substitution matrix is stored as `Vec<Vec<i32>>` for canonical storage and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic, preserving sub-integer precision through per-cell scoring (matches C's `n_dis_consweight_multi`).
-- **`f64::mul_add` (FMA) in DP arithmetic** — gcc `-O3` fuses `a + b * c` into a single-rounding FMA, while plain Rust `+=` produces two roundings. Rust uses `mul_add` in `match_calc_row` and gap-frequency-modulated penalties to match C bit-for-bit on flat-landscape matrices (closed the BL50 divergence).
+- **`num_complex::Complex64`** replaces the C `Fukusosuu` struct. A hand-ported bit-for-bit Cooley-Tukey FFT in `mafft-fft/src/fft_c_compat.rs` matches C's `fft.c` rounding exactly. (Necessary because off-the-shelf FFT libraries vary in butterfly grouping order, which produces 1-ULP correlation differences that flip FFT-anchor selection on flat-landscape matrices.)
+- **`f64` DP matrices.** The substitution matrix is stored as `Vec<Vec<i32>>` for canonical storage and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic, preserving sub-integer precision through per-cell scoring (matches C's `n_dis_consweight_multi`).
+- **`f64::mul_add` (FMA) in DP arithmetic.** gcc / clang `-O3` with `FP_CONTRACT=on` fuse `a + b * c` into a single-rounding FMA; plain Rust `+=` produces two roundings. Rust uses `mul_add` in `match_calc_row` and gap-frequency-modulated penalties to match C bit-for-bit on flat-landscape matrices.
 - **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring. Sequential float summation is preserved for accept/reject decisions to keep refinement output deterministic.
 - **SIMD-friendly inner loops**: branchless patterns in `match_score()`, `pairwise_score()`, and `pairwise_identity_distance()` that LLVM auto-vectorizes to NEON/AVX instructions.
 - **Three-way gap insertion** (matching C's `insertnewgaps()`): group1 follows cursor1, group2 follows cursor2, "other" sequences follow cursor1 with gaps at Insert positions.
@@ -295,22 +315,34 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is
 
 ### Test suite
 
-`cargo test --workspace --release --tests`: **364 passed, 0 failed,
-4 ignored** (4 are deliberate diagnostic/bisection tools, annotated
-at the call site). Lib tests separately: `cargo test --workspace
---lib`: **158 passed**. Python: 32 tests pass.
+`cargo test --workspace --release --tests -- --test-threads=1`:
+**364 passed, 0 failed, 4 ignored**. The 4 ignored tests are
+deliberate diagnostic / bisection tools annotated at the call site.
+Python (`pymafft`): **32 passed**.
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust lib tests (`--lib`, all crates) | 158 | All `#[cfg(test)] mod tests` blocks (incl. 7 `msalign` Hirschberg DP tests + 4 `parse_hat3_seed` tests) |
-| Rust binary tests (`mafft-rs`) | 10 | CLI helper functions (`decide_auto`, `replace_unusual`, etc.) |
-| Rust integration tests (`end_to_end`) | 89 | Byte-level parity with C across all supported modes + DP diagnostics (incl. 4 `--seedtable` and 7 `--retree N` byte-equal tests + the BB30013 boundary-frequencies regression guard) |
-| Rust FFI cross-validation tests | ~190 | Cell-by-cell matrix equality, single-pair `G__align11` / `A__align` / `genL__align11` / warp DP / FFT equality, PartTree pipeline, memsavetree, `MSalignmm` Hirschberg DP, MSalignmm profile alignment, BB20027 weight-equality, BB12041 distance-equality |
-| Rust other integration tests | ~25 | `trace_refinement` (15), `integration` mafft-io (7), `imp_*` (3) |
-| Python tests | 32 | API, strategies, file I/O, error handling, types |
-| **Total Rust integration** | **364** | |
+| Rust lib tests (`--lib`, all crates)  | 158  | All `#[cfg(test)] mod tests` blocks (incl. 7 `msalign` Hirschberg DP tests + 4 `parse_hat3_seed` tests) |
+| Rust binary tests (`mafft-rs`)        | 10   | CLI helper functions (`decide_auto`, `replace_unusual`, etc.) |
+| Rust integration (`end_to_end`)       | 90   | Mode-level byte-identity vs C across every supported flag/mode combo |
+| Rust FFI cross-validation             | ~90  | Cell-by-cell FFI equality: `G__align11`, `A__align`, `genL__align11`, warp DP, FFT, MSalignmm, PartTree pipeline, memsavetree, BB20027 weights, BB12041 distances |
+| Other integration                     | ~16  | `trace_refinement`, `integration` (mafft-io), `imp_*` |
+| Python tests                          | 32   | API, strategies, file I/O, error handling, types |
+| **Total Rust**                        | **364** | |
 
-Regression guards for C parity are in `crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity), `crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs` (PartTree pipeline equality). Any regression in DP indexing, boundary handling, FFT anchor segment gaps, retree distance, refinement-tree distance, or pairwise/profile consistency will fail at least one of these.
+Regression guards for C parity live in
+`crates/mafft-core/tests/end_to_end.rs` (mode-level byte-identity),
+`crates/mafft-core/tests/cross_validate_*.rs` (FFI-level cell/function
+equality), and `crates/mafft-tree/tests/cross_validate_parttree.rs`
+(PartTree pipeline equality). Any regression in DP indexing, boundary
+handling, FFT anchor segment gaps, retree distance,
+refinement-tree distance, or pairwise/profile consistency fails at
+least one of them.
+
+**Serialise the workspace test run** (`--test-threads=1`). One of the
+FFI cross-validation suites has a teardown-time `free()` issue under
+parallel execution; serialising avoids it. Individual suites run fine
+parallel; only the full-workspace combine triggers the flake.
 
 #### BALIBASE 3 parity sweep
 
@@ -324,74 +356,11 @@ Sweep across BALIBASE 3 (RV11–RV50, 386 protein test sets) against MAFFT 7.526
 | E-INS-i  | `--genafpair --maxiterate 1000` | **386/386** | **100.0 %** | none |
 | **G-INS-i + allowshift** | `--globalpair --maxiterate 1000 --allowshift` | **386/386** | **100.0 %** | none (2026-06-01) |
 
-**All five sweep modes — including the previously-problematic
-`--allowshift` G-INS-i — are now 386/386 byte-identical.** Total:
-**1930/1930 (100 %)** across the BALIBASE 3 protein corpus.
-
-The `--allowshift` residuals (originally 45 of 386, then 18 after
-performance work) closed via the X-strip ordering fix
-(`constraints.rs::build_homology_table_with_unalign`,
-2026-06-01). C's `pairlocalalign.c:2197` runs
-`G__align11_noalign` on X-stripped sequences *before* computing the
-distance that feeds `makedynamicmtx` (line 2207–2215). Rust was doing
-the X-strip recompute *after* the dynmtx re-run, so for X-containing
-inputs the dynamic matrix was built from the wrong distance →
-different second-alignment regions → different LH `importance` →
-final-alignment flips. Fix: compute `pscore_for_dist` upfront,
-apply `alignment.score = pscore_for_dist` unconditionally for L/G
-aligners. This also definitively disproved the previously-suspected
-"C `A__align` static-TLS state machine" hypothesis: an instrumented C
-binary that **zeros every static-TLS buffer at A__align entry**
-produces byte-identical output to vanilla C. The 45 §B.2-class
-"tied-trace" cases were a single FP-input-ordering bug all along, not
-unfixable C-side state.
-
-The earlier four INS-i residuals (BB30028, BB50001 L-INS-i; BB20004
-G-INS-i; BB40004 E-INS-i) closed via FP summation-order and tree-phase
-fixes in the constrained refinement path. None was the static-TLS
-artifact once suspected. All were found by instrumenting C MAFFT and
-comparing bit patterns at `%.18e`:
-
-1. **`hat2` 3-decimal truncation** for the refinement-weights tree
-   (`engine.rs`) — C's `dvtditr` rebuilds the tree from the 3-decimal
-   `hat2` file, not the in-memory full-precision matrix. Closed
-   BB50001 (244-line residual).
-2. **printf banker's rounding for `opt`** (`constraints.rs`) — C's
-   `%7.5f` hat3 serialization rounds half-to-even; Rust's `f64::round`
-   rounds half-away-from-zero. At exact half-points (`x.x005`) they
-   disagree by 1 ULP. `format!("{:.5}", v).parse()` matches C, making
-   the importance table bit-identical (12694/12694 regions).
-3. **backward diagonal sum for `old_imp`** (`refinement.rs`) — C's
-   `tditeration.c:891` reads `imp_match_out_scD` from `i=length-1`
-   down; FP addition is non-associative, so direction matters. Closed
-   BB20004 (10-line residual).
-4. **per-segment forward `impmatch` accumulation for `new_imp`**
-   (`refinement.rs`) — C's `Falign_localhom` sums each FFT segment's
-   impmatch (backward within a segment) then accumulates forward
-   across segments (`Falign_localhom.c:816`); a single global diagonal
-   sweep diverges by ~7 ULP. Closed BB30028 (4-line residual).
-5. **phase-split constraint importance** (`engine.rs`) — C computes the
-   constraint `importance` twice with *different* trees: tbfast
-   (progressive) uses the full-precision in-memory `iscore` tree, while
-   dvtditr (refinement) re-reads the 3-decimal `hat2` tree. Rust used
-   the rounded tree for both. The progressive phase now uses the
-   full-precision tree; a second `recompute_importance` from the rounded
-   refinement tree runs before `iterative_refine`. The E-INS-i BB40004
-   divergence was purely this (the genaffine alignment + distances were
-   already bit-identical; `--treein` with C's tree gave diff=0). Closed
-   BB40004 (2901-line residual); the per-phase split also makes L/G-INS-i
-   robustly correct rather than coincidentally matching.
-
-Cell-level FFI tests (`cross_validate_cpmx`, `cross_validate_counteff`,
-`cross_validate_bb20027_dp`) prove the Rust DP and profile-building
-match C bit-for-bit on identical inputs.
-
-FFT-NS-i reached 100 % earlier via the §B.10 FFT-segmented refinement
-boundary-frequencies fix (2026-05-25): closed BB30013's 3843-line
-residual by computing per-segment `headgapfreq{1,2}` /
-`gapfreq{1,2}[lgth]` from `sgap`/`egap` via `outgapcount` (mirroring
-C `Salignmm.c:1585-1622`) instead of defaulting `BoundaryFreqs` to
-1.0. Full writeup in `TODO.md §B.10`.
+Total: **1930/1930 alignments byte-identical** to C MAFFT 7.526
+across the BALIBASE 3 protein corpus. Cell-level FFI tests
+(`cross_validate_cpmx`, `cross_validate_counteff`,
+`cross_validate_bb20027_dp`) additionally prove the Rust DP and
+profile-building match C bit-for-bit on identical inputs.
 
 To reproduce:
 
@@ -402,28 +371,46 @@ scripts/balibase_parity.py /path/to/BAliBASE/ \
     --output balibase_parity.tsv
 ```
 
-Full investigation log: `balibase_parity_run.md`.
-
 ## Known limitations
 
-### `--xinsi` (untestable)
+### External-dependency-blocked modes
 
-Wired correctly but requires Stanford's `CONTRAfold v2.02+` binary, which is not shipped by upstream MAFFT. The binary emits a "contrafold not found" diagnostic when run without the external dependency. See `TODO.md` §D.
+These three modes are wired correctly but require third-party binaries
+not shipped by upstream MAFFT; end-to-end validation depends on the
+binary being on `PATH`:
 
-### Missing CLI flags
+- **`--xinsi` (X-INS-i)** — needs Stanford's
+  [CONTRAfold v2.02+](http://contra.stanford.edu/contrafold/). Emits a
+  "contrafold not found" diagnostic if absent.
+- **`--qinsi` (Q-INS-i)** — needs `mxscarnamod` built from
+  `mafft-upstream/extensions`.
+- **`--scarnalike`** — needs `dash_client` in `PATH`.
 
-None. Every user-visible MAFFT 7.526 CLI flag is implemented and
-byte-identical to C on the 36-seq test sample AND across all 386
-BALIBASE 3 protein test sets (verified for FFT-NS-i, L-INS-i, G-INS-i,
-E-INS-i, and `--allowshift` G-INS-i, all at `--maxiterate 1000`).
+### Unsupported CLI flags
 
-The remaining `TODO.md` items are:
-- `--xinsi` untestable until Stanford's `contrafold` is installed
-  (§D — wired and emits the correct "contrafold not found" diagnostic).
+The Rust binary covers every CLI flag exercised by the BALIBASE 3
+sweep and every flag in the parity matrix above. A number of niche C
+MAFFT 7.526 flags are NOT implemented; see `TODO.md` "Active items"
+for the full inventory. Notable omissions:
 
-**Zero known correctness divergences** across the 36-seq protein test
-sample and the BALIBASE 3 protein corpus (1930/1930 alignments matched
-byte-for-byte to C MAFFT 7.526).
+- **No `argv[0]` shortcut dispatch.** C MAFFT ships `linsi` / `ginsi`
+  / `einsi` / `fftnsi` / `nwnsi` / `qinsi` / `xinsi` symlinks; `mafft-
+  rs` requires long-flag form. See "Migration from MAFFT (C)" below
+  for the equivalent `mafft-rs` invocations.
+- **No DNA strand auto-detection** (`--adjustdirection`,
+  `--adjustdirectionaccurately`).
+- **No alternative tree-linkage flags** (`--averagelinkage`,
+  `--minimumlinkage`, `--mixedlinkage`, `--youngestlinkage`); the C
+  default is used.
+- **No alternative iteration-strategy flags** (`--bestfirst`,
+  `--simplehillclimbing`, `--skipiterate`, `--oneiteration`).
+- **No auxiliary output flags** beyond `--format clustal/phylip` and
+  `--treeout` (`--distout`, `--scoreout`, `--mapout`, `--pileup`,
+  etc. are not implemented).
+- **No RNA-structure or PDB-structure alternative pipelines**
+  (DAFS, FoldAlign, LARA, SCARNA, MCCASKILL, RIBOSUM, RNAALIFOLD,
+  `--pdbfilelist`, `--pdbidlist`) — these are out of scope.
+- **No MPI flag** (`--mpi`) — we use Rayon.
 
 ### Case preservation
 
@@ -431,43 +418,31 @@ C preserves the input case of residues (e.g., lowercase RNA). We uppercase all r
 
 ### Performance
 
-Benchmark snapshot vs C MAFFT 7.526 (2026-06-02, macOS arm64):
+Benchmark snapshot vs C MAFFT 7.526 (macOS arm64, alternating-run medians):
 
 | Mode / input                                | C MAFFT | mafft-rs | Ratio              |
 |---------------------------------------------|---------|----------|--------------------|
 | default FFT-NS-2 (108-seq synthetic)        | 1.34s   | 1.16s    | **rust 1.16× faster** |
-| `--maxiterate 100` FFT-NS-i (36-seq sample) | 0.767s  | 0.737s   | **rust 1.04× faster** |
-| `--maxiterate 100` FFT-NS-i (BB12019)       | 0.302s  | 0.205s   | **rust 1.47× faster** |
-| `--maxiterate 100` FFT-NS-i (BB30004)       | 1.370s  | 1.384s   | rust 0.99× (within noise) |
-| `--allowshift --globalpair --maxiterate 1000` (36-seq) | 2.56s | 1.73s | **rust 1.48× faster** |
+| `--maxiterate 100` FFT-NS-i (36-seq sample) | 0.785s  | 0.670s   | **rust 1.17× faster** |
+| `--maxiterate 100` FFT-NS-i (BB12019)       | 0.333s  | 0.198s   | **rust 1.68× faster** |
+| `--maxiterate 100` FFT-NS-i (BB30004)       | 1.366s  | 1.246s   | **rust 1.10× faster** |
+| `--allowshift --globalpair --maxiterate 1000` (36-seq) | 2.586s | 1.756s | **rust 1.47× faster** |
 | `--maxiterate 50 --localpair` (108-seq)     | 37.00s  | 22.93s   | **rust 1.61× faster** |
 | `--maxiterate 50 --globalpair` (108-seq)    | 35.32s  | 22.62s   | **rust 1.56× faster** |
 | `--parttree` (108-seq)                      | 1.70s   | 0.09s    | **rust 18× faster**   |
 | `--dpparttree` (108-seq)                    | 7.24s   | 0.08s    | **rust 90× faster**   |
 
-FFT-NS-i closed 2026-06-02 — Rust is now at-or-better than C across the
-inputs we measure. The closing change was a focused pass over
-`profile_align_imp_multimtx`: `unsafe { get_unchecked }` on every hot
-inner-loop read/write, hoisting of two loop-invariants (`fgcp1[i-1]`,
-`ogcp1[i]`) out of the j-loop, slice-binding of the per-row-constant
-arrays to fixed-lifetime locals, and gating the six warp-state buffer
-allocations behind `try_warp` (so FFT-NS-i no longer pays for warp
-setup it never uses; the same gate turned out to be a 1.48× win on
-`--allowshift` itself by trimming setup time of the warp DP path too).
-Each `get_unchecked` call site is annotated with the SAFETY invariant
-that makes it sound. Full details in `TODO.md §C.2`; byte-identity to
-C MAFFT 7.526 was preserved at every step (90/90 end-to-end +
-15/15 cross-validate FFI cell-equality tests pass; direct binary diff
-is 0 on the 36-seq sample for both FFT-NS-i and `--allowshift
---globalpair --maxiterate 1000`, plus BB30004 and BB12019).
-
-Earlier-flagged §C.1 (per-group gap stripping) is documented as a
-**design choice** rather than deferred work — the modes it would have
-targeted (FFT-NS-2, L/G-INS-i, PartTree, DP-PartTree) are already
-1.16×–90× faster than C without it.
-
-SIMD-friendly patterns in `match_score()`, `pairwise_score()`,
-`pairwise_identity_distance()` auto-vectorize via LLVM.
+SIMD-friendly patterns in `match_score()`, `pairwise_score()`, and
+`pairwise_identity_distance()` auto-vectorize via LLVM. The hot inner
+DP loop (`profile_align_imp_multimtx` in
+`crates/mafft-align/src/profile.rs`) is specialised at codegen time
+via a `#[inline(always)] fn j_loop<const TW: bool, const STRICT:
+bool>` helper, dispatched from the i-loop with a 4-way match — LLVM
+strips the warp arithmetic from the FFT-NS-i path and replaces
+per-cell branches on `strict_part_tiebreak` with const choices. All
+per-call scratch vectors come from thread-local pools (`DpScratch` /
+`DP_H_POOL` / `DP_IJP_POOL`) to amortise allocation across calls,
+matching C `A__align`'s static-TLS buffer strategy.
 
 ## Upstream MAFFT
 

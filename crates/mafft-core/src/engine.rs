@@ -52,6 +52,33 @@ pub struct MafftEngine {
     /// Offset/extension penalty override (positive float, e.g. 0.123 → internal -123).
     /// None = use default.
     pub gap_offset: Option<f64>,
+    /// Gap extension penalty override (`--exp`). User passes a positive
+    /// float (e.g. `--exp 0.1`); C negates internally (`gexp = -1.0 * arg`)
+    /// and then `constants()` scales by `(int)(scale * gexp + 0.5)`
+    /// (`scale = 600/1000` for protein, `3*600/1000` for DNA). When
+    /// `Some`, overrides `scoring.gap.extend` in the same pattern as
+    /// `gap_offset` overrides `scoring.gap.offset`. Default `None` keeps
+    /// the model default (0 for protein/DNA).
+    pub gap_extend: Option<f64>,
+    /// Per-class pairwise gap params for L-INS-i (`--lop` / `--lep` /
+    /// `--lexp`). Override the hardcoded `lgop=-2.00 / laof=0.100 /
+    /// lexp=-0.100` C defaults applied in the local pairwise alignment
+    /// stage. Each `None` = use the C default.
+    pub pair_lop: Option<f64>,
+    pub pair_lep: Option<f64>,
+    pub pair_lexp: Option<f64>,
+    /// Per-class pairwise gap params for E-INS-i generalized affine
+    /// (`--gop` / `--gep` / `--gexp`). Override the C defaults
+    /// `pggop=-1.53 / pgaof=0.10 / pgexp=-0.00`. Each `None` = use the
+    /// C default.
+    pub pair_gop: Option<f64>,
+    pub pair_gep: Option<f64>,
+    pub pair_gexp: Option<f64>,
+    /// `--shiftpenalty` factor for `--allowshift`. C's `spfactor`
+    /// multiplies the gap-open penalty to derive the per-cell shift
+    /// cost: `penalty_shift = (int)(spfactor * penalty)`. Default 2.0
+    /// (the C `--allowshift` baseline). `None` keeps the default.
+    pub shift_penalty_factor: Option<f64>,
     /// Disable FFT: force pure DP for all alignment steps.
     pub nofft: bool,
     /// Enable long-range gap shift penalty (--allowshift). In MAFFT 7.526 the
@@ -127,6 +154,14 @@ impl Default for MafftEngine {
             retree: 2,
             gap_open: None,
             gap_offset: None,
+            gap_extend: None,
+            pair_lop: None,
+            pair_lep: None,
+            pair_lexp: None,
+            pair_gop: None,
+            pair_gep: None,
+            pair_gexp: None,
+            shift_penalty_factor: None,
             nofft: false,
             allowshift: false,
             unalign_level: 0.0,
@@ -147,7 +182,16 @@ impl Default for MafftEngine {
 
 impl MafftEngine {
     pub fn new(mode: AlignmentMode) -> Self {
-        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2, gap_open: None, gap_offset: None, nofft: false, allowshift: false, unalign_level: 0.0, kimura_r: None, parttree: false, dpparttree: false, groupsize: None, reorder_output: false, treein_path: None, memsavetree: false, legacy_gap_cost: false, seed_homology: None, memsave_dp: false, c_compat: false }
+        Self { mode, scoring_model: ScoringModel::Blosum(62), retree: 2,
+            gap_open: None, gap_offset: None, gap_extend: None,
+            pair_lop: None, pair_lep: None, pair_lexp: None,
+            pair_gop: None, pair_gep: None, pair_gexp: None,
+            shift_penalty_factor: None,
+            nofft: false, allowshift: false, unalign_level: 0.0,
+            kimura_r: None, parttree: false, dpparttree: false,
+            groupsize: None, reorder_output: false, treein_path: None,
+            memsavetree: false, legacy_gap_cost: false,
+            seed_homology: None, memsave_dp: false, c_compat: false }
     }
 
     /// Enable `--c-compat`: replicate C MAFFT's static-TLS cpmx
@@ -279,6 +323,15 @@ impl MafftEngine {
             }
             scoring.gap.offset = new_offset;
         }
+        // `--exp` (gap extension penalty). C: `gexp = -1.0 * arg` then
+        // `penalty_ex = (int)(scale * gexp + 0.5)` where `scale =
+        // 600/1000` (protein) or `3*600/1000` (DNA). Same shape as the
+        // `gap_open` override above.
+        if let Some(exp) = self.gap_extend {
+            let pgexp = -(exp * 1000.0) as i32;
+            let scale = if seq_type.is_nucleotide() { 3.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+            scoring.gap.extend = (scale * pgexp as f64 + 0.5) as i32;
+        }
 
         let nseq = input.nseq();
         let quiet_mode = false;
@@ -369,9 +422,28 @@ impl MafftEngine {
             // `scripts/mafft:1469-1473`: when `unalignlevel > 0` zero
             // `lexp=laof=pgexp=pgaof=0` for the pair phase.
             let unalign_active = self.unalign_level > 0.0;
-            let lgop: f64 = -2.00;
-            let lexp: f64 = if is_einsi || unalign_active { 0.0 } else { -0.100 };
-            let laof: f64 = if is_einsi || unalign_active { 0.0 } else { 0.100 };
+            // Pair-phase gap defaults. C scripts/mafft assigns these per
+            // mode. Both L-INS-i and E-INS-i pairwise alignment use
+            // `lgop`/`lexp`/`laof` (the "L-INS" gap params); `--lop` /
+            // `--lep` / `--lexp` override. The `pggop`/`pgaof`/`pgexp`
+            // family (set by `--gop`/`--gep`/`--gexp` in C) is reserved
+            // for the X-INS-i / Q-INS-i RNA pipelines which we don't
+            // exercise — surfacing them at the CLI but they are
+            // currently inert for protein/DNA workflows. For E-INS-i,
+            // `lexp` and `laof` are forced to 0 (the generalized-affine
+            // skip-gap cost — `lgop_op = LGOP = -6.00` below — covers
+            // long-range gaps instead).
+            let lgop: f64 = self.pair_lop.unwrap_or(-2.00);
+            let lexp: f64 = if is_einsi || unalign_active {
+                self.pair_lexp.unwrap_or(0.0)
+            } else {
+                self.pair_lexp.unwrap_or(-0.100)
+            };
+            let laof: f64 = if is_einsi || unalign_active {
+                self.pair_lep.unwrap_or(0.0)
+            } else {
+                self.pair_lep.unwrap_or(0.100)
+            };
             // E-INS-i extras (`scripts/mafft:198-199`):
             //   LGOP=-6.00 → ppenalty_OP (skip-gap open).
             //   LEXP= 0.0 → ppenalty_EX (skip-gap extend, unused; C
@@ -392,7 +464,7 @@ impl MafftEngine {
             // (`constants.c:318`). For pair phase: penalty = -1199, sp = 2.0,
             // so penalty_shift = -2398.
             if self.unalign_level > 0.0 {
-                let spfactor = 2.0f64;
+                let spfactor = self.shift_penalty_factor.unwrap_or(2.0);
                 let penalty_shift = (spfactor * pair_gap.open) as i32 as f64;
                 pair_gap.shift = Some(penalty_shift);
             }
@@ -621,7 +693,8 @@ impl MafftEngine {
             // and gives `penalty_shift = 2.0 * penalty`. The previous "0.8"
             // here was confused with `unalignlevel = 0.8` — different knob.
             let shift = if self.allowshift {
-                Some(2.0 * scoring.gap.open as f64)
+                let spfactor = self.shift_penalty_factor.unwrap_or(2.0);
+                Some(spfactor * scoring.gap.open as f64)
             } else {
                 None
             };
@@ -887,7 +960,8 @@ impl MafftEngine {
                 // profile DP enables the warp/shift state (already ported in
                 // `profile_align_imp_with_boundary` via `gap.shift`).
                 let refine_shift = if self.allowshift {
-                    Some((2.0 * scoring.gap.open as f64) as i32 as f64)
+                    let spfactor = self.shift_penalty_factor.unwrap_or(2.0);
+                    Some((spfactor * scoring.gap.open as f64) as i32 as f64)
                 } else {
                     None
                 };

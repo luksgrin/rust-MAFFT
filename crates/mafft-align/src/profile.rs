@@ -23,9 +23,78 @@ use crate::dp::{AlignOp, Alignment, GapModel};
 // buffer amortisation — see `MAFFT_UPSTREAM_REPORT.md` for the
 // downstream effect on tied-cell traceback). RefCell because the DP
 // body needs `&mut` to the rows.
+/// Per-thread scratch buffers reused across `profile_align_imp_multimtx`
+/// calls. Mirrors C `A__align`'s `static TLS` strategy — every field is
+/// either fully overwritten before read on each call, or explicitly
+/// reset by the function before use, so cross-call data carried in the
+/// buffer never leaks into the alignment.
+///
+/// Profile (BB30004 post-const-generic-split, 2026-06-02) showed the
+/// per-call vec allocations inside `profile_align_imp_multimtx` summing
+/// to ~3–4 % of total runtime: `cpmx{1,2}_sparse` (nested
+/// `Vec<Vec<(usize, f64)>>` allocations), four gap-cost Vecs of size
+/// `n+1` / `m+1`, plus six per-row dense Vecs (`mj`, `mpj`, `currentw`,
+/// `previousw`, `initverticalw`, `lastverticalw`), plus `scarr`
+/// (allocated *per row* inside `match_calc_row`, so `~n` allocs per DP
+/// call), plus six warp-state Vecs when `try_warp == true`. All of them
+/// move here.
+#[derive(Default)]
+struct DpScratch {
+    ogcp1: Vec<f64>,
+    fgcp1: Vec<f64>,
+    ogcp2: Vec<f64>,
+    fgcp2: Vec<f64>,
+    initverticalw: Vec<f64>,
+    currentw: Vec<f64>,
+    previousw: Vec<f64>,
+    lastverticalw: Vec<f64>,
+    mj: Vec<f64>,
+    mpj: Vec<usize>,
+    scarr: Vec<f64>,
+    cpmx1_sparse: Vec<Vec<(usize, f64)>>,
+    cpmx2_sparse: Vec<Vec<(usize, f64)>>,
+    wmrecords: Vec<f64>,
+    prevwmrecords: Vec<f64>,
+    warpi: Vec<i32>,
+    warpj: Vec<i32>,
+    prevwarpi: Vec<i32>,
+    prevwarpj: Vec<i32>,
+    warpis: Vec<i32>,
+    warpjs: Vec<i32>,
+}
+
+impl DpScratch {
+    const fn new() -> Self {
+        Self {
+            ogcp1: Vec::new(),
+            fgcp1: Vec::new(),
+            ogcp2: Vec::new(),
+            fgcp2: Vec::new(),
+            initverticalw: Vec::new(),
+            currentw: Vec::new(),
+            previousw: Vec::new(),
+            lastverticalw: Vec::new(),
+            mj: Vec::new(),
+            mpj: Vec::new(),
+            scarr: Vec::new(),
+            cpmx1_sparse: Vec::new(),
+            cpmx2_sparse: Vec::new(),
+            wmrecords: Vec::new(),
+            prevwmrecords: Vec::new(),
+            warpi: Vec::new(),
+            warpj: Vec::new(),
+            prevwarpi: Vec::new(),
+            prevwarpj: Vec::new(),
+            warpis: Vec::new(),
+            warpjs: Vec::new(),
+        }
+    }
+}
+
 thread_local! {
     static DP_H_POOL: RefCell<Vec<Vec<f64>>> = const { RefCell::new(Vec::new()) };
     static DP_IJP_POOL: RefCell<Vec<Vec<i32>>> = const { RefCell::new(Vec::new()) };
+    static DP_SCRATCH: RefCell<DpScratch> = const { RefCell::new(DpScratch::new()) };
     /// `--c-compat` opt-in: mirrors C's `static TLS` memoization in
     /// `Salignmm.c::A__align` (lines 1091-1094, 1446-1450, 2203-2206).
     /// When `Profile::from_aligned_with_memo` is called repeatedly with
@@ -85,6 +154,7 @@ impl CpmxMemoState {
 pub fn reset_dp_pools() {
     DP_H_POOL.with_borrow_mut(|p| p.clear());
     DP_IJP_POOL.with_borrow_mut(|p| p.clear());
+    DP_SCRATCH.with_borrow_mut(|s| *s = DpScratch::new());
 }
 
 /// Reset C-compat memoization on this thread. Engine calls this at the
@@ -723,6 +793,225 @@ pub fn profile_align_imp_with_boundary(
 /// del) instead of the single `matrix`; everything else (gaps, imp, warp,
 /// traceback) is identical. When `None`, behaviour is byte-for-byte the
 /// original single-matrix path.
+/// Batch `match_calc` for a single row of the profile DP — extracted
+/// from `profile_align_imp_multimtx` so the body can be a plain function
+/// (rather than a closure) and the caller can keep mutable ownership of
+/// the pooled `scarr` buffer across calls. Mirrors C's `match_calc`
+/// (Salignmm.c lines 216-223) plus the partA__align variant when
+/// `multi` is `Some`. Writes into `output[0..m]`.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn match_calc_row_into(
+    row_pos: usize,
+    output: &mut [f64],
+    scarr: &mut [f64],
+    multi: Option<&crate::multimtx::MultiMtx>,
+    n: usize, m: usize, nalpha: usize,
+    matrix: &[Vec<f64>],
+    prof1_freqs: &[Vec<f64>],
+    cpmx2_sparse: &[Vec<(usize, f64)>],
+) {
+    if let Some(mm) = multi {
+        // Multi-distance-class match (C partA__align_variousdist). C's
+        // calloc'd arrays give zeros for row_pos >= n (tail row).
+        if row_pos >= n {
+            for j in 0..m { output[j] = 0.0; }
+        } else {
+            // match_row_into reuses caller's buffer (avoids per-row
+            // Vec allocation; hot path in --allowshift refinement).
+            mm.match_row_into(row_pos, &mut output[..m]);
+        }
+        return;
+    }
+    if row_pos >= n {
+        // Out-of-bounds: C's calloc'd arrays produce zeros here
+        for j in 0..m {
+            output[j] = 0.0;
+        }
+        return;
+    }
+    for l in 0..nalpha {
+        scarr[l] = 0.0;
+        for j in 0..nalpha {
+            // C's match_calc compiled with `gcc -O3` fuses
+            // `scarr[l] += a * b` into FMA (single-rounding fused
+            // multiply-add). Rust's `+=` followed by `*` produces two
+            // rounding steps. Use `mul_add` to match C's bit pattern.
+            scarr[l] = matrix[j][l].mul_add(prof1_freqs[row_pos][j], scarr[l]);
+        }
+    }
+    for j in 0..m {
+        output[j] = 0.0;
+        for &(k, v) in &cpmx2_sparse[j] {
+            output[j] = scarr[k].mul_add(v, output[j]);
+        }
+    }
+}
+
+/// Const-generic specialisation of the profile DP inner j-loop body.
+///
+/// This is the hot kernel inside `profile_align_imp_multimtx` — called
+/// once per outer-i row. The two `const bool` parameters lift what would
+/// otherwise be per-cell runtime branches on `try_warp` and
+/// `strict_part_tiebreak` into codegen-time choices:
+///
+/// - `TW = false` → the warp DP code is dead and LLVM strips it. This
+///   removes ~25 lines of body, ~12 register pressures (warp state vars),
+///   and the i-cache footprint of the warp arithmetic from the FFT-NS-i /
+///   L/G/E-INS-i hot path. In that branch the warp slices arrive as
+///   `&[]` / `&mut []` (cheap, valid, never accessed).
+/// - `STRICT = true` → use strict `>` for the `mi`/`mj` tie-break
+///   (mirrors C's `partA__align`). `false` → use `>=` (mirrors C's
+///   `A__align`). Per-cell branch becomes a const choice.
+///
+/// The caller (the outer i-loop) dispatches once per row with
+/// `match (try_warp, strict_part_tiebreak) { ... }` — a single
+/// fully-predicted branch amortised over `m` cells.
+///
+/// SAFETY invariants (apply to every `get_unchecked` call below):
+///   - `j` ranges `1..=m`.
+///   - `prev_s`, `cur_s`, `ogcp2_s`, `fgcp2_s`, `mj_s`, `mpj_s`,
+///     `h_row`, `ijp_row` are sized `m+1`, so indices in `{0..=m}` are
+///     in-bounds.
+///   - `prof2_ngf` is sized `m`; `j-1` always in `0..=m-1 < m`; the read
+///     at index `j` is guarded `if j < m`.
+///   - Under `TW = true`: `wmrecords`, `prevwmrecords`, `warpi`,
+///     `warpj`, `prevwarpi`, `prevwarpj` are sized `m+1`; the
+///     `warpis[warpn-1]` / `warpjs[warpn-1]` reads are inside the
+///     `warpn > 0` guard.
+///   - Under `TW = false`: every warp-state access is statically gated
+///     behind `if TW { ... }` and never executes — the empty-slice args
+///     are inert.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn j_loop<const TW: bool, const STRICT: bool>(
+    m: usize, i: usize,
+    h_row: &mut [f64], ijp_row: &mut [i32],
+    cur_s: &mut [f64], prev_s: &[f64],
+    ogcp2_s: &[f64], fgcp2_s: &[f64],
+    mj_s: &mut [f64], mpj_s: &mut [usize],
+    prof2_ngf: &[f64],
+    gf1_i: f64, gf1_im1: f64,
+    fgcp1_im1: f64, ogcp1_i: f64,
+    boundary_tail2: f64, f_ext: f64,
+    mi: &mut f64, mpi: &mut usize,
+    // warp state (only touched when TW == true):
+    fpenalty_shift: f64, warpbase: i32,
+    wmrecords: &mut [f64], prevwmrecords: &[f64],
+    warpi: &mut [i32], warpj: &mut [i32],
+    prevwarpi: &[i32], prevwarpj: &[i32],
+    warpis: &mut Vec<i32>, warpjs: &mut Vec<i32>,
+    warpn: &mut usize,
+) {
+    let mut mi_v = *mi;
+    let mut mpi_v = *mpi;
+    for j in 1..=m {
+        // Out-of-bounds positions in nongap_freq correspond to C's
+        // gapfreq1[lgth1] / gapfreq2[lgth2] which take on egap-derived
+        // values when partA__align is given sgap/egap
+        // (boundary.tail{1,2}) and 1.0 otherwise.
+        let gf2_j = if j < m {
+            unsafe { *prof2_ngf.get_unchecked(j) }
+        } else { boundary_tail2 };
+        let gf2_jm1 = unsafe { *prof2_ngf.get_unchecked(j - 1) };
+
+        let prevw_jm1 = unsafe { *prev_s.get_unchecked(j - 1) };
+        let mut wm = prevw_jm1;
+        unsafe { *ijp_row.get_unchecked_mut(j) = 0; }
+
+        let g_jskip = unsafe { fgcp2_s.get_unchecked(j - 1).mul_add(gf1_i, mi_v) };
+        if g_jskip > wm {
+            wm = g_jskip;
+            unsafe { *ijp_row.get_unchecked_mut(j) = -(j as i32 - mpi_v as i32); }
+        }
+
+        let g = unsafe { ogcp2_s.get_unchecked(j).mul_add(gf1_im1, prevw_jm1) };
+        let mi_update = if STRICT { g > mi_v } else { g >= mi_v };
+        if mi_update {
+            mi_v = g;
+            mpi_v = j - 1;
+        }
+        // C `Salignmm.c:1933`: `mi += fpenalty_ex;` — unconditional.
+        mi_v += f_ext;
+
+        let mj_j = unsafe { *mj_s.get_unchecked(j) };
+        let g_iskip = fgcp1_im1.mul_add(gf2_j, mj_j);
+        if g_iskip > wm {
+            wm = g_iskip;
+            unsafe {
+                *ijp_row.get_unchecked_mut(j) =
+                    i as i32 - *mpj_s.get_unchecked(j) as i32;
+            }
+        }
+
+        let g = ogcp1_i.mul_add(gf2_jm1, prevw_jm1);
+        let mj_update = if STRICT { g > mj_j } else { g >= mj_j };
+        if mj_update {
+            unsafe {
+                *mj_s.get_unchecked_mut(j) = g;
+                *mpj_s.get_unchecked_mut(j) = i - 1;
+            }
+        }
+        // C `Salignmm.c:1953`: `m[j] += fpenalty_ex;` — unconditional.
+        unsafe { *mj_s.get_unchecked_mut(j) += f_ext; }
+
+        // Warp candidate (`Salignmm.c:1957-2003`). `if TW` is a
+        // codegen-time choice; LLVM strips this entire block in the
+        // TW=false specialisation.
+        if TW {
+            let pwi_jm1 = unsafe { *prevwarpi.get_unchecked(j - 1) };
+            let pwj_jm1 = unsafe { *prevwarpj.get_unchecked(j - 1) };
+            let pwm_jm1 = unsafe { *prevwmrecords.get_unchecked(j - 1) };
+            let fpenalty_tmp = fpenalty_shift
+                + f_ext * ((i as i32 - pwi_jm1) as f64
+                         + (j as i32 - pwj_jm1) as f64);
+            let g = pwm_jm1 + fpenalty_tmp;
+            if g > wm {
+                if *warpn > 0
+                    && pwi_jm1 == unsafe { *warpis.get_unchecked(*warpn - 1) }
+                    && pwj_jm1 == unsafe { *warpjs.get_unchecked(*warpn - 1) }
+                {
+                    unsafe { *ijp_row.get_unchecked_mut(j) = warpbase + (*warpn as i32) - 1; }
+                } else {
+                    unsafe { *ijp_row.get_unchecked_mut(j) = warpbase + (*warpn as i32); }
+                    warpis.push(pwi_jm1);
+                    warpjs.push(pwj_jm1);
+                    *warpn += 1;
+                }
+                wm = g;
+            }
+        }
+
+        unsafe {
+            let c = cur_s.get_unchecked_mut(j);
+            *c += wm;
+            *h_row.get_unchecked_mut(j) = *c;
+        }
+
+        // Update wmrecords[j] / warpi[j] / warpj[j] (`Salignmm.c:1987-1998`).
+        // TW=false strips this whole block too.
+        if TW {
+            unsafe {
+                let wmr_jm1 = *wmrecords.get_unchecked(j - 1);
+                let wmr_j = wmrecords.get_unchecked_mut(j);
+                if wmr_jm1 > *wmr_j {
+                    *wmr_j = wmr_jm1;
+                    *warpi.get_unchecked_mut(j) = *warpi.get_unchecked(j - 1);
+                    *warpj.get_unchecked_mut(j) = *warpj.get_unchecked(j - 1);
+                }
+                let curm = *cur_s.get_unchecked(j);
+                if curm > *wmr_j {
+                    *wmr_j = curm;
+                    *warpi.get_unchecked_mut(j) = i as i32;
+                    *warpj.get_unchecked_mut(j) = j as i32;
+                }
+            }
+        }
+    }
+    *mi = mi_v;
+    *mpi = mpi_v;
+}
+
 pub fn profile_align_imp_multimtx(
     prof1: &Profile,
     prof2: &Profile,
@@ -765,6 +1054,22 @@ pub fn profile_align_imp_multimtx(
         );
     }
 
+    // Take all per-call scratch from the thread-local pool. The Vecs are
+    // pre-allocated from prior calls, sized to whatever the largest input
+    // on this thread has been so far. We then `clear()` + `push` or
+    // `resize` each one as needed; the underlying buffer is reused when
+    // the capacity already fits. Matches the C `A__align` static-TLS
+    // amortisation. Put back into the pool at the bottom of the function.
+    let DpScratch {
+        mut ogcp1, mut fgcp1, mut ogcp2, mut fgcp2,
+        mut initverticalw, mut currentw, mut previousw, mut lastverticalw,
+        mut mj, mut mpj, mut scarr,
+        mut cpmx1_sparse, mut cpmx2_sparse,
+        mut wmrecords, mut prevwmrecords,
+        mut warpi, mut warpj, mut prevwarpi, mut prevwarpj,
+        mut warpis, mut warpjs,
+    } = DP_SCRATCH.with_borrow_mut(std::mem::take);
+
     // Compute position-specific gap cost profiles matching C's formula:
     // ogcp[i] = 0.5 * (1.0 - opening_count[i]) * penalty * nongap_freq[i]
     // fgcp[i] = 0.5 * (1.0 - closing_count[i]) * penalty * nongap_freq[i]
@@ -773,23 +1078,19 @@ pub fn profile_align_imp_multimtx(
     // so positions beyond the profile length are 0.0 (from calloc).
     // The DP loop accesses ogcp2[j] where j goes 1..lgth2, so the last
     // element accessed is ogcp2[lgth2] = 0.0. We add a trailing 0.0
-    // to match this behavior.
+    // to match this behavior. Pooled — `clear()` releases stale contents
+    // but keeps the heap buffer; `push` reuses capacity when sufficient.
     let penalty = gap.open;
-    // Pre-allocate to exact final size (n+1, m+1) to skip the
-    // `RawVec::grow_one` realloc chain that profiling showed accounts
-    // for ~5 % of FFT-NS-i total time. The `.collect()` form did
-    // ~log2(n) reallocs as the Vec doubled; `with_capacity` is one
-    // alloc at the correct size.
-    let mut ogcp1: Vec<f64> = Vec::with_capacity(n + 1);
+    ogcp1.clear(); ogcp1.reserve(n + 1);
     for i in 0..n { ogcp1.push(0.5 * (1.0 - prof1.ogcp[i]) * penalty * prof1.nongap_freq[i]); }
     ogcp1.push(0.0); // C's calloc padding
-    let mut fgcp1: Vec<f64> = Vec::with_capacity(n + 1);
+    fgcp1.clear(); fgcp1.reserve(n + 1);
     for i in 0..n { fgcp1.push(0.5 * (1.0 - prof1.fgcp[i]) * penalty * prof1.nongap_freq[i]); }
     fgcp1.push(0.0);
-    let mut ogcp2: Vec<f64> = Vec::with_capacity(m + 1);
+    ogcp2.clear(); ogcp2.reserve(m + 1);
     for j in 0..m { ogcp2.push(0.5 * (1.0 - prof2.ogcp[j]) * penalty * prof2.nongap_freq[j]); }
     ogcp2.push(0.0);
-    let mut fgcp2: Vec<f64> = Vec::with_capacity(m + 1);
+    fgcp2.clear(); fgcp2.reserve(m + 1);
     for j in 0..m { fgcp2.push(0.5 * (1.0 - prof2.fgcp[j]) * penalty * prof2.nongap_freq[j]); }
     fgcp2.push(0.0);
 
@@ -805,67 +1106,37 @@ pub fn profile_align_imp_multimtx(
 
     // Build sparse representation of prof2 (C's cpmxpd/cpmxpdn, lines 196-212).
     // For each position j, store only non-zero (alphabet_index, frequency) pairs.
-    // Preallocated to skip RawVec::grow_one chain.
-    let mut cpmx2_sparse: Vec<Vec<(usize, f64)>> = Vec::with_capacity(m);
+    // Pooled: shrink/grow the outer Vec to length m; clear each inner Vec
+    // (preserving its capacity) before refilling. For Vec<Vec<...>> this is
+    // a big win — the inner allocations are the expensive ones.
+    if cpmx2_sparse.len() < m {
+        cpmx2_sparse.resize_with(m, Vec::new);
+    } else {
+        cpmx2_sparse.truncate(m);
+    }
     for j in 0..m {
-        let mut entries: Vec<(usize, f64)> = Vec::with_capacity(nalpha);
+        let entries = &mut cpmx2_sparse[j];
+        entries.clear();
+        entries.reserve(nalpha);
         for l in 0..nalpha {
             let v = prof2.freqs[j][l];
             if v != 0.0 {
                 entries.push((l, v));
             }
         }
-        cpmx2_sparse.push(entries);
     }
 
-    // Batch match_calc: compute scarr once per row, dot with sparse prof2.
-    // C's exact loop order (lines 216-223):
-    //   for l in 0..nalphabets:
-    //     scarr[l] = 0
-    //     for j in 0..nalphabets:
-    //       scarr[l] += matrix[j][l] * cpmx1[j][position]
-    // C's match_calc writes to output[0..lgth2-1] (0-based, no +1 shift).
-    // At the tail row (row_pos == n), C's over-allocated arrays give zeros.
-    let match_calc_row = |row_pos: usize, output: &mut [f64]| {
-        if let Some(mm) = multi {
-            // Multi-distance-class match (C partA__align_variousdist). C's
-            // calloc'd arrays give zeros for row_pos >= n (tail row).
-            if row_pos >= n {
-                for j in 0..m { output[j] = 0.0; }
-            } else {
-                // match_row_into reuses caller's buffer (avoids per-row
-                // Vec allocation; hot path in --allowshift refinement).
-                mm.match_row_into(row_pos, &mut output[..m]);
-            }
-            return;
-        }
-        if row_pos >= n {
-            // Out-of-bounds: C's calloc'd arrays produce zeros here
-            for j in 0..m {
-                output[j] = 0.0;
-            }
-            return;
-        }
-        let mut scarr = vec![0.0f64; nalpha];
-        for l in 0..nalpha {
-            scarr[l] = 0.0;
-            for j in 0..nalpha {
-                // C's match_calc compiled with `gcc -O3` fuses
-                // `scarr[l] += a * b` into FMA (single-rounding fused
-                // multiply-add). Rust's `+=` followed by `*` produces two
-                // rounding steps. Use `mul_add` to match C's bit pattern.
-                let m = matrix[j][l];
-                let f = prof1.freqs[row_pos][j];
-                scarr[l] = m.mul_add(f, scarr[l]);
-            }
-        }
-        for j in 0..m {
-            output[j] = 0.0;
-            for &(k, v) in &cpmx2_sparse[j] {
-                output[j] = scarr[k].mul_add(v, output[j]);
-            }
-        }
-    };
+    // Ensure scarr has nalpha slots; cleared lazily per-row inside
+    // `match_calc_row_into` (each cell is fully overwritten by the
+    // `for l` loop before any read in the `for j` accumulator below).
+    if scarr.len() < nalpha {
+        scarr.resize(nalpha, 0.0);
+    }
+
+    // `match_calc_row_into` (module-level helper below) computes the
+    // batch match-score row for row index `row_pos`, writing into
+    // `output[0..m]`. Reusable scratch (`scarr`) is passed in by &mut
+    // so the helper doesn't allocate.
 
     // h matrix (need full for traceback) and ijp.
     //
@@ -882,18 +1153,22 @@ pub fn profile_align_imp_multimtx(
 
     // initverticalw (C line 776): match_calc with prof2 pos 0 vs all prof1 positions.
     // C calls match_calc with swapped profiles: cpmx2pt first, cpmx1pt second.
-    let mut cpmx1_sparse: Vec<Vec<(usize, f64)>> = Vec::with_capacity(n);
+    // Pooled (same Vec<Vec<...>> reuse pattern as cpmx2_sparse above).
+    if cpmx1_sparse.len() < n {
+        cpmx1_sparse.resize_with(n, Vec::new);
+    } else {
+        cpmx1_sparse.truncate(n);
+    }
     for i in 0..n {
-        // Sparse entries per col have at most `nalpha` non-zeros; preallocate
-        // to skip the `RawVec::grow_one` realloc chain.
-        let mut entries: Vec<(usize, f64)> = Vec::with_capacity(nalpha);
+        let entries = &mut cpmx1_sparse[i];
+        entries.clear();
+        entries.reserve(nalpha);
         for l in 0..nalpha {
             let v = prof1.freqs[i][l];
             if v != 0.0 {
                 entries.push((l, v));
             }
         }
-        cpmx1_sparse.push(entries);
     }
 
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
@@ -904,23 +1179,33 @@ pub fn profile_align_imp_multimtx(
     // `match_calc_row` above. Without this, --tm 200 / flat-landscape
     // matrices accumulate 1-ULP boundary differences that flip DP
     // tie-breaks in the first retree pass (§B.2).
-    let mut initverticalw = vec![0.0f64; n + 1];
+    //
+    // Pooled: resize-to-fill (n+1 zeros). Entry [n] is C's calloc padding;
+    // entries [0..n] are explicitly overwritten by the if/else below.
+    initverticalw.clear();
+    initverticalw.resize(n + 1, 0.0);
     if let Some(mm) = multi {
         // C `partSalignmm.c:1764-1769`: fillzero + swapped per-class add/del.
         let col = mm.match_col(n);
         initverticalw[..n].copy_from_slice(&col[..n]);
     } else {
-        let mut scarr = vec![0.0f64; nalpha];
+        // Reuse the pooled `scarr_buf` (already sized to nalpha and used
+        // by `match_calc_row`). We're outside the closure's call window so
+        // no aliasing concern. — Actually we can't; the closure captured
+        // it by move. Use a small stack-allocated array via Vec instead.
+        // The boundary init runs once per call so the alloc cost is
+        // negligible vs the inner DP.
+        let mut bcarr: Vec<f64> = vec![0.0f64; nalpha];
         for l in 0..nalpha {
-            scarr[l] = 0.0;
+            bcarr[l] = 0.0;
             for j in 0..nalpha {
-                scarr[l] = matrix[j][l].mul_add(prof2.freqs[0][j], scarr[l]);
+                bcarr[l] = matrix[j][l].mul_add(prof2.freqs[0][j], bcarr[l]);
             }
         }
         for i in 0..n {
             initverticalw[i] = 0.0;
             for &(k, v) in &cpmx1_sparse[i] {
-                initverticalw[i] = scarr[k].mul_add(v, initverticalw[i]);
+                initverticalw[i] = bcarr[k].mul_add(v, initverticalw[i]);
             }
         }
     }
@@ -947,22 +1232,25 @@ pub fn profile_align_imp_multimtx(
     // currentw (C line 779): match_calc with prof1 pos 0 vs all prof2 positions.
     // C fills currentw[0..lgth2-1] (0-based), then adds gap to [1..lgth2].
     // Result: [0] = pure match score (no gap), [1..m-1] = match + gap, [m] = 0 + gap.
-    let mut currentw = vec![0.0f64; m + 1];
+    // Pooled.
+    currentw.clear();
+    currentw.resize(m + 1, 0.0);
     if let Some(mm) = multi {
         let row = mm.match_row(0, m);
         currentw[..m].copy_from_slice(&row[..m]);
     } else {
-        let mut scarr = vec![0.0f64; nalpha];
+        // Same pattern as initverticalw above — small boundary-init buffer.
+        let mut bcarr: Vec<f64> = vec![0.0f64; nalpha];
         for l in 0..nalpha {
-            scarr[l] = 0.0;
+            bcarr[l] = 0.0;
             for j in 0..nalpha {
-                scarr[l] = matrix[j][l].mul_add(prof1.freqs[0][j], scarr[l]);
+                bcarr[l] = matrix[j][l].mul_add(prof1.freqs[0][j], bcarr[l]);
             }
         }
         for j in 0..m {
             currentw[j] = 0.0;
             for &(k, v) in &cpmx2_sparse[j] {
-                currentw[j] = scarr[k].mul_add(v, currentw[j]);
+                currentw[j] = bcarr[k].mul_add(v, currentw[j]);
             }
         }
     }
@@ -1016,8 +1304,13 @@ pub fn profile_align_imp_multimtx(
     for j in 0..=m { h[0][j] = currentw[j]; }
     for i in 0..=n { h[i][0] = initverticalw[i]; }
 
-    let mut mj = vec![f64::NEG_INFINITY; m + 1];
-    let mut mpj = vec![0usize; m + 1];
+    // Pooled. The DP body reads mj[j] / mpj[j] only for j in 1..=m, so
+    // mj[0]/mpj[0] never matter. mj[1..=m] is initialised by the loop
+    // immediately below; mpj[1..=m] gets written there too.
+    mj.clear();
+    mj.resize(m + 1, f64::NEG_INFINITY);
+    mpj.clear();
+    mpj.resize(m + 1, 0);
     for j in 1..=m {
         let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(0.0);
         // FMA: same rationale as the inner DP gap-candidate computations
@@ -1102,8 +1395,18 @@ pub fn profile_align_imp_multimtx(
     for i in 0..=n { ijp[i][0] = i as i32 + 1; }
     for j in 0..=m { ijp[0][j] = -(j as i32 + 1); }
 
-    let mut previousw = vec![0.0f64; m + 1];
-    let mut lastverticalw = vec![0.0f64; n + 1];
+    // Pooled. previousw is fully overwritten by the i-loop swap (mem::swap
+    // with currentw), then index 0 is set from initverticalw[i-1]; the rest
+    // is overwritten by match_calc_row. The first iteration's swap makes
+    // previousw = (the freshly-built currentw); the initial contents of
+    // previousw[1..m] are never read. Zero-fill is cosmetic but cheap.
+    previousw.clear();
+    previousw.resize(m + 1, 0.0);
+    // lastverticalw[0] is set immediately below; lastverticalw[i] is set
+    // each row (`lastverticalw[i] = currentw[m - 1];`). Resize-with-zero
+    // is fine.
+    lastverticalw.clear();
+    lastverticalw.resize(n + 1, 0.0);
     lastverticalw[0] = currentw[m - 1];
 
     // Warp DP state (`Salignmm.c:1255-1281,1888-2022`). Activates when
@@ -1116,37 +1419,46 @@ pub fn profile_align_imp_multimtx(
     let warpbase: i32 = (n + m) as i32;
     let neg_warpbase: i32 = -warpbase;
     let mut warpn: usize = 0;
-    let mut warpis: Vec<i32> = Vec::new();
-    let mut warpjs: Vec<i32> = Vec::new();
+    // Pooled. `warpis` / `warpjs` start empty and grow as warp anchors are
+    // discovered; previous-call entries must NOT carry over. `clear()`
+    // truncates length to 0 while keeping the heap buffer (capacity), so
+    // subsequent `push` calls don't reallocate as long as the anchor count
+    // doesn't exceed the high-water mark.
+    warpis.clear();
+    warpjs.clear();
     // C uses `AllocateFloatVec` (calloc) → zero-init, then explicitly sets
     // `wmrecords[i] = 0.0` / `prevwmrecords[i] = 0.0` (Salignmm.c:1276-1277).
     //
-    // Gate the six warp-state buffer allocations behind `try_warp`. The DP
-    // inner loop reads/writes them only inside `if try_warp { ... }` blocks,
-    // so when warp is disabled (the FFT-NS-i / L/G/E-INS-i default) the
-    // buffers are never touched. Pre-fix this was 6 × (m+1) × {8|4} byte
-    // allocations + memsets *per DP call* — wasted work in the common case.
-    // Skipping them measurably tightens FFT-NS-i on inputs with many
-    // sequences (BB30004 50-seq runs ~thousands of DP calls per refinement
-    // sweep, so a few μs per call adds up to tens of ms total).
-    let (mut wmrecords, mut prevwmrecords, mut warpi, mut warpj,
-         mut prevwarpi, mut prevwarpj): (Vec<f64>, Vec<f64>, Vec<i32>, Vec<i32>, Vec<i32>, Vec<i32>) =
-        if try_warp {
-            (
-                vec![0.0; m + 1],
-                vec![0.0; m + 1],
-                vec![neg_warpbase; m + 1],
-                vec![neg_warpbase; m + 1],
-                vec![neg_warpbase; m + 1],
-                vec![neg_warpbase; m + 1],
-            )
-        } else {
-            // Empty Vecs — never read or written by the inner loop while
-            // `try_warp == false`. The `get_unchecked` accesses inside
-            // `if try_warp { ... }` would be UB on an empty Vec, but they
-            // are statically gated and never executed in this branch.
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
-        };
+    // Pooled. When `try_warp == false` the inner loop's warp paths are
+    // statically gated (TW=false specialisation strips them), so the
+    // get_unchecked reads against empty Vecs are never executed. We leave
+    // the pooled buffers untouched in that case — no work at all.
+    // When `try_warp == true`, resize/fill each buffer (initialising to
+    // 0.0 / neg_warpbase as C does).
+    if try_warp {
+        wmrecords.clear();
+        wmrecords.resize(m + 1, 0.0);
+        prevwmrecords.clear();
+        prevwmrecords.resize(m + 1, 0.0);
+        warpi.clear();
+        warpi.resize(m + 1, neg_warpbase);
+        warpj.clear();
+        warpj.resize(m + 1, neg_warpbase);
+        prevwarpi.clear();
+        prevwarpi.resize(m + 1, neg_warpbase);
+        prevwarpj.clear();
+        prevwarpj.resize(m + 1, neg_warpbase);
+    } else {
+        // Force-empty so the inner-loop slices (`&mut wmrecords` etc.) are
+        // zero-length. The TW=false specialisation never reads them, but
+        // zero-length is the only safe state for a never-read slice.
+        wmrecords.clear();
+        prevwmrecords.clear();
+        warpi.clear();
+        warpj.clear();
+        prevwarpi.clear();
+        prevwarpj.clear();
+    }
 
     // C pads gapfreq1pt[lgth1] = 1.0 and gapfreq2pt[lgth2] = 1.0 (tditeration.c's
     // `for(i=0;i<lgth+1;i++) gapfreq[i] = 1.0 - gapfreq[i];` with calloc'd 0 → 1).
@@ -1159,7 +1471,10 @@ pub fn profile_align_imp_multimtx(
 
         // Batch match_calc for row i (C line 816: ist+i)
         // Fills currentw[0..m-1]. Position m doesn't exist in prof2.
-        match_calc_row(i, &mut currentw);
+        match_calc_row_into(
+            i, &mut currentw, &mut scarr[..nalpha],
+            multi, n, m, nalpha, matrix, &prof1.freqs, &cpmx2_sparse,
+        );
         // C: imp_match_out_vead(currentw, i, lgth2) — add impmtx[i][:] (Salignmm.c:1848).
         if let Some(imp) = impmtx {
             if i < imp.len() {
@@ -1203,18 +1518,8 @@ pub fn profile_align_imp_multimtx(
         let mpj_s: &mut [usize] = &mut mpj;
         let prev_s: &mut [f64] = &mut previousw;
         let cur_s: &mut [f64] = &mut currentw;
-        // SAFETY (the entire inner j-loop):
-        //   - j ranges 1..=m (loop bound below)
-        //   - prev_s, cur_s, ogcp2_s, fgcp2_s, mj_s, mpj_s, h_row, ijp_row
-        //     are all sized m+1, so indices in {0..=m} are in-bounds.
-        //   - prof2_ngf is sized m (== prof2.length); the gf2_j read at
-        //     index j is guarded `if j < m` (else uses boundary.tail2),
-        //     so the unchecked access is only used when j < m.
-        //   - prof2_ngf at index j-1 is always safe since j >= 1 means
-        //     j-1 in 0..=m-1 < m.
-        //   - prevwmrecords / prevwarpi / prevwarpj / wmrecords / warpi /
-        //     warpj are sized m+1; warpis / warpjs are only indexed at
-        //     warpn-1 inside the `warpn > 0` guard.
+        // SAFETY (the entire inner j-loop, inside j_loop):
+        //   - see j_loop's SAFETY doc-block.
         // Use mul_add throughout — C compiled with `gcc -O3 -mfma` (or
         // equivalent) fuses `a + b * c` into FMA (single-rounding step);
         // matching this behavior is required for bit-identity to C's
@@ -1225,130 +1530,61 @@ pub fn profile_align_imp_multimtx(
         };
         let mut mpi: usize = 0;
 
-        for j in 1..=m {
-            // Out-of-bounds positions in nongap_freq correspond to C's
-            // gapfreq1[lgth1] / gapfreq2[lgth2] which take on egap-derived
-            // values when partA__align is given sgap/egap (boundary.tail{1,2})
-            // and 1.0 otherwise (when egap is NULL → C's `gapfreq[lgth]=0.0`
-            // pre-flip → 1.0 post-flip).
-            let gf2_j = if j < m {
-                unsafe { *prof2_ngf.get_unchecked(j) }
-            } else { boundary.tail2 };
-            // SAFETY: j >= 1 → j-1 in 0..=m-1 < m == prof2_ngf.len().
-            let gf2_jm1 = unsafe { *prof2_ngf.get_unchecked(j - 1) };
-
-            // SAFETY: prev_s sized m+1, j-1 in 0..=m-1.
-            let prevw_jm1 = unsafe { *prev_s.get_unchecked(j - 1) };
-            let mut wm = prevw_jm1;
-            // SAFETY: ijp_row sized m+1, j in 1..=m.
-            unsafe { *ijp_row.get_unchecked_mut(j) = 0; }
-
-            // SAFETY: fgcp2_s sized m+1, j-1 in 0..=m-1.
-            let g_jskip = unsafe { fgcp2_s.get_unchecked(j - 1).mul_add(gf1_i, mi) };
-            if g_jskip > wm {
-                wm = g_jskip;
-                unsafe { *ijp_row.get_unchecked_mut(j) = -(j as i32 - mpi as i32); }
-            }
-
-            // SAFETY: ogcp2_s sized m+1, j in 1..=m.
-            let g = unsafe { ogcp2_s.get_unchecked(j).mul_add(gf1_im1, prevw_jm1) };
-            let mi_update = if strict_part_tiebreak { g > mi } else { g >= mi };
-            if mi_update {
-                mi = g;
-                mpi = j - 1;
-            }
-            // C `Salignmm.c:1933`: `mi += fpenalty_ex;` — unconditional extend
-            // increment to the row-running gap-skip tracker. With protein
-            // default `DEFAULTGEP_B = 0` this is a no-op, but `--exp`
-            // overrides or future DNA-mode tunings would surface this.
-            mi += f_ext;
-
-            // SAFETY: mj_s sized m+1, j in 1..=m. mpj_s likewise.
-            let mj_j = unsafe { *mj_s.get_unchecked(j) };
-            let g_iskip = fgcp1_im1.mul_add(gf2_j, mj_j);
-            if g_iskip > wm {
-                wm = g_iskip;
-                unsafe {
-                    *ijp_row.get_unchecked_mut(j) = i as i32 - *mpj_s.get_unchecked(j) as i32;
-                }
-            }
-
-            let g = ogcp1_i.mul_add(gf2_jm1, prevw_jm1);
-            let mj_update = if strict_part_tiebreak { g > mj_j } else { g >= mj_j };
-            if mj_update {
-                unsafe {
-                    *mj_s.get_unchecked_mut(j) = g;
-                    *mpj_s.get_unchecked_mut(j) = i - 1;
-                }
-            }
-            // C `Salignmm.c:1953`: `m[j] += fpenalty_ex;` — unconditional,
-            // mirrors the row tracker increment above. C allocates `m` to
-            // size `lgth2+2` so writing `m[lgth2]` is safe; our `mj` is sized
-            // `m+1` so `mj[m]` is also safe. A previous version of this code
-            // guarded with `if j < m`, but C has no such guard — the spurious
-            // guard surfaces as 1-ULP drift on the trailing column and flips
-            // tie-breaks for flat-landscape matrices (TM PAM 200).
-            unsafe { *mj_s.get_unchecked_mut(j) += f_ext; }
-
-            // Warp candidate (`Salignmm.c:1957-2003`). Allows cell (i,j) to
-            // jump back to an anchor (warpis[k], warpjs[k]) sourced from
-            // `prevwmrecords[j-1]` with cost `fpenalty_shift + fpenalty_ex
-            // * Manhattan_distance`. C uses scalar `fpenalty_ex` regardless of
-            // profile position weighting — matches our `gap.extend`.
-            if try_warp {
-                // SAFETY: prevwarpi/j sized m+1, j-1 in 0..=m-1.
-                let pwi_jm1 = unsafe { *prevwarpi.get_unchecked(j - 1) };
-                let pwj_jm1 = unsafe { *prevwarpj.get_unchecked(j - 1) };
-                let pwm_jm1 = unsafe { *prevwmrecords.get_unchecked(j - 1) };
-                let fpenalty_tmp = fpenalty_shift
-                    + f_ext * ((i as i32 - pwi_jm1) as f64
-                             + (j as i32 - pwj_jm1) as f64);
-                let g = pwm_jm1 + fpenalty_tmp;
-                if g > wm {
-                    if warpn > 0
-                        // SAFETY: warpn > 0, so warpn-1 is in 0..warpn ==
-                        // warpis.len() == warpjs.len() (we push to both
-                        // together below).
-                        && pwi_jm1 == unsafe { *warpis.get_unchecked(warpn - 1) }
-                        && pwj_jm1 == unsafe { *warpjs.get_unchecked(warpn - 1) }
-                    {
-                        unsafe { *ijp_row.get_unchecked_mut(j) = warpbase + (warpn as i32) - 1; }
-                    } else {
-                        unsafe { *ijp_row.get_unchecked_mut(j) = warpbase + (warpn as i32); }
-                        warpis.push(pwi_jm1);
-                        warpjs.push(pwj_jm1);
-                        warpn += 1;
-                    }
-                    wm = g;
-                }
-            }
-
-            // SAFETY: cur_s sized m+1, j in 1..=m. h_row sized m+1.
-            unsafe {
-                let c = cur_s.get_unchecked_mut(j);
-                *c += wm;
-                *h_row.get_unchecked_mut(j) = *c;
-            }
-
-            // Update wmrecords[j] / warpi[j] / warpj[j] (`Salignmm.c:1987-1998`).
-            if try_warp {
-                // SAFETY: wmrecords / warpi / warpj sized m+1, j in 1..=m.
-                unsafe {
-                    let wmr_jm1 = *wmrecords.get_unchecked(j - 1);
-                    let wmr_j = wmrecords.get_unchecked_mut(j);
-                    if wmr_jm1 > *wmr_j {
-                        *wmr_j = wmr_jm1;
-                        *warpi.get_unchecked_mut(j) = *warpi.get_unchecked(j - 1);
-                        *warpj.get_unchecked_mut(j) = *warpj.get_unchecked(j - 1);
-                    }
-                    let curm = *cur_s.get_unchecked(j);
-                    if curm > *wmr_j {
-                        *wmr_j = curm;
-                        *warpi.get_unchecked_mut(j) = i as i32;
-                        *warpj.get_unchecked_mut(j) = j as i32;
-                    }
-                }
-            }
+        // Dispatch the j-loop body to a const-generic specialisation.
+        // The 2×2 matrix of (TW, STRICT) lets LLVM strip the dead warp
+        // path entirely in the FFT-NS-i / L/G/E-INS-i case and replace
+        // the per-cell `if strict_part_tiebreak` branch with a constant
+        // choice. Dispatch cost is one fully-predicted branch per row,
+        // amortised over `m` inner cells.
+        match (try_warp, strict_part_tiebreak) {
+            (false, false) => j_loop::<false, false>(
+                m, i, h_row, ijp_row, cur_s, prev_s,
+                ogcp2_s, fgcp2_s, mj_s, mpj_s, prof2_ngf,
+                gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
+                boundary.tail2, f_ext,
+                &mut mi, &mut mpi,
+                fpenalty_shift, warpbase,
+                &mut wmrecords, &prevwmrecords,
+                &mut warpi, &mut warpj,
+                &prevwarpi, &prevwarpj,
+                &mut warpis, &mut warpjs, &mut warpn,
+            ),
+            (false, true) => j_loop::<false, true>(
+                m, i, h_row, ijp_row, cur_s, prev_s,
+                ogcp2_s, fgcp2_s, mj_s, mpj_s, prof2_ngf,
+                gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
+                boundary.tail2, f_ext,
+                &mut mi, &mut mpi,
+                fpenalty_shift, warpbase,
+                &mut wmrecords, &prevwmrecords,
+                &mut warpi, &mut warpj,
+                &prevwarpi, &prevwarpj,
+                &mut warpis, &mut warpjs, &mut warpn,
+            ),
+            (true, false) => j_loop::<true, false>(
+                m, i, h_row, ijp_row, cur_s, prev_s,
+                ogcp2_s, fgcp2_s, mj_s, mpj_s, prof2_ngf,
+                gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
+                boundary.tail2, f_ext,
+                &mut mi, &mut mpi,
+                fpenalty_shift, warpbase,
+                &mut wmrecords, &prevwmrecords,
+                &mut warpi, &mut warpj,
+                &prevwarpi, &prevwarpj,
+                &mut warpis, &mut warpjs, &mut warpn,
+            ),
+            (true, true) => j_loop::<true, true>(
+                m, i, h_row, ijp_row, cur_s, prev_s,
+                ogcp2_s, fgcp2_s, mj_s, mpj_s, prof2_ngf,
+                gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
+                boundary.tail2, f_ext,
+                &mut mi, &mut mpi,
+                fpenalty_shift, warpbase,
+                &mut wmrecords, &prevwmrecords,
+                &mut warpi, &mut warpj,
+                &prevwarpi, &prevwarpj,
+                &mut warpis, &mut warpjs, &mut warpn,
+            ),
         }
         lastverticalw[i] = currentw[m - 1];
 
@@ -1604,6 +1840,27 @@ pub fn profile_align_imp_multimtx(
     // the alignment.
     DP_H_POOL.with_borrow_mut(|p| std::mem::swap(p, &mut h));
     DP_IJP_POOL.with_borrow_mut(|p| std::mem::swap(p, &mut ijp));
+
+    // Return the scratch Vecs to the thread-local pool too. Each one
+    // keeps its current capacity, so the next call on this thread
+    // benefits from amortised allocation when input sizes are
+    // comparable. The `match_calc_row` closure consumed `scarr` and
+    // `cpmx2_sparse` by move (it had to so the closure could carry the
+    // mutable scarr borrow); recover them by dropping the closure and
+    // putting the moved values back via the helpers' returns. Actually
+    // simpler: we already destructured the pool at function entry, so
+    // here we only need to put each named local back.
+    DP_SCRATCH.with_borrow_mut(|s| {
+        *s = DpScratch {
+            ogcp1, fgcp1, ogcp2, fgcp2,
+            initverticalw, currentw, previousw, lastverticalw,
+            mj, mpj, scarr,
+            cpmx1_sparse, cpmx2_sparse,
+            wmrecords, prevwmrecords,
+            warpi, warpj, prevwarpi, prevwarpj,
+            warpis, warpjs,
+        };
+    });
 
     Alignment {
         seq1: Vec::new(),

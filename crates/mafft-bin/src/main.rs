@@ -102,6 +102,12 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     linewidth: usize,
 
+    /// Name field width in CLUSTAL/PHYLIP output. Default: 15 for
+    /// CLUSTAL, 10 for PHYLIP (matches C MAFFT's `clustalout_pointer` /
+    /// `phylipout_pointer`). Names longer than the field are truncated.
+    #[arg(long, value_name = "N")]
+    namelength: Option<usize>,
+
     // --- Scoring parameters ---
     /// Gap opening penalty (positive float, e.g. 1.53) [default: 1.53]
     #[arg(long)]
@@ -110,6 +116,51 @@ struct Args {
     /// Offset (gap extension-like penalty, positive float, e.g. 0.123) [default: 0.123]
     #[arg(long)]
     ep: Option<f64>,
+
+    /// Gap extension penalty (`--exp`). Positive float (e.g. 0.1); negated
+    /// internally to match C's `gexp = -1.0 * arg` convention. Default 0
+    /// (no per-residue extension cost).
+    #[arg(long)]
+    exp: Option<f64>,
+
+    /// L-INS-i pairwise gap-open (`--lop`). Signed float, no negation
+    /// (matches C: `lgop=-2.00` default). `allow_hyphen_values` so
+    /// negative numbers like `-3.0` are parsed as the value, not a flag.
+    #[arg(long, allow_hyphen_values = true)]
+    lop: Option<f64>,
+
+    /// L-INS-i pairwise offset (`--lep`). Signed float, no negation
+    /// (matches C: `laof=0.100` default).
+    #[arg(long, allow_hyphen_values = true)]
+    lep: Option<f64>,
+
+    /// L-INS-i pairwise gap-extend (`--lexp`). Signed float, no negation
+    /// (matches C: `lexp=-0.100` default).
+    #[arg(long, allow_hyphen_values = true)]
+    lexp: Option<f64>,
+
+    /// X-INS-i / Q-INS-i generalized-affine pair gap-open (`--gop`).
+    /// Inert in protein/DNA pipelines (only used by RNA structure
+    /// modes — see `TODO.md` external-dep limitations). Default
+    /// `pggop=-1.53` in C.
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
+    gop: Option<f64>,
+
+    /// X-INS-i / Q-INS-i generalized-affine pair offset (`--gep`).
+    /// Inert in protein/DNA pipelines. Default `pgaof=0.10`.
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
+    gep: Option<f64>,
+
+    /// X-INS-i / Q-INS-i generalized-affine pair gap-extend (`--gexp`).
+    /// Inert in protein/DNA pipelines. Default `pgexp=-0.10`.
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
+    gexp: Option<f64>,
+
+    /// Shift penalty factor for `--allowshift` (`--shiftpenalty`).
+    /// Multiplied by the gap-open penalty to get the per-cell shift cost.
+    /// Default 2.0 (matches C `spfactor=2.0` when `--allowshift` is on).
+    #[arg(long)]
+    shiftpenalty: Option<f64>,
 
     /// BLOSUM matrix number (30, 45, 50, 62, 80). Only used with --localpair/--globalpair when scoring with BLOSUM.
     #[arg(long)]
@@ -256,8 +307,86 @@ struct Args {
     c_compat: bool,
 }
 
+/// Apply C MAFFT shell-script defaults based on `argv[0]` basename.
+///
+/// C MAFFT ships symlinks (`linsi`, `ginsi`, `einsi`, `fftns`, `fftnsi`,
+/// `nwns`, `nwnsi`, `qinsi`, `xinsi`) plus the `mafft-` prefixed forms.
+/// Each symlink invocation sets a different combination of mode and
+/// iteration defaults — see `scripts/mafft` (the C `if [ $progname = ... ]`
+/// case-cascade) for the exact mapping. We mirror it here.
+///
+/// Reads the current executable's basename (`std::env::current_exe()`),
+/// strips an optional `mafft-` prefix, and dispatches to
+/// `apply_progname_dispatch`. The latter is a pure function so it can
+/// be unit-tested without touching the process state.
+fn apply_progname_defaults(args: &mut Args) {
+    let progname = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .map(|s| s.strip_prefix("mafft-").unwrap_or(s))
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    apply_progname_dispatch(&progname, args);
+}
+
+/// Pure dispatch step for `apply_progname_defaults`. Given the (possibly
+/// prefix-stripped) basename, override `args` fields that the user did
+/// *not* explicitly pass. For `Option<T>` fields we check `is_none()`;
+/// for boolean mode flags we check that *no* alternative mode is already
+/// on (so `linsi --globalpair` correctly switches to global pairwise).
+fn apply_progname_dispatch(progname: &str, args: &mut Args) {
+    let no_pair_mode_set =
+        !args.localpair && !args.globalpair && !args.genafpair
+        && !args.qinsi && !args.xinsi && !args.scarnalike;
+    let set_maxit_if_default = |m: &mut Option<usize>, v: usize| {
+        if m.is_none() { *m = Some(v); }
+    };
+
+    match progname {
+        "linsi" => {
+            if no_pair_mode_set { args.localpair = true; }
+            set_maxit_if_default(&mut args.maxiterate, 1000);
+        }
+        "ginsi" => {
+            if no_pair_mode_set { args.globalpair = true; }
+            set_maxit_if_default(&mut args.maxiterate, 1000);
+        }
+        "einsi" => {
+            if no_pair_mode_set { args.genafpair = true; }
+            set_maxit_if_default(&mut args.maxiterate, 1000);
+        }
+        "fftns" => {
+            // FFT-NS-2 = default; nothing to set.
+        }
+        "fftnsi" => {
+            // C: defaultiterate=2 (NOT 100). Verified
+            // `fftnsi sample` byte-identical to `mafft --maxiterate 2 sample`.
+            set_maxit_if_default(&mut args.maxiterate, 2);
+        }
+        "nwns" => {
+            if !args.nofft { args.nofft = true; }
+        }
+        "nwnsi" => {
+            if !args.nofft { args.nofft = true; }
+            set_maxit_if_default(&mut args.maxiterate, 2);
+        }
+        "qinsi" => {
+            if no_pair_mode_set { args.qinsi = true; }
+            set_maxit_if_default(&mut args.maxiterate, 1000);
+        }
+        "xinsi" => {
+            if no_pair_mode_set { args.xinsi = true; }
+            set_maxit_if_default(&mut args.maxiterate, 1000);
+        }
+        _ => {} // Not a recognised shortcut (likely "mafft-rs" or unrelated)
+    }
+}
+
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    apply_progname_defaults(&mut args);
 
     // Configure thread pool
     if args.thread > 0 {
@@ -495,6 +624,17 @@ fn main() {
     if let Some(ep) = args.ep {
         engine = engine.with_gap_offset(ep);
     }
+    // Fine-grained gap penalty overrides (--exp / --shiftpenalty /
+    // pair-phase variants). Each is `Option<f64>`; `None` keeps the C
+    // default applied inside the engine.
+    engine.gap_extend = args.exp;
+    engine.shift_penalty_factor = args.shiftpenalty;
+    engine.pair_lop = args.lop;
+    engine.pair_lep = args.lep;
+    engine.pair_lexp = args.lexp;
+    engine.pair_gop = args.gop;
+    engine.pair_gep = args.gep;
+    engine.pair_gexp = args.gexp;
     if let Some(bl) = args.bl {
         engine = engine.with_scoring_model(ScoringModel::Blosum(bl));
     }
@@ -918,6 +1058,44 @@ fn determine_mode(args: &Args) -> AlignmentMode {
     }
 }
 
+/// Derive the human-readable strategy label (e.g. `FFT-NS-2`,
+/// `L-INS-i`) for the CLUSTAL header. Mirrors what C's `scripts/mafft`
+/// passes to `f2cl -c LABEL`.
+///
+/// The label depends on the combination of pair-mode flag, `--nofft`,
+/// and `--maxiterate`. The mapping reproduces the `defaultprogname`
+/// case-cascade in `scripts/mafft`:
+///   FFT-NS-2 — default
+///   NW-NS-2  — `--nofft`
+///   FFT-NS-i — `--maxiterate N` (N > 0), no `--nofft`
+///   NW-NS-i  — `--maxiterate N` (N > 0), `--nofft`
+///   L-INS-1  — `--localpair --maxiterate 0`
+///   L-INS-i  — `--localpair --maxiterate N` (N > 0)
+///   G-INS-1  — `--globalpair --maxiterate 0`
+///   G-INS-i  — `--globalpair --maxiterate N` (N > 0)
+///   E-INS-1  — `--genafpair --maxiterate 0`
+///   E-INS-i  — `--genafpair --maxiterate N` (N > 0)
+///   Q-INS-i  — `--qinsi` (--maxiterate auto-defaults to 1000)
+///   X-INS-i  — `--xinsi` (--maxiterate auto-defaults to 1000)
+fn clustal_strategy_label(args: &Args) -> &'static str {
+    let iter = args.maxiterate.unwrap_or(0);
+    if args.localpair {
+        if iter == 0 { "L-INS-1" } else { "L-INS-i" }
+    } else if args.globalpair {
+        if iter == 0 { "G-INS-1" } else { "G-INS-i" }
+    } else if args.genafpair {
+        if iter == 0 { "E-INS-1" } else { "E-INS-i" }
+    } else if args.qinsi {
+        "Q-INS-i"
+    } else if args.xinsi {
+        "X-INS-i"
+    } else if iter > 0 {
+        if args.nofft { "NW-NS-i" } else { "FFT-NS-i" }
+    } else {
+        if args.nofft { "NW-NS-2" } else { "FFT-NS-2" }
+    }
+}
+
 fn write_output<W: Write>(
     seqs: &SequenceSet,
     writer: &mut W,
@@ -925,10 +1103,18 @@ fn write_output<W: Write>(
 ) -> Result<(), mafft_io::IoError> {
     match args.format.as_str() {
         "clustal" | "clw" => {
-            mafft_io::write_clustal(seqs, writer, None, None, None)
+            // C MAFFT computes per-column conservation marks
+            // (`setmark_clustal`, f2cl.c:22) and embeds the
+            // alignment-mode label in the header line. Match both.
+            let marks = mafft_io::compute_clustal_marks(seqs);
+            let label = clustal_strategy_label(args);
+            mafft_io::write_clustal_full(
+                seqs, writer, None, args.namelength,
+                Some(marks.as_str()), Some(label),
+            )
         }
         "phylip" | "phy" => {
-            mafft_io::write_phylip(seqs, writer, None, None)
+            mafft_io::write_phylip(seqs, writer, None, args.namelength)
         }
         _ => {
             mafft_io::write_fasta_to_writer_with_width(seqs, writer, args.linewidth)
@@ -1051,5 +1237,135 @@ mod tests {
         let mut seq2 = original.clone();
         replace_unusual(&mut seq2, true);
         assert_eq!(seq2.len(), original.len());
+    }
+
+    /// Parse a default `Args` (mafft-rs default behaviour) and apply
+    /// progname dispatch for the given name. Returns the mutated args.
+    fn dispatch(name: &str) -> Args {
+        let mut a = Args::parse_from(["mafft-rs"]);
+        apply_progname_dispatch(name, &mut a);
+        a
+    }
+
+    #[test]
+    fn progname_linsi_sets_localpair_and_iter_1000() {
+        let a = dispatch("linsi");
+        assert!(a.localpair);
+        assert_eq!(a.maxiterate, Some(1000));
+    }
+
+    #[test]
+    fn progname_ginsi_sets_globalpair_and_iter_1000() {
+        let a = dispatch("ginsi");
+        assert!(a.globalpair);
+        assert_eq!(a.maxiterate, Some(1000));
+    }
+
+    #[test]
+    fn progname_einsi_sets_genafpair_and_iter_1000() {
+        let a = dispatch("einsi");
+        assert!(a.genafpair);
+        assert_eq!(a.maxiterate, Some(1000));
+    }
+
+    #[test]
+    fn progname_fftnsi_sets_iter_2_not_100() {
+        // C `scripts/mafft`: defaultiterate=2 for fftnsi. README previously
+        // said --maxiterate 100; that was wrong.
+        let a = dispatch("fftnsi");
+        assert_eq!(a.maxiterate, Some(2));
+        assert!(!a.localpair && !a.globalpair && !a.genafpair);
+    }
+
+    #[test]
+    fn progname_nwns_sets_nofft_only() {
+        let a = dispatch("nwns");
+        assert!(a.nofft);
+        assert_eq!(a.maxiterate, None);
+    }
+
+    #[test]
+    fn progname_nwnsi_sets_nofft_and_iter_2() {
+        let a = dispatch("nwnsi");
+        assert!(a.nofft);
+        assert_eq!(a.maxiterate, Some(2));
+    }
+
+    #[test]
+    fn progname_qinsi_sets_qinsi_mode_and_iter_1000() {
+        let a = dispatch("qinsi");
+        assert!(a.qinsi);
+        assert_eq!(a.maxiterate, Some(1000));
+    }
+
+    #[test]
+    fn progname_xinsi_sets_xinsi_mode_and_iter_1000() {
+        let a = dispatch("xinsi");
+        assert!(a.xinsi);
+        assert_eq!(a.maxiterate, Some(1000));
+    }
+
+    #[test]
+    fn progname_unknown_leaves_args_untouched() {
+        let a = dispatch("mafft-rs");
+        assert!(!a.localpair && !a.globalpair && !a.genafpair);
+        assert!(!a.nofft);
+        assert_eq!(a.maxiterate, None);
+    }
+
+    #[test]
+    fn user_maxiterate_overrides_progname_default() {
+        let mut a = Args::parse_from(["mafft-rs", "--maxiterate", "5"]);
+        apply_progname_dispatch("linsi", &mut a);
+        assert!(a.localpair); // pair mode still applied
+        assert_eq!(a.maxiterate, Some(5)); // but user iter wins
+    }
+
+    #[test]
+    fn user_pair_mode_overrides_progname_default() {
+        // `linsi --globalpair` should run G-INS-i, not L-INS-i.
+        let mut a = Args::parse_from(["mafft-rs", "--globalpair"]);
+        apply_progname_dispatch("linsi", &mut a);
+        assert!(a.globalpair);
+        assert!(!a.localpair);
+        assert_eq!(a.maxiterate, Some(1000)); // iter still applied
+    }
+
+    /// All eight fine-grained gap-penalty flags parse correctly and
+    /// land in their respective `Args` fields. Default is `None`.
+    #[test]
+    fn gap_penalty_flags_default_to_none() {
+        let a = Args::parse_from(["mafft-rs"]);
+        assert!(a.exp.is_none());
+        assert!(a.shiftpenalty.is_none());
+        assert!(a.lop.is_none());
+        assert!(a.lep.is_none());
+        assert!(a.lexp.is_none());
+        assert!(a.gop.is_none());
+        assert!(a.gep.is_none());
+        assert!(a.gexp.is_none());
+    }
+
+    #[test]
+    fn gap_penalty_flags_parse_signed_floats() {
+        let a = Args::parse_from([
+            "mafft-rs",
+            "--exp", "0.1",
+            "--shiftpenalty", "3.0",
+            "--lop", "-3.0",
+            "--lep", "0.2",
+            "--lexp", "-0.2",
+            "--gop", "-1.53",
+            "--gep", "0.15",
+            "--gexp", "-0.05",
+        ]);
+        assert_eq!(a.exp, Some(0.1));
+        assert_eq!(a.shiftpenalty, Some(3.0));
+        assert_eq!(a.lop, Some(-3.0));
+        assert_eq!(a.lep, Some(0.2));
+        assert_eq!(a.lexp, Some(-0.2));
+        assert_eq!(a.gop, Some(-1.53));
+        assert_eq!(a.gep, Some(0.15));
+        assert_eq!(a.gexp, Some(-0.05));
     }
 }
