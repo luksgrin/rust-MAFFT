@@ -1893,6 +1893,32 @@ pub fn pairwise_align11(
     head_gap: bool,
     tail_gap: bool,
 ) -> Alignment {
+    pairwise_align11_ex(
+        seq1, seq2, matrix, amino_map, penalty, 0.0, head_gap, tail_gap,
+    )
+}
+
+/// Extended form of [`pairwise_align11`] that takes a separate
+/// gap-extension penalty (`penalty_ex`, C `fpenalty_ex`). Mirrors
+/// C `Galign11.c::G__align11` lines 1362-1384 which add
+/// `fpenalty_ex_i` to `mi` and `fpenalty_ex` to `m[j]` after the
+/// diagonal update each cell. With `penalty_ex = 0` this is
+/// identical to `pairwise_align11`.
+///
+/// Closes R-1b: without this per-cell gap-extension contribution,
+/// `--nofft --exp > 0` diverged from C at tied-trace gap positions
+/// (the missing `penalty_ex` accumulation changed which cells were
+/// chosen as gap-region maxima).
+pub fn pairwise_align11_ex(
+    seq1: &[u8],
+    seq2: &[u8],
+    matrix: &[Vec<f64>],
+    amino_map: &[u8; 256],
+    penalty: f64,
+    penalty_ex: f64,
+    head_gap: bool,
+    tail_gap: bool,
+) -> Alignment {
     let n = seq1.len();
     let m = seq2.len();
     if n == 0 || m == 0 {
@@ -1979,6 +2005,11 @@ pub fn pairwise_align11(
         let mut mi = previousw[0];
         let mut mpi: usize = 0;
 
+        // C `Galign11.c:1336-1337`: `fpenalty_ex_i = (i < lgth1) ?
+        // fpenalty_ex : 0.0` (boundary fix from 2018/May/11). Match
+        // verbatim — at the tail-row (i == n) the in-row extension
+        // contribution is zeroed.
+        let fpenalty_ex_i = if i < n { penalty_ex } else { 0.0 };
         for j in 1..=m {
             let mut wm = previousw[j - 1];
             ijp[i][j] = 0;
@@ -1995,6 +2026,9 @@ pub fn pairwise_align11(
                 mi = g;
                 mpi = j - 1;
             }
+            // C `Galign11.c:1362-1363`: `mi += fpenalty_ex_i`
+            // — per-cell in-row gap extension contribution.
+            mi += fpenalty_ex_i;
 
             // Insertion: m[j] + fpenalty (flat, C line 1325)
             let g = mj[j] + penalty;
@@ -2007,6 +2041,12 @@ pub fn pairwise_align11(
             if g >= mj[j] {
                 mj[j] = g;
                 mpj[j] = i - 1;
+            }
+            // C `Galign11.c:1381-1384`: `if (j < lgth2) m[j] += fpenalty_ex;`
+            // — per-cell in-col gap extension contribution, gated on
+            // not being the tail column.
+            if j < m {
+                mj[j] += penalty_ex;
             }
 
             currentw[j] += wm;

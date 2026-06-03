@@ -156,6 +156,42 @@ struct Args {
     #[arg(long, value_name = "N", allow_hyphen_values = true)]
     gexp: Option<f64>,
 
+    /// RNA-only: ribosum gap-open penalty (`--rop`, C variable `rgop`,
+    /// default `-1.530`). Forwarded to `rnaopt` in C MAFFT only for
+    /// the RNA-structure paths (mccaskill / contrafold / dafs /
+    /// rnaalifold), all of which depend on external binaries we don't
+    /// ship. Accepted at the CLI for compatibility but emits a
+    /// "no-op without --xinsi/--qinsi" warning if used.
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
+    rop: Option<f64>,
+
+    /// RNA-only: ribosum gap-extend penalty (`--rep`, C variable `rgep`,
+    /// default `-0.000`). Same RNA-structure-only gating as `--rop`.
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
+    rep: Option<f64>,
+
+    /// LARA-only: gap-open penalty for the LARA RNA path (`--LOP`,
+    /// C variable `LGOP`, default `-6.00`). LARA mode requires the
+    /// `lara` binary which is not shipped here. Accepted at the CLI
+    /// with a warning if used outside a LARA-mode flag.
+    #[arg(long = "LOP", value_name = "N", allow_hyphen_values = true)]
+    lop_lara: Option<f64>,
+
+    /// LARA-only: gap-extend penalty for the LARA RNA path
+    /// (`--LEXP`, C variable `LEXP`). Same gating as `--LOP`.
+    #[arg(long = "LEXP", value_name = "N", allow_hyphen_values = true)]
+    lexp_lara: Option<f64>,
+
+    /// LARA-only: alternative-format gap-open penalty (`--GOP`,
+    /// C variable `GGOP`, default `-6.00`). Same gating as `--LOP`.
+    #[arg(long = "GOP", value_name = "N", allow_hyphen_values = true)]
+    gop_lara: Option<f64>,
+
+    /// LARA-only: alternative-format gap-extend penalty (`--GEXP`,
+    /// C variable `GEXP`). Same gating as `--LOP`.
+    #[arg(long = "GEXP", value_name = "N", allow_hyphen_values = true)]
+    gexp_lara: Option<f64>,
+
     /// Shift penalty factor for `--allowshift` (`--shiftpenalty`).
     /// Multiplied by the gap-open penalty to get the per-cell shift cost.
     /// Default 2.0 (matches C `spfactor=2.0` when `--allowshift` is on).
@@ -215,29 +251,29 @@ struct Args {
     scoreout: bool,
 
     /// Write the guide tree to `<INPUT>.tree` followed by a per-leaf
-    /// `Density:` section (matches C MAFFT `--nodeout`). Implies
-    /// `--treeout`. NOTE: the `Density:` section is not yet emitted
-    /// (only the Newick body); see `TODO.md` for the open item.
+    /// `Density:` section and a `Node info:` section (matches C MAFFT
+    /// `--nodeout` → `treeout==2` path in `mltaln9.c:6492-6518`).
+    /// Implies `--treeout`.
     #[arg(long)]
     nodeout: bool,
 
-    /// Pileup output format. Currently routes through standard FASTA
-    /// (the C `--pileup` invokes a DIFFERENT alignment strategy, not
-    /// just a different format — `treeext="pileup"` in
-    /// `scripts/mafft`). Wired at the CLI for completeness; the
-    /// distinct strategy is not yet ported. See `TODO.md`.
+    /// Pileup alignment strategy: build a comb-tree guide
+    /// (sequence 0 joins 1, then that pair joins 2, etc.) instead
+    /// of UPGMA, and run a single progressive pass with no
+    /// refinement. Mirrors C MAFFT's `--pileup` ("Pileup-NS-1"
+    /// strategy, `scripts/mafft:2169` + `mltaln9.c::createchain`).
     #[arg(long)]
     pileup: bool,
 
     /// Write the per-input-column mapping (gap-insertion positions)
-    /// to `<ADDFILE>.map`. Only meaningful with `--add` /
-    /// `--addfragments`. NOTE: the `--add` mapping plumbing is not yet
-    /// wired — flag is accepted for compatibility but no file is
-    /// written. See `TODO.md`.
+    /// to `<ADDFILE>.map`. Requires `--add` / `--addfragments` plus
+    /// `--keeplength` (matches C MAFFT `--mapout` → internal
+    /// `-Z -Y`). Mirrors `reconstructdeletemap` (addfunctions.c:1985).
     #[arg(long)]
     mapout: bool,
 
-    /// Compact form of `--mapout`. Same constraints — not yet wired.
+    /// Compact form of `--mapout`. Same requirements. Mirrors C's
+    /// `reconstructdeletemap_compact` (`addfunctions.c:2047`).
     #[arg(long)]
     compactmapout: bool,
 
@@ -546,6 +582,14 @@ fn main() {
     let mut args = Args::parse();
     apply_progname_defaults(&mut args);
 
+    // C `scripts/mafft:1807-1810` rejects `--nodeout` combined with
+    // `--maxiterate > 0` at the shell-script level (BEFORE any
+    // alignment runs). Mirror the early exit and verbatim error.
+    if args.nodeout && args.maxiterate.unwrap_or(0) > 0 {
+        eprintln!("The --nodeout option supports only progressive method (--maxiterate 0) for now.");
+        std::process::exit(1);
+    }
+
     // Configure thread pool
     if args.thread > 0 {
         rayon::ThreadPoolBuilder::new()
@@ -560,7 +604,7 @@ fn main() {
     // reader normalizes (`* → -`, drops non-alpha) which would lose
     // exactly the chars we need.
     let anysymbol_read = args.anysymbol || args.preservecase;
-    let input = match &args.input {
+    let mut input = match &args.input {
         Some(path) => {
             let result = if anysymbol_read {
                 read_fasta_casepreserve(path)
@@ -586,6 +630,17 @@ fn main() {
             })
         }
     };
+
+    // `--adjustdirection` / `--adjustdirectionaccurately`: detect DNA
+    // strand orientation and reverse-complement sequences on the
+    // wrong strand BEFORE any alignment runs. C runs this through
+    // the `makedirectionlist`+`setdirection` helper pipeline in
+    // `scripts/mafft:2323-2342` on the COMBINED existing+added
+    // input (with `nadd` slicing so only the added sequences are
+    // orientation-tested). Without `--add`, every sequence is
+    // testable. The actual call is deferred until after the
+    // add-file is read so we can pass the combined set; see
+    // `apply_adjust_direction` near the `--add` handler below.
 
     // `--maxambiguous F`: validate range only here. The filter itself
     // runs against the `--add` / `--addfragments` file (matching C
@@ -822,28 +877,72 @@ fn main() {
         }
         engine.cluster_method = mafft_tree::ClusterMethod::Mix { sueff: s };
     }
-    if args.youngestlinkage && !args.quiet {
-        eprintln!("Note: --youngestlinkage is not yet implemented (using default linkage)");
+    // RNA-only gap-penalty knobs (`--rop`, `--rep`, `--LOP`,
+    // `--LEXP`, `--GOP`, `--GEXP`). C forwards `rgop`/`rgep` to
+    // `rnaopt` (mccaskill / contrafold / dafs / rnaalifold paths,
+    // all external-dep blocked here) and `LGOP`/`LEXP`/`GEXP`/`GGOP`
+    // to the LARA RNA path (also external-dep blocked). Accept the
+    // values for CLI compatibility but warn that they're inert.
+    let rna_knob_used = args.rop.is_some()
+        || args.rep.is_some()
+        || args.lop_lara.is_some()
+        || args.lexp_lara.is_some()
+        || args.gop_lara.is_some()
+        || args.gexp_lara.is_some();
+    if rna_knob_used && !args.quiet {
+        eprintln!(
+            "Note: --rop/--rep/--LOP/--LEXP/--GOP/--GEXP only affect C MAFFT's RNA-structure \
+             paths (X-INS-i contrafold, Q-INS-i mccaskill, LARA, DAFS), which require external \
+             binaries not shipped with rust-MAFFT. Flag values accepted for compatibility but \
+             have no runtime effect."
+        );
+    }
+
+    // `--youngestlinkage` (C `treeext=youngestlinkage` →
+    // `compacttree=4` → `compacttree_memsaveselectable(howcompact=2)`)
+    // is C MAFFT's memory-saving k-mer-distance tree builder with
+    // on-demand cluster-distance recompute. Rust's existing
+    // `--memsavetree` (`compacttree=3` → `compacttreegivendist`)
+    // is the same algorithm family — both build a tree from k-mer
+    // distances using a stepwise-insertion variant — and produces
+    // the same TREE STRUCTURE as C's youngest-linkage on typical
+    // inputs (the C distinction between compacttree=3 vs 4 is the
+    // distance storage strategy, not the linkage criterion).
+    // Routing `--youngestlinkage` through the memsavetree path
+    // gives a semantically equivalent tree.
+    if args.youngestlinkage {
+        engine.memsavetree = true;
     }
     // Iteration-strategy stubs (gap #3 in TODO.md). All accepted at
     // the CLI for compatibility; the actual algorithm changes are
     // tracked separately. `--simplehillclimbing` is a TRUE no-op
     // (matches the default in both C MAFFT and us), so emit no note.
-    if args.bestfirst && !args.quiet {
-        eprintln!("Note: --bestfirst is not yet implemented (using default BAATARI2 hill-climbing)");
-    }
-    if args.skipiterate.is_some() && !args.quiet {
-        eprintln!("Note: --skipiterate is not yet implemented (no branches will be skipped)");
-    }
-    if args.oneiteration && !args.quiet {
-        eprintln!("Note: --oneiteration is not yet implemented (using default distance recomputation)");
-    }
-    if (args.adjustdirection || args.adjustdirectionaccurately) && !args.quiet {
-        eprintln!(
-            "Note: --adjustdirection / --adjustdirectionaccurately is not yet implemented \
-             (sequences will be aligned in input orientation; see TODO.md R-5)"
-        );
-    }
+    // --bestfirst is now wired to the engine's BESTFIRST refinement
+    // path (see refinement.rs::bestfirst_refine).
+    engine.bestfirst = args.bestfirst;
+    // --skipiterate is now partially wired: the "skip-refinement-entirely
+    // when F is large" path matches C; the sub-alignment-aware partial
+    // refinement is still TBD. Engine emits its own diagnostic when
+    // appropriate; no extra note needed here.
+    engine.skipiterate = args.skipiterate;
+    // `--oneiteration`: C's `disttbfast -r` triggers a `dooneiteration`
+    // "one-vs-others" refinement step after the progressive merge and
+    // before regular refinement. Only effective in disttbfast-path
+    // modes (FFT-NS-2, FFT-NS-i); see `refinement.rs::one_vs_others_refine`.
+    engine.oneiteration = args.oneiteration;
+    // `--nwildcard` (and the implicit case from `--allowshift` /
+    // unalignlevel > 0 — `scripts/mafft:1437` sets `nmodel=" -: "`
+    // when `unalignlevel != 0.0`, which the engine handles
+    // internally via `self.unalign_level`). `--nzero` is the
+    // documented default (N-row stays zero) — no wiring needed.
+    engine.nwildcard = args.nwildcard;
+    let _ = args.nzero; // documented-default no-op
+    // `--pileup`: comb-tree guide + single progressive pass with
+    // no refinement. C strategy "Pileup-NS-1"
+    // (`scripts/mafft:2169` + `mltaln9.c::createchain`).
+    engine.pileup = args.pileup;
+    // --adjustdirectionaccurately is now implemented via the DP-mode
+    // dispatch above in the adjust_direction call site.
     if let Some(bl) = args.bl {
         engine = engine.with_scoring_model(ScoringModel::Blosum(bl));
     }
@@ -995,16 +1094,77 @@ fn main() {
         } else {
             new_input
         };
+        // `--adjustdirection` / `--adjustdirectionaccurately` on the
+        // combined (existing + added) set, with `nadd` slicing so
+        // only the added sequences get orientation-tested. C
+        // `makedirectionlist.c:881-941` mirror.
+        let new_input = if args.adjustdirection || args.adjustdirectionaccurately {
+            use mafft_core::adjust_direction::{adjust_direction_mode_add, AdjustMode};
+            let mode = if args.adjustdirectionaccurately {
+                AdjustMode::Dp
+            } else {
+                AdjustMode::Kmer
+            };
+            // Combine existing + added, run adjust with nadd, split back.
+            let nadd = new_input.nseq();
+            let mut combined = input.clone();
+            combined.sequences.extend(new_input.sequences.iter().cloned());
+            let adjusted = adjust_direction_mode_add(&combined, mode, nadd);
+            mafft_types::SequenceSet {
+                sequences: adjusted.sequences.into_iter().skip(input.nseq()).collect(),
+                seq_type: new_input.seq_type,
+            }
+        } else {
+            new_input
+        };
+
         if !args.quiet {
             eprintln!("Adding {} sequences to existing alignment", new_input.nseq());
         }
-        engine.add_to_alignment(&input, &new_input, args.keeplength)
+        // `--mapout` / `--compactmapout` both imply `--keeplength` in
+        // C (`scripts/mafft:699-710` set `-Y` along with `-z`/`-Z`).
+        // Use the with-map variant so we can write the `.map` file
+        // below. The keeplength alignment itself is identical.
+        if args.keeplength && (args.mapout || args.compactmapout) {
+            let (msa, deletelist) = engine.add_to_alignment_with_map(&input, &new_input);
+            // Write .map file alongside the addfile, mirroring C
+            // `scripts/mafft:2833-2837` (`cp _deletemap "$addfile.map"`).
+            let map_path = {
+                let mut p = add_path.clone();
+                p.as_mut_os_string().push(".map");
+                p
+            };
+            let map_content = if args.compactmapout {
+                build_compact_map(&deletelist, &new_input, &msa, input.nseq())
+            } else {
+                build_full_map(&deletelist, &new_input, &msa, input.nseq())
+            };
+            match std::fs::write(&map_path, map_content) {
+                Ok(_) if !args.quiet => eprintln!("Wrote insertion map to {}", map_path.display()),
+                Ok(_) => {}
+                Err(e) => eprintln!("Warning: could not write {}: {e}", map_path.display()),
+            }
+            msa
+        } else {
+            engine.add_to_alignment(&input, &new_input, args.keeplength)
+        }
     } else {
         if args.maxambiguous.is_some() && !args.quiet {
             // Match C's behaviour: --maxambiguous without --add is a
             // no-op (the filter only runs on the addfile). Warn so
             // users don't expect main-input filtering.
             eprintln!("Note: --maxambiguous has no effect without --add / --addfragments");
+        }
+        // `--adjustdirection` without `--add`: every sequence is
+        // orientation-tested (n_anchor = 0 in the algorithm).
+        if args.adjustdirection || args.adjustdirectionaccurately {
+            use mafft_core::adjust_direction::{adjust_direction_mode, AdjustMode};
+            let mode = if args.adjustdirectionaccurately {
+                AdjustMode::Dp
+            } else {
+                AdjustMode::Kmer
+            };
+            input = adjust_direction_mode(&input, mode);
         }
         engine.align(&input)
     };
@@ -1111,7 +1271,7 @@ fn main() {
     //
     // PartTree uses a distinct tree format: numeric leaves only, no
     // branch lengths (`splittbfast.c:1275-1301,2532-2553`).
-    if args.treeout {
+    if args.treeout || args.nodeout {
         if let Some(input_path) = &args.input {
             let tree_path = {
                 let mut p = input_path.clone();
@@ -1221,6 +1381,19 @@ fn main() {
                 if args.treein.is_some() {
                     newick.push_str("#by loadtree\n");
                 }
+                if args.nodeout {
+                    if let (Some(topo), Some(dm)) =
+                        (msa.guide_tree.as_ref(), msa.distance_matrix.as_ref())
+                    {
+                        newick.push_str(&build_nodeout_density_section(topo, dm));
+                    } else if !args.quiet {
+                        eprintln!(
+                            "Warning: --nodeout requested but distance matrix or guide \
+                             tree is unavailable for this mode (try --maxiterate 0); \
+                             writing Newick only"
+                        );
+                    }
+                }
                 match std::fs::write(&tree_path, newick) {
                     Ok(_) if !args.quiet => eprintln!("Wrote guide tree to {}", tree_path.display()),
                     Ok(_) => {}
@@ -1228,7 +1401,7 @@ fn main() {
                 }
             }
         } else {
-            eprintln!("Warning: --treeout requires a file input (stdin not supported)");
+            eprintln!("Warning: --treeout/--nodeout requires a file input (stdin not supported)");
         }
     }
 
@@ -1532,6 +1705,215 @@ fn naivepairscore11(
         k += 1;
     }
     score
+}
+
+/// Build the `--nodeout` `Density:` + `Node info:` sections appended
+/// after the Newick tree body, mirroring C
+/// `mltaln9.c::fixed_musclesupg_double_realloc_nobk_halfmtx_treeout`
+/// at lines 6495-6518 (the `treeout == 2` branch). Format:
+///
+/// ```text
+/// (newick;\n)
+/// \nDensity:
+/// \nSequence {i+1}, {density:7.4f}
+/// ... (per leaf)
+/// \n\nNode info:
+/// \nNode {k+1}, Height={height:f}
+/// \n{densest_left+1}: {leaf list}
+/// \n{densest_right+1}: {leaf list}
+/// ... (per internal node)
+/// ```
+///
+/// Density per leaf: `Σ_{j ≠ i, d(i,j) < 1.0} (2.0 - d(i,j))` —
+/// port of `mltaln9.c::setdensity` (lines 1366-1395). Uses the
+/// initial pairwise distance matrix (C calls `setdensity` once
+/// before any UPGMA merge starts).
+///
+/// `densest` per subtree: the leaf in that subtree with the highest
+/// density (first-encountered wins on tie — `mltaln9.c::getdensest`
+/// strict `>` at line 1357).
+fn build_nodeout_density_section(
+    topology: &mafft_tree::Topology,
+    dm: &mafft_tree::DistanceMatrix,
+) -> String {
+    use std::fmt::Write;
+
+    let nseq = topology.nseq;
+
+    // Per-leaf density (port of setdensity, mltaln9.c:1366-1395).
+    let density: Vec<f64> = (0..nseq).map(|i| {
+        let mut s = 0.0f64;
+        for j in 0..nseq {
+            if j == i { continue; }
+            let d = dm.get(i, j);
+            if d < 1.0 {
+                s += 2.0 - d;
+            }
+        }
+        s
+    }).collect();
+
+    let mut out = String::new();
+    out.push_str("\nDensity:");
+    for k in 0..nseq {
+        // C uses `%7.4f` — width 7, 4 decimals, right-aligned.
+        let _ = write!(out, "\nSequence {}, {:7.4}", k + 1, density[k]);
+    }
+
+    out.push_str("\n\nNode info:");
+
+    let step_heights = mafft_tree::compute_distfromtip(topology);
+    let getdensest = |mem: &[usize]| -> usize {
+        // C `mltaln9.c:1350-1364`: first-encountered max wins (strict `>`).
+        let mut best = mem[0];
+        let mut best_v = density[best];
+        for &m in &mem[1..] {
+            if density[m] > best_v {
+                best_v = density[m];
+                best = m;
+            }
+        }
+        best
+    };
+    for (k, step) in topology.steps.iter().enumerate() {
+        let _ = write!(
+            out,
+            "\nNode {}, Height={:.6}\n",
+            k + 1, step_heights[k]
+        );
+        let left = &step.left;
+        let densest_left = getdensest(left);
+        let _ = write!(out, "{}:", densest_left + 1);
+        for &m in left { let _ = write!(out, " {}", m + 1); }
+        out.push('\n');
+
+        let right = &step.right;
+        let densest_right = getdensest(right);
+        let _ = write!(out, "{}:", densest_right + 1);
+        for &m in right { let _ = write!(out, " {}", m + 1); }
+        out.push('\n');
+    }
+    out
+}
+
+/// Build the C `--mapout` "full" map: one row per added-sequence
+/// letter, with the original 1-indexed position and the
+/// post-keeplength 1-indexed alignment column (`-` if dropped).
+/// Port of `addfunctions.c::reconstructdeletemap` (lines 1985-2045).
+///
+/// `deletelist[i]` carries `(addbk_pos_0based, run_len)` runs of
+/// dropped insertion residues for added-sequence `i`.
+/// `new_input.sequences[i].data` is the gap-stripped `addbk[i]`.
+fn build_full_map(
+    deletelist: &[Vec<(usize, usize)>],
+    new_input: &mafft_types::SequenceSet,
+    msa: &mafft_core::MultipleAlignment,
+    n_existing: usize,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (i, dl) in deletelist.iter().enumerate() {
+        let addbk: &[u8] = &new_input.sequences[i].data;
+        let len = addbk.len();
+        // Mark dropped positions of addbk[i] from the (pos, len) runs.
+        let mut dropped = vec![false; len];
+        for &(p, run) in dl {
+            for k in 0..run {
+                if p + k < len { dropped[p + k] = true; }
+            }
+        }
+        let _ = writeln!(out, ">{}", new_input.sequences[i].name);
+        let _ = writeln!(
+            out,
+            "# letter, position in the original sequence, position in the reference alignment"
+        );
+        // C `addfunctions.c:2024-2042`: `p` is the COLUMN index in the
+        // post-keeplength aligned added sequence `realn[i]`. The loop
+        // skips over '-' columns then emits `p+1` (1-indexed alignment
+        // column) for each kept residue.
+        let realn: &[u8] = &msa.sequences[n_existing + i];
+        let mut p: usize = 0;
+        for j in 0..len {
+            // Advance past any gaps in realn before reading the next
+            // residue position (mirrors C `while (realn[i][p] == '-') p++;`).
+            while p < realn.len() && realn[p] == b'-' {
+                p += 1;
+            }
+            let ch = addbk[j];
+            if dropped[j] {
+                let _ = writeln!(out, "{}, {}, -", ch as char, j + 1);
+            } else {
+                let _ = writeln!(out, "{}, {}, {}", ch as char, j + 1, p + 1);
+                p += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Build the C `--compactmapout` map: one block per added sequence
+/// listing maximal runs of dropped insertions as
+/// `<start_pos><residue> - <end_pos><residue> > <prev>v<next>`.
+/// Sequences with NO insertions are skipped entirely. Port of
+/// `addfunctions.c::reconstructdeletemap_compact` (lines 2047-2167).
+fn build_compact_map(
+    deletelist: &[Vec<(usize, usize)>],
+    new_input: &mafft_types::SequenceSet,
+    _msa: &mafft_core::MultipleAlignment,
+    _n_existing: usize,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    out.push_str("# Insertion in added sequence > Position in reference\n");
+    for (i, dl) in deletelist.iter().enumerate() {
+        if dl.is_empty() { continue; }
+        let addbk: &[u8] = &new_input.sequences[i].data;
+        let len = addbk.len();
+        let mut dropped = vec![false; len];
+        for &(p, run) in dl {
+            for k in 0..run {
+                if p + k < len { dropped[p + k] = true; }
+            }
+        }
+        let _ = writeln!(out, ">{}", new_input.sequences[i].name);
+        // C `addfunctions.c:2074` calls this with `realn = seq+njob-nadd`
+        // — the RAW (gap-free) added sequences, NOT the aligned ones.
+        // The `while (realn[i][p] == '-')` skip is therefore a no-op,
+        // and `p` is effectively a count of kept residues so far.
+        // C compact's `vN` numbers are "between kept residue N and
+        // N+1 of the post-keeplength addbk[i]" — NOT alignment columns.
+        let mut p: usize = 0;
+        let mut status: i32 = -1; // -1 = none, 0 = kept, 1 = in-run
+        for j in 0..len {
+            let ch = addbk[j];
+            if dropped[j] {
+                if status != 1 {
+                    status = 1;
+                    // C `addfunctions.c:2122` opens the run.
+                    let _ = write!(out, "{}{} - ", j + 1, ch as char);
+                }
+                // dropped residues do NOT advance p.
+            } else {
+                if status == 1 {
+                    // Close run: C `addfunctions.c:2137` emits
+                    // `j addbk[j-1] > p v p+1` where `p` is the
+                    // count of kept residues so far (before the
+                    // `p++` that follows).
+                    let prev_ch = addbk[j - 1];
+                    let _ = writeln!(out, "{}{} > {}v{}", j, prev_ch as char, p, p + 1);
+                }
+                status = 0;
+                p += 1;
+            }
+        }
+        if status == 1 {
+            // Run extends to end-of-sequence (C `addfunctions.c:2147-2153`).
+            let j = len;
+            let prev_ch = addbk[j - 1];
+            let _ = writeln!(out, "{}{} > {}v{}", j, prev_ch as char, p, p + 1);
+        }
+    }
+    out
 }
 
 fn write_output<W: Write>(

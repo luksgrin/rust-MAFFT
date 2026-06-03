@@ -1,0 +1,40 @@
+# Insertion in added sequence > Position in reference
+>    32== M83181   1 human serotonin receptor <>[JBC267(11),7553-7562'92]
+176R - 180D > 175v176
+229T - 247A > 223v224
+257E - 282R > 232v233
+285D - 293I > 234v235
+301S - 316C > 241v242
+333R - 338A > 257v258
+>    33=p A35181 serotonin receptor class 1A - rat
+176R - 180D > 175v176
+229T - 247A > 223v224
+257Q - 282R > 232v233
+285D - 293I > 234v235
+301S - 316Y > 241v242
+333R - 338A > 257v258
+>    34== L06803   1 Lymnaea stagnalis serotonin receptor <>[PNAS90,11-15'93]
+1M - 9L > 0v1
+25G - 25G > 15v16
+82D - 89V > 71v72
+234R - 236P > 215v216
+291Q - 345R > 269v270
+352R - 355K > 275v276
+366N - 397L > 285v286
+404G - 415S > 291v292
+>    35=p A47174 serotonin receptor, 5HTlym receptor - great pond snail
+1M - 9L > 0v1
+25G - 25G > 15v16
+82D - 89V > 71v72
+234R - 236P > 215v216
+291Q - 345R > 269v270
+352R - 355K > 275v276
+366N - 397L > 285v286
+404G - 415S > 291v292
+>    36== X95604   1 Bombyx mori serotonin receptor <antennae>[InsectBiochem.Mol.Bi
+1M - 8E > 0v1
+200K - 204W > 191v192
+255R - 268P > 241v242
+280G - 288A > 252v253
+293I - 318P > 256v257
+326G - 343Y > 263v264

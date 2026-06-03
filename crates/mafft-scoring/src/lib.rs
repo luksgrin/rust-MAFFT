@@ -33,6 +33,70 @@ pub fn build_context(model: ScoringModel, seq_type: SeqType) -> ScoringContext {
     build_context_with_kimura(model, seq_type, 2)
 }
 
+/// Mutate a DNA scoring context to enable C MAFFT's `--nwildcard`
+/// behaviour. Ports `constants.c::nscore` exactly:
+///
+/// ```text
+/// for i in 0..26:
+///     n_dis[i][amino_n['n']] = round(0.25 * n_dis[i][i])
+///     n_dis[amino_n['n']][i] = n_dis[i][amino_n['n']]
+/// n_dis[amino_n['n']][amino_n['n']] = round(0.25 * (n_dis[0][0] + n_dis[1][1] + n_dis[2][2] + n_dis[3][3]))
+/// ```
+///
+/// `amino_n['n']` in the DNA alphabet (`agctuAGCTUnNbdhkmnrsvwyx-O`)
+/// is `17` — the SECOND occurrence of `'n'` wins because
+/// `build_amino_map` overwrites on duplicates. The uppercase `'N'`
+/// at index 11 is NOT touched (matches C exactly: `nscore` only
+/// fills `amino_n['n']`, so `'N'` inputs do not benefit from
+/// `--nwildcard`).
+///
+/// Updates `substitution_matrix`, `consweight_matrix`, and
+/// `fft_matrix` so all DP paths see the new scores. The
+/// `ln_matrix` and `ribosumdis` are out of the scored region
+/// (10x10 / explicit fill) and not touched — matching C.
+///
+/// `--nzero` is the default behaviour (N-row stays zero), so no
+/// separate function is needed for it.
+pub fn apply_nwildcard(scoring: &mut ScoringContext) {
+    if !scoring.seq_type.is_nucleotide() {
+        return; // C `nscore` is DNA-only.
+    }
+    let n_idx = scoring.amino_map[b'n' as usize] as usize;
+    if n_idx >= scoring.substitution_matrix.len() {
+        return;
+    }
+
+    for i in 0..26 {
+        let self_score = scoring.substitution_matrix[i][i] as f64;
+        let v = (0.25 * self_score).round() as i32;
+        scoring.substitution_matrix[i][n_idx] = v;
+        scoring.substitution_matrix[n_idx][i] = v;
+        scoring.consweight_matrix[i][n_idx] = v as f64;
+        scoring.consweight_matrix[n_idx][i] = v as f64;
+        // C `constants.c:525` runs `nscore` before `n_disFFT` is
+        // rebuilt (`constants.c:553`-ish). Keep `fft_matrix` in
+        // sync — for the scored region it's just `substitution_matrix
+        // + offset` (offsetFFT = 0 in practice).
+        if i < scoring.fft_matrix.len() && n_idx < scoring.fft_matrix[i].len() {
+            let off = scoring.gap.offset;
+            scoring.fft_matrix[i][n_idx] = v + off;
+            scoring.fft_matrix[n_idx][i] = v + off;
+        }
+    }
+    // C 2017/Jan/2 form: 0.25 * sum of A,G,C,T diagonals (NOT
+    // 0.25 * 0.25 * sum, the older formula at constants.c:35).
+    let sum_diag = (scoring.substitution_matrix[0][0]
+        + scoring.substitution_matrix[1][1]
+        + scoring.substitution_matrix[2][2]
+        + scoring.substitution_matrix[3][3]) as f64;
+    let v = (0.25 * sum_diag).round() as i32;
+    scoring.substitution_matrix[n_idx][n_idx] = v;
+    scoring.consweight_matrix[n_idx][n_idx] = v as f64;
+    if n_idx < scoring.fft_matrix.len() {
+        scoring.fft_matrix[n_idx][n_idx] = v + scoring.gap.offset;
+    }
+}
+
 /// Build scoring context with a custom Kimura R parameter for DNA.
 ///
 /// `kimura_r` controls the transition/transversion ratio in the Kimura

@@ -61,6 +61,23 @@ pub struct RefinementParams {
     /// below this floor get clamped up. Set to the C default if not
     /// otherwise overridden by `--minimumweight`.
     pub minimum_weight: f64,
+    /// `--bestfirst` parallelisation strategy. C MAFFT's BAATARI2
+    /// (default) walks each branch sequentially in topology order and
+    /// accepts improvements immediately. BESTFIRST evaluates all
+    /// branches against the same baseline alignment, picks the one
+    /// with the largest gain, applies it, repeats. C's BESTFIRST is
+    /// deterministic across thread counts (verified --thread 1, 4,
+    /// 8 produce byte-identical output) — threads only parallelise
+    /// the per-branch evaluation.
+    pub bestfirst: bool,
+    /// Per-(step, side) skip flags for `--skipiterate F` small-F mode.
+    /// `skip_branches[step_idx]` is `(skip_left, skip_right)` —
+    /// when a side is `true`, that branch's realign attempt is
+    /// skipped entirely (mirrors C `dvtditr.c:999/1004`'s
+    /// `skipthisbranch[j][k] = 1`). Empty = no skips (default
+    /// refinement). Populated by the caller from
+    /// `mafft_tree::generate_subalignments_table` output.
+    pub skip_branches: Vec<(bool, bool)>,
 }
 
 impl Default for RefinementParams {
@@ -73,6 +90,8 @@ impl Default for RefinementParams {
             shift: None,
             unalign_level: 0.0,
             minimum_weight: 0.00001,
+            bestfirst: false,
+            skip_branches: Vec::new(),
         }
     }
 }
@@ -175,7 +194,18 @@ pub fn iterative_refine(
     let branch_weights = BranchWeights::new(topology);
     let global_weights = mafft_tree::sequence_weights(topology);
     let use_global_weights = std::env::var("RUST_MAFFT_GLOBAL_WEIGHTS").is_ok();
-    let mut gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64)
+    // C MAFFT's `dvtditr` invocation in `scripts/mafft` does NOT pass
+    // `-g $gexp` (the `--exp` extension penalty). Only `disttbfast`
+    // gets `-g`. As a result C's refinement DP always sees
+    // `penalty_ex = 0`, regardless of what `--exp` the user passed —
+    // confirmed by C's progress output showing `alg=A, ..., -0.00,
+    // -0.00` for the refinement-phase alignment vs `..., -0.00,
+    // +0.10` for the progressive disttbfast phase. Match that: zero
+    // out the extend penalty in refinement's GapModel so we mirror
+    // C exactly. Without this our refinement keeps shortening the
+    // alignment under non-zero `--exp` while C's keeps the
+    // progressive width.
+    let mut gap = GapModel::new(scoring.gap.open as f64, 0.0)
         .with_legacy_gap_cost(params.legacy_gap_cost);
     if let Some(s) = params.shift {
         gap = gap.with_shift(s);
@@ -208,6 +238,23 @@ pub fn iterative_refine(
         for &step_idx in &step_order {
             for (side, group1, group2) in &branch_map[step_idx] {
                 let branch_id: BranchId = (step_idx, *side);
+
+                // `--skipiterate F` small-F: per-(step, side) skip
+                // flags (port of C `dvtditr.c:1059-1066`'s
+                // `skipthisbranch[]`). Skipped branches are
+                // silently dropped — they do NOT count toward the
+                // convergence target, mirroring C `tditeration.c:2358`
+                // (`identity = 1; tscore = mscore` for skipped
+                // branches, which `tditeration.c:2255-2256` then
+                // treats as "no improvement" without bumping the
+                // converge counter).
+                let skipped = params.skip_branches.get(step_idx)
+                    .map(|&(l, r)| if *side == 0 { l } else { r })
+                    .unwrap_or(false);
+                if skipped {
+                    iter_scores.insert(branch_id, 0.0);
+                    continue;
+                }
 
                 if let Ok(f) = std::env::var("RS_DISTARR_DUMP") {
                     use std::io::Write;
@@ -1566,6 +1613,326 @@ fn search_anchors_aa(
 /// `iterative_refine` on each column-slice independently, then re-concatenate.
 ///
 /// Mirrors the segmented loop in `dvtditr.c:1085` driven by `searchAnchors`.
+/// BESTFIRST refinement strategy — port of C MAFFT's
+/// `parallelizationstrategy = BESTFIRST` (`tditeration.c:595-619`).
+///
+/// Where BAATARI2 (the default in both C and rust) walks each branch
+/// sequentially in topology order and accepts improvements immediately,
+/// BESTFIRST evaluates all branches against the **same baseline**
+/// alignment per iteration, picks the one with the largest gain, applies
+/// it, and repeats. The result is deterministic (verified C's BESTFIRST
+/// gives byte-identical output across `--thread 1`, `--thread 4`, and
+/// `--thread 8`) — multi-threading in C only parallelises the per-branch
+/// evaluation, never reorders the global pick.
+///
+/// Terminates when no branch yields positive gain (converged) or
+/// `max_iterations` is reached.
+pub fn bestfirst_refine(
+    alignment: &mut MultipleAlignment,
+    topology: &Topology,
+    scoring: &ScoringContext,
+    params: &RefinementParams,
+    constraints: Option<&LocalHomologyTable>,
+) -> usize {
+    let nseq = alignment.nseq();
+    if nseq <= 2 || topology.steps.is_empty() {
+        return 0;
+    }
+
+    let branch_weights = BranchWeights::new(topology);
+    let global_weights = mafft_tree::sequence_weights(topology);
+    let use_global_weights = std::env::var("RUST_MAFFT_GLOBAL_WEIGHTS").is_ok();
+    // Same C-mirroring zero-out as `iterative_refine` (dvtditr without -g).
+    let mut gap = GapModel::new(scoring.gap.open as f64, 0.0)
+        .with_legacy_gap_cost(params.legacy_gap_cost);
+    if let Some(s) = params.shift {
+        gap = gap.with_shift(s);
+    }
+
+    let nsteps = topology.steps.len();
+    let branch_map = build_branch_map(topology, nseq);
+
+    let mut iterations = 0usize;
+    for _iter in 0..params.max_iterations {
+        iterations += 1;
+        // Snapshot baseline — every branch evaluates against this, NOT
+        // against an updated mastercopy. That's the BESTFIRST signature
+        // vs BAATARI2's eager-accept loop.
+        let baseline_seqs = alignment.sequences.clone();
+
+        // For each branch: compute baseline old_score, run realign, compute
+        // new_score, record (branch_id, gain, new_seqs) if gain > 0.
+        let mut best: Option<(f64, Vec<Vec<u8>>)> = None;
+        for step_idx in 0..nsteps {
+            for (_side, group1, group2) in &branch_map[step_idx] {
+                let weights = if use_global_weights {
+                    global_weights.clone()
+                } else {
+                    branch_weights.weights_for_branch(topology, step_idx, *_side)
+                };
+                let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(params.minimum_weight)).collect();
+                let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(params.minimum_weight)).collect();
+                let s1w: f64 = w1.iter().sum();
+                let s2w: f64 = w2.iter().sum();
+                let w1n: Vec<f64> = if s1w > 0.0 { w1.iter().map(|w| w / s1w).collect() } else { vec![1.0; group1.len()] };
+                let w2n: Vec<f64> = if s2w > 0.0 { w2.iter().map(|w| w / s2w).collect() } else { vec![1.0; group2.len()] };
+
+                let old_sub = compute_split_score(
+                    group1, group2, &baseline_seqs, &weights, scoring,
+                    params.minimum_weight,
+                );
+                let old_imp = if let Some(lh) = constraints {
+                    compute_impmatch_diagonal(
+                        group1, group2, &baseline_seqs, &w1n, &w2n, lh,
+                    )
+                } else { 0.0 };
+                let old_score = old_sub + old_imp;
+
+                let mm_distarr: Option<Vec<f64>> = if params.unalign_level > 0.0 {
+                    Some(branch_weights.dist_from_a_branch(topology, step_idx, *_side))
+                } else {
+                    None
+                };
+                let mm_input = mm_distarr.as_ref().map(|d| MultiMtxInput {
+                    distarr: d,
+                    unalign_level: params.unalign_level,
+                });
+
+                if let Some((new_seqs, _, dp_impmatch)) = realign_all(
+                    group1, group2, &baseline_seqs, &weights, scoring, &gap,
+                    constraints, params.use_fft, mm_input.as_ref(),
+                    params.minimum_weight,
+                ) {
+                    // C `tditeration.c:2185`: `identity = !strcmp(localcopy[s1], mastercopy[s1])`
+                    // ANDed with the s2 comparison. When identical, `tscore = mscore`
+                    // and gain = 0 — never accepted by `gain > 0` test. Skip the score
+                    // recompute (matches C's branch and avoids FP drift around zero).
+                    let s1 = group1[0];
+                    let s2 = group2[0];
+                    let changed = baseline_seqs[s1] != new_seqs[s1]
+                        || baseline_seqs[s2] != new_seqs[s2];
+                    if !changed {
+                        continue;
+                    }
+                    let new_sub = compute_split_score(
+                        group1, group2, &new_seqs, &weights, scoring,
+                        params.minimum_weight,
+                    );
+                    let new_imp = if let Some(lh) = constraints {
+                        dp_impmatch.unwrap_or_else(|| compute_impmatch_diagonal(
+                            group1, group2, &new_seqs, &w1n, &w2n, lh,
+                        ))
+                    } else { 0.0 };
+                    let new_score = new_sub + new_imp;
+                    let gain = new_score - old_score;
+                    if gain > 0.0 {
+                        match &best {
+                            None => best = Some((gain, new_seqs)),
+                            Some((bg, _)) if gain > *bg => best = Some((gain, new_seqs)),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        match best {
+            Some((_gain, new_seqs)) => {
+                alignment.sequences = new_seqs;
+            }
+            None => break, // converged: no branch improves
+        }
+    }
+    iterations
+}
+
+/// `intergroup_score` clone that mirrors C's
+/// `mltaln9.c::intergroup_score` (lines 404-477) FP-order EXACTLY:
+/// the C code precomputes `efficient = eff1[i] * eff2[j]` THEN does
+/// `*value += tmpscore * efficient` (one mul outside, then one fma).
+/// This differs from `compute_split_score` which inlines as
+/// `(tmpscore * wi) * wj + total` (a different product order).
+///
+/// The two formulations are mathematically equivalent but FP-different;
+/// the difference is below the tie-break threshold for the
+/// tree-dependent refinement (`iterative_refine` matches C byte-exactly
+/// with `compute_split_score`), but for `dooneiteration`'s pure
+/// leave-one-out splits the per-pair sub-ULP drift cumulates across
+/// 36*2 iterations and flips two accept decisions on the 36-seq sample
+/// (rust width 715 vs C 713 with `compute_split_score`).
+///
+/// Weights are normalised per-group exactly like
+/// `fastconjuction_noname` (`tddis.c:548`) with `mineff = 0.0`.
+fn intergroup_score_c_order(
+    group1: &[usize],
+    group2: &[usize],
+    sequences: &[Vec<u8>],
+    weights: &[f64],
+    scoring: &ScoringContext,
+) -> f64 {
+    let w1: Vec<f64> = group1.iter().map(|&i| weights[i]).collect();
+    let w2: Vec<f64> = group2.iter().map(|&i| weights[i]).collect();
+    let s1: f64 = w1.iter().sum();
+    let s2: f64 = w2.iter().sum();
+    let w1n: Vec<f64> = if s1 > 0.0 { w1.iter().map(|w| w / s1).collect() } else { vec![1.0; group1.len()] };
+    let w2n: Vec<f64> = if s2 > 0.0 { w2.iter().map(|w| w / s2).collect() } else { vec![1.0; group2.len()] };
+
+    let mut total = 0.0f64;
+    for (i_local, &i) in group1.iter().enumerate() {
+        let wi = w1n[i_local];
+        for (j_local, &j) in group2.iter().enumerate() {
+            let wj = w2n[j_local];
+            // C `mltaln9.c:426`: `efficient = eff1[i] * eff2[j]`
+            // (one rounding), then `mltaln9.c:466`:
+            // `*value += (double)tmpscore * (double)efficient`
+            // (with FP_CONTRACT on at clang -O3 this is one fma).
+            let efficient = wi * wj;
+            let tmpscore = pairwise_score(&sequences[i], &sequences[j], scoring);
+            total = tmpscore.mul_add(efficient, total);
+        }
+    }
+    total
+}
+
+/// `--oneiteration` "one-vs-others" refinement — port of
+/// `disttbfast.c::dooneiteration` (lines 2217-2538). Runs AFTER
+/// the progressive merge but BEFORE the regular tree-dependent
+/// refinement (`iterative_refine` / `segmented_iterative_refine`).
+///
+/// Only triggered from the disttbfast-path modes (FFT-NS-2 and
+/// FFT-NS-i); L/G/E-INS-i pipelines do not call this function in C
+/// because they go through `pairlocalalign → tbfast → dvtditr`
+/// and `scripts/mafft:2673` passes `-r` only to `disttbfast`.
+///
+/// ## Algorithm
+///
+/// `ITERATIVECYCLE = 2` (disttbfast.c:11) full passes over the
+/// alignment. Each pass walks every sequence index `l in 0..nseq`
+/// in order; for each `l` we treat the singleton `{l}` as group 1
+/// and all other sequences as group 2, then attempt a fresh
+/// realignment of that split. We compute the C
+/// `intergroup_score` (substitution score between groups, no
+/// constraints) before AND after the realign and KEEP the new
+/// alignment iff the new score is at least as good as the
+/// baseline (C's `if( nscore < oscore )` revert at
+/// `disttbfast.c:2457`).
+///
+/// Constraints are NOT used (disttbfast path never sees
+/// `constraint != 0`); `gap.extend = 0.0` matches the fact that
+/// `dvtditr` is not invoked here — the gap-extension penalty
+/// `--exp` is only baked into the progressive DP via disttbfast's
+/// `-g $gexp`, not into this refinement step (`scripts/mafft`
+/// only passes `-r ` for oneiteration, never `-g`).
+///
+/// `min_weight = 0.0` (matches C `fastconjuction_noname` call at
+/// `disttbfast.c:2321-2322` with `mineff = 0.0`).
+pub fn one_vs_others_refine(
+    alignment: &mut MultipleAlignment,
+    topology: &Topology,
+    scoring: &ScoringContext,
+    params: &RefinementParams,
+) {
+    let nseq = alignment.nseq();
+    if nseq <= 2 {
+        return;
+    }
+
+    // C `disttbfast.c:11` `#define ITERATIVECYCLE 2`. Each cycle
+    // walks every sequence index once.
+    const ITERATIVE_CYCLE: usize = 2;
+
+    let weights = mafft_tree::sequence_weights(topology);
+    // `gap.extend = 0.0`: disttbfast itself does pass `-g $gexp`
+    // for progressive, but `dooneiteration` calls `Falign`/`A__align`
+    // with the in-process `penalty_ex` global, which `scripts/mafft`
+    // does not reset before invoking `disttbfast -r`. The progressive
+    // step left it at the user's `-g` value, so we mirror by reading
+    // `scoring.gap.extend` (NOT zeroing). Keep the legacy/shift
+    // pieces from `params` so `--allowshift` interactions are
+    // forwarded correctly.
+    let mut gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64)
+        .with_legacy_gap_cost(params.legacy_gap_cost);
+    if let Some(s) = params.shift {
+        gap = gap.with_shift(s);
+    }
+
+    let total_iters = nseq * ITERATIVE_CYCLE;
+    for ll in 0..total_iters {
+        let l = ll % nseq;
+        // group1 = singleton {l}, group2 = the rest, preserving
+        // sequence order (matches C's loop at disttbfast.c:2298-2300:
+        // `for( i=0,j=0; i<njob; i++ ) if( i != l ) localmem[1][j++] = i;`).
+        let group1 = vec![l];
+        let group2: Vec<usize> = (0..nseq).filter(|&i| i != l).collect();
+
+        // Baseline `intergroup_score` BEFORE commongappick. C also
+        // commongappicks the groups before the realign DP, but
+        // intergroup_score skips gap-gap columns anyway so the
+        // baseline value is invariant to that stripping. No
+        // constraints (disttbfast path), so impmatch = 0.
+        let oscore = intergroup_score_c_order(
+            &group1, &group2, &alignment.sequences, &weights, scoring,
+        );
+
+
+        // Mirror C `dooneiteration` exactly: per-group commongappick
+        // FIRST, THEN call progressive-Falign on the stripped data.
+        // For singleton group1, commongappick strips every column
+        // where seq[l] is a gap → result is the gap-free singleton.
+        // For group2, strips columns where ALL N-1 seqs are gap.
+        let width = alignment.sequences[0].len();
+        let g1_gap_cols: Vec<bool> = (0..width)
+            .map(|c| group1.iter().all(|&i| alignment.sequences[i][c] == b'-'))
+            .collect();
+        let g2_gap_cols: Vec<bool> = (0..width)
+            .map(|c| group2.iter().all(|&i| alignment.sequences[i][c] == b'-'))
+            .collect();
+        // Build a transient "candidate" workspace where each group has
+        // its common-gap columns removed. For sequences NOT in either
+        // group we keep raw bytes (they're irrelevant to the merge).
+        let mut candidate: Vec<Vec<u8>> = alignment.sequences.iter()
+            .map(|s| s.clone()).collect();
+        for &i in &group1 {
+            let stripped: Vec<u8> = (0..width)
+                .filter(|&c| !g1_gap_cols[c])
+                .map(|c| alignment.sequences[i][c])
+                .collect();
+            candidate[i] = stripped;
+        }
+        for &i in &group2 {
+            let stripped: Vec<u8> = (0..width)
+                .filter(|&c| !g2_gap_cols[c])
+                .map(|c| alignment.sequences[i][c])
+                .collect();
+            candidate[i] = stripped;
+        }
+        // Now merge the two stripped groups via the progressive
+        // Falign-equivalent (kobetsubunkatsu=0). After this call,
+        // candidate[i] for i ∈ group1 ∪ group2 holds the new
+        // alignment row; other indices keep their pre-strip data
+        // (and we never read them again before discarding).
+        let _ = crate::progressive::merge_two_groups_progressive(
+            &group1, &group2, &mut candidate, &weights, scoring, &gap,
+            params.use_fft,
+            // C `disttbfast` is invoked with `-O` ($termgapopt) for
+            // FFT-NS-2/i, meaning `outgap = 0` (terminal gaps NOT
+            // penalised). Matches the progressive merge call site
+            // in `engine.rs` which passes `penalize_term_gaps=false`
+            // for non-G-INS-i / non-parttree modes.
+            false,
+        );
+
+        let nscore = intergroup_score_c_order(
+            &group1, &group2, &candidate, &weights, scoring,
+        );
+        // C `disttbfast.c:2457`: if( nscore < oscore ) revert.
+        // Equivalent to accept-when-nscore-≥-oscore.
+        if nscore >= oscore {
+            alignment.sequences = candidate;
+        }
+    }
+}
+
 /// Falls back to whole-alignment refinement when no anchors are found.
 ///
 /// `constraints` is intentionally not sliced — C's segmented path uses

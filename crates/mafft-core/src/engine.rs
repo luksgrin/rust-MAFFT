@@ -84,13 +84,55 @@ pub struct MafftEngine {
     /// `RefinementParams.minimum_weight`. `None` keeps the C default
     /// (`0.00001`).
     pub minimum_weight: Option<f64>,
+    /// `--nwildcard`: fill the DNA scoring matrix's `'n'` row
+    /// with `round(0.25 * self_score)` per residue, matching C's
+    /// `constants.c::nscore`. When false (default and `--nzero`),
+    /// the N row stays at the build-time defaults (effectively
+    /// zero for the unscored entries). DNA-only — protein inputs
+    /// silently bypass.
+    pub nwildcard: bool,
+    /// `--skipiterate F` threshold — mirrors C's `dvtditr -E
+    /// $fixthreshold` → `autosubalignment = F`. When F exceeds the
+    /// max distance-from-tip in the guide tree, refinement is
+    /// skipped entirely (matches C's `generatesubalignmentstable`
+    /// returning 1, which prints the "WARNING: Iterative refinement
+    /// was not done" diagnostic and exits). For small F values C
+    /// generates sub-alignments for memory-efficient partial
+    /// refinement; that branch is not yet implemented and falls
+    /// through to regular refinement with a stderr note.
+    pub skipiterate: Option<f64>,
+    /// `--bestfirst` refinement strategy. Default false (BAATARI2,
+    /// matches C MAFFT's default). When true, refinement evaluates
+    /// every branch against the same baseline alignment per
+    /// iteration, picks the one with the largest gain, applies,
+    /// repeats — mirroring C's `parallelizationstrategy = BESTFIRST`.
+    pub bestfirst: bool,
+    /// `--oneiteration` "one-vs-others" refinement (C's
+    /// `disttbfast -r` → `dooneiteration` in
+    /// `mafft-upstream/core/disttbfast.c:2217`). Runs once after the
+    /// progressive merge and before regular refinement. ONLY
+    /// triggered in the disttbfast-path modes (FFT-NS-2, FFT-NS-i);
+    /// L/G/E-INS-i bypass it because `scripts/mafft:2673` only
+    /// passes `-r` to `disttbfast`, never to `tbfast` or `dvtditr`.
+    pub oneiteration: bool,
+    /// `--pileup`: build a comb-tree guide via
+    /// [`mafft_tree::Topology::pileup_chain`] instead of UPGMA,
+    /// then run progressive merge once with no refinement (C
+    /// strategy name "Pileup-NS-1", `scripts/mafft:2169`). Skips
+    /// distance computation entirely. Forces `retree = 1` and
+    /// disables `--maxiterate` refinement.
+    pub pileup: bool,
     /// Tree-linkage method for UPGMA cluster joining. Mirrors C's
     /// `tbfast -X $sueff` (`scripts/mafft:264,419,422,427`). Default
     /// = `Mix { sueff: 0.1 }` (C default). `--averagelinkage` →
     /// `Mix { sueff: 1.0 }` ≡ `Average`; `--minimumlinkage` → `Mix
     /// { sueff: 0.0 }` ≡ `Minimum`; `--mixedlinkage F` → `Mix { sueff:
-    /// F }`. C's `--youngestlinkage` is a separate algorithm and is
-    /// NOT covered by this field (see `TODO.md`).
+    /// F }`. C's `--youngestlinkage` is a separate algorithm
+    /// (memory-saving k-mer tree builder with on-demand cluster
+    /// distance recompute); rust wires it via `self.memsavetree`,
+    /// which uses the same algorithm family and is byte-identical
+    /// to C youngest-linkage on small inputs but diverges on
+    /// larger ones (see `TODO.md`).
     pub cluster_method: mafft_tree::ClusterMethod,
     /// Disable FFT: force pure DP for all alignment steps.
     pub nofft: bool,
@@ -176,6 +218,11 @@ impl Default for MafftEngine {
             pair_gexp: None,
             shift_penalty_factor: None,
             minimum_weight: None,
+            skipiterate: None,
+            bestfirst: false,
+            oneiteration: false,
+            nwildcard: false,
+            pileup: false,
             cluster_method: mafft_tree::ClusterMethod::default(),
             nofft: false,
             allowshift: false,
@@ -202,6 +249,8 @@ impl MafftEngine {
             pair_lop: None, pair_lep: None, pair_lexp: None,
             pair_gop: None, pair_gep: None, pair_gexp: None,
             shift_penalty_factor: None, minimum_weight: None,
+            skipiterate: None, bestfirst: false, oneiteration: false, nwildcard: false,
+            pileup: false,
             cluster_method: mafft_tree::ClusterMethod::default(),
             nofft: false, allowshift: false, unalign_level: 0.0,
             kimura_r: None, parttree: false, dpparttree: false,
@@ -307,6 +356,17 @@ impl MafftEngine {
             build_context(scoring_model, seq_type)
         };
 
+        // `--nwildcard` (and the implicit case from `unalignlevel != 0`
+        // — see `scripts/mafft:1437` setting `nmodel=" -: "`). Fills
+        // the DNA scoring matrix's `'n'` row with 25%-self-score
+        // values. DNA-only — protein inputs no-op. Apply BEFORE any
+        // gap penalty overrides so they still take effect on the
+        // residue submatrix.
+        let want_nwildcard = self.nwildcard || self.unalign_level > 0.0;
+        if want_nwildcard {
+            mafft_scoring::apply_nwildcard(&mut scoring);
+        }
+
         // Apply gap penalty overrides if set.
         // C convention: --op 1.53 means ppenalty = -1530 (multiply by -1000).
         // After scaling: penalty = (int)(600/1000 * ppenalty + 0.5).
@@ -351,7 +411,18 @@ impl MafftEngine {
 
         let nseq = input.nseq();
         let quiet_mode = false;
-        let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| s.data.clone()).collect();
+        // C `disttbfast.c:4453` calls `gappick0(bseq[i], seq[i])` for
+        // every sequence before the progressive merge — the engine
+        // works on RESIDUE-ONLY sequences regardless of whether the
+        // input FASTA had gaps. Without this, feeding a previously-
+        // aligned FASTA (gaps in input) produces a different alignment
+        // than C because the rust progressive sees the gapped form
+        // (closes R-6: 16+1 adversarial fixture diverged by 369 lines
+        // on combined_17.fa, byte-identical on the residue-only
+        // c17_ungapped.fa).
+        let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| {
+            s.data.iter().copied().filter(|&c| c != b'-' && c != b'.').collect()
+        }).collect();
         let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
 
         let use_fft = !self.nofft && matches!(
@@ -630,6 +701,12 @@ impl MafftEngine {
                 | AlignmentMode::XInsi { .. }
         ) {
             1
+        } else if self.pileup {
+            // `--pileup` is "Pileup-NS-1" — single progressive pass,
+            // no second tree-rebuild (`scripts/mafft:2169` strategy
+            // name; C disttbfast forces `cycle = 1` for the pileup
+            // guidetree variant at line 1991).
+            1
         } else {
             self.retree.clamp(1, 3)
         };
@@ -679,6 +756,11 @@ impl MafftEngine {
         for pass in 0..retree {
             let topo = if let Some(ref t) = user_topo {
                 t.clone()
+            } else if self.pileup {
+                // `--pileup`: skip the distance matrix entirely and
+                // build a comb-tree directly from the input order.
+                // C `mltaln9.c::createchain` with `shuffle=0`.
+                mafft_tree::Topology::pileup_chain(nseq)
             } else if self.memsavetree {
                 if pass == 0 {
                     memsavetree_kmer_topo.clone().expect("memsavetree topology must be cached")
@@ -873,6 +955,47 @@ impl MafftEngine {
             .as_ref()
             .map(|(_, dm)| dm.clone());
 
+        // `--oneiteration`: C's `disttbfast -r` → `dooneiteration`
+        // (`disttbfast.c:2217-2538`). Runs AFTER progressive merge,
+        // BEFORE regular refinement. Gated on the disttbfast-path
+        // modes ONLY (FFT-NS-2, FFT-NS-i) — `scripts/mafft:2673`
+        // passes `-r` only to `disttbfast`, not to `tbfast`/`dvtditr`.
+        // L/G/E-INS-i use pairlocalalign+tbfast, so their pipeline
+        // never sees `-r` even when `--oneiteration` is given (C
+        // confirmed: `--localpair --oneiteration` ≡ `--localpair`
+        // alone, byte-identical).
+        if self.oneiteration
+            && matches!(self.mode,
+                AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. })
+        {
+            // `final_progressive_topo` is the guide tree from the
+            // last `progressive_align_full_c_compat_ex` pass
+            // (set at line 802 above). Always Some at this point
+            // for the disttbfast-path modes (FFT-NS-2/i).
+            let oneiter_topo = final_progressive_topo
+                .as_ref()
+                .expect("FFT-NS-2/i path always sets final_progressive_topo")
+                .clone();
+            let refine_shift = if self.allowshift {
+                let spfactor = self.shift_penalty_factor.unwrap_or(2.0);
+                Some((spfactor * scoring.gap.open as f64) as i32 as f64)
+            } else {
+                None
+            };
+            let one_iter_params = RefinementParams {
+                max_iterations: 0, // unused by one_vs_others_refine
+                use_fft: true,
+                legacy_gap_cost: self.legacy_gap_cost,
+                shift: refine_shift,
+                unalign_level: self.unalign_level,
+                minimum_weight: self.minimum_weight.unwrap_or(0.00001),
+                ..Default::default()
+            };
+            crate::refinement::one_vs_others_refine(
+                &mut msa, &oneiter_topo, &scoring, &one_iter_params,
+            );
+        }
+
         // Step 4: Iterative refinement (if mode requires it)
         match &self.mode {
             AlignmentMode::FftNs2 => {}
@@ -961,10 +1084,14 @@ impl MafftEngine {
                 // `final_progressive_topo` so the Newick we emit for
                 // FFT-NS-i / *-INS-i modes matches what C writes.
                 final_progressive_topo = Some(topo.clone());
-                // C's mafft script caps iterate at 16 for the default (non-BESTFIRST)
-                // parallelization strategy (scripts/mafft line ~1515). This matters
-                // because more iterations doesn't always improve — it can over-refine.
-                let capped_iterations = (*iterations).min(16);
+                // C's mafft script (scripts/mafft:1512) sets `iteratelimit=254`
+                // for BESTFIRST/BAATARI0, else `iteratelimit=16`, then caps
+                // `iterate` to that. Mirror that strategy-dependent cap so
+                // `--bestfirst --maxiterate 100` actually runs 100 best-move
+                // iterations (C width 713) instead of stopping at 16 (rust
+                // width 725 before this fix).
+                let iterate_limit = if self.bestfirst { 254 } else { 16 };
+                let capped_iterations = (*iterations).min(iterate_limit);
                 // C's mafft script always passes -F (use_fft=1) to dvtditr
                 // for refinement (scripts/mafft line 1531: rnaoptit=" -F "),
                 // regardless of whether progressive alignment used FFT.
@@ -996,6 +1123,7 @@ impl MafftEngine {
                     // does not set).
                     unalign_level: self.unalign_level,
                     minimum_weight: self.minimum_weight.unwrap_or(0.00001),
+                    bestfirst: self.bestfirst,
                     ..Default::default()
                 };
                 // C `dvtditr.c:882` switches to segmented refinement (split
@@ -1028,16 +1156,87 @@ impl MafftEngine {
                         mafft_align::recompute_importance(lh, &seq_refs, &weights);
                     }
                 }
-                let use_segmented = matches!(self.mode, AlignmentMode::FftNsi { .. })
-                    && local_hom.is_none();
-                if use_segmented {
-                    crate::refinement::segmented_iterative_refine(
-                        &mut msa, &topo, &scoring, &params, local_hom.as_ref(),
-                    );
+                // `--skipiterate F`: C's `dvtditr -E $fixthreshold` →
+                // `autosubalignment = F`. The function
+                // `generatesubalignmentstable` (mltaln9.c:15330-15407)
+                // walks the tree and identifies sub-alignment clusters
+                // whose internal merges are all ≤ F. Two outcomes:
+                //   - Whole tree below threshold → skip refinement
+                //     entirely (`distfromtip[0] <= threshold`, returns 1).
+                //   - Otherwise → sub-alignments are recorded, and
+                //     `dvtditr.c:997-1006` marks topology branches that
+                //     are STRICT SUBSETS of any sub-alignment as
+                //     `skipthisbranch[step][side]=1` so refinement
+                //     skips them.
+                let (skip_refinement, skip_branches_vec) = if let Some(f) = self.skipiterate {
+                    let (sub_alignments, all_below) =
+                        mafft_tree::generate_subalignments_table(&topo, f);
+                    if all_below {
+                        eprintln!(
+                            "\n#################################################################\n\
+                             # WARNING: Iterative refinment was not done because you gave a\n\
+                             # large --skipiterate value ({f:.3}).\n\
+                             #################################################################\n"
+                        );
+                        (true, Vec::new())
+                    } else {
+                        // Build the per-(step, side) skip mask from
+                        // sub-alignments. A branch is skipped iff its
+                        // subtree (step.left or step.right) is a STRICT
+                        // SUBSET of any sub-alignment cluster (C's
+                        // `includemember && !samemember` at
+                        // `dvtditr.c:997-1006`).
+                        let nsteps = topo.steps.len();
+                        let sub_sets: Vec<std::collections::BTreeSet<usize>> =
+                            sub_alignments.iter().map(|s| s.iter().copied().collect()).collect();
+                        let skip_branches: Vec<(bool, bool)> = topo.steps.iter().map(|step| {
+                            let l: std::collections::BTreeSet<usize> = step.left.iter().copied().collect();
+                            let r: std::collections::BTreeSet<usize> = step.right.iter().copied().collect();
+                            let mut skip_l = false;
+                            let mut skip_r = false;
+                            for s in &sub_sets {
+                                if !skip_l && l.is_subset(s) && l != *s { skip_l = true; }
+                                if !skip_r && r.is_subset(s) && r != *s { skip_r = true; }
+                                if skip_l && skip_r { break; }
+                            }
+                            (skip_l, skip_r)
+                        }).collect();
+                        let _ = (nsteps, sub_alignments);
+                        (false, skip_branches)
+                    }
                 } else {
-                    iterative_refine(
-                        &mut msa, &topo, &scoring, &params, local_hom.as_ref(),
-                    );
+                    (false, Vec::new())
+                };
+                let params = RefinementParams {
+                    skip_branches: skip_branches_vec,
+                    ..params
+                };
+                // `--skipiterate F` small-F: skip-branches honored
+                // only by the standard `iterative_refine` BAATARI2
+                // loop. C's dvtditr does this regardless of the
+                // segmented mode; for parity we route the small-F
+                // case through the un-segmented refinement.
+                let has_skip_branches = !params.skip_branches.is_empty();
+                let use_segmented = matches!(self.mode, AlignmentMode::FftNsi { .. })
+                    && local_hom.is_none()
+                    && !has_skip_branches;
+                if !skip_refinement {
+                    if params.bestfirst {
+                        // `--bestfirst` (C `parallelizationstrategy=BESTFIRST`):
+                        // pick best-gain branch per iteration. Bypasses both
+                        // the BAATARI2 walk and the FFT-segmented variant.
+                        crate::refinement::bestfirst_refine(
+                            &mut msa, &topo, &scoring, &params, local_hom.as_ref(),
+                        );
+                    } else if use_segmented {
+                        crate::refinement::segmented_iterative_refine(
+                            &mut msa, &topo, &scoring, &params, local_hom.as_ref(),
+                        );
+                    } else {
+                        iterative_refine(
+                            &mut msa, &topo, &scoring, &params, local_hom.as_ref(),
+                        );
+                    }
                 }
             }
         }
@@ -1179,6 +1378,44 @@ impl MafftEngine {
         } else {
             add_sequences(&existing, &new_sequences, &new_names, &scoring, use_fft)
         }
+    }
+
+    /// Same as [`add_to_alignment`] with `keeplength = true`, but also
+    /// returns the per-added-sequence list of dropped insertion runs.
+    /// Used by `--mapout` / `--compactmapout` to emit the `.map`
+    /// file. Each entry is `(start_pos_in_addbk_0based, run_length)`.
+    pub fn add_to_alignment_with_map(
+        &self,
+        existing_input: &SequenceSet,
+        new_input: &SequenceSet,
+    ) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
+        let seq_type = existing_input.seq_type;
+        let scoring_model = if seq_type.is_nucleotide() {
+            ScoringModel::Dna
+        } else {
+            self.scoring_model
+        };
+        let mut scoring = build_context(scoring_model, seq_type);
+        if let Some(op) = self.gap_open {
+            let ppenalty = -(op * 1000.0) as i32;
+            let scale = if seq_type.is_nucleotide() { 3.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+            scoring.gap.open = (scale * ppenalty as f64 + 0.5) as i32;
+        }
+        let use_fft = !self.nofft && matches!(
+            self.mode,
+            AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. }
+        );
+        let existing = MultipleAlignment {
+            sequences: existing_input.sequences.iter().map(|s| s.data.clone()).collect(),
+            names: existing_input.sequences.iter().map(|s| s.name.clone()).collect(),
+            score: 0.0,
+            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
+        };
+        let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();
+        let new_names: Vec<String> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
+        crate::add::add_sequences_keeplength_with_map(
+            &existing, &new_sequences, &new_names, &scoring, use_fft,
+        )
     }
 
     /// Convenience: read FASTA file and align.

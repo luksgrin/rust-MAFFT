@@ -216,6 +216,69 @@ pub fn addonetip(
 ///   height = parent_height_of_left_child + left_branch_length
 ///
 /// For leaves, height = 0. Each step's height = max(left_child_height, right_child_height) + branch_length.
+/// Port of C `mltaln9.c::generatesubalignmentstable` (lines 15330-15407).
+///
+/// Walks the guide tree and identifies "sub-alignment" clusters whose
+/// internal merges are ALL at heights ≤ `threshold` (the
+/// `--skipiterate F` value). For each cluster, records the
+/// representative-side member list that crossed the threshold.
+///
+/// Returns `(sub_alignments, all_below_threshold)` where:
+/// - `sub_alignments` is the per-cluster list of sequence indices.
+///   Each cluster covers one subtree whose own height has just
+///   exceeded `threshold` (the merge step where `distfromtip[rep]`
+///   crosses F is recorded; the cluster's members are
+///   `step.left` or `step.right` accordingly).
+/// - `all_below_threshold = true` mirrors C's "return 1" branch
+///   (`distfromtip[0] <= threshold`) — the whole tree is below the
+///   threshold, so the caller should skip refinement entirely
+///   (matches C `dvtditr.c:817-833`'s WARNING + early return).
+///   Caller can short-circuit on this.
+///
+/// Mirrors C exactly: `distfromtip[]` is tracked per representative
+/// (`topol[step][side][0]`); at each step both sides advance their
+/// representative's height by `len[step][side]`; a cluster is
+/// recorded iff `topol[step][side]` has more than one member
+/// (`topol[i][side][1] != -1`) AND `distfromtip_before <= threshold
+/// < distfromtip_after`.
+pub fn generate_subalignments_table(
+    topology: &Topology,
+    threshold: f64,
+) -> (Vec<Vec<usize>>, bool) {
+    let nseq = topology.nseq;
+    let mut distfromtip: Vec<f64> = vec![0.0; nseq];
+    let mut sub_alignments: Vec<Vec<usize>> = Vec::new();
+
+    for step in &topology.steps {
+        let rep0 = step.left[0];
+        let dist0_before = distfromtip[rep0];
+        distfromtip[rep0] = dist0_before + step.left_length;
+        let dist0_after = distfromtip[rep0];
+
+        let rep1 = step.right[0];
+        let dist1_before = distfromtip[rep1];
+        distfromtip[rep1] = dist1_before + step.right_length;
+        let dist1_after = distfromtip[rep1];
+
+        // C `topol[i][0][1] != -1`: side has more than one member.
+        // In rust JoinStep, left/right are full accumulated lists,
+        // so this is `step.left.len() > 1`.
+        if step.left.len() > 1 && dist0_before <= threshold && threshold < dist0_after {
+            sub_alignments.push(step.left.clone());
+        }
+        if step.right.len() > 1 && dist1_before <= threshold && threshold < dist1_after {
+            sub_alignments.push(step.right.clone());
+        }
+    }
+
+    // C `mltaln9.c:15399`: `if (distfromtip[0] <= threshold) return 1;`
+    // i.e., even the root sequence didn't cross the threshold → the
+    // whole tree is below F → skip refinement entirely.
+    let all_below = distfromtip.first().copied().unwrap_or(0.0) <= threshold;
+
+    (sub_alignments, all_below)
+}
+
 pub fn compute_distfromtip(topology: &Topology) -> Vec<f64> {
     let nseq = topology.nseq;
     let mut heights: Vec<f64> = vec![0.0; nseq]; // height of each sequence/cluster representative

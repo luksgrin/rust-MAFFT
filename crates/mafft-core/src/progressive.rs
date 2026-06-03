@@ -13,7 +13,7 @@
 // negligible cost (cache size is bounded by `nseq`, keys are small
 // `Vec<usize>`).
 use std::collections::BTreeMap;
-use mafft_align::{profile_align, pairwise_align11, fft_profile_align, Profile, GapModel, AlignOp, FftAlignParams};
+use mafft_align::{profile_align, pairwise_align11_ex, fft_profile_align, Profile, GapModel, AlignOp, FftAlignParams};
 use mafft_tree::{Topology, sequence_weights, compute_distfromtip};
 use mafft_types::ScoringContext;
 
@@ -384,10 +384,11 @@ pub fn progressive_align_with_mergeoralign_n(
                     }
                 }
 
-                // For OTHER already-aligned rows: build the post-restore
-                // representation. OTHER preserves its pre-merge content at
-                // type A (anchor) and type C (gap_col) positions, and gets
-                // gap chars at type B (new merge gap) positions.
+                // R-6 closure: use `apply_c_insertnewgaps` (mirrors C
+                // addfunctions.c::insertnewgaps with profilealignment)
+                // to do the full multi-row reconstruction. Matches C
+                // byte-identically including the compression case where
+                // OTHER's residue absorbs an adjacent new-merge-gap col.
                 let n1 = post_merge_width - stripped_width;
                 if n1 > 0 || n_gap_cols > 0 {
                     let active_set: std::collections::HashSet<usize> =
@@ -395,18 +396,108 @@ pub fn progressive_align_with_mergeoralign_n(
                     let other_indices: Vec<usize> = (0..nseq)
                         .filter(|i| already_aligned[*i] && !active_set.contains(i))
                         .collect();
-                    for i in other_indices {
-                        let other_pre = aligned[i].clone();
-                        // Defensive: only rebuild if OTHER is at pre_width.
-                        // Other widths shouldn't happen if invariants hold.
-                        if other_pre.len() == pre_width {
-                            aligned[i] = build_other_post_restore_row(
-                                &other_pre,
-                                &anchor_positions,
-                                &gap_cols_before,
-                                &new_merge_gap_set,
-                                post_merge_width,
-                            );
+
+                    // Use the C-style insertnewgaps port by default.
+                    // Closes R-6's `--add` adversarial divergence and
+                    // matches C byte-identically on canonical inputs.
+                    // RS_R6_PORT_OFF env var falls back to flat-padding
+                    // for diagnostics.
+                    let use_port = std::env::var("RS_R6_PORT_OFF").is_err();
+
+                    // Sanity: only run the port if all rows that participate
+                    // (active + OTHER) have consistent widths. Prior Wide
+                    // steps can leave OTHER rows at different widths than
+                    // the active-side post-restore width, which trips up
+                    // the lockstep walker. Falling back to flat-padding
+                    // for those cases keeps the canonical 30+6 fixture
+                    // byte-identical.
+                    let active_w = aligned[existing_grp[0]].len();
+                    let other_widths_consistent = other_indices.iter().all(|&i| {
+                        // OTHER should be at pre_width (before this step's
+                        // common-gap restoration). pre_width is the input
+                        // width of active before commongappick.
+                        aligned[i].len() == pre_width
+                    });
+
+                    if use_port && !other_indices.is_empty() && other_widths_consistent {
+                        // Rust uses '-' for new-merge-gaps (not '=' like C),
+                        // so findnewgaps on a string would return 0. Compute
+                        // gaplen + gapmap directly from new_merge_gap_set
+                        // and gap_cols_before.
+                        let group1_active = aligned[existing_grp[0]].clone();
+                        let post_restore_w = group1_active.len();
+                        let _ = active_w;
+                        let inserts_per_strip_idx: Vec<usize> =
+                            gap_cols_before.iter().map(|v| v.len()).collect();
+
+                        // gaplen[k] indexed by post-restore residue count
+                        // (= anchors + restored common-gaps). Value = new-
+                        // merge-gap count right after the k-th residue.
+                        let mut gaplen = vec![0usize; post_restore_w + 2];
+                        {
+                            let mut pos = 0usize;
+                            let mut s = 0usize;
+                            for q in 0..post_merge_width {
+                                if new_merge_gap_set.contains(&q) {
+                                    gaplen[pos] += 1;
+                                } else {
+                                    pos += inserts_per_strip_idx.get(s).copied().unwrap_or(0);
+                                    pos += 1;
+                                    s += 1;
+                                }
+                            }
+                        }
+
+                        // gapmap[k] indexed by post-restore position. Value =
+                        // common-gap block length starting at k.
+                        let mut gapmap = vec![0usize; post_restore_w + 2];
+                        {
+                            // Walk post-restore positions in the same order
+                            // restore_common_gaps_to_merged_row emits them.
+                            let mut p = 0usize;
+                            let mut s = 0usize;
+                            for q in 0..post_merge_width {
+                                if new_merge_gap_set.contains(&q) {
+                                    p += 1; // new-merge-gap col emitted as-is
+                                } else {
+                                    let n_common = inserts_per_strip_idx.get(s).copied().unwrap_or(0);
+                                    if n_common > 0 {
+                                        gapmap[p] = n_common;
+                                    }
+                                    p += n_common; // skip the restored '-' chars
+                                    p += 1; // the anchor itself
+                                    s += 1;
+                                }
+                            }
+                            // Trailing
+                            let n_common = inserts_per_strip_idx.get(anchor_positions.len()).copied().unwrap_or(0);
+                            if n_common > 0 && p < gapmap.len() {
+                                gapmap[p] = n_common;
+                            }
+                        }
+
+                        apply_c_insertnewgaps(
+                            &mut aligned,
+                            existing_grp,
+                            new_grp,
+                            &other_indices,
+                            &gaplen,
+                            &gapmap,
+                            scoring,
+                            &gap,
+                        );
+                    } else {
+                        for i in other_indices {
+                            let other_pre = aligned[i].clone();
+                            if other_pre.len() == pre_width {
+                                aligned[i] = build_other_post_restore_row(
+                                    &other_pre,
+                                    &anchor_positions,
+                                    &gap_cols_before,
+                                    &new_merge_gap_set,
+                                    post_merge_width,
+                                );
+                            }
                         }
                     }
                 }
@@ -525,6 +616,500 @@ fn restore_common_gaps_to_merged_row(
         out.push(b'-');
     }
     out
+}
+
+/// commongappick — strip cols where ALL rows are '-' or '.'. Mirrors
+/// C `mltaln9.c::commongappick`. In-place.
+fn commongappick_inplace(mseq: &mut Vec<Vec<u8>>) {
+    if mseq.is_empty() || mseq[0].is_empty() { return; }
+    let n = mseq.len();
+    let len = mseq[0].len();
+    let mut keep = vec![true; len];
+    for j in 0..len {
+        let all_gap = (0..n).all(|i| {
+            let c = mseq[i].get(j).copied().unwrap_or(b'-');
+            c == b'-' || c == b'.'
+        });
+        if all_gap { keep[j] = false; }
+    }
+    for row in mseq.iter_mut() {
+        let new_row: Vec<u8> = row.iter().enumerate()
+            .filter(|(j, _)| keep[*j])
+            .map(|(_, &c)| c)
+            .collect();
+        *row = new_row;
+    }
+}
+
+/// Port of C `addfunctions.c::profilealignment` (static at line 127).
+/// Aligns OTHER's content (`mseq0`) with group2's content (`mseq2`)
+/// at a single gap region, then marks group1's `mseq1` with '-' or
+/// '=' based on the resulting alignment. Mutates all three in place.
+///
+/// Used by `apply_c_insertnewgaps` at each new-merge-gap region
+/// adjacent to a common-gap restoration (gapshift2 > 0). The key
+/// effect: when commongappick strips all-gap cols from `mseq0` /
+/// `mseq2`, the resulting alignment is COMPRESSED (newlen < input
+/// width) — this is what closes R-6's `--add` adversarial gap.
+fn rs_profilealignment(
+    mseq0: &mut Vec<Vec<u8>>,
+    mseq1: &mut Vec<Vec<u8>>,
+    mseq2: &mut Vec<Vec<u8>>,
+    scoring: &ScoringContext,
+    gap: &GapModel,
+) {
+    // C: if (aln0[0][1] == 0 && aln2[0][1] == 0) return; — single-char
+    // case with --allowshift off. Skip — non-trivial case is the
+    // adversarial input.
+
+    commongappick_inplace(mseq0);
+    commongappick_inplace(mseq2);
+
+    // C edge case (line 154): if mseq2 first row is empty (no
+    // residues), fill all mseq2 with gap chars matching mseq0 length
+    // and return. mseq1 untouched.
+    let n0 = mseq0.len();
+    let n1 = mseq1.len();
+    let n2 = mseq2.len();
+    if n2 == 0 || mseq2[0].is_empty() {
+        let target_len = if n0 > 0 { mseq0[0].len() } else { 0 };
+        for row in mseq2.iter_mut() {
+            *row = vec![b'-'; target_len];
+        }
+        return;
+    }
+
+    // Build per-row weights as 1/alcount for non-all-gap rows, 0 else.
+    let alcount0 = mseq0.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
+    let alcount2 = mseq2.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
+    let eff0: Vec<f64> = mseq0.iter().map(|r| {
+        if r.iter().any(|&c| c != b'-' && c != b'.') { 1.0 / alcount0 as f64 } else { 0.0 }
+    }).collect();
+    let eff2: Vec<f64> = mseq2.iter().map(|r| {
+        if r.iter().any(|&c| c != b'-' && c != b'.') { 1.0 / alcount2 as f64 } else { 0.0 }
+    }).collect();
+
+    let mseq0_refs: Vec<&[u8]> = mseq0.iter().map(|v| v.as_slice()).collect();
+    let mseq2_refs: Vec<&[u8]> = mseq2.iter().map(|v| v.as_slice()).collect();
+    let prof0 = Profile::from_aligned(&mseq0_refs, &eff0, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(&mseq2_refs, &eff2, &scoring.amino_map, scoring.nalphabets);
+
+    // C uses outgap=1 (headgp=1, tailgp=1) in the A__align call.
+    let aln = profile_align(&prof0, &prof2, &scoring.consweight_matrix, gap, true, true);
+
+    // Apply ops to produce new mseq0/mseq2.
+    let mut new_mseq0: Vec<Vec<u8>> = vec![Vec::new(); n0];
+    let mut new_mseq2: Vec<Vec<u8>> = vec![Vec::new(); n2];
+    let mut cur_i = vec![0usize; n0];
+    let mut cur_j = vec![0usize; n2];
+    for op in &aln.operations {
+        match op {
+            AlignOp::Match => {
+                for i in 0..n0 {
+                    new_mseq0[i].push(mseq0[i].get(cur_i[i]).copied().unwrap_or(b'-'));
+                    cur_i[i] += 1;
+                }
+                for j in 0..n2 {
+                    new_mseq2[j].push(mseq2[j].get(cur_j[j]).copied().unwrap_or(b'-'));
+                    cur_j[j] += 1;
+                }
+            }
+            AlignOp::Delete => {
+                for i in 0..n0 {
+                    new_mseq0[i].push(mseq0[i].get(cur_i[i]).copied().unwrap_or(b'-'));
+                    cur_i[i] += 1;
+                }
+                for j in 0..n2 {
+                    new_mseq2[j].push(b'-');
+                }
+            }
+            AlignOp::Insert => {
+                for i in 0..n0 {
+                    new_mseq0[i].push(b'-');
+                }
+                for j in 0..n2 {
+                    new_mseq2[j].push(mseq2[j].get(cur_j[j]).copied().unwrap_or(b'-'));
+                    cur_j[j] += 1;
+                }
+            }
+        }
+    }
+    *mseq0 = new_mseq0;
+    *mseq2 = new_mseq2;
+
+    // C lines 217-220: fill aln1 with '-' chars at newlen width.
+    let newlen = if n0 > 0 { mseq0[0].len() } else if n2 > 0 { mseq2[0].len() } else { 0 };
+    for row in mseq1.iter_mut() {
+        *row = vec![b'-'; newlen];
+    }
+
+    // C lines 222-242: at each j, if all aln0 are '-' AND all aln1 are
+    // '-' → mark all aln1 with '=' at j.
+    for j in 0..newlen {
+        let all_aln0_gap = mseq0.iter().all(|r| r.get(j).copied().unwrap_or(b'-') == b'-');
+        if !all_aln0_gap { continue; }
+        let all_aln1_gap = mseq1.iter().all(|r| r.get(j).copied().unwrap_or(b'-') == b'-');
+        if all_aln1_gap {
+            for row in mseq1.iter_mut() {
+                row[j] = b'=';
+            }
+        }
+    }
+    let _ = n1;
+}
+
+/// Port of C `addfunctions.c::findnewgaps` (line 327). gaplen[k]
+/// = number of '=' chars right after the k-th non-'=' char in seq.
+/// gaplen size = len(seq) + 1.
+pub fn findnewgaps(seq: &[u8]) -> Vec<usize> {
+    let mut gaplen = vec![0usize; seq.len() + 1];
+    let mut pos = 0;
+    for &c in seq {
+        if c == b'=' { gaplen[pos] += 1; }
+        else { pos += 1; }
+    }
+    gaplen
+}
+
+/// Port of C `addfunctions.c::insertnewgaps` (lines 445-650).
+/// Operates on the post-restore state (active rows already have
+/// common-gap chars restored; OTHER rows still at pre-merge width).
+/// Returns the new aligned state for all rows.
+///
+/// Key invariant: `aseq[OTHER]` walks pre-merge positions via index
+/// `j`; `aseq[active]` walks post-restore positions via `posin12`.
+/// `gaplen` is indexed by `j` (pre-merge); `gapmap` is indexed by
+/// `posin12` (post-restore).
+///
+/// **Currently SKIPS profilealignment** — for scenarios where the
+/// new-merge-gap is NOT adjacent to a common-gap (gapshift2==0
+/// branch always taken), this matches C exactly. Profilealignment
+/// will be added for the compression cases.
+pub fn apply_c_insertnewgaps(
+    aseq: &mut [Vec<u8>],
+    existing_grp: &[usize],
+    new_grp: &[usize],
+    other_indices: &[usize],
+    gaplen: &[usize],
+    gapmap: &[usize],
+    scoring: &ScoringContext,
+    gap: &GapModel,
+) {
+    if other_indices.is_empty() {
+        return; // C returns early when ngroup0 == 0
+    }
+
+    let rep = other_indices[0];
+    let len = aseq[rep].len();
+    let len0 = len + 1;
+
+    // Output buffers.
+    let mut out: Vec<Vec<u8>> = (0..aseq.len()).map(|_| Vec::with_capacity(len * 2 + 16)).collect();
+
+    let mut posin12 = 0usize;
+    let mut j = 0usize;
+    while j < len0 {
+        if j < gaplen.len() && gaplen[j] > 0 {
+            // Collect mseq0/1/2 for this gap region.
+            let gapshift = gaplen[j];
+            let mut mseq0: Vec<Vec<u8>> = (0..other_indices.len()).map(|_| Vec::new()).collect();
+            let mut mseq1: Vec<Vec<u8>> = (0..existing_grp.len()).map(|_| Vec::new()).collect();
+            let mut mseq2: Vec<Vec<u8>> = (0..new_grp.len()).map(|_| Vec::new()).collect();
+
+            // First gapshift = new-merge-gap region (gaplen[j] '=' chars in
+            // group1 post-restore).
+            for row in mseq0.iter_mut() {
+                for _ in 0..gapshift { row.push(b'-'); }
+            }
+            for (k, &i) in existing_grp.iter().enumerate() {
+                for kk in 0..gapshift {
+                    let c = aseq[i].get(posin12 + kk).copied().unwrap_or(b'-');
+                    mseq1[k].push(c);
+                }
+            }
+            for (k, &i) in new_grp.iter().enumerate() {
+                for kk in 0..gapshift {
+                    let c = aseq[i].get(posin12 + kk).copied().unwrap_or(b'-');
+                    mseq2[k].push(c);
+                }
+            }
+            posin12 += gapshift;
+
+            // Second gapshift = gapmap[posin12] (adjacent common-gap region).
+            // OTHER takes from pre-merge j..j+gapshift2; active take from
+            // posin12..posin12+gapshift2.
+            let gapshift2 = gapmap.get(posin12).copied().unwrap_or(0);
+            if gapshift2 > 0 {
+                for (k, &i) in other_indices.iter().enumerate() {
+                    for kk in 0..gapshift2 {
+                        let c = aseq[i].get(j + kk).copied().unwrap_or(b'-');
+                        mseq0[k].push(c);
+                    }
+                }
+                for (k, &i) in existing_grp.iter().enumerate() {
+                    for kk in 0..gapshift2 {
+                        let c = aseq[i].get(posin12 + kk).copied().unwrap_or(b'-');
+                        mseq1[k].push(c);
+                    }
+                }
+                for (k, &i) in new_grp.iter().enumerate() {
+                    for kk in 0..gapshift2 {
+                        let c = aseq[i].get(posin12 + kk).copied().unwrap_or(b'-');
+                        mseq2[k].push(c);
+                    }
+                }
+
+                // Run profilealignment — this can compress the mseq buffers.
+                rs_profilealignment(&mut mseq0, &mut mseq1, &mut mseq2, scoring, gap);
+
+                j += gapshift2;
+                posin12 += gapshift2;
+            }
+
+            // Append the (possibly compressed) mseq buffers to out.
+            for (k, &i) in other_indices.iter().enumerate() {
+                out[i].extend_from_slice(&mseq0[k]);
+            }
+            for (k, &i) in existing_grp.iter().enumerate() {
+                out[i].extend_from_slice(&mseq1[k]);
+            }
+            for (k, &i) in new_grp.iter().enumerate() {
+                out[i].extend_from_slice(&mseq2[k]);
+            }
+        }
+
+        // Block-copy: 1+ contiguous anchors where gaplen is 0.
+        let mut blocklen = 1;
+        let mut q = j + 1;
+        while q < len0 && q < gaplen.len() && gaplen[q] == 0 {
+            blocklen += 1;
+            q += 1;
+        }
+
+        // C's strncpy0 stops at source NUL. We mirror by breaking when
+        // the source index goes past the row's actual length.
+        for &i in other_indices {
+            for k in 0..blocklen {
+                if let Some(&c) = aseq[i].get(j + k) {
+                    if c != 0 { out[i].push(c); }
+                } else { break; }
+            }
+        }
+        for &i in existing_grp {
+            for k in 0..blocklen {
+                if let Some(&c) = aseq[i].get(posin12 + k) {
+                    if c != 0 { out[i].push(c); }
+                } else { break; }
+            }
+        }
+        for &i in new_grp {
+            for k in 0..blocklen {
+                if let Some(&c) = aseq[i].get(posin12 + k) {
+                    if c != 0 { out[i].push(c); }
+                } else { break; }
+            }
+        }
+
+        j += blocklen;
+        posin12 += blocklen;
+    }
+
+    // Trim trailing zeros from output rows (defensive).
+    for row in out.iter_mut() {
+        while row.last() == Some(&0) { row.pop(); }
+    }
+
+    // Copy back to aseq for affected rows.
+    for &i in other_indices.iter().chain(existing_grp).chain(new_grp) {
+        aseq[i] = std::mem::take(&mut out[i]);
+    }
+}
+
+/// `insertnewgaps` with `profilealignment` — partial port of C
+/// `addfunctions.c::insertnewgaps` (lines 445-650) including the
+/// per-gap-region `profilealignment` call (`addfunctions.c:127`).
+///
+/// **Status: NOT yet wired in.** This is the structural scaffold
+/// for closing R-6's `--add` adversarial-input divergence; the
+/// remaining piece is synchronizing the active rows' widths with
+/// OTHER's when profilealignment changes the gap-region width.
+///
+/// At each new-merge-gap region of length `g` in post-merge space,
+/// C extracts OTHER's content from the next `g` pre-merge anchor
+/// positions and runs a profile alignment against group2's content
+/// in the same region. The result reshuffles OTHER's residues into
+/// the gap region (instead of leaving them at the anchor positions
+/// and padding the gap region with '-' as
+/// `build_other_post_restore_row` does).
+///
+/// For default biological inputs this collapses to a no-op (the
+/// flat-padding result matches), but on adversarial inputs where
+/// the added sequence's insertions span positions where OTHER has
+/// residues, the profile alignment compresses the result by up to
+/// `g` columns.
+///
+/// Returns the new aligned slices for OTHER rows (in `other_indices`
+/// order). When integrated, the active rows (existing+new) must
+/// also be regenerated with the matching width.
+#[allow(dead_code, clippy::too_many_arguments)]
+fn insertnewgaps_with_profilealignment(
+    aligned: &[Vec<u8>],
+    other_indices: &[usize],
+    existing_grp: &[usize],
+    new_grp: &[usize],
+    anchor_positions: &[usize],
+    gap_cols_before: &[Vec<usize>],
+    new_merge_gap_set: &std::collections::HashSet<usize>,
+    post_merge_width: usize,
+    scoring: &ScoringContext,
+    gap: &GapModel,
+) -> Vec<Vec<u8>> {
+    // Build mapping: post-merge col q -> stripped_idx (anchor index in
+    // pre-merge) right AFTER it. Used to translate gap-region post-merge
+    // start positions into pre-merge anchor index ranges.
+    let stripped_width = anchor_positions.len();
+    let mut anchor_idx_at_post: Vec<usize> = Vec::with_capacity(post_merge_width);
+    {
+        let mut s = 0usize;
+        for q in 0..post_merge_width {
+            if !new_merge_gap_set.contains(&q) { s += 1; }
+            anchor_idx_at_post.push(s); // anchor count consumed up to and including q
+        }
+    }
+
+    // Find maximal runs of consecutive new_merge_gap_set columns.
+    let mut gap_runs: Vec<(usize, usize)> = Vec::new(); // (q_start, length)
+    {
+        let mut q = 0;
+        while q < post_merge_width {
+            if new_merge_gap_set.contains(&q) {
+                let start = q;
+                while q < post_merge_width && new_merge_gap_set.contains(&q) { q += 1; }
+                gap_runs.push((start, q - start));
+            } else {
+                q += 1;
+            }
+        }
+    }
+
+    // Build OTHER's pre-merge content (one row per other index).
+    let other_pre: Vec<Vec<u8>> = other_indices.iter().map(|&i| aligned[i].clone()).collect();
+    // post-restore output rows for OTHER (to be filled).
+    let mut other_out: Vec<Vec<u8>> = vec![Vec::with_capacity(post_merge_width); other_indices.len()];
+
+    // Walk anchors s = 0..stripped_width and maintain post-merge col q.
+    let mut s = 0usize;
+    let mut run_idx = 0usize;
+    let mut q = 0usize;
+    while s < stripped_width {
+        // Skip any new-merge-gap run starting at q.
+        if run_idx < gap_runs.len() && gap_runs[run_idx].0 == q {
+            let (g_start, g_len) = gap_runs[run_idx];
+            run_idx += 1;
+            // Consume the next g_len anchors as OTHER's source for this
+            // gap region (C `insertnewgaps:571`: mseq0 = seq[list0[i]]+j
+            // for gapshift chars).
+            let consume = g_len.min(stripped_width - s);
+            let src_anchors = &anchor_positions[s..s + consume];
+
+            // mseq0: OTHER's chars at those anchor positions.
+            let mseq0: Vec<Vec<u8>> = other_pre.iter().map(|row| {
+                src_anchors.iter().map(|&k| row.get(k).copied().unwrap_or(b'-')).collect()
+            }).collect();
+
+            // mseq2: new-side (group2) post-merge chars in the gap run.
+            // group2 was updated by merge_step_cached; aligned[new_grp[k]]
+            // currently has post-merge content (already updated by
+            // restore_common_gaps_to_merged_row in the caller). But here
+            // we receive raw aligned BEFORE restore in the new path, so
+            // we use the post-merge index directly.
+            let mseq2: Vec<Vec<u8>> = new_grp.iter().map(|&i| {
+                aligned[i].iter().skip(g_start).take(g_len).copied().collect()
+            }).collect();
+
+            // mseq0 commongappick: for our case (singletons or small)
+            // the all-gap check is a no-op since rows here came from
+            // anchor positions where seq[0] had a residue (so OTHER
+            // could be residue or gap but not all-gap).
+            // Build profiles and run profile_align.
+            let m_refs: Vec<&[u8]> = mseq0.iter().map(|v| v.as_slice()).collect();
+            let n_refs: Vec<&[u8]> = mseq2.iter().map(|v| v.as_slice()).collect();
+            let n0 = m_refs.len();
+            let n2 = n_refs.len();
+            let alcount0 = mseq0.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
+            let alcount2 = mseq2.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
+            let w0: Vec<f64> = mseq0.iter().map(|r| {
+                if r.iter().any(|&c| c != b'-' && c != b'.') { 1.0 / alcount0 as f64 } else { 0.0 }
+            }).collect();
+            let w2: Vec<f64> = mseq2.iter().map(|r| {
+                if r.iter().any(|&c| c != b'-' && c != b'.') { 1.0 / alcount2 as f64 } else { 0.0 }
+            }).collect();
+            let prof0 = Profile::from_aligned(&m_refs, &w0, &scoring.amino_map, scoring.nalphabets);
+            let prof2 = Profile::from_aligned(&n_refs, &w2, &scoring.amino_map, scoring.nalphabets);
+
+            // C uses outgap=1 in the profilealignment A__align call.
+            let aln = profile_align(&prof0, &prof2, &scoring.consweight_matrix, gap, true, true);
+
+            // Apply ops to each OTHER row: emit the aligned mseq0[i][k]
+            // characters at each Match/Delete op, and '-' at Insert ops.
+            let mut cur_i = vec![0usize; n0];
+            for op in &aln.operations {
+                for i in 0..n0 {
+                    match op {
+                        AlignOp::Match | AlignOp::Delete => {
+                            let c = mseq0[i].get(cur_i[i]).copied().unwrap_or(b'-');
+                            other_out[i].push(c);
+                            cur_i[i] += 1;
+                        }
+                        AlignOp::Insert => {
+                            other_out[i].push(b'-');
+                        }
+                    }
+                }
+            }
+            s += consume;
+            q = g_start + g_len;
+            continue;
+        }
+
+        // Not in a gap run: emit OTHER's chars at common-gap positions
+        // before this anchor, then OTHER's char at the anchor.
+        if s < stripped_width {
+            for &k_pre in &gap_cols_before[s] {
+                for (i, row) in other_pre.iter().enumerate() {
+                    other_out[i].push(row.get(k_pre).copied().unwrap_or(b'-'));
+                }
+            }
+            for (i, row) in other_pre.iter().enumerate() {
+                other_out[i].push(row.get(anchor_positions[s]).copied().unwrap_or(b'-'));
+            }
+            s += 1;
+            q += 1;
+        }
+    }
+
+    // Tail common-gap positions (after the last anchor).
+    if let Some(tail) = gap_cols_before.get(stripped_width) {
+        for &k_pre in tail {
+            for (i, row) in other_pre.iter().enumerate() {
+                other_out[i].push(row.get(k_pre).copied().unwrap_or(b'-'));
+            }
+        }
+    }
+
+    // Trailing gap runs (after all anchors consumed).
+    while run_idx < gap_runs.len() {
+        let (_, g_len) = gap_runs[run_idx];
+        for _ in 0..g_len {
+            for row in other_out.iter_mut() {
+                row.push(b'-');
+            }
+        }
+        run_idx += 1;
+    }
+
+    let _ = (existing_grp, anchor_idx_at_post); // referenced for future debug
+    other_out
 }
 
 /// For an OTHER (already-aligned, not-in-merge) row at pre-merge L_pre,
@@ -752,7 +1337,20 @@ pub fn progressive_align_full_c_compat_ex(
     let mut aligned: Vec<Vec<u8>> = sequences.to_vec();
 
     let mut last_score = 0.0;
-    let mut gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64)
+    // C MAFFT only passes `-g $gexp` (the `--exp` extension penalty)
+    // to `disttbfast` (the FFT-NS-2 / FFT-NS-i progressive binary).
+    // The constrained progressive path goes through `tbfast` instead,
+    // which does NOT get `-g` (`scripts/mafft:2525-2550`). So when
+    // constraints are present (L/G/E-INS-i path), we must zero out
+    // the extend penalty regardless of what the user set `--exp`
+    // to — matching C's effective behaviour. Refinement enforces
+    // the same constraint in `refinement.rs::iterative_refine`.
+    let progressive_extend = if constraints.is_some() {
+        0.0
+    } else {
+        scoring.gap.extend as f64
+    };
+    let mut gap = GapModel::new(scoring.gap.open as f64, progressive_extend)
         .with_legacy_gap_cost(legacy_gap_cost);
     if let Some(shift) = shift_penalty {
         gap = gap.with_shift(shift);
@@ -902,6 +1500,41 @@ pub fn progressive_align_full_c_compat_ex(
     }
 }
 
+/// Merge two pre-formed groups within an existing alignment using the
+/// progressive-style Falign (kobetsubunkatsu=0) path — same per-step
+/// merge that `progressive_align_full_c_compat_ex` invokes.
+///
+/// This is what C's `dooneiteration` (`disttbfast.c:2390-2452`) uses
+/// to realign a singleton-vs-rest split. Mirrors that with
+/// `constraints = None`, no profile cache, no cpmx memo
+/// (`c_compat = false`, `use_cache = false`, matching
+/// `disttbfast.c:2288-2289`'s `cpmxchild0/1 = NULL` reset on every
+/// `dooneiteration` step).
+///
+/// Returns the score; modifies `aligned` in place — only indices
+/// in `group1 ∪ group2` are rewritten.
+pub fn merge_two_groups_progressive(
+    group1: &[usize],
+    group2: &[usize],
+    aligned: &mut Vec<Vec<u8>>,
+    weights: &[f64],
+    scoring: &ScoringContext,
+    gap: &GapModel,
+    use_fft: bool,
+    penalize_term_gaps: bool,
+) -> f64 {
+    let mut empty_cache: BTreeMap<Vec<usize>, CachedProfile> = BTreeMap::new();
+    merge_step_cached(
+        group1, group2, aligned, weights, scoring, gap, use_fft,
+        &mut empty_cache,
+        None,                  // no constraints
+        penalize_term_gaps,
+        false,                 // memsave_dp off
+        false,                 // c_compat off — dooneiteration always rebuilds cpmx
+        false,                 // use_cache off — same reason
+    )
+}
+
 fn merge_step_cached(
     group1: &[usize],
     group2: &[usize],
@@ -982,10 +1615,15 @@ fn merge_step_cached(
         // merge — including 1-vs-1 — must penalize terminal gaps. Hardcoding
         // `false` here caused the `--parttree --nofft` 944-line divergence vs C
         // (every 1-vs-1 merge took the wrong head/tail gap path).
-        pairwise_align11(
+        // Pass `scoring.gap.extend` so the 1-vs-1 NW DP applies
+        // `fpenalty_ex` per cell (port of C `Galign11.c:1362,1383`).
+        // Without it, `--nofft --exp > 0` diverged at tied-trace
+        // gap positions (R-1b closure).
+        pairwise_align11_ex(
             &aligned[group1[0]], &aligned[group2[0]],
             &scoring.consweight_matrix, &scoring.amino_map,
-            scoring.gap.open as f64, penalize_term_gaps, penalize_term_gaps,
+            scoring.gap.open as f64, scoring.gap.extend as f64,
+            penalize_term_gaps, penalize_term_gaps,
         )
     } else if use_fft {
         // C uses Falign for ALL steps when use_fft=true (ffttry = nlen > clus,

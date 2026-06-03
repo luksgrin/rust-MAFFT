@@ -39,6 +39,50 @@ impl Topology {
         }
     }
 
+    /// Build a comb-tree topology — sequence 0 joins 1, then that
+    /// pair joins 2, then 3, etc. Mirrors C MAFFT's `--pileup`
+    /// (`mltaln9.c::createchain` with `shuffle=0`) which writes
+    /// "pileup" to the `_guidetree` file and `disttbfast` consumes
+    /// it via `createchain(..., shuffle=0, ...)`.
+    ///
+    /// Branch lengths follow C exactly: every "chain side" branch
+    /// length is `l = 2.0 / nseq`; the new-singleton branch grows
+    /// linearly with the step index (`ll = l, 2l, 3l, ...`).
+    /// Empty for `nseq < 2`.
+    pub fn pileup_chain(nseq: usize) -> Self {
+        let mut topo = Self::new(nseq);
+        if nseq < 2 {
+            return topo;
+        }
+        let l = 2.0 / nseq as f64;
+        // Step 0: join sequences 0 and 1 with equal lengths.
+        topo.steps.push(JoinStep {
+            left: vec![0],
+            right: vec![1],
+            left_length: l,
+            right_length: l,
+        });
+        let mut ll = 2.0 * l;
+        // Each subsequent step adds the next input sequence to the
+        // accumulated chain. `mm = 0` always in the no-shuffle case
+        // since the accumulated cluster's representative stays at
+        // index 0 (mm = min(mm, jm) and 0 <= every new jm), so the
+        // accumulated side is always `left` and the new singleton
+        // is always `right`. `len[i][0] = l` (chain branch),
+        // `len[i][1] = ll` (new-singleton full depth).
+        for i in 1..(nseq - 1) {
+            let accumulated: Vec<usize> = (0..=i).collect();
+            topo.steps.push(JoinStep {
+                left: accumulated,
+                right: vec![i + 1],
+                left_length: l,
+                right_length: ll,
+            });
+            ll += l;
+        }
+        topo
+    }
+
     /// Number of join steps (= nseq - 1 for a complete tree).
     pub fn num_steps(&self) -> usize {
         self.steps.len()

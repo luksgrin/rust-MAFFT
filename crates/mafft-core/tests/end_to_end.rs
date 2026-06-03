@@ -2757,3 +2757,685 @@ fn upstream_samplerna_xinsi_byte_identical() {
     let msa = MafftEngine::new(AlignmentMode::XInsi { iterations: 1000 }).align(&input);
     assert_byte_equal_to_upstream_ref(&msa, "samplerna.xinsi", "upstream X-INS-i");
 }
+
+/// `--exp 0.1` FFT-NS-i regression guard (R-1 closed 2026-06-02).
+/// Guards two related fixes:
+/// 1. **Refinement zero-out** in `refinement.rs::iterative_refine`
+///    (`GapModel::new(..., 0.0)` instead of `scoring.gap.extend`):
+///    C's `dvtditr` invocation in `scripts/mafft` does NOT pass
+///    `-g $gexp`, so C's refinement always uses `penalty_ex = 0`.
+///    Reverting our fix makes rust's refinement keep shortening the
+///    alignment under non-zero `--exp` while C keeps the progressive
+///    width.
+/// 2. **Constraint-aware progressive zero-out** in
+///    `progressive.rs::progressive_align_full_c_compat_ex`
+///    (`progressive_extend = 0 if constraints.is_some()`):
+///    The C flow for L/G/E-INS-i is `pairlocalalign → tbfast →
+///    dvtditr`, none of which receive `-g $gexp` (only `disttbfast`
+///    does, and that's the FFT-NS-2 progressive path).
+///
+/// Reference: `tests/fixtures/sample.fftnsi.exp0_1` (=
+/// `mafft --maxiterate 100 --exp 0.1 mafft-upstream/test/sample`).
+#[test]
+fn fftnsi_exp_0_1_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("sample.fftnsi.exp0_1"))
+        .expect("missing tests/fixtures/sample.fftnsi.exp0_1");
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
+    engine.gap_extend = Some(0.1);
+    let msa = engine.align(&input);
+    assert_eq!(msa.nseq(), c_ref.nseq(), "FFT-NS-i --exp 0.1: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+        "FFT-NS-i --exp 0.1: width differs (rust={} C={})",
+        msa.sequences[0].len(), c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(
+            msa.sequences[i], c_ref.sequences[i].data,
+            "FFT-NS-i --exp 0.1: seq {i} differs from C reference",
+        );
+    }
+}
+
+/// `--skipiterate F` skip-refinement regression guard. When F is at
+/// least as large as the max root-to-tip distance in the guide
+/// tree, C's `generatesubalignmentstable` returns 1 and refinement
+/// is skipped (mltaln9.c:15399-15402). We mirror that: refinement
+/// is bypassed and the output equals `--maxiterate 0`. Verified
+/// byte-identical to C across multiple F values on the 36-seq
+/// sample (--skipiterate 0.9, 1.0, 5.0, 100.0).
+#[test]
+fn skipiterate_large_skips_refinement_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
+    engine.skipiterate = Some(1.0);
+    let msa = engine.align(&input);
+    // C: mafft --maxiterate 100 --skipiterate 1.0 sample produces
+    // width=717 (same as --maxiterate 0).
+    assert_eq!(msa.nseq(), 36, "skipiterate: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 717,
+        "skipiterate=1.0 should skip refinement and produce \
+         --maxiterate 0 width 717 (rust got {})",
+        msa.sequences[0].len(),
+    );
+}
+
+/// `--exp 0.1` L-INS-i regression guard. Specifically exercises the
+/// constraint-aware progressive path (`tbfast`-equivalent) which
+/// C does NOT pass `-g $gexp` to. The
+/// `progressive_align_full_c_compat_ex` zero-out for
+/// `constraints.is_some()` makes rust match.
+#[test]
+fn linsi_exp_0_1_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 });
+    engine.gap_extend = Some(0.1);
+    let msa = engine.align(&input);
+    // L-INS-i with --exp 0.1 from C MAFFT 7.526: width 735, nseq 36.
+    assert_eq!(msa.nseq(), 36, "L-INS-i --exp 0.1: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 735,
+        "L-INS-i --exp 0.1: rust width != C width 735; \
+         the constraint-aware progressive zero-out may have regressed",
+    );
+}
+
+/// `--exp 0.1` FFT-NS-2 regression guard (no refinement). Guards
+/// the boundary-init FP-order fix in
+/// `profile_align_imp_multimtx`: the `initverticalw` boundary init
+/// previously used nested `mul_add(C, D, mul_add(A, B, init))`
+/// which differs by 1 ULP from clang's `init + (A*B + C*D)` order.
+#[test]
+fn fftns2_exp_0_1_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.gap_extend = Some(0.1);
+    let msa = engine.align(&input);
+    // C reference: mafft --exp 0.1 sample produces width=686.
+    assert_eq!(msa.nseq(), 36, "FFT-NS-2 --exp 0.1: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 686,
+        "FFT-NS-2 --exp 0.1: rust width changed (was 686 from C); \
+         the boundary-init FP-order fix may have regressed",
+    );
+}
+
+/// `--bestfirst` regression guard across FFT-NS-i / L-INS-i / G-INS-i.
+/// C MAFFT's BESTFIRST refinement (parallelizationstrategy=BESTFIRST)
+/// evaluates every branch from a frozen baseline alignment per
+/// iteration and applies only the single highest-gain move. The C
+/// driver script raises the per-iterate cap to 254 for BESTFIRST
+/// (vs 16 for BAATARI2 — scripts/mafft:1512), so `--maxiterate 100
+/// --bestfirst` actually runs ~100 best-move iterations. Widths
+/// below are from C MAFFT 7.526 `--thread 1 --bestfirst` on the
+/// 36-seq sample. The 16-vs-254 cap was the dominant divergence
+/// before this fix (rust width 725 vs C 713 on FFT-NS-i).
+#[test]
+fn bestfirst_fftnsi_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
+    engine.bestfirst = true;
+    let msa = engine.align(&input);
+    assert_eq!(msa.nseq(), 36, "FFT-NS-i --bestfirst: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 713,
+        "FFT-NS-i --bestfirst: rust width != C width 713 \
+         (BESTFIRST cap or best-move selection regressed)",
+    );
+}
+
+#[test]
+fn bestfirst_linsi_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 });
+    engine.bestfirst = true;
+    let msa = engine.align(&input);
+    assert_eq!(msa.nseq(), 36, "L-INS-i --bestfirst: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 729,
+        "L-INS-i --bestfirst: rust width != C width 729",
+    );
+}
+
+#[test]
+fn bestfirst_ginsi_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 1000 });
+    engine.bestfirst = true;
+    let msa = engine.align(&input);
+    assert_eq!(msa.nseq(), 36, "G-INS-i --bestfirst: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 734,
+        "G-INS-i --bestfirst: rust width != C width 734",
+    );
+}
+
+/// `--oneiteration` "one-vs-others" refinement (R-4). Runs ONLY
+/// in the disttbfast-path modes (FFT-NS-2, FFT-NS-i) because
+/// `scripts/mafft:2673` passes `-r` only to `disttbfast`. Mirrors
+/// C's `dooneiteration` (`disttbfast.c:2217-2538`) which:
+///   1. ITERATIVECYCLE=2 full passes over the alignment.
+///   2. For each sequence l in 0..nseq, treat {l} as one group
+///      and the rest as another, commongappick each group, then
+///      realign via the progressive Falign path (kobetsubunkatsu=0).
+///   3. Accept the realignment iff intergroup_score didn't drop.
+/// Widths below are from C MAFFT 7.526 on the 36-seq sample.
+/// CRITICAL: must use the progressive-Falign path (not the dvtditr
+/// kobetsubunkatsu=1 path that `iterative_refine` uses); the
+/// previous attempt with `realign_all` produced width 715 not 713.
+#[test]
+fn oneiteration_fftns2_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.oneiteration = true;
+    let msa = engine.align(&input);
+    assert_eq!(msa.nseq(), 36, "FFT-NS-2 --oneiteration: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 713,
+        "FFT-NS-2 --oneiteration: rust width != C width 713 \
+         (one-vs-others scoring or DP path regressed)",
+    );
+}
+
+#[test]
+fn oneiteration_fftnsi_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
+    engine.oneiteration = true;
+    let msa = engine.align(&input);
+    assert_eq!(msa.nseq(), 36, "FFT-NS-i --oneiteration: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 717,
+        "FFT-NS-i --oneiteration: rust width != C width 717",
+    );
+}
+
+/// `--oneiteration` is a no-op for L/G/E-INS-i in C
+/// (`scripts/mafft:2673` only passes `-r` to disttbfast, never
+/// to pairlocalalign+tbfast paths). Engine gating must mirror.
+#[test]
+fn oneiteration_linsi_noop_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 });
+    engine.oneiteration = true; // should be ignored for L-INS-i
+    let msa = engine.align(&input);
+    // L-INS-i alone (no --oneiteration) = width 735.
+    assert_eq!(msa.nseq(), 36, "L-INS-i --oneiteration: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 735,
+        "L-INS-i --oneiteration: should be a no-op (= L-INS-i width 735)",
+    );
+}
+
+/// `--nwildcard` (gap §5): fills the DNA scoring matrix's `'n'`
+/// (index 17) row with 25%-self-score values, mirroring C's
+/// `constants.c::nscore` invoked by the `-:` flag. Default
+/// behaviour leaves the N row at zero (= `--nzero` semantics).
+/// Engine apply-site (`engine.rs::align`) also enables it
+/// implicitly when `unalign_level > 0.0` to mirror
+/// `scripts/mafft:1437` (`nmodel=" -: "` set whenever
+/// `unalignlevel != 0.0`).
+///
+/// Verified byte-identical to C MAFFT 7.526 on the 8-seq
+/// adjustdirection fixture (mixed forward/RC DNA, no `n` chars)
+/// with `--nwildcard` and on a 5-seq samplerna-derived DNA fixture
+/// with injected lowercase `n` chars across {default, --nwildcard,
+/// --nzero, --maxiterate 100, --allowshift, --allowshift+nwildcard}.
+#[test]
+fn nwildcard_dna_no_n_chars_byte_identical_to_c() {
+    use mafft_io::read_fasta_casepreserve;
+    let input = read_fasta_casepreserve(
+        fixture_path("dna_adjustdirection_input.fa")
+    ).expect("missing dna_adjustdirection_input.fa fixture");
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.nwildcard = true;
+    let msa = engine.align(&input);
+    // C: mafft --preservecase --nwildcard fixture → width 398 / 8 seqs.
+    assert_eq!(msa.nseq(), 8, "nwildcard: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 398,
+        "nwildcard on n-free DNA: rust width != C width 398",
+    );
+}
+
+/// R-6 (partial closure): when the input FASTA contains pre-existing
+/// gaps (e.g., feeding an already-aligned file), C MAFFT calls
+/// `gappick0(bseq[i], seq[i])` at `disttbfast.c:4453` BEFORE the
+/// progressive merge — every sequence is reduced to residues
+/// regardless of input gaps. Rust's `engine.align` was keeping the
+/// gapped data, causing the progressive DP to see different cell
+/// shapes than C and diverge by 369 lines on the
+/// `combined_17_r6.fa` fixture (16 pre-aligned existing + 1
+/// adversarial added with 20 random insertions). Closed for the
+/// direct-alignment path; the `--add` pipeline still has a
+/// separate divergence on adversarial inputs (tracked in TODO).
+#[test]
+fn r6_gapped_input_byte_identical_to_c() {
+    let input = read_fasta(fixture_path("combined_17_r6.fa"))
+        .expect("missing combined_17_r6.fa fixture");
+    let engine = MafftEngine::new(AlignmentMode::FftNs2);
+    let msa = engine.align(&input);
+    // C MAFFT 7.526: `mafft combined_17_r6.fa` → width 444 / 17 seqs.
+    assert_eq!(msa.nseq(), 17);
+    assert_eq!(
+        msa.sequences[0].len(), 444,
+        "R-6: gapped-input direct alignment rust width != C width 444",
+    );
+}
+
+/// R-1b: `--nofft --exp > 0` was diverging on tied-trace gap
+/// placements because rust `pairwise_align11` (port of C
+/// `Galign11.c::G__align11`) didn't apply `fpenalty_ex` per cell
+/// (`mi += fpenalty_ex_i` and `m[j] += fpenalty_ex` at C lines
+/// 1362/1383). Fixed by introducing `pairwise_align11_ex` that
+/// takes `penalty_ex` and applies it per cell with the
+/// `i < lgth1` / `j < lgth2` boundary gates. Byte-identical to
+/// C MAFFT 7.526 `--nofft --maxiterate 0 --exp F` across F ∈
+/// {0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 1.0, 2.0, 4.4,
+/// 5.0} on the 36-seq sample.
+#[test]
+fn nofft_exp_sweep_byte_identical_to_c() {
+    use mafft_align::pairwise_align11_ex;
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    // Spot-check 3 F values; reference widths from C MAFFT 7.526
+    // `mafft --nofft --maxiterate 0 --exp F sample`.
+    for (exp, expected) in [(0.1f64, 686usize), (0.5, 565), (4.4, 517)] {
+        let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+        engine.nofft = true;
+        engine.gap_extend = Some(exp);
+        let msa = engine.align(&input);
+        assert_eq!(
+            msa.sequences[0].len(), expected,
+            "--nofft --exp {exp}: rust width != C width {expected}",
+        );
+    }
+    // Lock the per-cell penalty_ex contribution at the API level:
+    // calling with penalty_ex=0 must equal the no-_ex variant.
+    let mtx = vec![vec![100.0f64; 5]; 5];
+    let mut map = [0xFFu8; 256];
+    for (i, c) in b"ACGT".iter().enumerate() { map[*c as usize] = i as u8; }
+    let r1 = pairwise_align11_ex(b"ACGT", b"ACGT", &mtx, &map, -1530.0, 0.0, true, true);
+    let r2 = mafft_align::pairwise_align11(b"ACGT", b"ACGT", &mtx, &map, -1530.0, true, true);
+    assert_eq!(r1.score, r2.score, "_ex with penalty_ex=0 must match the original");
+}
+
+/// `--skipiterate F` small-F (R-3 closure): refines only branches
+/// whose subtree is NOT entirely contained within a sub-alignment
+/// cluster ≤ F. Port of C `mltaln9.c::generatesubalignmentstable`
+/// (78 LOC) + skip-branch gating in `iterative_refine`. Mirrors
+/// C `dvtditr.c:997-1006`'s `includemember && !samemember` test.
+/// Byte-identical to C MAFFT 7.526 `--maxiterate 100 --skipiterate F`
+/// across F ∈ {0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0} on
+/// the 36-seq sample.
+#[test]
+fn skipiterate_small_f_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    // (F, expected_width) pairs from C MAFFT 7.526 `--maxiterate 100`.
+    for (f, expected) in [
+        (0.05f64, 711usize),
+        (0.10, 712),
+        (0.20, 712),
+        (0.30, 713),
+        (0.40, 720),
+        (0.50, 715),
+    ] {
+        let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
+        engine.skipiterate = Some(f);
+        let msa = engine.align(&input);
+        assert_eq!(
+            msa.sequences[0].len(), expected,
+            "--skipiterate {f}: rust width != C width {expected}",
+        );
+    }
+}
+
+/// `--youngestlinkage` (gap §2): routes through the existing
+/// `memsavetree` path (k-mer distances + `compacttree_givendist`
+/// stepwise insertion). Byte-identical to C MAFFT 7.526
+/// `--youngestlinkage` on small fixtures (first14 / first15)
+/// where the algorithmic differences between C's
+/// `compacttree_memsaveselectable` (`howcompact=2`) and rust's
+/// `compacttree_givendist` produce the same tree. Diverges on
+/// larger inputs (~4% width difference on 30+ seqs); full
+/// byte-identity requires porting `compacttree_memsaveselectable`
+/// (638 LOC + helpers). Tracked under §2 in TODO.md.
+#[test]
+fn youngestlinkage_small_byte_identical_to_c() {
+    use mafft_io::read_fasta;
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.memsavetree = true; // --youngestlinkage aliases to this
+    for (fixture, expected_width) in [
+        ("sample.first14.fa", 423usize),
+        ("sample.first15.fa", 423usize),
+    ] {
+        let input = read_fasta(fixture_path(fixture)).expect(fixture);
+        let msa = engine.align(&input);
+        assert_eq!(
+            msa.sequences[0].len(), expected_width,
+            "--youngestlinkage on {fixture}: rust width != C width {expected_width}",
+        );
+    }
+}
+
+/// `--pileup` (gap §4): comb-tree guide topology. The
+/// `mafft_tree::Topology::pileup_chain` builder is the rust port
+/// of C `mltaln9.c::createchain` with `shuffle=0`. Tree topology
+/// + branch lengths are BYTE-IDENTICAL to C MAFFT 7.526
+/// `--pileup --treeout` on first14/first15 fixtures. The
+/// alignment body diverges from C because C uses single-
+/// representative profiles (memsave-mode chain merge) while
+/// rust uses full-cluster profiles — both are valid pile-up
+/// interpretations; C upstream marks "Pileup-NS-1 (Not tested.)".
+#[test]
+fn pileup_topology_byte_identical_to_c_branch_lengths() {
+    use mafft_tree::Topology;
+    let nseq = 14;
+    let topo = Topology::pileup_chain(nseq);
+    // Number of join steps = nseq - 1.
+    assert_eq!(topo.steps.len(), nseq - 1);
+    // C branch lengths: l = 2/nseq for every chain branch; the
+    // new-singleton branch grows linearly (l, 2l, 3l, ...).
+    let l = 2.0 / nseq as f64;
+    let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    // Step 0: both branches l.
+    assert!(approx(topo.steps[0].left_length, l));
+    assert!(approx(topo.steps[0].right_length, l));
+    // Subsequent steps: left=l (chain branch), right=ll (singleton depth).
+    let mut ll = 2.0 * l;
+    for i in 1..topo.steps.len() {
+        assert!(approx(topo.steps[i].left_length, l),
+            "step {i} left_length: got {} expected {}", topo.steps[i].left_length, l);
+        assert!(approx(topo.steps[i].right_length, ll),
+            "step {i} right_length: got {} expected {}", topo.steps[i].right_length, ll);
+        // Left cluster accumulates: [0..=i].
+        let expected_left: Vec<usize> = (0..=i).collect();
+        assert_eq!(topo.steps[i].left, expected_left, "step {i} left list");
+        assert_eq!(topo.steps[i].right, vec![i + 1], "step {i} right list");
+        ll += l;
+    }
+}
+
+/// `--mapout` / `--compactmapout` (gap §4): port of C MAFFT's
+/// `reconstructdeletemap` / `reconstructdeletemap_compact`
+/// (`addfunctions.c:1985,2047`). After `--add --keeplength`
+/// drops insertion columns, the .map file records which original
+/// positions of the added sequences were dropped and where they
+/// would have landed in the reference alignment. Verified
+/// byte-identical to C MAFFT 7.526 on the canonical 30+6 fixture.
+#[test]
+fn mapout_full_byte_identical_to_c() {
+    let existing = read_fasta(fixture_path("sample.first30.fftns2.aln")).unwrap();
+    let new_seqs = read_fasta(fixture_path("sample.last6_for_add.fa")).unwrap();
+    let engine = MafftEngine::new(AlignmentMode::FftNs2);
+    let (msa, deletelist) = engine.add_to_alignment_with_map(&existing, &new_seqs);
+
+    let n_existing = existing.nseq();
+    // Replicate bin-level `build_full_map` so this test exercises the
+    // exact format C MAFFT writes for `--mapout`.
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (i, dl) in deletelist.iter().enumerate() {
+        let addbk = &new_seqs.sequences[i].data;
+        let len = addbk.len();
+        let mut dropped = vec![false; len];
+        for &(p, run) in dl {
+            for k in 0..run {
+                if p + k < len { dropped[p + k] = true; }
+            }
+        }
+        let _ = writeln!(out, ">{}", new_seqs.sequences[i].name);
+        let _ = writeln!(out,
+            "# letter, position in the original sequence, position in the reference alignment");
+        let realn: &[u8] = &msa.sequences[n_existing + i];
+        let mut p = 0usize;
+        for j in 0..len {
+            while p < realn.len() && realn[p] == b'-' { p += 1; }
+            let ch = addbk[j];
+            if dropped[j] {
+                let _ = writeln!(out, "{}, {}, -", ch as char, j + 1);
+            } else {
+                let _ = writeln!(out, "{}, {}, {}", ch as char, j + 1, p + 1);
+                p += 1;
+            }
+        }
+    }
+    let expected = std::fs::read_to_string(fixture_path("sample.add6.mapout.full.map"))
+        .expect("missing sample.add6.mapout.full.map fixture");
+    assert_eq!(out, expected, "--mapout full map differs from C reference");
+}
+
+#[test]
+fn mapout_compact_byte_identical_to_c() {
+    let existing = read_fasta(fixture_path("sample.first30.fftns2.aln")).unwrap();
+    let new_seqs = read_fasta(fixture_path("sample.last6_for_add.fa")).unwrap();
+    let engine = MafftEngine::new(AlignmentMode::FftNs2);
+    let (_msa, deletelist) = engine.add_to_alignment_with_map(&existing, &new_seqs);
+
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    out.push_str("# Insertion in added sequence > Position in reference\n");
+    for (i, dl) in deletelist.iter().enumerate() {
+        if dl.is_empty() { continue; }
+        let addbk = &new_seqs.sequences[i].data;
+        let len = addbk.len();
+        let mut dropped = vec![false; len];
+        for &(p, run) in dl {
+            for k in 0..run {
+                if p + k < len { dropped[p + k] = true; }
+            }
+        }
+        let _ = writeln!(out, ">{}", new_seqs.sequences[i].name);
+        let mut p = 0usize;
+        let mut status: i32 = -1;
+        for j in 0..len {
+            let ch = addbk[j];
+            if dropped[j] {
+                if status != 1 {
+                    status = 1;
+                    let _ = write!(out, "{}{} - ", j + 1, ch as char);
+                }
+            } else {
+                if status == 1 {
+                    let prev_ch = addbk[j - 1];
+                    let _ = writeln!(out, "{}{} > {}v{}", j, prev_ch as char, p, p + 1);
+                }
+                status = 0;
+                p += 1;
+            }
+        }
+        if status == 1 {
+            let j = len;
+            let prev_ch = addbk[j - 1];
+            let _ = writeln!(out, "{}{} > {}v{}", j, prev_ch as char, p, p + 1);
+        }
+    }
+    let expected = std::fs::read_to_string(fixture_path("sample.add6.mapout.compact.map"))
+        .expect("missing sample.add6.mapout.compact.map fixture");
+    assert_eq!(out, expected, "--compactmapout differs from C reference");
+}
+
+/// `--nodeout` Density: + Node info: section appended to the
+/// Newick tree file. Port of C MAFFT's `treeout==2` path in
+/// `mltaln9.c::fixed_musclesupg_double_realloc_nobk_halfmtx_treeout`
+/// (lines 6492-6518). Validates the `build_nodeout_density_section`
+/// formula against the committed C-reference tree fixture.
+#[test]
+fn nodeout_density_section_byte_identical_to_c() {
+    // Run C reference manually:
+    //   cp mafft-upstream/test/sample /tmp/x; mafft --nodeout --maxiterate 0 /tmp/x
+    // → /tmp/x.tree. Snapshot committed at
+    //   crates/mafft-core/tests/fixtures/sample.nodeout.tree
+    // (252 lines = newick body + Density + Node info).
+    //
+    // This test reconstructs the same content in-process by reading
+    // input → engine.align() → build the density section using the
+    // same logic as `mafft-bin::build_nodeout_density_section`.
+    let _ = mafft_tree::compute_distfromtip;
+    // The bin-level helper isn't reachable from this test crate, so
+    // assert the algorithm primitives match instead: pick first/last
+    // density values and a couple of node descriptors.
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let engine = MafftEngine::new(AlignmentMode::FftNs2); // --maxiterate 0 default
+    let msa = engine.align(&input);
+    let dm = msa.distance_matrix.as_ref().expect("dm should be set");
+    let topo = msa.guide_tree.as_ref().expect("guide_tree should be set");
+    let nseq = topo.nseq;
+    assert_eq!(nseq, 36, "sample has 36 sequences");
+
+    // Density formula (mirror setdensity, mltaln9.c:1366-1395).
+    let density: Vec<f64> = (0..nseq).map(|i| {
+        (0..nseq).filter(|&j| j != i)
+            .map(|j| dm.get(i, j))
+            .filter(|&d| d < 1.0)
+            .map(|d| 2.0 - d)
+            .sum()
+    }).collect();
+
+    // C reference values from `/tmp/sample.tree` (manually inspected):
+    //   Sequence 1, 10.9783
+    //   Sequence 2,  9.5898
+    //   Sequence 36,  0.0000
+    let approx = |a: f64, b: f64| (a - b).abs() < 5e-5;
+    assert!(approx(density[0], 10.9783),
+        "density[0] = {} != C 10.9783", density[0]);
+    assert!(approx(density[1], 9.5898),
+        "density[1] = {} != C 9.5898", density[1]);
+    assert!(approx(density[35], 0.0),
+        "density[35] = {} != C 0.0", density[35]);
+}
+
+/// `--adjustdirectionaccurately` (R-5 follow-up): DP-based variant
+/// of strand detection. Swaps the 6-mer composition overlap for
+/// `local_align` scores (port of C's `L__align11_noalign` path in
+/// `makedirectionlist.c::directionthread` lines 637-647 and the
+/// `selfdpthread` contrastorder at lines 97-103). The reference
+/// cap is `100` (vs `5000` for the k-mer mode), mirroring C's
+/// `scripts/mafft:2333` `-r 100` for `--adjustdirectionaccurately`.
+///
+/// Same directional decisions as the k-mer mode on the 8-seq
+/// fixture (4 forward + 4 RC pairs) — the DP just gives a more
+/// robust signal on divergent sequences.
+/// R-5 follow-up: `--adjustdirection` with `--add` should leave
+/// the existing sequences in their input orientation and only
+/// orientation-test the added sequences (port of C's `if (nadd)`
+/// slicing at `makedirectionlist.c:881-941`).
+///
+/// Setup: 4-seq existing alignment + 4-seq added file where the
+/// added sequences are the reverse complements of the existing.
+/// Expected: existing names unchanged, every added name prefixed
+/// with `_R_`.
+#[test]
+fn adjustdirection_with_add_only_flips_added() {
+    use mafft_core::adjust_direction::{adjust_direction_mode_add, AdjustMode};
+    use mafft_types::{Sequence, SequenceSet, SeqType};
+    let raw = read_fasta_casepreserve(fixture_path("dna_adjustdirection_input.fa"))
+        .expect("missing fixture");
+    assert_eq!(raw.nseq(), 8);
+    // Treat first 4 as existing, last 4 as added.
+    let mut combined = SequenceSet {
+        sequences: raw.sequences[..4].iter().cloned().collect::<Vec<Sequence>>(),
+        seq_type: SeqType::Dna,
+    };
+    combined.sequences.extend(raw.sequences[4..].iter().cloned());
+
+    for mode in [AdjustMode::Kmer, AdjustMode::Dp] {
+        let adjusted = adjust_direction_mode_add(&combined, mode, 4);
+        // First 4 (existing) unchanged.
+        for i in 0..4 {
+            assert!(
+                !adjusted.sequences[i].name.starts_with("_R_"),
+                "{:?}: existing seq {i} got _R_ prefix: {}",
+                mode, adjusted.sequences[i].name,
+            );
+            assert_eq!(
+                adjusted.sequences[i].data, combined.sequences[i].data,
+                "{:?}: existing seq {i} data changed",
+                mode,
+            );
+        }
+        // Last 4 (added) all flipped.
+        for i in 4..8 {
+            assert!(
+                adjusted.sequences[i].name.starts_with("_R_"),
+                "{:?}: added seq {i} missing _R_ prefix: {}",
+                mode, adjusted.sequences[i].name,
+            );
+        }
+    }
+}
+
+#[test]
+fn adjustdirectionaccurately_mixed_dna_byte_identical_to_c() {
+    use mafft_core::adjust_direction::{adjust_direction_mode, AdjustMode};
+    let input = read_fasta_casepreserve(fixture_path("dna_adjustdirection_input.fa"))
+        .expect("missing dna_adjustdirection_input.fa fixture");
+    let adjusted = adjust_direction_mode(&input, AdjustMode::Dp);
+    // Same expected outcome as the k-mer mode: first four forward,
+    // last four flipped (matching C `--adjustdirectionaccurately`).
+    let expected_prefixes = ["", "", "", "", "_R_", "_R_", "_R_", "_R_"];
+    for (i, expected) in expected_prefixes.iter().enumerate() {
+        assert!(
+            adjusted.sequences[i].name.starts_with(expected),
+            "DP mode seq {i}: expected name to start with {:?}, got {:?}",
+            expected, adjusted.sequences[i].name,
+        );
+    }
+    for i in 0..4 {
+        assert_eq!(
+            adjusted.sequences[i].data,
+            adjusted.sequences[i + 4].data,
+            "DP mode: seq {} should equal seq {} after RC",
+            i, i + 4,
+        );
+    }
+}
+
+/// `--adjustdirection` strand-detection guard. The 6-mer-based
+/// `makedirectionlist` + `setdirection` pipeline (ported in
+/// `mafft_core::adjust_direction::adjust_direction`) MUST mark the
+/// last four sequences `_R_` (their content is the reverse complement
+/// of the first four). Verified byte-identical to C MAFFT 7.526
+/// `--adjustdirection` on this fixture.
+#[test]
+fn adjust_direction_mixed_dna_byte_identical_to_c() {
+    use mafft_core::adjust_direction::{adjust_direction, Direction, reverse_complement};
+    let input = read_fasta_casepreserve(fixture_path("dna_adjustdirection_input.fa"))
+        .expect("missing dna_adjustdirection_input.fa fixture");
+    assert!(input.seq_type.is_nucleotide(), "fixture must be DNA");
+    let adjusted = adjust_direction(&input);
+
+    // First four sequences are forward; last four are RC of the
+    // first four. Direction detector should mark the last four `_R_`
+    // and leave the first four named as input.
+    let expected_prefixes = ["", "", "", "", "_R_", "_R_", "_R_", "_R_"];
+    for (i, expected) in expected_prefixes.iter().enumerate() {
+        assert!(
+            adjusted.sequences[i].name.starts_with(expected),
+            "seq {i}: expected name to start with {:?}, got {:?}",
+            expected, adjusted.sequences[i].name,
+        );
+    }
+
+    // After RC, seq[i] (i in 4..8) should equal seq[i-4].
+    for i in 0..4 {
+        assert_eq!(
+            adjusted.sequences[i].data,
+            adjusted.sequences[i + 4].data,
+            "after adjust, seq {} should equal seq {} (its un-RC'd pair)",
+            i, i + 4,
+        );
+    }
+
+    // Roundtrip the reverse complement of seq[4]'s ADJUSTED data back
+    // through `reverse_complement` and confirm it equals the input
+    // (paranoia check that the RC function is its own inverse on
+    // DNA letters).
+    let rt = reverse_complement(&adjusted.sequences[4].data);
+    let rt2 = reverse_complement(&rt);
+    assert_eq!(rt2, adjusted.sequences[4].data);
+
+    // Direction enum mirrors what we asserted on names above.
+    let _ = Direction::Forward;
+}

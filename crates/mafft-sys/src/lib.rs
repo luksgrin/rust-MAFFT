@@ -622,6 +622,39 @@ unsafe extern "C" {
     pub fn commongappick(nseq: c_int, seq: *mut *mut c_char);
     pub fn reporterr(str: *const c_char, ...);
     pub fn ErrorExit(message: *mut c_char);
+
+    // -- --add gap restoration / insertion (addfunctions.c) --
+    pub fn findnewgaps(n: c_int, rep: c_int, seq: *mut *mut c_char, gaplen: *mut c_int);
+    pub fn findcommongaps(n: c_int, seq: *mut *mut c_char, gapmap: *mut c_int);
+    pub fn adjustgapmap(newlen: c_int, gapmap: *mut c_int, seq: *mut c_char);
+    pub fn restorecommongaps(
+        njob: c_int,
+        n0: c_int,
+        seq: *mut *mut c_char,
+        ex1: *mut c_int,
+        ex2: *mut c_int,
+        gapmap: *mut c_int,
+        alloclen: c_int,
+        gapchar: c_char,
+    );
+    pub fn insertnewgaps(
+        njob: c_int,
+        alreadyaligned: *mut c_int,
+        seq: *mut *mut c_char,
+        ex1: *mut c_int,
+        ex2: *mut c_int,
+        gaplen: *mut c_int,
+        gapmap: *mut c_int,
+        alloclen: c_int,
+        alg: c_char,
+        gapchar: c_char,
+    );
+
+    // Note: C's `profilealignment` is `static` in addfunctions.c, so
+    // it can only be exercised end-to-end via `insertnewgaps` above.
+    // That is sufficient for parity testing since rust's
+    // `insertnewgaps_with_profilealignment` is meant to replicate the
+    // whole insertnewgaps function, not just profilealignment.
 }
 
 // ---------------------------------------------------------------------------

@@ -111,30 +111,41 @@ pub fn add_sequences_keeplength(
     scoring: &ScoringContext,
     use_fft: bool,
 ) -> MultipleAlignment {
+    let (msa, _) = add_sequences_keeplength_with_map(
+        existing, new_sequences, new_names, scoring, use_fft,
+    );
+    msa
+}
+
+/// Like [`add_sequences_keeplength`] but also returns the per-added-
+/// sequence list of dropped insertion runs (`(start_in_addbk_0based,
+/// run_length)` pairs). Used by `--mapout` / `--compactmapout`.
+///
+/// Each entry corresponds to a maximal run of residues in the
+/// ORIGINAL (pre-alignment, gap-free) added sequence that the
+/// `--keeplength` column filter dropped — these are the
+/// "insertions" the user asked for the map of. Position is
+/// 0-indexed in `addbk[i]`.
+///
+/// C parity: matches the `deletelist` populated by
+/// `deletenewinsertions_whole` (`addfunctions.c`) that C feeds to
+/// `reconstructdeletemap` / `reconstructdeletemap_compact`.
+pub fn add_sequences_keeplength_with_map(
+    existing: &MultipleAlignment,
+    new_sequences: &[Vec<u8>],
+    new_names: &[String],
+    scoring: &ScoringContext,
+    use_fft: bool,
+) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
     if new_sequences.is_empty() {
-        return existing.clone();
+        return (existing.clone(), Vec::new());
     }
     let target_width = existing.sequences.first().map(|s| s.len()).unwrap_or(0);
     let n_existing = existing.nseq();
+    let nadd = new_sequences.len();
 
     let mut full = add_sequences(existing, new_sequences, new_names, scoring, use_fft);
 
-    // Reduce columns to those where the original existing pattern is
-    // preserved. C's `--keeplength` post-processing
-    // (`disttbfast.c:4839-4882`):
-    //   1. Save original gap pattern of existing sequences.
-    //   2. Run alignment.
-    //   3. For each new column that's all-gap on the existing side,
-    //      delete it (drops new-sequence residues at those columns).
-    //   4. Restore the original alignment columns of existing sequences.
-    //
-    // Simpler equivalent: walk left-to-right; keep a column iff at
-    // least one existing sequence has a non-gap residue at that column.
-    // Existing sequences then automatically retain their original
-    // pattern (since the aligner only adds new gap columns, never
-    // removes original ones, as long as no `commongappick` ran on
-    // them in the merge — which is guaranteed by the per-step
-    // common-gap behavior).
     let width = full.sequences.first().map(|s| s.len()).unwrap_or(0);
     let mut keep = vec![false; width];
     for col in 0..width {
@@ -150,6 +161,37 @@ pub fn add_sequences_keeplength(
         keep[col] = any_existing_residue;
     }
 
+    // Build per-added-seq deletelist BEFORE column filtering — we
+    // need the post-add (pre-filter) sequence to know which residue
+    // of `addbk[i]` lives at each dropped column.
+    let mut deletelist: Vec<Vec<(usize, usize)>> = Vec::with_capacity(nadd);
+    for i in 0..nadd {
+        let aligned = &full.sequences[n_existing + i];
+        let mut entries: Vec<(usize, usize)> = Vec::new();
+        let mut addbk_pos: usize = 0;
+        let mut run_start: usize = 0;
+        let mut run_len: usize = 0;
+        for (col, &c) in aligned.iter().enumerate() {
+            if c == b'-' || c == b'.' {
+                continue;
+            }
+            if keep[col] {
+                if run_len > 0 {
+                    entries.push((run_start, run_len));
+                    run_len = 0;
+                }
+            } else {
+                if run_len == 0 { run_start = addbk_pos; }
+                run_len += 1;
+            }
+            addbk_pos += 1;
+        }
+        if run_len > 0 {
+            entries.push((run_start, run_len));
+        }
+        deletelist.push(entries);
+    }
+
     for s in full.sequences.iter_mut() {
         let mut filtered: Vec<u8> = Vec::with_capacity(target_width);
         for col in 0..s.len() {
@@ -158,7 +200,7 @@ pub fn add_sequences_keeplength(
         *s = filtered;
     }
 
-    full
+    (full, deletelist)
 }
 
 /// Compute `mergeoralign[]` for each branch in the guide tree, mirroring
