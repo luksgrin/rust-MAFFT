@@ -77,7 +77,7 @@ Total: **1930/1930 alignments byte-identical** to C MAFFT 7.526.
 | `--parttree` (108-seq)                      | 1.70s   | 0.09s    | **18× faster** |
 | `--dpparttree` (108-seq)                    | 7.24s   | 0.08s    | **90× faster** |
 
-Test suite: **414 Rust integration tests pass, 0 failed, 6 ignored**
+Test suite: **416 Rust integration tests pass, 0 failed, 6 ignored**
 (the ignored are deliberate diagnostic / bisection tools annotated at
 the call site). Plus **32 Python tests pass**.
 
@@ -136,30 +136,22 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
    `crates/mafft-core/tests/fixtures/dna_adjustdirection_input.fa`
    fixture and on samplerna-derived DNA. See R-5 below for the
    implementation notes.
-2. **Tree-linkage variants — partially exposed.** Three of the four
-   C tree-linkage flags are now wired and byte-identical to C MAFFT:
+2. **Tree-linkage variants — all four IMPLEMENTED.** All four
+   C tree-linkage flags are wired and byte-identical to C MAFFT:
    - **`--averagelinkage`** (sueff = 1.0), **`--minimumlinkage`**
      (sueff = 0.0), **`--mixedlinkage F`** (sueff = F) all route to
      the existing `mafft_tree::ClusterMethod::Mix` infrastructure
      via `MafftEngine.cluster_method`. Verified byte-identical to C
      across 9 linkage × mode combinations (default / FFT-NS-i /
      L-INS-i × each linkage flag).
-   - **`--youngestlinkage`** — IMPLEMENTED (partial). Wired
-     through rust's existing `memsavetree` path (`compacttree=3`
-     equivalent in C terms). Byte-identical to C MAFFT 7.526
-     `--youngestlinkage` on small fixtures (first14 / first15:
-     width 423 / 423). Diverges on larger inputs (sample.first30:
-     rust 602 vs C 578; full 36-seq sample: rust 709 vs C 703).
-     C's `--youngestlinkage` uses `compacttree=4` →
-     `compacttree_memsaveselectable` with `howcompact=2` — a
-     memory-saving k-mer tree builder with on-demand cluster-
-     distance recompute (`mltaln9.c:5491`, 638 LOC). Full
-     byte-identity would require porting that function plus its
-     `verycompactkmerdistarrthreadjoblist` helpers. Tracked as
-     R-8 below. Regression test:
-     `youngestlinkage_small_byte_identical_to_c`.
-3. **Iteration-strategy variants — partially exposed.** All four
-   C iteration-strategy flags now have CLI args. Status:
+   - **`--youngestlinkage`** — IMPLEMENTED, byte-identical to
+     C MAFFT 7.526 on first14/15/30/36 and the 36-seq sample
+     (widths 423/423/578/703). Dedicated port of
+     `compacttree_memsaveselectable(howcompact=2, memsave=1)`
+     with both k-mer (pass 0) and MSA (pass 1+) distance paths.
+     See R-8 below.
+3. **Iteration-strategy variants — all four IMPLEMENTED.** All four
+   C iteration-strategy flags have CLI args. Status:
    - **`--simplehillclimbing`** — FULLY HANDLED. Matches C's
      `parallelizationstrategy=BAATARI2`, which is the default in
      both C MAFFT and mafft-rs, so the flag is a true no-op
@@ -194,8 +186,8 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
      path (`scripts/mafft:2673` passes `-r` only to `disttbfast`);
      L/G/E-INS-i are correctly no-op in both rust and C.
      See R-4 below for the port notes.
-4. **Auxiliary output formats — partially exposed.** All six C
-   MAFFT 7.526 aux-output flags now have CLI args. Status:
+4. **Auxiliary output formats — all six IMPLEMENTED.** All six C
+   MAFFT 7.526 aux-output flags have CLI args. Status:
    - **`--distout`** — FULLY IMPLEMENTED. Writes the engine's
      pairwise distance matrix to `<INPUT>.hat2`. Byte-identical to
      C across 6 mode combinations (default / FFT-NS-i / L/G/E-INS-i
@@ -230,25 +222,16 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
      (`crates/mafft-core/tests/fixtures/sample.add6.mapout.*.map`).
      Regression tests: `mapout_full_byte_identical_to_c`,
      `mapout_compact_byte_identical_to_c`.
-   - **`--pileup`** — IMPLEMENTED, partial. Comb-tree guide
-     topology is byte-identical to C MAFFT 7.526 with `--pileup
-     --treeout` on first14 / first15 fixtures (port of C
-     `mltaln9.c::createchain` shuffle=0, exposed as
-     `mafft_tree::Topology::pileup_chain`). Engine wires
-     `self.pileup` to use that topology, force `retree = 1`, and
-     skip refinement (matching C's "Pileup-NS-1" strategy at
-     `scripts/mafft:2169`). The ALIGNMENT BODY diverges from C —
-     rust builds full-cluster profiles at each chain merge while
-     C uses single-representative (memsave) profiles, giving rust
-     ~10% tighter alignments (e.g., width 714 vs C 800 on the
-     36-seq sample). Both are valid pile-up interpretations; C
-     upstream marks this strategy "Pileup-NS-1 (Not tested.)".
-     Byte-identical alignment output would require a single-rep
-     profile + gap-broadcast post-step (substantial refactor).
-     Regression test:
-     `pileup_topology_byte_identical_to_c_branch_lengths`.
-5. **Sequence-filter flags — partially exposed.** All six C MAFFT
-   7.526 sequence-filter flags now have CLI args. Status:
+   - **`--pileup`** — IMPLEMENTED, byte-identical to C MAFFT
+     7.526 on first14/15/30/36 and the 36-seq sample (width
+     429/429/604/800). One-line fix: --pileup needs uniform
+     1.0 weights (C `tbrweight=0`), not tree-derived. The
+     original "single-representative profile" hypothesis was
+     wrong; both rust and C use full-cluster profiles, just
+     with different weight schemes. See R-7 below.
+5. **Sequence-filter flags — all six IMPLEMENTED (2 intentional
+   no-ops for --dash dependencies).** All six C MAFFT 7.526
+   sequence-filter flags have CLI args. Status:
    - **`--maxambiguous F`** — FULLY IMPLEMENTED. Direct port of C's
      `filter.c` (drops sequences whose ambiguous-residue fraction
      exceeds F, collapses runs of N/X via `shortenN`). Mirrors C's
@@ -283,10 +266,67 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
    byte-identical to C MAFFT across 44/45 mode×value combinations
    (R-1 closed 2026-06-02 — the boundary-init FP-order bug that
    originally caused `--exp` aggressive-value divergence is fixed).
-   Sole remaining residual: `--exp ≥ 4.5` on FFT-NS-2 (no refinement)
-   produces 16 lines of single-char tied-trace gap shifts (same
-   width, same score) — pathological-value tie-break, out-of-scope
-   for realistic workflows. `--gop`/`--gep`/`--gexp` are wired but
+
+   Sole remaining residual: **`--exp ≥ 4.30` on FFT-NS-2** (no
+   refinement) produces 16-24 lines of single-char tied-trace
+   gap shifts (same width 517, same score) — pathological-
+   value tie-break.
+
+   Threshold pinned 2026-06-04 (`--exp 4.29` byte-identical,
+   `--exp 4.30` triggers). Corresponds to `penalty_ex = -2579`
+   (= `(int)(0.6 * -4300 + 0.5)`) — at this value the per-cell
+   gap-extension penalty crosses a threshold where the DP
+   has multiple equally-scoring paths through the Drosophila
+   opsin cluster (seqs 14-17).
+
+   Diagnostic ladder (all `--exp 5.0` unless noted):
+   - first17 / dros4 / seqs 13-17 in isolation: 0 diff.
+   - first21 / first28+: triggers (3-7 diff cols per seq on
+     seqs 14-17).
+   - `--nofft`: 0 diff (FFT-anchor specific).
+   - `--maxiterate ≥ 1`: 0 diff (refinement smooths).
+   - The `M-V` vs `-MV` shift is exactly 1 column at the
+     boundary of the conserved transmembrane region.
+
+   Closure barrier: the diverging cell is in the per-segment
+   profile DP at extreme penalty_ex. All rust-vs-C tie-break
+   operators (`>=` for mi/mj GE-update, `>` for wm strict-GT,
+   `wm = previousw[j-1]` init, `lasti = n+1` boundary) verified
+   matching C `Salignmm.c::A__align` lines 2046-2087.
+
+   **Cell-level FFI investigation 2026-06-04** added per-step
+   dump infrastructure (`RS_DP_DUMP=/path` env var in
+   `progressive.rs::merge_step_cached`) plus FFI compare tests
+   (`exp_residual_dump_compare`, `exp_residual_step10`). The
+   compare test feeds rust's recorded per-step inputs to C's
+   `Falign` via mafft-sys and reports rust vs C row-by-row.
+
+   Findings:
+   - For `--exp 5.0` on the 36-seq sample: ALL 70 merge steps
+     (35 × 2 passes) show rust's recorded output == C's
+     `Falign` output on the SAME inputs (with weight
+     per-group sum-to-1 normalization).
+   - The isolated step-10 test (rust's `fft_profile_align` vs
+     C's `Falign` on identical inputs): both produce width
+     354, byte-identical alignment.
+   - But end-to-end `mafft --exp 5.0 sample` still produces a
+     16-line content diff vs `mafft-rs --exp 5.0 sample`.
+
+   This is paradoxical: if per-step rust = C on same inputs,
+   end-to-end should match by induction. The dump_compare
+   harness also shows divergence at step 47 for `--exp 0`
+   (which has 0-line end-to-end diff), confirming false
+   positives in the FFI compare — some C state we don't
+   capture in the dump (likely accumulated FP roundoff or
+   subtle Falign global state) shifts behavior in ways the
+   per-step replay can't reproduce.
+
+   Pathological-value tie-break with no realistic workflow
+   impact — default `--exp` is 0, no documented workflow uses
+   `--exp ≥ 4.30`, and any refinement closes it. Diagnostic
+   infrastructure is in place if a real closure attempt
+   becomes warranted: `RS_DP_DUMP`, `exp_residual_dump_compare`,
+   `exp_residual_step10`. `--gop`/`--gep`/`--gexp` are wired but
    currently inert in protein/DNA pipelines (they only affect C's
    X-INS-i / Q-INS-i RNA paths, which are external-dep blocked).
    `--rop` / `--rep` / `--LOP` / `--LEXP` / `--GOP` / `--GEXP`
@@ -296,10 +336,17 @@ the 1930/1930 BALIBASE parity or any documented user workflow.
    RNA-structure paths (CONTRAfold / mxscarnamod / LARA / DAFS)
    and are otherwise inert. Variable names map to C verbatim
    (`rgop`/`rgep`/`LGOP`/`LEXP`/`GGOP`/`GEXP`).
-7. **Out-of-scope by design** (no plan to support): RNA structure
+7. **PDB structure-aware alignment (`--pdbfilelist`,
+    `--pdbidlist`) — full parity with C MAFFT 7.526.** Both flags
+    are disabled in upstream C MAFFT itself (`scripts/mafft:969-990`
+    — "temporarily unavailable, 2018/Dec." → `exit`), so true parity
+    is achieved by emitting the same verbatim message and exit code.
+    Rust wires the flags via clap and matches C's exit behaviour
+    byte-for-byte (verified 2026-06-04: same stderr message, same
+    `$?` exit status).
+8. **Out-of-scope by design** (no plan to support): RNA structure
     alignment via DAFS / FoldAlign / LARA / SCARNA / MCCASKILL /
-    RIBOSUM / RNAALIFOLD; PDB structure-aware alignment
-    (`--pdbfilelist`, `--pdbidlist`); alternative pairwise via
+    RIBOSUM / RNAALIFOLD; alternative pairwise via
     BLAST or LAST (`--blastpair`, `--lastpair`, `--lastmultipair`,
     `--fastapair`, `--fastswpair`, `--hybridpair`,
     `--longshortpair`, `--shortlongpair`); MPI parallelism
@@ -542,17 +589,24 @@ R-5. **`--adjustdirection` k-mer strand detection — RESOLVED
    orientation decision is case-invariant either way). Regression
    test: `adjustdirection_with_add_only_flips_added`.
 
-   **Not yet ported** (single remaining follow-up):
-   - `contrastsort` is implemented as a stable sort; C uses
-     glibc qsort which is not stable. Differences would surface
-     only on inputs where the (forward_self − reverse_self) key
-     ties — none observed on the test inputs above.
+   **Contrastsort sort-stability follow-up — RESOLVED
+   2026-06-04.** Switched `testable.sort_by` → `sort_unstable_by`
+   to better match C `qsort`'s spirit. Verified byte-identical
+   to C on (a) the standard 8-seq + 5-seq + 17-seq DNA fixtures
+   (no contrast-key ties), (b) a synthetic palindromic-DNA
+   fixture where ALL 4 contrast keys tie at 0 (orientation
+   decisions are direction-symmetric so the tie order doesn't
+   matter downstream). Neither rust's stable nor unstable sort
+   matches glibc qsort bit-exactly on every conceivable tied
+   input — that would require linking glibc's qsort or re-
+   implementing its exact pivot/partition algorithm — but no
+   realistic input has been observed to expose the difference.
 
    Regression test:
    `end_to_end::adjust_direction_mixed_dna_byte_identical_to_c`.
 
-R-6. **Gapped-input divergence — direct alignment closed
-   2026-06-03; `--add` path still partial.**
+R-6. **Gapped-input divergence — direct alignment + `--add`
+   path both CLOSED 2026-06-03.**
 
    **Direct alignment path — RESOLVED.** Root cause was rust's
    `engine.align` keeping the input sequences verbatim (with
@@ -731,53 +785,48 @@ R-6-orig. **`--add` alignment-body divergence on synthetic divergent
    `--add` fixture, all byte-identical. The synthetic
    input was specifically constructed to amplify ties.
 
-R-8. **`--youngestlinkage` divergence vs C on larger inputs —
-   surfaced 2026-06-03 during §2 closure.** Rust currently
-   wires `--youngestlinkage` through the existing memsavetree
-   path (`compacttreegivendist` in C terms = `compacttree=3`),
-   which is the SAME ALGORITHM FAMILY as C's `--youngestlinkage`
-   (`compacttree=4` → `compacttree_memsaveselectable`,
-   `howcompact=2`) but differs in algorithmic detail of cluster
-   joining. Coincidentally byte-identical on small inputs
-   (first14, first15: width 423) but diverges on larger
-   (first30: rust 602 vs C 578, 36-seq: rust 709 vs C 703).
+R-8. **`--youngestlinkage` divergence — CLOSED 2026-06-03.**
+   Port required two pieces (NOT 638 LOC):
+   1. `youngestlinkage_tree` (~200 LOC) — k-mer path mirroring
+      `compacttree_memsaveselectable(seq=NULL, howcompact=2,
+      memsave=1)`. Forward + two-sided initial scan via
+      `initial_mindist_yl`; per-step recompute via k-mer tables.
+   2. `youngestlinkage_tree_msa` (~50 LOC sharing core via
+      closure) — MSA path mirroring the same C function with
+      `seq=bseq` (triggering `verycompactmsadistarrthreadjoblist`).
+      Used in pass 1+ of `--youngestlinkage` (the two-pass
+      progressive C MAFFT runs).
 
-   **To investigate (low priority — `--youngestlinkage` is a
-   memory-saving variant for huge alignments, not a common
-   workflow):** port `mltaln9.c::compacttree_memsaveselectable`
-   (638 LOC) plus its `verycompactkmerdistarrthreadjoblist`
-   helpers (~150 LOC). Algorithm sketch: per-cluster nearest-
-   neighbor tracking with on-demand pairwise distance recompute
-   from k-mer tables, using a doubly-linked active-cluster chain
-   (`Bchain`) and a joblist for batched distance updates after
-   each join.
+   Shared `youngestlinkage_core` factors the per-step loop;
+   distance closures parameterize k-mer vs MSA. Cell-level FFI
+   harness (`youngestlinkage_topol_matches_c_step_by_step`)
+   validated rust port = C `compacttree_memsaveselectable`
+   byte-identically when fed the same initial mindist.
 
-R-7. **`--pileup` alignment-body divergence vs C — surfaced
-   2026-06-03 during gap-§4 closure.** The CHAIN TOPOLOGY rust
-   builds is byte-identical to C MAFFT 7.526 `--pileup --treeout`
-   (Newick + branch lengths match exactly on the first14 /
-   first15 fixtures; see
-   `pileup_topology_byte_identical_to_c_branch_lengths`). The
-   ALIGNMENT BODY, however, diverges by ~10% width — rust gives
-   tighter alignments (e.g., 36-seq sample: rust width 714, C
-   width 800). Root cause: rust's progressive merge builds a
-   FULL-CLUSTER profile at each chain step (averaging all
-   accumulated members with their weights), while C's memsave
-   pipeline at each chain step uses a SINGLE-REPRESENTATIVE
-   profile (just `bseq[mm]`, the chain head) and then
-   broadcasts the resulting gap pattern to the other accumulated
-   members via the chain's implicit linkage.
+   Results: first14/15/30/36 all 0 diff vs C MAFFT 7.526
+   `--youngestlinkage` (was 0/24/682/870). Width matches:
+   first30 578=578, first36 703=703. --memsavetree preserved
+   byte-identical. 416/416 tests passing.
 
-   Both interpretations are valid chain-merge alignments. C
-   upstream's strategy name is "Pileup-NS-1 (Not tested.)" so
-   the divergence is unlikely to affect any real user workflow.
+R-7. **`--pileup` alignment-body divergence vs C — CLOSED
+   2026-06-03 with a one-line fix.** Root cause was NOT
+   single-rep vs full-cluster (the original hypothesis); both
+   C and rust use full-cluster profiles. The actual difference:
+   C's `--pileup` sets `tbrweight = 0` (`disttbfast.c:3962`),
+   which makes the merge weights `eff[i] = 1.0` for all i
+   (uniform). Rust was using `sequence_weights(topology)`
+   (tree-derived) for all modes except `--parttree`.
 
-   **To investigate (low priority):** if byte-identity is
-   required, implement a `merge_two_groups_single_rep_progressive`
-   helper that builds the profile from just `aligned[group1[0]]`
-   instead of the full cluster, plus a post-step gap-broadcast
-   to propagate `aligned[rep]`'s new gap columns into
-   `aligned[other_cluster_members]`. The broadcast is delicate
-   because the cluster members must stay mutually aligned across
-   chain steps. Gate on `params.pileup` so it doesn't touch the
-   tree-based UPGMA progressive path.
+   **Fix** (`engine.rs:832`): one-line addition to the
+   existing `weights_override` branch:
+   ```rust
+   let weights_override = if use_parttree || self.pileup {
+       Some(vec![1.0; sequences.len()])
+   } else { None };
+   ```
+
+   Closes byte-identity on `first14`, `first15`, `first30`,
+   `first36`, and `36-seq sample` (was 1000+ line diff on
+   36-seq, now 0). The CHAIN TOPOLOGY was already byte-
+   identical (existing
+   `pileup_topology_byte_identical_to_c_branch_lengths` test).

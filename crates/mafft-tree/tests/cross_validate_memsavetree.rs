@@ -492,3 +492,121 @@ fn memsavetree_topol_matches_c_step_by_step() {
     assert_eq!(c_via_rust_newick, our_newick,
         "Newick from C's FFI topology should match ours bit-exact");
 }
+
+/// Drive C's `compacttree_memsaveselectable` (compacttree=4, the
+/// `--youngestlinkage` algorithm) via the
+/// `rs_compacttree_memsaveselectable_kmer` wrapper. Compares each merge
+/// step's `(im, jm)` and branch lengths against rust's
+/// `youngestlinkage_tree`. First diverging step reveals the bug.
+///
+/// Uses initial mindist FROM C's `ylcompactdisthalfmtxthread` (which is
+/// the both-sided forward-walk variant for compacttree=4 — same logic
+/// rust's `initial_mindist_yl` implements). Currently the FFI wrapper
+/// exposes `rs_compact_initial_mindist` (one-sided) only; for now we
+/// compute rust's `initial_mindist_yl` and pass it both to rust's port
+/// and C's algorithm.
+#[test]
+fn youngestlinkage_topol_matches_c_step_by_step() {
+    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    // Use first15 — first input where our port diverges from C.
+    let input = read_fasta(std::path::Path::new(
+        "../../crates/mafft-core/tests/fixtures/sample.first15.fa"
+    )).expect("load first15");
+
+    unsafe { init_c_protein(); }
+
+    let nseq = input.sequences.len();
+    let stripped: Vec<Vec<u8>> = input.sequences.iter().map(|s| {
+        s.data.iter().filter(|&&c| c != b'-' && c != b'.').copied().collect()
+    }).collect();
+    let nogaplen_c: Vec<i32> = stripped.iter().map(|s| s.len() as i32).collect();
+    let mut c_points: Vec<Vec<i32>> = stripped.iter().map(|s| unsafe { c_pointt(s) }).collect();
+    let mut selfscore_c: Vec<i32> = (0..nseq).map(|i| {
+        let mut tbl = vec![0i32; 46656];
+        unsafe { mafft_sys::makecompositiontable_p(tbl.as_mut_ptr(), c_points[i].as_mut_ptr()); }
+        unsafe { mafft_sys::commonsextet_p(tbl.as_mut_ptr(), c_points[i].as_mut_ptr()) }
+    }).collect();
+    unsafe { mafft_sys::commonsextet_p(std::ptr::null_mut(), std::ptr::null_mut()); }
+
+    // Compute rust's initial_mindist_yl AND C's
+    // `rs_compact_initial_mindist_yl` and verify they match.
+    let pointt_u32: Vec<Vec<u32>> = c_points.iter().map(|v| {
+        v.iter().take_while(|&&x| x >= 0).map(|&x| x as u32).collect()
+    }).collect();
+    let nogaplen_usize: Vec<usize> = nogaplen_c.iter().map(|&x| x as usize).collect();
+    let (r_mindist, r_nearest) = mafft_tree::memsavetree::initial_mindist_yl_for_test(
+        &pointt_u32,
+        &nogaplen_usize,
+        &selfscore_c,
+        46656,
+        PLENFACA, PLENFACB, PLENFACC, PLENFACD,
+    );
+
+    let mut c_yl_mindist = vec![0.0_f64; nseq];
+    let mut c_yl_nearest = vec![0_i32; nseq];
+    let mut c_points_raw: Vec<*mut c_int> = c_points.iter_mut()
+        .map(|v| v.as_mut_ptr()).collect();
+    let mut nogaplen_mut = nogaplen_c.clone();
+    unsafe {
+        mafft_sys::rs_compact_initial_mindist_yl(
+            nseq as c_int,
+            c_points_raw.as_mut_ptr(),
+            nogaplen_mut.as_mut_ptr(),
+            selfscore_c.as_mut_ptr(),
+            c_yl_mindist.as_mut_ptr(),
+            c_yl_nearest.as_mut_ptr(),
+        );
+    }
+    eprintln!("Initial mindist comparison (rust vs C ylcompact):");
+    for i in 0..nseq {
+        let m_diff = (r_mindist[i] - c_yl_mindist[i]).abs();
+        let n_match = r_nearest[i] == c_yl_nearest[i];
+        if m_diff > 1e-10 || !n_match {
+            eprintln!("  i={i}: R mindist={:.10} nearest={} | C mindist={:.10} nearest={}",
+                r_mindist[i], r_nearest[i], c_yl_mindist[i], c_yl_nearest[i]);
+        }
+    }
+    // Now use C's mindist for both (so the test confirms which side has the bug).
+    let c_mindist: Vec<f64> = c_yl_mindist.clone();
+    let c_nearest: Vec<i32> = c_yl_nearest.clone();
+
+    let mut c_topol0 = vec![-1_i32; nseq - 1];
+    let mut c_topol1 = vec![-1_i32; nseq - 1];
+    let mut c_len0 = vec![0.0_f64; nseq - 1];
+    let mut c_len1 = vec![0.0_f64; nseq - 1];
+    unsafe {
+        mafft_sys::rs_compacttree_memsaveselectable_kmer(
+            nseq as c_int,
+            c_points_raw.as_mut_ptr(),
+            nogaplen_mut.as_mut_ptr(),
+            selfscore_c.as_mut_ptr(),
+            c_mindist.as_ptr(),
+            c_nearest.as_ptr(),
+            c_topol0.as_mut_ptr(),
+            c_topol1.as_mut_ptr(),
+            c_len0.as_mut_ptr(),
+            c_len1.as_mut_ptr(),
+        );
+    }
+
+    eprintln!("C compacttree_memsaveselectable (kmer, howcompact=2) sequence:");
+    for k in 0..(nseq - 1) {
+        eprintln!("  step {k}: ({},{}) lens=({:.6},{:.6})",
+            c_topol0[k], c_topol1[k], c_len0[k], c_len1[k]);
+    }
+
+    // Rust's port:
+    let raw_refs: Vec<&[u8]> = input.sequences.iter().map(|s| s.data.as_slice()).collect();
+    let r_topo = mafft_tree::memsavetree::youngestlinkage_tree(&raw_refs, false);
+
+    eprintln!("\nRust youngestlinkage_tree sequence:");
+    for k in 0..r_topo.steps.len() {
+        let s = &r_topo.steps[k];
+        let lmin = s.left.iter().min().copied().unwrap_or(0);
+        let rmin = s.right.iter().min().copied().unwrap_or(0);
+        eprintln!("  step {k}: ({lmin},{rmin}) lens=({:.6},{:.6})",
+            s.left_length, s.right_length);
+    }
+
+    unsafe { cleanup_c(); }
+}

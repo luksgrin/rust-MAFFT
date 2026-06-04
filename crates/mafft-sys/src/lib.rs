@@ -311,6 +311,18 @@ unsafe extern "C" {
         out_len1: *mut c_double,
     );
 
+    /// Drive C's `ylcompactdisthalfmtxthread` (the `--youngestlinkage`
+    /// initial scan: forward walk + both-sided update). Mirrors
+    /// `disttbfast.c:957-1038`. Single-threaded.
+    pub fn rs_compact_initial_mindist_yl(
+        nseq: c_int,
+        pointt: *mut *mut c_int,
+        nogaplen: *mut c_int,
+        selfscore: *mut c_int,
+        mindist: *mut c_double,
+        mindistfrom: *mut c_int,
+    );
+
     /// Drive C's `compacttree_memsaveselectable` with `howcompact=2`,
     /// `memsave=1`, `seq=NULL` (k-mer distance path). Kept for reference
     /// but NOT the algorithm `--memsavetree` actually uses.

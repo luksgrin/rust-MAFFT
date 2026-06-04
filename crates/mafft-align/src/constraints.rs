@@ -954,7 +954,7 @@ pub fn build_homology_table_with_unalign(
             // `L__align11_noalign` (`pairlocalalign.c:2139`). To match, we
             // recompute the score on X-stripped sequences when needed; the
             // alignment regions still come from the X-containing run.
-            let mut score_for_dist: f64 = if matches!(aligner, PairAligner::GeneralizedAffine) {
+            let score_for_dist: f64 = if matches!(aligner, PairAligner::GeneralizedAffine) {
                 // commongappick + sum amino_dis at matched columns; gaps free.
                 let mut s = 0.0f64;
                 let n_alpha = matrix.len();

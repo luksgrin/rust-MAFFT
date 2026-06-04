@@ -216,12 +216,27 @@ fn run_alignment(input: SequenceSet, mode: AlignmentMode) -> AlignmentResult {
 // Module functions
 // ---------------------------------------------------------------------------
 
+/// Try to convert a Python object with `.id` and `.seq` attributes (duck-
+/// types `Bio.SeqRecord.SeqRecord` and similar) into a `(name, seq)` pair.
+/// Returns `None` if either attribute is missing.
+fn try_record_to_pair(obj: &Bound<'_, PyAny>) -> Option<(String, String)> {
+    let id_obj = obj.getattr("id").ok()?;
+    let seq_obj = obj.getattr("seq").ok()?;
+    let id: String = id_obj.extract().ok()?;
+    // `seq` may be a `Bio.Seq.Seq` (custom type) — `str()` always works.
+    let seq_str = seq_obj.str().ok()?;
+    let seq: String = seq_str.extract().ok()?;
+    Some((id, seq))
+}
+
 /// Align sequences.
 ///
 /// Args:
-///     sequences: List of sequences. Can be:
+///     sequences: List of sequences. Accepted shapes:
 ///         - List of strings (auto-named "seq_1", "seq_2", ...)
 ///         - List of (name, sequence) tuples
+///         - List of objects with `.id` and `.seq` attributes
+///           (e.g. Biopython `SeqRecord`).
 ///     strategy: Alignment strategy. One of:
 ///         "fftns2" (default), "fftnsi", "ginsi", "linsi", "einsi"
 ///     maxiterate: Maximum refinement iterations (0 = default for strategy).
@@ -237,7 +252,10 @@ fn align(
 ) -> PyResult<AlignmentResult> {
     let mode = parse_strategy(strategy, maxiterate)?;
 
-    // Accept either list of strings or list of (name, seq) tuples
+    // Accept (in order of try):
+    //   1. list of strings
+    //   2. list of (name, seq) tuples
+    //   3. iterable of SeqRecord-like objects (`.id`, `.seq` attrs)
     let input = if let Ok(str_list) = sequences.extract::<Vec<String>>() {
         let pairs: Vec<(String, String)> = str_list
             .into_iter()
@@ -247,9 +265,25 @@ fn align(
         build_input(pairs)?
     } else if let Ok(tuple_list) = sequences.extract::<Vec<(String, String)>>() {
         build_input(tuple_list)?
+    } else if let Ok(iter) = sequences.try_iter() {
+        // Duck-type: try to read each item's `.id` and `.seq` attrs.
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (i, item) in iter.enumerate() {
+            let item = item?;
+            match try_record_to_pair(&item) {
+                Some(p) => pairs.push(p),
+                None => return Err(PyValueError::new_err(format!(
+                    "sequences[{}] is not a string, (name, seq) tuple, or \
+                     object with .id and .seq attributes",
+                    i
+                ))),
+            }
+        }
+        build_input(pairs)?
     } else {
         return Err(PyValueError::new_err(
-            "sequences must be a list of strings or list of (name, sequence) tuples"
+            "sequences must be a list of strings, (name, sequence) tuples, \
+             or SeqRecord-like objects"
         ));
     };
 

@@ -1035,7 +1035,7 @@ fn insertnewgaps_with_profilealignment(
             let m_refs: Vec<&[u8]> = mseq0.iter().map(|v| v.as_slice()).collect();
             let n_refs: Vec<&[u8]> = mseq2.iter().map(|v| v.as_slice()).collect();
             let n0 = m_refs.len();
-            let n2 = n_refs.len();
+            let _n2 = n_refs.len();
             let alcount0 = mseq0.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
             let alcount2 = mseq2.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
             let w0: Vec<f64> = mseq0.iter().map(|r| {
@@ -1553,6 +1553,22 @@ fn merge_step_cached(
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
 
+    // RS_DP_DUMP: when set, append one entry per merge call to the file at
+    // its value. Format (tab-delimited per line):
+    //   step_idx<TAB>group1_indices<TAB>group2_indices<TAB>weights1<TAB>
+    //   weights2<TAB>penalty<TAB>penalty_ex<TAB>headgp<TAB>tailgp<TAB>
+    //   group1_seqs (semicolon-sep)<TAB>group2_seqs<TAB>... blank for output;
+    //   a second line per call is written AFTER profile_align with the output
+    //   alignment seqs. Used by R-1-residual investigation.
+    let dump_inputs = std::env::var_os("RS_DP_DUMP").is_some();
+    let dp_dump_step = if dump_inputs {
+        let s1: Vec<String> = group1.iter().map(|&i| String::from_utf8_lossy(&aligned[i]).into_owned()).collect();
+        let s2: Vec<String> = group2.iter().map(|&i| String::from_utf8_lossy(&aligned[i]).into_owned()).collect();
+        let w1: Vec<f64> = group1.iter().map(|&i| weights[i]).collect();
+        let w2: Vec<f64> = group2.iter().map(|&i| weights[i]).collect();
+        Some((s1, s2, w1, w2))
+    } else { None };
+
     // Look up cached profiles or build from sequences
     let key1 = sorted_key(group1);
     let key2 = sorted_key(group2);
@@ -1808,6 +1824,33 @@ fn merge_step_cached(
 
     for (gi, &idx) in group1.iter().enumerate() { aligned[idx] = new_seqs_g1[gi].clone(); }
     for (gi, &idx) in group2.iter().enumerate() { aligned[idx] = new_seqs_g2[gi].clone(); }
+
+    // RS_DP_DUMP: write per-step inputs + outputs to the file at the env
+    // var's value. Format (one tab-separated entry per line):
+    //   group1<TAB>group2<TAB>w1<TAB>w2<TAB>penalty<TAB>penalty_ex<TAB>
+    //   headgp<TAB>tailgp<TAB>use_fft<TAB>has_constraint<TAB>out1<TAB>out2
+    // Where group{1,2} are semicolon-separated input row sequences,
+    // out{1,2} are semicolon-separated post-merge row sequences.
+    if let Some((s1, s2, w1, w2)) = dp_dump_step {
+        if let Ok(path) = std::env::var("RS_DP_DUMP") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let out1: Vec<String> = new_seqs_g1.iter().map(|v| String::from_utf8_lossy(v).into_owned()).collect();
+                let out2: Vec<String> = new_seqs_g2.iter().map(|v| String::from_utf8_lossy(v).into_owned()).collect();
+                let _ = writeln!(f,
+                    "g1={}\tg2={}\tw1={}\tw2={}\tpen={}\tpen_ex={}\thgp={}\ttgp={}\tfft={}\tcon={}\tout1={}\tout2={}",
+                    s1.join(";"), s2.join(";"),
+                    w1.iter().map(|x| format!("{:.10}", x)).collect::<Vec<_>>().join(","),
+                    w2.iter().map(|x| format!("{:.10}", x)).collect::<Vec<_>>().join(","),
+                    gap.open as i32, gap.extend as i32,
+                    penalize_term_gaps as u8, penalize_term_gaps as u8,
+                    use_fft as u8,
+                    constraints.is_some() as u8,
+                    out1.join(";"), out2.join(";"),
+                );
+            }
+        }
+    }
 
     aln.score
 }

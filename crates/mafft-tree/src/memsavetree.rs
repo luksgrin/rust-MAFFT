@@ -17,8 +17,9 @@
 //!
 //! # Scope
 //! Single-threaded protein 6-mer path (the path `--auto` triggers on the
-//! 100k–200k bracket). DNA k-mer (tuplesize 6 / 10) and MSA-based variants
-//! are TODO.
+//! 100k–200k bracket). DNA k-mer (via `encode_points_dna`, tuplesize 4)
+//! and MSA-based variants (`memsavetree_msa`, `youngestlinkage_tree_msa`)
+//! are implemented.
 
 use crate::parttree_dist::{
     common_sextets_p, composition_table, encode_points_dna,
@@ -344,6 +345,331 @@ pub fn memsavetree(seqs: &[&[u8]], is_dna: bool) -> Topology {
     //    its initial nearest neighbor until finding a parent at greater
     //    height. NO per-step cluster distance recomputation.
     compacttree_givendist(nseq, &mindist, &nearest)
+}
+
+/// `mafft-upstream/core/disttbfast.c::ylcompactdisthalfmtxthread`
+/// (lines 957-1038) — initial mindist/nearest scan for compacttree=4
+/// (`--youngestlinkage`). Walks `j = i+1..njob` (forward, vs the
+/// `compactdisthalfmtxthread` backward walk) and updates BOTH sides
+/// of each pair (`mindist[i]` AND `mindist[j]`, vs the one-sided
+/// update in the compacttree=3 path).
+pub fn initial_mindist_yl_for_test(
+    pointt: &[Vec<u32>],
+    nogaplen: &[usize],
+    selfscore: &[i32],
+    tsize: usize,
+    lf_a: f64, lf_b: f64, lf_c: f64, lf_d: f64,
+) -> (Vec<f64>, Vec<i32>) {
+    initial_mindist_yl(pointt, nogaplen, selfscore, tsize, lf_a, lf_b, lf_c, lf_d)
+}
+
+fn initial_mindist_yl(
+    pointt: &[Vec<u32>],
+    nogaplen: &[usize],
+    selfscore: &[i32],
+    tsize: usize,
+    lf_a: f64, lf_b: f64, lf_c: f64, lf_d: f64,
+) -> (Vec<f64>, Vec<i32>) {
+    let nseq = pointt.len();
+    let mut mindist = vec![999.9_f64; nseq];
+    let mut nearest = vec![-1_i32; nseq];
+
+    for i in 0..(nseq - 1) {
+        let table_i = composition_table(&pointt[i], tsize);
+        for j in (i + 1)..nseq {
+            let tmpdist = distcompact(
+                nogaplen[i], nogaplen[j],
+                &table_i, &pointt[j],
+                selfscore[i], selfscore[j],
+                tsize, lf_a, lf_b, lf_c, lf_d,
+            );
+            let pref_ij = preferenceval(i, j, nseq);
+            let tmp_x = tmpdist + pref_ij;
+            if tmp_x < mindist[i] {
+                mindist[i] = tmp_x;
+                nearest[i] = j as i32;
+            }
+            let pref_ji = preferenceval(j, i, nseq);
+            let tmp_y = tmpdist + pref_ji;
+            if tmp_y < mindist[j] {
+                mindist[j] = tmp_y;
+                nearest[j] = i as i32;
+            }
+        }
+    }
+
+    // Subtract preferences back (mirrors `disttbfast.c:3718,3764`).
+    for i in 0..nseq {
+        if nearest[i] >= 0 {
+            mindist[i] -= preferenceval(i, nearest[i] as usize, nseq);
+        }
+    }
+
+    (mindist, nearest)
+}
+
+/// Port of C MAFFT `mltaln9.c::compacttree_memsaveselectable` with
+/// `howcompact=2`, `memsave=1` — the `--youngestlinkage` variant.
+///
+/// Difference vs `compacttree_givendist`: per-step recomputation of
+/// cluster distances via k-mer tables. At each merge of `(im, jm)`,
+/// distances from the newly-merged cluster to every other active
+/// cluster are recomputed using `cluster_mix(dist(im,i), dist(jm,i))`,
+/// updating `mindist[i]` and `nearest[i]` where the merged cluster
+/// is now closer than the prior best.
+///
+/// Identical to memsavetree on small inputs (first14, first15) where
+/// the initial mindist[] survives; diverges on larger (first30+)
+/// where recomputation changes join order.
+pub fn youngestlinkage_tree(seqs: &[&[u8]], is_dna: bool) -> Topology {
+    let nseq = seqs.len();
+    if nseq <= 1 {
+        return Topology::new(nseq);
+    }
+
+    let (tsize, lf_a, lf_b, lf_c, lf_d) = if is_dna {
+        (4096_usize, DLENFACA, DLENFACB, DLENFACC, DLENFACD)
+    } else {
+        (46656_usize, PLENFACA, PLENFACB, PLENFACC, PLENFACD)
+    };
+
+    let stripped: Vec<Vec<u8>> = seqs.iter().map(|s| gappick0(s)).collect();
+    let nogaplen: Vec<usize> = stripped.iter().map(|s| s.len()).collect();
+    let pointt: Vec<Vec<u32>> = stripped.iter().map(|s| {
+        if is_dna { encode_points_dna(s) } else { encode_points_protein(s) }
+    }).collect();
+    let selfscore: Vec<i32> = pointt.iter().map(|p| {
+        let table = composition_table(p, tsize);
+        common_sextets_p(&table, p, tsize) as i32
+    }).collect();
+
+    let (mindist, nearest) = initial_mindist_yl(
+        &pointt, &nogaplen, &selfscore, tsize, lf_a, lf_b, lf_c, lf_d,
+    );
+
+    // K-mer distance closure for the per-step recompute. `pointt[i]`
+    // refers to leaf `i`'s k-mer index — the memsave shortcut where
+    // merged clusters use their leaf rep's k-mer state.
+    let _table_cache: () = ();
+    youngestlinkage_core(nseq, mindist, nearest, |a, b| {
+        let table_a = composition_table(&pointt[a], tsize);
+        distcompact(
+            nogaplen[a], nogaplen[b],
+            &table_a, &pointt[b],
+            selfscore[a], selfscore[b],
+            tsize, lf_a, lf_b, lf_c, lf_d,
+        )
+    })
+}
+
+/// Shared core loop for `compacttree_memsaveselectable` (compacttree=4,
+/// `--youngestlinkage`). Takes a distance closure that computes the
+/// distance between any two cluster indices using their representative
+/// k-mer state (for k-mer mode) or aligned content (for MSA mode).
+fn youngestlinkage_core(
+    nseq: usize,
+    mut mindist: Vec<f64>,
+    mut nearest: Vec<i32>,
+    mut compute_dist: impl FnMut(usize, usize) -> f64,
+) -> Topology {
+    if nseq <= 1 {
+        return Topology::new(nseq);
+    }
+
+    let mut prev: Vec<Option<usize>> = (0..nseq).map(|i| if i == 0 { None } else { Some(i - 1) }).collect();
+    let mut next: Vec<Option<usize>> = (0..nseq).map(|i| if i == nseq - 1 { None } else { Some(i + 1) }).collect();
+    let mut head: Option<usize> = Some(0);
+
+    let mut hist: Vec<i32> = vec![-1; nseq];
+    let mut tmptmplen: Vec<f64> = vec![0.0; nseq];
+
+    struct RawStep {
+        im_rep: usize,
+        jm_rep: usize,
+        len0: f64,
+        len1: f64,
+        prev_im: i32,
+        prev_jm: i32,
+    }
+    let mut raw_steps: Vec<RawStep> = Vec::with_capacity(nseq - 1);
+
+    let sueff1 = 1.0 - SUEFF;
+    let sueff05 = SUEFF * 0.5;
+    let cluster_mix = |d1: f64, d2: f64| d1.min(d2) * sueff1 + (d1 + d2) * sueff05;
+
+    for _k in 0..(nseq - 1) {
+        let mut im: usize = 0;
+        let mut minscore: f64 = 999.9;
+        let mut cur = head;
+        while let Some(i) = cur {
+            if next[i].is_some() && mindist[i] < minscore {
+                im = i;
+                minscore = mindist[i];
+            }
+            cur = next[i];
+        }
+        let mut jm = nearest[im] as usize;
+        if jm < im {
+            std::mem::swap(&mut im, &mut jm);
+        }
+
+        let im_rep = if hist[im] < 0 {
+            im
+        } else {
+            let s = &raw_steps[hist[im] as usize];
+            s.im_rep.min(s.jm_rep)
+        };
+        let jm_rep = if hist[jm] < 0 {
+            jm
+        } else {
+            let s = &raw_steps[hist[jm] as usize];
+            s.im_rep.min(s.jm_rep)
+        };
+
+        let half = minscore * 0.5;
+        let len0 = half - tmptmplen[im];
+        let len1 = half - tmptmplen[jm];
+
+        let prev_im = hist[im];
+        let prev_jm = hist[jm];
+
+        raw_steps.push(RawStep { im_rep, jm_rep, len0, len1, prev_im, prev_jm });
+        let k_idx = raw_steps.len() as i32 - 1;
+
+        tmptmplen[im] = half;
+        hist[im] = k_idx;
+        mindist[im] = 999.9;
+
+        let mut new_dists: Vec<(usize, f64)> = Vec::new();
+        cur = head;
+        while let Some(i) = cur {
+            cur = next[i];
+            if i == im || i == jm { continue; }
+            let d1 = compute_dist(im, i);
+            let d2 = compute_dist(jm, i);
+            let dnew = cluster_mix(d1, d2);
+            new_dists.push((i, dnew));
+            if dnew < mindist[i] {
+                mindist[i] = dnew;
+                nearest[i] = im as i32;
+            }
+            if nearest[i] == jm as i32 {
+                nearest[i] = im as i32;
+            }
+        }
+        for &(i, dnew) in &new_dists {
+            if dnew < mindist[im] {
+                mindist[im] = dnew;
+                nearest[im] = i as i32;
+            }
+        }
+
+        if let Some(p) = prev[jm] {
+            next[p] = next[jm];
+        } else {
+            head = next[jm];
+        }
+        if let Some(n) = next[jm] {
+            prev[n] = prev[jm];
+        }
+        prev[jm] = None;
+        next[jm] = None;
+    }
+
+    let mut step_members: Vec<(Vec<usize>, Vec<usize>)> = Vec::with_capacity(raw_steps.len());
+    for rs in raw_steps.iter() {
+        let left_members: Vec<usize> = if rs.prev_im < 0 {
+            vec![rs.im_rep]
+        } else {
+            let pk = rs.prev_im as usize;
+            let (l, r) = &step_members[pk];
+            let mut v = Vec::with_capacity(l.len() + r.len());
+            v.extend_from_slice(l);
+            v.extend_from_slice(r);
+            v
+        };
+        let right_members: Vec<usize> = if rs.prev_jm < 0 {
+            vec![rs.jm_rep]
+        } else {
+            let pk = rs.prev_jm as usize;
+            let (l, r) = &step_members[pk];
+            let mut v = Vec::with_capacity(l.len() + r.len());
+            v.extend_from_slice(l);
+            v.extend_from_slice(r);
+            v
+        };
+        step_members.push((left_members, right_members));
+    }
+
+    let mut topo = Topology::new(nseq);
+    for (rs, (left, right)) in raw_steps.iter().zip(step_members.iter()) {
+        topo.steps.push(JoinStep {
+            left: left.clone(),
+            right: right.clone(),
+            left_length: rs.len0,
+            right_length: rs.len1,
+        });
+    }
+    topo
+}
+
+/// Port of C MAFFT `compacttree_memsaveselectable` with `seq=bseq` —
+/// the MSA-based path used in pass 1+ of `--youngestlinkage`. Mirrors
+/// the `ylmsacompactdisthalfmtxthread` initial scan (forward + two-
+/// sided update) and the `verycompactmsadistarrthreadjoblist` per-step
+/// recompute using `distcompact_msa`.
+pub fn youngestlinkage_tree_msa(
+    aligned: &[&[u8]],
+    matrix: &[Vec<f64>],
+    amino_map: &[u8; 256],
+    penalty: f64,
+) -> Topology {
+    let nseq = aligned.len();
+    if nseq <= 1 {
+        return Topology::new(nseq);
+    }
+
+    let selfscore: Vec<f64> = aligned.iter()
+        .map(|s| naivepairscore11_aligned(s, s, matrix, amino_map, penalty))
+        .collect();
+
+    // Initial mindist via ylmsacompactdisthalfmtxthread-equivalent
+    // (forward walk + two-sided update).
+    let mut mindist = vec![999.9_f64; nseq];
+    let mut nearest = vec![-1_i32; nseq];
+    for i in 0..(nseq - 1) {
+        for j in (i + 1)..nseq {
+            let d = distcompact_msa(
+                aligned[i], aligned[j],
+                selfscore[i], selfscore[j],
+                matrix, amino_map, penalty,
+            );
+            let pref_ij = preferenceval(i, j, nseq);
+            let pref_ji = preferenceval(j, i, nseq);
+            if d + pref_ij < mindist[i] {
+                mindist[i] = d + pref_ij;
+                nearest[i] = j as i32;
+            }
+            if d + pref_ji < mindist[j] {
+                mindist[j] = d + pref_ji;
+                nearest[j] = i as i32;
+            }
+        }
+    }
+    for i in 0..nseq {
+        if nearest[i] >= 0 {
+            mindist[i] -= preferenceval(i, nearest[i] as usize, nseq);
+        }
+    }
+
+    let aligned_owned: Vec<&[u8]> = aligned.to_vec();
+    youngestlinkage_core(nseq, mindist, nearest, |a, b| {
+        distcompact_msa(
+            aligned_owned[a], aligned_owned[b],
+            selfscore[a], selfscore[b],
+            matrix, amino_map, penalty,
+        )
+    })
 }
 
 /// MSA-based memsavetree (C MAFFT `tbfast.c:2538` "Making a compact

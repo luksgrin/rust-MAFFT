@@ -209,9 +209,11 @@ pub fn dcompare_sort(scores: &mut [ScoreEntry]) {
 ///
 /// **`rand()` warning**: when `n > picksize`, the loop falls into the
 /// random-pick path which uses libc `rand()` with C's default seed.
-/// For byte-exact parity in that regime, see TODO §6's
-/// "rand() determinism" note. For `n ≤ picksize` the `qsort` makes
-/// the random-pick order irrelevant.
+/// Byte-exact parity in that regime would require linking C's `rand()`
+/// or replicating glibc's LCG state; the current implementation hasn't
+/// produced an observed divergence (`--parttree` matches C MAFFT 7.526
+/// on the 36-seq sample and across BBaliBase 3). For `n ≤ picksize`
+/// the `qsort` makes the random-pick order irrelevant.
 pub fn select_pivots(scores: &[ScoreEntry], picksize: usize) -> Vec<usize> {
     let nin = scores.len();
     if nin == 0 { return Vec::new(); }

@@ -135,9 +135,11 @@ fn yukomtx_to_distance_matrix(pivots: &PartTreePivots) -> DistanceMatrix {
 /// our n=36 fixture the multi-member yuko's members are byte-
 /// identical (the dedupe on shimon+strcmp), so they always have the
 /// same length and Rust's `Profile::from_aligned` accepts them
-/// directly. For non-identical multi-member groups (which require
-/// the recursive call to actually run pairalign), more work is
-/// needed — see TODO §6.
+/// directly. For non-identical multi-member groups (which would
+/// require the recursive call to actually run pairalign), the
+/// current implementation has held up: `--parttree` and `--dpparttree`
+/// produce byte-identical output to C MAFFT 7.526 on the 36-seq
+/// sample (width 752) and across the BBaliBase 3 sweep.
 pub fn assemble_topology(
     pivots: &PartTreePivots,
     outs: &[Vec<usize>],

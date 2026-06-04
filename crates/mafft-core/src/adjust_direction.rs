@@ -255,13 +255,19 @@ fn adjust_direction_with(input: &SequenceSet, mode: AdjustMode, nadd: usize) -> 
             }).collect()
         }
     };
-    // C uses qsort with a `b - a` comparator → descending. For ties,
-    // qsort is not stable but C MAFFT relies on glibc qsort's actual
-    // behaviour on the data. Stable sort here produces deterministic
-    // output; matches C's typical outcome on inputs where the
-    // contrast key is unique (the only case where this matters for
-    // strand assignment).
-    testable.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // C uses `qsort` (glibc, unstable) with a `b - a` comparator →
+    // descending. To match C's tie-break behaviour as closely as a
+    // standard library allows, use rust's `sort_unstable_by`
+    // (pdqsort). Rust's stable sort would lock the *original input*
+    // order on ties, while qsort's tie-break is data-dependent.
+    // Neither matches the other bit-exactly on every conceivable
+    // tied input, but unstable matches the spirit better. On the
+    // committed fixtures the contrast key
+    // (forward_self − reverse_self) does not produce ties, so the
+    // choice has no observed effect; the regression test sweep
+    // covering 8 + 5 + 17 + 36 sequences is byte-identical to C
+    // under both stable and unstable here.
+    testable.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     contrast_order.extend(testable);
     let order: Vec<usize> = contrast_order.iter().map(|(i, _)| *i).collect();
 

@@ -2862,6 +2862,28 @@ fn fftns2_exp_0_1_byte_identical_to_c() {
     );
 }
 
+/// `--exp 4.25` byte-identical guard — pins the upper edge of the
+/// byte-identical regime for the `--exp` × FFT-NS-2 sweep. The
+/// pathological-value tied-trace residual kicks in at `--exp ≥ 4.30`
+/// (penalty_ex = -2579), where the per-cell gap-extension penalty
+/// makes the DP have multiple equally-scoring paths through the
+/// Drosophila opsin cluster. See TODO.md §6 for the detailed
+/// characterization. Closes with `--nofft` or any refinement.
+#[test]
+fn fftns2_exp_4_25_byte_identical_to_c() {
+    let input = read_fasta(test_data_path("sample")).unwrap();
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.gap_extend = Some(4.25);
+    let msa = engine.align(&input);
+    // C reference: mafft --exp 4.25 sample = width 517 (byte-identical).
+    assert_eq!(msa.nseq(), 36, "FFT-NS-2 --exp 4.25: nseq mismatch");
+    assert_eq!(
+        msa.sequences[0].len(), 517,
+        "FFT-NS-2 --exp 4.25: rust width changed (was 517 from C); \
+         the byte-identical regime upper edge regressed",
+    );
+}
+
 /// `--bestfirst` regression guard across FFT-NS-i / L-INS-i / G-INS-i.
 /// C MAFFT's BESTFIRST refinement (parallelizationstrategy=BESTFIRST)
 /// evaluates every branch from a frozen baseline alignment per

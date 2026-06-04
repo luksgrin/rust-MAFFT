@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
-use mafft_tree::{DistanceMatrix, musclesupg, ClusterMethod, ktuple_distance, scoring_matrix_distance};
+use mafft_tree::{DistanceMatrix, musclesupg, ktuple_distance, scoring_matrix_distance};
 use mafft_tree::parttree_split::{build_parttree_topology};
 use mafft_tree::parttree_pivot::PtSeqKind;
 use mafft_align::{build_local_homology_table, GapModel};
@@ -96,10 +96,12 @@ pub struct MafftEngine {
     /// max distance-from-tip in the guide tree, refinement is
     /// skipped entirely (matches C's `generatesubalignmentstable`
     /// returning 1, which prints the "WARNING: Iterative refinement
-    /// was not done" diagnostic and exits). For small F values C
-    /// generates sub-alignments for memory-efficient partial
-    /// refinement; that branch is not yet implemented and falls
-    /// through to regular refinement with a stderr note.
+    /// was not done" diagnostic and exits). For small F values, the
+    /// port (R-3, closed 2026-06-03) generates sub-alignment
+    /// clusters via `mafft_tree::generate_subalignments_table` and
+    /// sets per-(step, side) skip flags in
+    /// `RefinementParams::skip_branches`, mirroring C's
+    /// `dvtditr.c:997-1006` `includemember && !samemember` gate.
     pub skipiterate: Option<f64>,
     /// `--bestfirst` refinement strategy. Default false (BAATARI2,
     /// matches C MAFFT's default). When true, refinement evaluates
@@ -168,6 +170,10 @@ pub struct MafftEngine {
     /// (`mltaln9.c:5491`) — k-mer-based distances computed on the fly with
     /// no full distance matrix. Enabled by `--auto` for the 100k+ bracket.
     pub memsavetree: bool,
+    /// `--youngestlinkage` — same family as memsavetree but with per-step
+    /// recomputation of cluster distances after each join. C MAFFT
+    /// `mltaln9.c::compacttree_memsaveselectable(howcompact=2, memsave=1)`.
+    pub youngestlinkage: bool,
     /// `--leavegappyregion` / `--legacygappenalty` — disable the
     /// gap-aware DP reweighting (`legacygapcost = 1`,
     /// `Salignmm.c:1604-1610`). Restores pre-7.110 behaviour where
@@ -234,6 +240,7 @@ impl Default for MafftEngine {
             reorder_output: false,
             treein_path: None,
             memsavetree: false,
+            youngestlinkage: false,
             legacy_gap_cost: false,
             seed_homology: None,
             memsave_dp: false,
@@ -255,7 +262,7 @@ impl MafftEngine {
             nofft: false, allowshift: false, unalign_level: 0.0,
             kimura_r: None, parttree: false, dpparttree: false,
             groupsize: None, reorder_output: false, treein_path: None,
-            memsavetree: false, legacy_gap_cost: false,
+            memsavetree: false, youngestlinkage: false, legacy_gap_cost: false,
             seed_homology: None, memsave_dp: false, c_compat: false }
     }
 
@@ -744,11 +751,15 @@ impl MafftEngine {
         //
         // Pass 0 uses k-mer; pass 1+ uses MSA. The MSA tree is rebuilt
         // INSIDE the retree loop from `msa.sequences` after each pass.
-        let memsavetree_kmer_topo: Option<mafft_tree::Topology> = if self.memsavetree {
+        let memsavetree_kmer_topo: Option<mafft_tree::Topology> = if self.memsavetree || self.youngestlinkage {
             let seq_refs: Vec<&[u8]> = input.sequences.iter()
                 .map(|s| s.data.as_slice()).collect();
             let is_dna = scoring.seq_type.is_nucleotide();
-            Some(mafft_tree::memsavetree::memsavetree(&seq_refs, is_dna))
+            if self.youngestlinkage {
+                Some(mafft_tree::memsavetree::youngestlinkage_tree(&seq_refs, is_dna))
+            } else {
+                Some(mafft_tree::memsavetree::memsavetree(&seq_refs, is_dna))
+            }
         } else {
             None
         };
@@ -761,19 +772,32 @@ impl MafftEngine {
                 // build a comb-tree directly from the input order.
                 // C `mltaln9.c::createchain` with `shuffle=0`.
                 mafft_tree::Topology::pileup_chain(nseq)
-            } else if self.memsavetree {
+            } else if self.memsavetree || self.youngestlinkage {
                 if pass == 0 {
                     memsavetree_kmer_topo.clone().expect("memsavetree topology must be cached")
                 } else {
                     // MSA-based rebuild from the prior pass's alignment.
+                    // For --youngestlinkage, use the compacttree=4 MSA
+                    // variant (`youngestlinkage_tree_msa`); for
+                    // --memsavetree, use the compacttree=3 MSA variant
+                    // (`memsavetree_msa`).
                     let aligned_refs: Vec<&[u8]> = msa.sequences.iter()
                         .map(|s| s.as_slice()).collect();
-                    mafft_tree::memsavetree::memsavetree_msa(
-                        &aligned_refs,
-                        &scoring.consweight_matrix,
-                        &scoring.amino_map,
-                        scoring.gap.open as f64,
-                    )
+                    if self.youngestlinkage {
+                        mafft_tree::memsavetree::youngestlinkage_tree_msa(
+                            &aligned_refs,
+                            &scoring.consweight_matrix,
+                            &scoring.amino_map,
+                            scoring.gap.open as f64,
+                        )
+                    } else {
+                        mafft_tree::memsavetree::memsavetree_msa(
+                            &aligned_refs,
+                            &scoring.consweight_matrix,
+                            &scoring.amino_map,
+                            scoring.gap.open as f64,
+                        )
+                    }
                 }
             } else if pass == 0 && use_parttree {
                 parttree_topo.clone().unwrap()
@@ -827,9 +851,12 @@ impl MafftEngine {
             // C `splittbfast.c:6` `#define WEIGHT 0` makes `--parttree` use
             // `fastconjuction_noweight` (uniform per-cluster weights) for
             // its internal `pairalign`. We mirror that by passing a
-            // uniform-1.0 weight vector when `use_parttree`. All other
-            // modes derive weights from the guide tree's branch lengths.
-            let weights_override: Option<Vec<f64>> = if use_parttree {
+            // uniform-1.0 weight vector when `use_parttree`. `--pileup`
+            // also disables weighting (`disttbfast.c:3962` sets
+            // `weight = 0; tbrweight = 0` → `eff[i] = 1.0` for all i at
+            // `disttbfast.c:4131`). All other modes derive weights from
+            // the guide tree's branch lengths.
+            let weights_override: Option<Vec<f64>> = if use_parttree || self.pileup {
                 Some(vec![1.0; sequences.len()])
             } else {
                 None

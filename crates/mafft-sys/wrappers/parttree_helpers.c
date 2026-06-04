@@ -340,3 +340,58 @@ void rs_compact_initial_mindist(
             mindist[i] -= rs_preferenceval( i, mindistfrom[i], nseq );
     }
 }
+
+/// Drive C's `ylcompactdisthalfmtxthread` (the `--youngestlinkage`
+/// initial scan, with forward walk + both-sided update). Mirrors
+/// `disttbfast.c:957-1038`. Single-threaded only.
+void rs_compact_initial_mindist_yl(
+    int nseq,
+    int **pointt,
+    int *nogaplen,
+    int *selfscore,
+    double *mindist,
+    int *mindistfrom )
+{
+    int i, j;
+    int *table1;
+
+    for( i=0; i<nseq; i++ )
+    {
+        mindist[i] = 999.9;
+        mindistfrom[i] = -1;
+    }
+
+    for( i=0; i<nseq-1; i++ )
+    {
+        table1 = (int *)calloc( tsize, sizeof( int ) );
+        if( !table1 ) { fprintf( stderr, "rs_compact_initial_mindist_yl: calloc\n" ); exit( 1 ); }
+        makecompositiontable_p( table1, pointt[i] );
+
+        for( j=i+1; j<nseq; j++ )
+        {
+            double tmpdist = distcompact( nogaplen[i], nogaplen[j], table1, pointt[j], selfscore[i], selfscore[j] );
+            double preference = rs_preferenceval( i, j, nseq );
+            double tmpdistx = tmpdist + preference;
+            if( tmpdistx < mindist[i] )
+            {
+                mindist[i] = tmpdistx;
+                mindistfrom[i] = j;
+            }
+
+            preference = rs_preferenceval( j, i, nseq );
+            double tmpdisty = tmpdist + preference;
+            if( tmpdisty < mindist[j] )
+            {
+                mindist[j] = tmpdisty;
+                mindistfrom[j] = i;
+            }
+        }
+        free( table1 );
+    }
+    commonsextet_p( NULL, NULL );
+
+    // Subtract preference back out (mirrors disttbfast.c:3721,3767).
+    for( i=0; i<nseq; i++ )
+        if( mindistfrom[i] >= 0 )
+            mindist[i] -= rs_preferenceval( i, mindistfrom[i], nseq );
+}

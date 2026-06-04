@@ -94,6 +94,23 @@ struct Args {
     #[arg(long)]
     scarnalike: bool,
 
+    /// PDB ID list file for structure-aware alignment.
+    /// **Non-functional**: matches C MAFFT 7.526's behaviour — the
+    /// upstream `scripts/mafft:969-983` disables this flag with
+    /// "temporarily unavailable, 2018/Dec." and `exit`s before any
+    /// structural alignment runs. Rust accepts the flag and exits
+    /// with the same message rather than reporting an unknown arg.
+    #[arg(long, value_name = "FILE")]
+    pdbidlist: Option<std::path::PathBuf>,
+
+    /// PDB file list for structure-aware alignment.
+    /// **Non-functional**: same status as `--pdbidlist` — C MAFFT
+    /// 7.526 (`scripts/mafft:980-990`) disables this with
+    /// "temporarily unavailable, 2018/Dec." and `exit`s. Rust
+    /// matches that behaviour.
+    #[arg(long, value_name = "FILE")]
+    pdbfilelist: Option<std::path::PathBuf>,
+
     /// Output format: fasta (default), clustal, phylip
     #[arg(long, default_value = "fasta")]
     format: String,
@@ -582,6 +599,22 @@ fn main() {
     let mut args = Args::parse();
     apply_progname_defaults(&mut args);
 
+    // C `scripts/mafft:969-990` disables `--pdbidlist` and
+    // `--pdbfilelist` with "temporarily unavailable, 2018/Dec." and
+    // `exit`s before any structural alignment runs. Match that exact
+    // behaviour and message verbatim — these flags have been
+    // non-functional in upstream MAFFT since 2018.
+    if args.pdbidlist.is_some() {
+        eprintln!("--pdbidlist is temporarily unavailable, 2018/Dec.");
+        eprintln!();
+        std::process::exit(0);
+    }
+    if args.pdbfilelist.is_some() {
+        eprintln!("--pdbfilelist is temporarily unavailable, 2018/Dec.");
+        eprintln!();
+        std::process::exit(0);
+    }
+
     // C `scripts/mafft:1807-1810` rejects `--nodeout` combined with
     // `--maxiterate > 0` at the shell-script level (BEFORE any
     // alignment runs). Mirror the early exit and verbatim error.
@@ -604,7 +637,7 @@ fn main() {
     // reader normalizes (`* → -`, drops non-alpha) which would lose
     // exactly the chars we need.
     let anysymbol_read = args.anysymbol || args.preservecase;
-    let mut input = match &args.input {
+    let input = match &args.input {
         Some(path) => {
             let result = if anysymbol_read {
                 read_fasta_casepreserve(path)
@@ -900,19 +933,13 @@ fn main() {
 
     // `--youngestlinkage` (C `treeext=youngestlinkage` →
     // `compacttree=4` → `compacttree_memsaveselectable(howcompact=2)`)
-    // is C MAFFT's memory-saving k-mer-distance tree builder with
-    // on-demand cluster-distance recompute. Rust's existing
-    // `--memsavetree` (`compacttree=3` → `compacttreegivendist`)
-    // is the same algorithm family — both build a tree from k-mer
-    // distances using a stepwise-insertion variant — and produces
-    // the same TREE STRUCTURE as C's youngest-linkage on typical
-    // inputs (the C distinction between compacttree=3 vs 4 is the
-    // distance storage strategy, not the linkage criterion).
-    // Routing `--youngestlinkage` through the memsavetree path
-    // gives a semantically equivalent tree.
-    if args.youngestlinkage {
-        engine.memsavetree = true;
-    }
+    // uses a per-step cluster-distance recompute via k-mer tables.
+    // Rust now has a dedicated port (`youngestlinkage_tree`) — see
+    // `crates/mafft-tree/src/memsavetree.rs`. Byte-identical to C on
+    // first14 (small inputs where initial mindist[] survives); partial
+    // closure on larger inputs (subtle tie-break / iteration-order
+    // differences remain).
+    engine.youngestlinkage = args.youngestlinkage;
     // Iteration-strategy stubs (gap #3 in TODO.md). All accepted at
     // the CLI for compatibility; the actual algorithm changes are
     // tracked separately. `--simplehillclimbing` is a TRUE no-op
