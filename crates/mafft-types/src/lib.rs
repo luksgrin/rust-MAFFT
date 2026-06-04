@@ -1,8 +1,7 @@
 //! Pure Rust equivalents of MAFFT's core C data structures.
 //!
 //! These types use idiomatic Rust (Vec, Option, enums) instead of raw pointers
-//! and linked lists. Conversion traits to/from the C representations in
-//! `mafft_sys` are provided for the FFI boundary.
+//! and linked lists.
 
 mod local_hom;
 mod tree; // intentionally empty — tree types live in mafft-tree

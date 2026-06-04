@@ -38,7 +38,7 @@ jobs:
         run: cargo build --workspace
 
       - name: Build Rust binary (release)
-        run: cargo build -p mafft-bin --release
+        run: cargo build -p mafft-rs --release
 
       - name: Run Rust tests (lib only, fast)
         run: cargo test --workspace --lib

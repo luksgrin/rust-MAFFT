@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/mafft-c-bindings",
     "crates/mafft-sys",
     "crates/mafft-types",
     "crates/mafft-io",
@@ -9,6 +10,7 @@ members = [
     "crates/mafft-tree",
     "crates/mafft-core",
     "crates/mafft-bin",
+    "crates/mafft",
     "crates/pymafft",
 ]
 resolver = "2"

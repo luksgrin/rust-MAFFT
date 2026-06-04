@@ -37,10 +37,23 @@ Issues = "https://github.com/luksgrin/rust-MAFFT/issues"
 [project.optional-dependencies]
 test = ["pytest>=7"]
 
+# Expose `mafft-rs` on $PATH after `pip install pymafft`. The launcher in
+# `pymafft.__main__` execs the bundled native binary at `pymafft/_bin/mafft-rs`.
+[project.scripts]
+mafft-rs = "pymafft.__main__:main"
+
 [tool.maturin]
 manifest-path = "Cargo.toml"
 features = ["pyo3/extension-module"]
 python-source = "python"
+# The bundled `mafft-rs` binary lives under `python/pymafft/_bin/`. It is
+# placed there by the wheel pre-build step (`cargo build --release -p
+# mafft-rs` + copy). Listing it explicitly via `include` guarantees it ends
+# up in the wheel even if maturin's auto-discovery skips non-Python files.
+include = [
+    { path = "python/pymafft/_bin/mafft-rs", format = "wheel" },
+    { path = "python/pymafft/_bin/mafft-rs.exe", format = "wheel" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

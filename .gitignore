@@ -8,6 +8,12 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# pymafft bundled binary. The wheel pre-build step (`cargo build --release
+# -p mafft-rs` + copy) is responsible for `mkdir -p`-ing this dir and
+# placing the binary inside; nothing in the source tree owns it.
+crates/pymafft/python/pymafft/_bin/mafft-rs
+crates/pymafft/python/pymafft/_bin/mafft-rs.exe
+
 # OS
 .DS_Store
 

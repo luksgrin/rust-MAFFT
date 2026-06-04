@@ -16,5 +16,7 @@ mafft-types = { path = "../mafft-types", version = "0.1.0" }
 mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
 
 [dev-dependencies]
-mafft-sys = { path = "../mafft-sys" }
+# See note in mafft-scoring/Cargo.toml — alias preserves `use mafft_sys`
+# in cross_validate_* test files while the real crate is internal-only.
+mafft-sys = { path = "../mafft-c-bindings", package = "mafft-c-bindings" }
 mafft-io = { path = "../mafft-io" }

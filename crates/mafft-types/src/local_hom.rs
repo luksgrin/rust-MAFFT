@@ -83,36 +83,3 @@ impl LocalHomologyTable {
     }
 }
 
-// ---------------------------------------------------------------------------
-// FFI conversion: C LocalHom linked list <-> Rust Vec<HomologyRegion>
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "ffi")]
-impl HomologyRegion {
-    /// Convert a C `LocalHom` linked list into a Vec of Rust regions.
-    ///
-    /// # Safety
-    /// The pointer must point to a valid `LocalHom` linked list (or be null).
-    pub unsafe fn from_c_list(head: *const mafft_sys::LocalHom) -> Vec<Self> {
-        let mut regions = Vec::new();
-        let mut ptr = head;
-        while !ptr.is_null() {
-            let c = unsafe { &*ptr };
-            regions.push(Self {
-                start1: c.start1,
-                end1: c.end1,
-                start2: c.start2,
-                end2: c.end2,
-                opt: c.opt,
-                overlapaa: c.overlapaa,
-                extended: c.extended != 0,
-                importance: c.importance,
-                rimportance: c.rimportance,
-                korh: c.korh as u8,
-                nokori: c.nokori,
-            });
-            ptr = c.next;
-        }
-        regions
-    }
-}

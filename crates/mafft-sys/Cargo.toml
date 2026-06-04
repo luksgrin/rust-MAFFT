@@ -1,11 +1,21 @@
 [package]
 name = "mafft-sys"
-version.workspace = true
+version = "0.0.1"
 edition.workspace = true
 license.workspace = true
-description = "Raw FFI bindings to MAFFT C code (internal, not for publication)"
-build = "build.rs"
-publish = false
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Reserved namespace for future raw FFI bindings to MAFFT C source (currently a stub)"
+readme = "README.md"
 
-[build-dependencies]
-cc = "1"
+# Intentionally pinned at 0.0.1 (independent of the workspace version) so
+# this stub stays distinguishable from any future real `mafft-sys`
+# release. Once vendored C source is added and real `unsafe extern "C"`
+# bindings are exposed, bump to 0.1.0+ and update `description`.
+
+[lib]
+name = "mafft_sys"
+path = "src/lib.rs"

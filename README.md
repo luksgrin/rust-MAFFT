@@ -113,7 +113,7 @@ cargo test --workspace --exclude pymafft --release
 cargo test --workspace --exclude pymafft --lib
 
 # Build C reference for FFI cross-validation (optional; cargo test --tests
-# triggers this automatically via mafft-sys's build.rs)
+# triggers this automatically via mafft-c-bindings' build.rs)
 make -C mafft-upstream/core
 ```
 
@@ -309,23 +309,27 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 
 ## Architecture
 
-The project is organized as a Cargo workspace with 10 crates:
+The project is organized as a Cargo workspace with 12 crates:
 
 ```
 crates/
-  mafft-sys/       Raw FFI bindings to MAFFT C code (dev-only, for cross-validation)
-  mafft-types/     Shared Rust types (HomologyRegion, Sequence, ScoringContext, etc.)
-  mafft-io/        FASTA, Clustal, PHYLIP, hat2 I/O
-  mafft-scoring/   Substitution matrices (BLOSUM, JTT, TM, DNA) and gap penalties
-  mafft-fft/       FFT-based homology detection (hand-ported Cooley-Tukey, bit-for-bit C-compat)
-  mafft-align/     Pairwise and profile alignment algorithms (NW, SW, generalized affine, warp DP)
-  mafft-tree/      Distance computation, NJ, UPGMA, guide tree construction, PartTree, memsavetree
-  mafft-core/      Progressive alignment engine, iterative refinement, MafftEngine, `--add` machinery
-  mafft-bin/       CLI binary (mafft-rs)
-  pymafft/         Python bindings via PyO3
+  mafft-c-bindings/  Internal-only FFI shim that compiles MAFFT's C source
+                     for cross-validation tests. Never shipped at runtime.
+  mafft-sys/         Reserved name on crates.io (0.0.1 stub; future real FFI
+                     shim with vendored C source will land here as 0.1.0+)
+  mafft-types/       Shared Rust types (HomologyRegion, Sequence, ScoringContext, etc.)
+  mafft-io/          FASTA, Clustal, PHYLIP, hat2 I/O
+  mafft-scoring/     Substitution matrices (BLOSUM, JTT, TM, DNA) and gap penalties
+  mafft-fft/         FFT-based homology detection (hand-ported Cooley-Tukey, bit-for-bit C-compat)
+  mafft-align/       Pairwise and profile alignment algorithms (NW, SW, generalized affine, warp DP)
+  mafft-tree/        Distance computation, NJ, UPGMA, guide tree construction, PartTree, memsavetree
+  mafft-core/        Progressive alignment engine, iterative refinement, MafftEngine, `--add` machinery
+  mafft/             Ergonomic top-level crate — `cargo add mafft` re-exports mafft-core/types/io
+  mafft-bin/         CLI binary (`mafft-rs`; `cargo install mafft-rs`)
+  pymafft/           Python bindings via PyO3 (`pip install pymafft`)
 ```
 
-The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-sys` is only used as a dev-dependency for cross-validation tests.
+The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindings` is only used as a dev-dependency for cross-validation tests.
 
 ### Key design decisions
 

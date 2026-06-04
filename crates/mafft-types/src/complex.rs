@@ -5,22 +5,6 @@
 /// `norm`, and everything else we'll need for the FFT port in Phase 3.
 pub use num_complex::Complex64;
 
-// ---------------------------------------------------------------------------
-// FFI conversion: Fukusosuu <-> Complex64 (only with "ffi" feature)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "ffi")]
-/// Convert a C `Fukusosuu` to a Rust `Complex64`.
-pub fn from_fukusosuu(c: mafft_sys::Fukusosuu) -> Complex64 {
-    Complex64::new(c.R, c.I)
-}
-
-#[cfg(feature = "ffi")]
-/// Convert a Rust `Complex64` to a C `Fukusosuu`.
-pub fn to_fukusosuu(c: Complex64) -> mafft_sys::Fukusosuu {
-    mafft_sys::Fukusosuu { R: c.re, I: c.im }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

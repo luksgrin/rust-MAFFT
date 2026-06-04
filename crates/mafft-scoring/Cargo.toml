@@ -15,4 +15,8 @@ readme = "../../README.md"
 mafft-types = { path = "../mafft-types", version = "0.1.0" }
 
 [dev-dependencies]
-mafft-sys = { path = "../mafft-sys" }
+# Aliased to `mafft-sys` so the cross_validate_* test code can keep
+# `use mafft_sys::*`. The actual package is `mafft-c-bindings`, the
+# internal-only FFI shim. The published `mafft-sys` crate (under
+# `crates/mafft-sys/`) is an unrelated stub reserving the name.
+mafft-sys = { path = "../mafft-c-bindings", package = "mafft-c-bindings" }

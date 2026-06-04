@@ -351,6 +351,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "mafft"
+version = "0.1.0"
+dependencies = [
+ "mafft-core",
+ "mafft-io",
+ "mafft-types",
+]
+
+[[package]]
 name = "mafft-align"
 version = "0.1.0"
 dependencies = [
@@ -362,17 +371,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "mafft-bin"
+name = "mafft-c-bindings"
 version = "0.1.0"
 dependencies = [
- "clap",
- "mafft-align",
- "mafft-core",
- "mafft-io",
- "mafft-scoring",
- "mafft-tree",
- "mafft-types",
- "rayon",
+ "cc",
 ]
 
 [[package]]
@@ -381,10 +383,10 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "mafft-align",
+ "mafft-c-bindings",
  "mafft-fft",
  "mafft-io",
  "mafft-scoring",
- "mafft-sys",
  "mafft-tree",
  "mafft-types",
  "num-complex",
@@ -412,27 +414,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "mafft-rs"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "mafft-align",
+ "mafft-core",
+ "mafft-io",
+ "mafft-scoring",
+ "mafft-tree",
+ "mafft-types",
+ "rayon",
+]
+
+[[package]]
 name = "mafft-scoring"
 version = "0.1.0"
 dependencies = [
- "mafft-sys",
+ "mafft-c-bindings",
  "mafft-types",
 ]
 
 [[package]]
 name = "mafft-sys"
-version = "0.1.0"
-dependencies = [
- "cc",
-]
+version = "0.0.1"
 
 [[package]]
 name = "mafft-tree"
 version = "0.1.0"
 dependencies = [
+ "mafft-c-bindings",
  "mafft-io",
  "mafft-scoring",
- "mafft-sys",
  "mafft-types",
 ]
 
@@ -440,7 +453,6 @@ dependencies = [
 name = "mafft-types"
 version = "0.1.0"
 dependencies = [
- "mafft-sys",
  "num-complex",
 ]
 

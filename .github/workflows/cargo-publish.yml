@@ -1,0 +1,67 @@
+name: Publish to crates.io
+
+# Fires on the same `release: published` event that drives release.yml
+# (binaries) and python.yml (PyPI). Single tag → three publishes in
+# parallel.
+#
+# Prerequisites:
+#   * CARGO_REGISTRY_TOKEN repository secret set (Settings → Secrets →
+#     Actions). Obtain via crates.io → Account Settings → API Access.
+#   * All crates' `version.workspace = "X.Y.Z"` in the root Cargo.toml
+#     matches the release tag (the `mafft-sys` stub is pinned at 0.0.1
+#     independently and not driven by the workspace version).
+#   * Internal crates `mafft-c-bindings` (the FFI shim that compiles
+#     MAFFT's C source from the git submodule) and `pymafft` (built as a
+#     wheel via maturin, not via cargo publish) stay `publish = false` —
+#     `cargo-workspaces` honours that flag and skips them.
+#
+# Publish order is computed automatically from the dependency graph:
+#   mafft-sys (stub, no deps) → mafft-types → mafft-io, mafft-scoring →
+#   mafft-fft → mafft-align, mafft-tree → mafft-core → mafft, mafft-rs
+#
+# `--from-git` tells cargo-workspaces to publish the exact commit the
+# release tag points to (no version bump performed here).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: cargo publish (all crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+          fetch-depth: 0  # cargo-workspaces wants full git history
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-publish-
+
+      - name: Install cargo-workspaces
+        run: cargo install cargo-workspaces --locked
+
+      - name: Verify workspace compiles
+        run: cargo build --workspace --release
+
+      - name: Publish all crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # `--from-git` publishes the exact tagged commit. `--yes` skips the
+        # interactive confirmation. `--no-verify` is intentionally omitted:
+        # we want each crate's `cargo publish` to dry-build before upload.
+        run: |
+          cargo workspaces publish \
+            --from-git \
+            --yes \
+            --token "${CARGO_REGISTRY_TOKEN}"
