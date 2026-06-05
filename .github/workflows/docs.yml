@@ -2,10 +2,19 @@ name: Documentation
 
 # Builds the mkdocs-material site and publishes it to GitHub Pages.
 #
+# Build (and deploy) the mkdocs-material site.
+#
+# Build runs on every push to main/dev and every PR — same coverage as
+# ci.yml / python.yml — so broken cross-links or mkdocstrings import
+# failures are caught before merge. Deploy is gated to events that
+# legitimately represent the published state of the project.
+#
 # Triggers:
-#   * push to main      → rebuild + deploy
-#   * release published → rebuild + deploy (picks up version bumps)
-#   * workflow_dispatch → manual rebuild from the Actions tab
+#   * push to main          → build + DEPLOY
+#   * release published     → build + DEPLOY (picks up version bumps)
+#   * workflow_dispatch     → build + DEPLOY (manual override)
+#   * push to dev           → build only (preview/regression check)
+#   * pull_request to main  → build only (preview/regression check)
 #
 # The site source lives on `main` under `docs/` + `mkdocs.yml`. The
 # rendered HTML is published to GitHub Pages via the official
@@ -16,18 +25,9 @@ name: Documentation
 
 on:
   push:
-    branches: [main]
-    # Skip the docs rebuild when only code changes that don't affect
-    # the docs site. Anything under docs/, mkdocs.yml, the workflow
-    # itself, or any Rust/Python source that mkdocstrings introspects
-    # triggers a rebuild.
-    paths:
-      - "docs/**"
-      - "mkdocs.yml"
-      - ".github/workflows/docs.yml"
-      - "crates/pymafft/**"
-      - "crates/mafft-bin/src/lib.rs"
-      - "crates/mafft/**"
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
   release:
     types: [published]
   workflow_dispatch:
@@ -106,6 +106,13 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    # Deploy only from `main`, releases, or manual dispatch. PR builds
+    # and `dev` pushes run the build job for regression-check purposes
+    # but never replace the published site.
+    if: >-
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

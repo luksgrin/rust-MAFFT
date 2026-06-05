@@ -81,5 +81,5 @@ implementation, compiled in-tree).
 
 - :material-source-branch: [GitHub](https://github.com/luksgrin/rust-MAFFT)
 - :material-package: [crates.io: `mafft`](https://crates.io/crates/mafft) · [`mafft-rs`](https://crates.io/crates/mafft-rs) · [`mafft-core`](https://crates.io/crates/mafft-core)
-- :material-python: [PyPI: `pymafft`](https://pypi.org/project/pymafft/)
+- :material-language-python: [PyPI: `pymafft`](https://pypi.org/project/pymafft/)
 - :material-book-open-page-variant: [docs.rs: `mafft`](https://docs.rs/mafft)
