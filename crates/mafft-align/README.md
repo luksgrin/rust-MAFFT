@@ -2,6 +2,12 @@
 
 > Pairwise and profile sequence alignment for [rust-MAFFT](https://github.com/luksgrin/rust-MAFFT).
 
+> **Acknowledgment.** rust-MAFFT is a port of [MAFFT](https://mafft.cbrc.jp/alignment/software/)
+> by **Kazutaka Katoh** and colleagues (CBRC). The science is theirs.
+> If you use this crate in published work, please cite
+> [Katoh & Standley 2013](https://doi.org/10.1093/molbev/mst010);
+> full guidance at [the project citation page](https://luksgrin.github.io/rust-MAFFT/citation/).
+
 The DP layer: Needleman-Wunsch, Smith-Waterman, generalized affine
 (`G__align11`, `L__align11`, `A__align`), profile-vs-profile DP
 (`MSalign`, `Salignmm`, `partA__align`), FFT-anchored DP (`Falign`),

@@ -2,6 +2,14 @@
 
 > The MAFFT multiple sequence alignment CLI, in pure Rust. Drop-in replacement for upstream `mafft`.
 
+> **Acknowledgment.** rust-MAFFT is a port of [MAFFT](https://mafft.cbrc.jp/alignment/software/)
+> by **Kazutaka Katoh** and colleagues (CBRC). The science is theirs.
+> If you use this tool in published work, please cite
+> [Katoh & Standley 2013](https://doi.org/10.1093/molbev/mst010).
+> Run `mafft-rs --cite` for the citation block, or see
+> [the project citation page](https://luksgrin.github.io/rust-MAFFT/citation/)
+> for full guidance and BibTeX.
+
 Byte-identical output to C MAFFT 7.526 across the full BAliBASE 3
 fixture set (1930/1930). Same flag surface (`--localpair`,
 `--globalpair`, `--genafpair`, `--maxiterate`, `--add`,

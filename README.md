@@ -1,10 +1,21 @@
-# MAFFT-rs
+# rust-MAFFT
 
-A Rust reimplementation of [MAFFT](https://mafft.cbrc.jp/alignment/software/), the widely-used multiple sequence alignment tool originally written in C by Kazutaka Katoh.
+A pure-Rust port of [**MAFFT**](https://mafft.cbrc.jp/alignment/software/), the
+multiple sequence alignment software developed by Kazutaka Katoh and
+colleagues at CBRC. The scientific contribution — the FFT-anchored
+alignment algorithm, the iterative-refinement variants, the scoring
+matrices — is theirs. This project re-engineers that work in Rust while
+preserving **byte-identical output** to the C reference across the
+BAliBASE 3 benchmark (1930/1930).
+
+> **If you use this software in published work, please cite the
+> original MAFFT paper (Katoh & Standley 2013) — see
+> [Acknowledgments and Citation](#acknowledgments-and-citation) below
+> for BibTeX entries.**
 
 This project provides:
 - **`mafft-rs`** — a single CLI binary replacing the original 5+ C binaries and shell script
-- **`mafft-core`** — a Rust library crate for programmatic use
+- **`mafft`** / **`mafft-core`** — Rust library crates for programmatic use
 - **`pymafft`** — Python bindings via PyO3
 
 ## Status
@@ -449,12 +460,90 @@ git commit -m "Bump MAFFT upstream to <version>"
 | **Python** (`python.yml`) | push/PR + release | Build wheels (Linux, macOS, Windows), test on Python 3.9-3.13, publish to PyPI on release |
 | **Release** (`release.yml`) | GitHub release | Build `mafft-rs` binaries for 4 platforms, attach to release |
 
+## Acknowledgments and Citation
+
+rust-MAFFT is a port — every algorithmic decision in this codebase
+traces back to work by **Kazutaka Katoh** and colleagues. The FFT-
+anchored alignment, the iterative-refinement strategies (L-INS-i /
+G-INS-i / E-INS-i), the scoring matrices, the PartTree heuristic for
+large datasets — all of it is theirs. This project is engineering on
+top of their science, and it would not exist without two decades of
+their public, open work on MAFFT. Thank you.
+
+### How to cite
+
+If you use rust-MAFFT in published work, **you must cite the original
+MAFFT paper.** The rust-MAFFT manuscript (in preparation for
+*Bioinformatics*) should be cited additionally once published — but
+the algorithmic foundation always remains the Katoh et al. work, and
+that citation never goes away.
+
+**Primary citation — MAFFT v7 (always required):**
+
+> Katoh, K., & Standley, D. M. (2013). MAFFT multiple sequence
+> alignment software version 7: improvements in performance and
+> usability. *Molecular Biology and Evolution*, 30(4), 772–780.
+> https://doi.org/10.1093/molbev/mst010
+
+```bibtex
+@article{Katoh2013,
+  author  = {Katoh, Kazutaka and Standley, Daron M.},
+  title   = {{MAFFT} Multiple Sequence Alignment Software Version 7:
+             Improvements in Performance and Usability},
+  journal = {Molecular Biology and Evolution},
+  volume  = {30},
+  number  = {4},
+  pages   = {772--780},
+  year    = {2013},
+  doi     = {10.1093/molbev/mst010}
+}
+```
+
+**Foundational citation — original MAFFT (FFT-NS-1/2 modes):**
+
+> Katoh, K., Misawa, K., Kuma, K., & Miyata, T. (2002). MAFFT: a novel
+> method for rapid multiple sequence alignment based on fast Fourier
+> transform. *Nucleic Acids Research*, 30(14), 3059–3066.
+> https://doi.org/10.1093/nar/gkf436
+
+```bibtex
+@article{Katoh2002,
+  author  = {Katoh, Kazutaka and Misawa, Kazuharu and
+             Kuma, Kei-ichi and Miyata, Takashi},
+  title   = {{MAFFT}: a novel method for rapid multiple sequence
+             alignment based on fast {F}ourier transform},
+  journal = {Nucleic Acids Research},
+  volume  = {30},
+  number  = {14},
+  pages   = {3059--3066},
+  year    = {2002},
+  doi     = {10.1093/nar/gkf436}
+}
+```
+
+See [`CITATION.cff`](CITATION.cff) for the machine-readable form and
+[the citation page](https://luksgrin.github.io/rust-MAFFT/citation/) for
+additional references (PartTree, MAFFT v5, etc.) you should cite when
+using mode-specific features.
+
 ## License
 
-- Rust code (`crates/`): [MIT](LICENSE-MIT)
-- Original MAFFT C code (`mafft-upstream/`): [BSD-3-Clause](mafft-upstream/license)
+This project is distributed under the SPDX expression `MIT AND
+BSD-3-Clause`:
 
-## Credits
+- **MIT** — original Rust code in this repository (the engine port,
+  bindings, CLI, build system, tests). See [`LICENSE-MIT`](LICENSE-MIT).
+- **BSD-3-Clause** — algorithmic constructs and any verbatim
+  translations carried over from upstream MAFFT. Copyright Kazutaka
+  Katoh. See [`LICENSE-BSD`](LICENSE-BSD).
 
-- Original MAFFT by [Kazutaka Katoh](https://mafft.cbrc.jp/alignment/software/) (CBRC, AIST)
-- Rust reimplementation by Lucas Goiriz (luksgrin)
+The `mafft-upstream/` submodule contains the original C MAFFT under
+its [own BSD-3-Clause license](mafft-upstream/license).
+
+## Authors
+
+- **Lucas Goiriz** ([@luksgrin](https://github.com/luksgrin)) — Rust
+  port, library design, bindings, tests, documentation
+- **Original MAFFT**: [**Kazutaka Katoh**](https://mafft.cbrc.jp/alignment/software/)
+  and collaborators (CBRC, Osaka University). All scientific credit
+  belongs to them.

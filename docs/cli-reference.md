@@ -62,6 +62,7 @@ Options:
       --kimura <KIMURA>              Kimura R parameter for DNA distance model [default: 2]
       --thread <THREAD>              Number of threads (0 = use all available cores) [default: 0] [default: 0]
   -q, --quiet                        Quiet mode: suppress progress messages
+      --cite                         Print the citation for MAFFT (and rust-MAFFT, once published) and exit. rust-MAFFT is a port of MAFFT by Kazutaka Katoh et al.; the scientific contribution is theirs and must be cited in any published work
       --reorder                      Output sequences in guide-tree DFS order (matching C MAFFT `--reorder`)
       --inputorder                   Output sequences in input order (default; matches C MAFFT `--inputorder`)
       --treeout                      Write the guide tree to `<INPUT>.tree` in Newick format (matches C MAFFT `--treeout`). Ignored when input is read from stdin

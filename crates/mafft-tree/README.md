@@ -2,6 +2,13 @@
 
 > Distance computation and guide tree construction for [rust-MAFFT](https://github.com/luksgrin/rust-MAFFT).
 
+> **Acknowledgment.** rust-MAFFT is a port of [MAFFT](https://mafft.cbrc.jp/alignment/software/)
+> by **Kazutaka Katoh** and colleagues (CBRC). The science is theirs.
+> If you use this crate in published work, please cite
+> [Katoh & Standley 2013](https://doi.org/10.1093/molbev/mst010); if
+> your work uses `--parttree`, also cite [Katoh & Toh 2007](https://doi.org/10.1093/bioinformatics/btl592).
+> Full guidance at [the project citation page](https://luksgrin.github.io/rust-MAFFT/citation/).
+
 k-mer distances, full pairwise distance matrices, NJ and UPGMA tree
 construction, PartTree partitioning for large datasets (10K+
 sequences), and the memsavetree variants (`memsavetree`,

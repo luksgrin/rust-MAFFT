@@ -119,6 +119,7 @@ nav:
       - Workspace overview: architecture/workspace.md
       - Byte-identity: architecture/byte-identity.md
       - Cross-validation: architecture/cross-validation.md
+  - Citation: citation.md
   - Contributing: contributing/index.md
 
 extra:

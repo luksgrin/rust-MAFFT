@@ -2,6 +2,12 @@
 
 > FASTA, Clustal, PHYLIP, hat2, and localhom I/O for [rust-MAFFT](https://github.com/luksgrin/rust-MAFFT).
 
+> **Acknowledgment.** rust-MAFFT is a port of [MAFFT](https://mafft.cbrc.jp/alignment/software/)
+> by **Kazutaka Katoh** and colleagues (CBRC). The science is theirs.
+> If you use this crate in published work, please cite
+> [Katoh & Standley 2013](https://doi.org/10.1093/molbev/mst010);
+> full guidance at [the project citation page](https://luksgrin.github.io/rust-MAFFT/citation/).
+
 Reads sequences and their associated constraint / distance data from
 disk (or any `BufRead`), and writes alignment results back out. Reuses
 [`noodles-fasta`](https://crates.io/crates/noodles-fasta) under the

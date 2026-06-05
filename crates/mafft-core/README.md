@@ -2,6 +2,13 @@
 
 > The MAFFT alignment engine, in pure Rust. Byte-identical to C MAFFT 7.526.
 
+> **Acknowledgment.** rust-MAFFT is a port of [MAFFT](https://mafft.cbrc.jp/alignment/software/)
+> by **Kazutaka Katoh** and colleagues (CBRC). The science is theirs.
+> If you use this crate in published work, please cite
+> [Katoh & Standley 2013](https://doi.org/10.1093/molbev/mst010);
+> full guidance (including mode-specific references) at
+> [the project citation page](https://luksgrin.github.io/rust-MAFFT/citation/).
+
 `MafftEngine`, `AlignmentMode`, the progressive-alignment driver
 (`merge_step_cached` / `Falign`), iterative refinement (segmented
 NW/SW + oscillation detection), and the `--add` / `--addfragments`

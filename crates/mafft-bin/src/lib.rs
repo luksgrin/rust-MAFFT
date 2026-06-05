@@ -239,6 +239,13 @@ struct Args {
     #[arg(long, short)]
     quiet: bool,
 
+    /// Print the citation for MAFFT (and rust-MAFFT, once published) and
+    /// exit. rust-MAFFT is a port of MAFFT by Kazutaka Katoh et al.; the
+    /// scientific contribution is theirs and must be cited in any
+    /// published work.
+    #[arg(long)]
+    cite: bool,
+
     /// Output sequences in guide-tree DFS order (matching C MAFFT `--reorder`).
     #[arg(long, conflicts_with = "inputorder")]
     reorder: bool,
@@ -518,6 +525,44 @@ struct Args {
     c_compat: bool,
 }
 
+/// Print the canonical MAFFT citation block to stdout. Invoked by the
+/// `--cite` flag (an early-exit path in `run()` that prints this and
+/// exits 0).
+///
+/// rust-MAFFT is a port — the science is by Katoh et al. The block
+/// names Katoh & Standley 2013 as the primary citation (canonical for
+/// MAFFT v7, which this is a port of) and points at the docs site for
+/// mode-specific references and BibTeX.
+fn print_citation() {
+    println!("rust-MAFFT v{} — port of MAFFT 7.526", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("If you use this software in published work, please cite the");
+    println!("original MAFFT paper. The scientific contribution is by");
+    println!("Kazutaka Katoh and colleagues at CBRC; this Rust port preserves");
+    println!("their algorithm byte-for-byte.");
+    println!();
+    println!("  Katoh, K., & Standley, D. M. (2013).");
+    println!("  MAFFT multiple sequence alignment software version 7:");
+    println!("  improvements in performance and usability.");
+    println!("  Molecular Biology and Evolution, 30(4), 772-780.");
+    println!("  doi: 10.1093/molbev/mst010");
+    println!();
+    println!("Mode-specific references (cite additionally when relevant):");
+    println!();
+    println!("  FFT-NS-1/2:        Katoh et al. 2002, NAR 30(14):3059-3066");
+    println!("                     doi: 10.1093/nar/gkf436");
+    println!("  L/G/E-INS-i:       Katoh et al. 2005, NAR 33(2):511-518");
+    println!("                     doi: 10.1093/nar/gki198");
+    println!("  --parttree:        Katoh & Toh 2007, Bioinformatics 23(3):372-374");
+    println!("                     doi: 10.1093/bioinformatics/btl592");
+    println!();
+    println!("Full citation guidance and BibTeX entries:");
+    println!("  https://luksgrin.github.io/rust-MAFFT/citation/");
+    println!();
+    println!("Machine-readable form (CITATION.cff):");
+    println!("  https://github.com/luksgrin/rust-MAFFT/blob/main/CITATION.cff");
+}
+
 /// Apply C MAFFT shell-script defaults based on `argv[0]` basename.
 ///
 /// C MAFFT ships symlinks (`linsi`, `ginsi`, `einsi`, `fftns`, `fftnsi`,
@@ -609,6 +654,14 @@ fn apply_progname_dispatch(progname: &str, args: &mut Args) {
 pub fn run() {
     let mut args = Args::parse();
     apply_progname_defaults(&mut args);
+
+    // --cite: print the citation block and exit cleanly. Comes before
+    // every other flag handler so `--cite` is safe to combine with any
+    // input or to invoke without one.
+    if args.cite {
+        print_citation();
+        std::process::exit(0);
+    }
 
     // C `scripts/mafft:969-990` disables `--pdbidlist` and
     // `--pdbfilelist` with "temporarily unavailable, 2018/Dec." and

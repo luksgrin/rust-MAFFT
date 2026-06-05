@@ -2,6 +2,12 @@
 
 > Pure-Rust types shared across the [rust-MAFFT](https://github.com/luksgrin/rust-MAFFT) workspace.
 
+> **Acknowledgment.** rust-MAFFT is a port of [MAFFT](https://mafft.cbrc.jp/alignment/software/)
+> by **Kazutaka Katoh** and colleagues (CBRC). The science is theirs.
+> If you use this crate in published work, please cite
+> [Katoh & Standley 2013](https://doi.org/10.1093/molbev/mst010);
+> full guidance at [the project citation page](https://luksgrin.github.io/rust-MAFFT/citation/).
+
 `Sequence`, `SequenceSet`, `SeqType`, `ScoringModel`, gap-segment
 descriptors, `HomologyRegion` for local-homology constraint lists,
 plus a `Complex64` alias used by the FFT layer. No engine logic, no

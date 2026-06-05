@@ -7,6 +7,12 @@ workspace. It re-exports the alignment engine, sequence types, and I/O
 helpers so most callers can `use mafft::*` and skip the sub-crate
 imports.
 
+> **Acknowledgment.** rust-MAFFT is a port of [MAFFT](https://mafft.cbrc.jp/alignment/software/)
+> by **Kazutaka Katoh** and colleagues (CBRC). The science is theirs.
+> If you use this crate in published work, please cite
+> [Katoh & Standley 2013](https://doi.org/10.1093/molbev/mst010);
+> full guidance at [the project citation page](https://luksgrin.github.io/rust-MAFFT/citation/).
+
 ## Install
 
 ```sh

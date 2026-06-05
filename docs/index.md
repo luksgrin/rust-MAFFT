@@ -2,6 +2,17 @@
 
 **Pure-Rust port of [MAFFT 7.526](https://mafft.cbrc.jp/alignment/software/), byte-identical to the C reference.**
 
+!!! quote "Built on MAFFT"
+
+    rust-MAFFT is a port — every algorithmic decision in this codebase
+    traces back to work by **[Kazutaka Katoh](https://mafft.cbrc.jp/alignment/software/)**
+    and colleagues at CBRC. The FFT-anchored alignment algorithm, the
+    iterative-refinement strategies, the scoring matrices, the PartTree
+    heuristic — all of it is theirs. This project is engineering on
+    top of their science. **If you use it in published work, please
+    cite the original MAFFT paper.** See the
+    [Citation](citation.md) page for full details and BibTeX.
+
 ## What it is
 
 A complete rewrite of the MAFFT multiple sequence alignment toolchain in
@@ -83,3 +94,4 @@ implementation, compiled in-tree).
 - :material-package: [crates.io: `mafft`](https://crates.io/crates/mafft) · [`mafft-rs`](https://crates.io/crates/mafft-rs) · [`mafft-core`](https://crates.io/crates/mafft-core)
 - :material-language-python: [PyPI: `pymafft`](https://pypi.org/project/pymafft/)
 - :material-book-open-page-variant: [docs.rs: `mafft`](https://docs.rs/mafft)
+- :material-format-quote-close: [**How to cite**](citation.md)
