@@ -9,7 +9,7 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Pairwise and profile sequence alignment algorithms for MAFFT"
-readme = "../../README.md"
+readme = "README.md"
 
 [dependencies]
 mafft-types = { path = "../mafft-types", version = "0.1.0" }

@@ -9,7 +9,7 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "MAFFT multiple sequence alignment tool (Rust implementation)"
-readme = "../../README.md"
+readme = "README.md"
 
 [lib]
 name = "mafft_rs"

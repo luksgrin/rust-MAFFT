@@ -9,7 +9,7 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "I/O routines for MAFFT: FASTA, Clustal, PHYLIP, hat2, localhom formats"
-readme = "../../README.md"
+readme = "README.md"
 
 [dependencies]
 mafft-types = { path = "../mafft-types", version = "0.1.0" }

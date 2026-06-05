@@ -9,7 +9,7 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "FFT-based homology detection for MAFFT multiple sequence alignment"
-readme = "../../README.md"
+readme = "README.md"
 
 [dependencies]
 mafft-types = { path = "../mafft-types", version = "0.1.0" }

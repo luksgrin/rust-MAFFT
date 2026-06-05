@@ -14,8 +14,20 @@ __pycache__/
 crates/pymafft/python/pymafft/_bin/mafft-rs
 crates/pymafft/python/pymafft/_bin/mafft-rs.exe
 
+# pymafft cdylib built by `maturin develop` — Python-version + ABI +
+# platform specific, lives under the source tree only for in-place dev,
+# never source-controlled.
+crates/pymafft/python/pymafft/*.so
+crates/pymafft/python/pymafft/*.pyd
+crates/pymafft/python/pymafft/*.dylib
+
 # mkdocs build output
 site/
+
+# BAliBASE parity-suite output. `scripts/balibase_parity.py` writes
+# per-test byte-diff results here; they're regenerated on every run and
+# nothing depends on a checked-in snapshot.
+balibase_parity*.tsv
 
 # OS
 .DS_Store

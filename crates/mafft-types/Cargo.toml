@@ -9,7 +9,7 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Pure Rust types for MAFFT multiple sequence alignment"
-readme = "../../README.md"
+readme = "README.md"
 
 [dependencies]
 num-complex = "0.4"

@@ -1,0 +1,32 @@
+# mafft-scoring
+
+> Substitution matrices and gap penalties for [rust-MAFFT](https://github.com/luksgrin/rust-MAFFT).
+
+The MAFFT scoring stack ported to pure Rust: BLOSUM62 (default for
+protein), JTT, transmembrane (TM), and DNA matrices, plus the
+gap-opening / gap-extension constants that every alignment mode reads.
+Also hosts `calcW` — the inner-loop SP-component computation — whose
+exact `mul_add` shape matches clang `FP_CONTRACT=ON` output, a
+necessary condition for byte-identity with C MAFFT.
+
+## Install
+
+```sh
+cargo add mafft-scoring
+```
+
+Most callers want the top-level [`mafft`](https://crates.io/crates/mafft)
+crate, which uses these matrices implicitly. Depend on `mafft-scoring`
+directly only when you need to compose a custom scoring context.
+
+## Documentation
+
+API reference: [docs.rs/mafft-scoring](https://docs.rs/mafft-scoring)
+
+Project documentation: [luksgrin.github.io/rust-MAFFT](https://luksgrin.github.io/rust-MAFFT/)
+
+## License
+
+MIT for the Rust port; the matrix constants and `calcW` algorithm are
+derived from upstream MAFFT under BSD-3-Clause. See `LICENSE-MIT` and
+`LICENSE-BSD` in the workspace root.

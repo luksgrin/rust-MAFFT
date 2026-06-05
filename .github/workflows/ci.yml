@@ -266,3 +266,67 @@ jobs:
           print(f'OK: {len(seqs)} sequences, width {widths.pop()}')
           "
           echo "Rust binary test: PASS"
+
+  # ------------------------------------------------------------------
+  # Cross-platform sanity build — release.yml / python.yml ship macOS
+  # and Windows artifacts; we should at least know that `cargo build`
+  # + lib tests work on those hosts on every PR. The Linux `build` job
+  # above stays the authoritative byte-identity gate (it's the only
+  # one that runs the FFI cross-validation suite against C MAFFT).
+  #
+  # Excluded:
+  #   - pymafft           : its cdylib needs maturin's linker dance,
+  #                         not a plain `cargo build`
+  #   - mafft-c-bindings  : compiles MAFFT's C source which links
+  #                         pthread + uses POSIX-only headers; works
+  #                         on macOS, fails on Windows MSVC
+  #
+  # We also limit `cargo test` to the crates that have NO dev-dep on
+  # mafft-c-bindings — otherwise the cross_validate_* test binaries
+  # would still pull it in via dev-deps and fail to link on Windows.
+  # ------------------------------------------------------------------
+  cross-platform:
+    name: "Cross-platform: ${{ matrix.os }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-xp-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-xp-
+
+      - name: Build (workspace minus pymafft + C shim)
+        run: cargo build --workspace --exclude pymafft --exclude mafft-c-bindings --release
+
+      - name: Unit tests (FFI-independent crates)
+        run: >
+          cargo test --release --lib
+          -p mafft-types
+          -p mafft-io
+          -p mafft-fft
+          -p mafft-align
+          -p mafft-rs
+          -p mafft
+
+      - name: Smoke-test mafft-rs binary
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./target/release/mafft-rs.exe --version
+          else
+            ./target/release/mafft-rs --version
+          fi
