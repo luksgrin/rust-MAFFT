@@ -1,0 +1,19 @@
+[package]
+name = "mafft-align"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Pairwise and profile sequence alignment algorithms for MAFFT"
+readme = "README.md"
+
+[dependencies]
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+mafft-fft = { path = "../mafft-fft", version = "0.1.0" }
+num-complex = "0.4"
+rayon = "1"

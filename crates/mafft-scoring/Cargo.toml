@@ -1,0 +1,22 @@
+[package]
+name = "mafft-scoring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Scoring matrices (BLOSUM, JTT, DNA) and gap penalties for MAFFT alignment"
+readme = "README.md"
+
+[dependencies]
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+
+[dev-dependencies]
+# Aliased to `mafft-sys` so the cross_validate_* test code can keep
+# `use mafft_sys::*`. The actual package is `mafft-c-bindings`, the
+# internal-only FFI shim. The published `mafft-sys` crate (under
+# `crates/mafft-sys/`) is an unrelated stub reserving the name.
+mafft-sys = { path = "../mafft-c-bindings", package = "mafft-c-bindings" }

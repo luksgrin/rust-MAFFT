@@ -1,0 +1,30 @@
+[package]
+name = "mafft-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "MAFFT multiple sequence alignment tool (Rust implementation)"
+readme = "README.md"
+
+[lib]
+name = "mafft_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mafft-rs"
+path = "src/main.rs"
+
+[dependencies]
+mafft-core = { path = "../mafft-core", version = "0.1.0" }
+mafft-io = { path = "../mafft-io", version = "0.1.0" }
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+mafft-tree = { path = "../mafft-tree", version = "0.1.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+mafft-align = { path = "../mafft-align", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
+rayon = "1"

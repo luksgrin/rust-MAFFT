@@ -1,0 +1,17 @@
+[package]
+# Internal-only FFI cross-validation shim: compiles MAFFT's C source from
+# `mafft-upstream/core/` (a git submodule outside this crate dir) into a
+# static lib, then exposes raw bindings. Used by the workspace's
+# `cross_validate_*` integration tests in mafft-scoring/tree/core, NEVER
+# at runtime. Kept `publish = false`. The crates.io name `mafft-sys` is
+# reserved by a separate stub crate at `crates/mafft-sys/`.
+name = "mafft-c-bindings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Internal FFI shim to MAFFT C source for cross-validation tests"
+build = "build.rs"
+publish = false
+
+[build-dependencies]
+cc = "1"

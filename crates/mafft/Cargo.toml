@@ -1,0 +1,21 @@
+[package]
+# `mafft` is the ergonomic top-level crate: a one-line dependency that
+# gives users the full alignment API via re-exports. Most users should
+# depend on this rather than `mafft-core` directly — it stays stable
+# across internal reorganisation of the underlying workspace crates.
+name = "mafft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "MAFFT multiple sequence alignment — high-level Rust API (re-exports mafft-core, mafft-types, mafft-io)"
+readme = "README.md"
+
+[dependencies]
+mafft-core = { path = "../mafft-core", version = "0.1.0" }
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+mafft-io = { path = "../mafft-io", version = "0.1.0" }

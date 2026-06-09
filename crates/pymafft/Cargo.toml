@@ -1,0 +1,21 @@
+[package]
+name = "pymafft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Python bindings for MAFFT-rs multiple sequence alignment"
+readme = "../../README.md"
+publish = false
+
+[lib]
+name = "pymafft"
+crate-type = ["cdylib"]
+
+[dependencies]
+mafft-core = { path = "../mafft-core", version = "0.1.0" }
+mafft-io = { path = "../mafft-io", version = "0.1.0" }
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+pyo3 = { version = "0.24", features = ["extension-module"] }

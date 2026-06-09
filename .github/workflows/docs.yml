@@ -1,0 +1,122 @@
+name: Documentation
+
+# Builds the mkdocs-material site and publishes it to GitHub Pages.
+#
+# Build (and deploy) the mkdocs-material site.
+#
+# Build runs on every push to main/dev and every PR — same coverage as
+# ci.yml / python.yml — so broken cross-links or mkdocstrings import
+# failures are caught before merge. Deploy is gated to events that
+# legitimately represent the published state of the project.
+#
+# Triggers:
+#   * push to main          → build + DEPLOY
+#   * release published     → build + DEPLOY (picks up version bumps)
+#   * workflow_dispatch     → build + DEPLOY (manual override)
+#   * push to dev           → build only (preview/regression check)
+#   * pull_request to main  → build only (preview/regression check)
+#
+# The site source lives on `main` under `docs/` + `mkdocs.yml`. The
+# rendered HTML is published to GitHub Pages via the official
+# `actions/deploy-pages` flow (no `gh-pages` orphan branch needed —
+# Pages now serves directly from an Actions artifact).
+#
+# Pages configuration: Settings → Pages → Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Pages needs id-token for OIDC + pages write for the deploy.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One docs deployment at a time. Don't cancel in-progress runs; let
+# them finish so deploys land in order.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build mkdocs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      # ----- Rust: build the CLI so its --help can be rendered -----
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-docs-
+
+      - name: Build mafft-rs (for CLI reference)
+        run: cargo build --release -p mafft-rs
+
+      - name: Regenerate CLI reference
+        run: bash scripts/gen-cli-reference.sh > docs/cli-reference.md
+
+      # ----- Python: build pymafft so mkdocstrings can import it -----
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install docs dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            mkdocs-material \
+            'mkdocstrings[python]>=0.24' \
+            mkdocs-material-extensions \
+            pymdown-extensions \
+            black \
+            biopython \
+            maturin
+
+      - name: Build pymafft in-place (for mkdocstrings introspection)
+        working-directory: crates/pymafft
+        run: maturin develop --release
+
+      # ----- Build the site -----
+      - name: mkdocs build
+        run: mkdocs build --strict
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    # Deploy only from `main`, releases, or manual dispatch. PR builds
+    # and `dev` pushes run the build job for regression-check purposes
+    # but never replace the published site.
+    if: >-
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

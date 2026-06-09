@@ -1,0 +1,332 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  # ------------------------------------------------------------------
+  # Build: compile C binaries and Rust workspace
+  # ------------------------------------------------------------------
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build C binaries
+        run: make -C mafft-upstream/core
+
+      - name: Build Rust workspace
+        run: cargo build --workspace
+
+      - name: Build Rust binary (release)
+        run: cargo build -p mafft-rs --release
+
+      - name: Run Rust tests (lib only, fast)
+        run: cargo test --workspace --lib
+
+      - name: Run Rust integration tests (release)
+        # `--tests` runs every `tests/*.rs` integration binary across the
+        # workspace (end_to_end + cross_validate_* + trace_refinement,
+        # etc.). Prior to this, only the named `end_to_end` binary ran, so
+        # the cross-validate FFI tests + the imp_matrix correctness tests
+        # were silently uncovered by CI.
+        run: cargo test --workspace --release --tests
+
+      - name: Smoke test Rust binary
+        run: |
+          ./target/release/mafft-rs -q mafft-upstream/test/sample > /dev/null
+          echo "mafft-rs smoke test: PASS"
+
+      # Upload C binaries + scripts + test data as a single artifact
+      - name: Prepare C test bundle
+        run: |
+          mkdir -p c-test-bundle/binaries c-test-bundle/scripts c-test-bundle/test
+          cp mafft-upstream/binaries/* c-test-bundle/binaries/
+          cp mafft-upstream/scripts/* c-test-bundle/scripts/
+          cp -r mafft-upstream/test/* c-test-bundle/test/
+
+      - name: Upload C test bundle
+        uses: actions/upload-artifact@v5
+        with:
+          name: c-test-bundle
+          path: c-test-bundle/
+          retention-days: 1
+
+      - name: Upload Rust binary
+        uses: actions/upload-artifact@v5
+        with:
+          name: mafft-rs
+          path: target/release/mafft-rs
+          retention-days: 1
+
+  # ------------------------------------------------------------------
+  # MAFFT C alignment tests (each mode runs as a separate job)
+  # ------------------------------------------------------------------
+  test-fftns2:
+    name: "Test C: FFT-NS-2 (default)"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft sample > x 2>/dev/null
+          diff x sample.fftns2
+
+  test-fftnsi:
+    name: "Test C: FFT-NS-i"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --maxiterate 100 sample > x 2>/dev/null
+          diff x sample.fftnsi
+
+  test-dpparttree:
+    name: "Test C: dpparttree"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --dpparttree sample > x 2>/dev/null
+          diff x sample.dpparttree
+
+  test-gins1:
+    name: "Test C: G-INS-1"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --globalpair sample > x 2>/dev/null
+          diff x sample.gins1
+
+  test-ginsi:
+    name: "Test C: G-INS-i"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --globalpair --maxiterate 100 sample > x 2>/dev/null
+          diff x sample.ginsi
+
+  test-ginsi-allowshift:
+    name: "Test C: G-INS-i (allowshift)"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --allowshift --globalpair --maxiterate 100 sample > x 2>/dev/null
+          diff x sample.ginsi.allowshift
+
+  test-lins1:
+    name: "Test C: L-INS-1"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --localpair sample > x 2>/dev/null
+          diff x sample.lins1
+
+  test-linsi:
+    name: "Test C: L-INS-i"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --localpair --maxiterate 100 sample > x 2>/dev/null
+          diff x sample.linsi
+
+  test-parttree:
+    name: "Test C: parttree"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+      - name: Run test
+        run: |
+          chmod +x binaries/* scripts/*
+          export PATH="$PWD/binaries:$PWD/scripts:$PATH"
+          export MAFFT_BINARIES="$PWD/binaries"
+          cd test
+          mafft --parttree sample > x 2>/dev/null
+          diff x sample.parttree
+
+  # ------------------------------------------------------------------
+  # Rust binary validation
+  # ------------------------------------------------------------------
+  test-rust-binary:
+    name: "Test Rust: mafft-rs binary"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: mafft-rs
+      - uses: actions/download-artifact@v5
+        with:
+          name: c-test-bundle
+          path: c-test-bundle
+      - name: Validate output
+        run: |
+          chmod +x mafft-rs
+          ./mafft-rs -q c-test-bundle/test/sample > rust_out.fasta
+          SEQ_COUNT=$(grep -c '^>' rust_out.fasta)
+          [ "$SEQ_COUNT" -eq 36 ] || { echo "FAIL: expected 36 sequences, got $SEQ_COUNT"; exit 1; }
+          python3 -c "
+          seqs = {}; name = None
+          for line in open('rust_out.fasta'):
+              line = line.strip()
+              if line.startswith('>'): name = line; seqs[name] = ''
+              elif name: seqs[name] += line
+          widths = set(len(s) for s in seqs.values())
+          assert len(widths) == 1, f'Inconsistent widths: {widths}'
+          print(f'OK: {len(seqs)} sequences, width {widths.pop()}')
+          "
+          echo "Rust binary test: PASS"
+
+  # ------------------------------------------------------------------
+  # Cross-platform sanity build — release.yml / python.yml ship macOS
+  # and Windows artifacts; we should at least know that `cargo build`
+  # + lib tests work on those hosts on every PR. The Linux `build` job
+  # above stays the authoritative byte-identity gate (it's the only
+  # one that runs the FFI cross-validation suite against C MAFFT).
+  #
+  # Excluded:
+  #   - pymafft           : its cdylib needs maturin's linker dance,
+  #                         not a plain `cargo build`
+  #   - mafft-c-bindings  : compiles MAFFT's C source which links
+  #                         pthread + uses POSIX-only headers; works
+  #                         on macOS, fails on Windows MSVC
+  #
+  # We also limit `cargo test` to the crates that have NO dev-dep on
+  # mafft-c-bindings — otherwise the cross_validate_* test binaries
+  # would still pull it in via dev-deps and fail to link on Windows.
+  # ------------------------------------------------------------------
+  cross-platform:
+    name: "Cross-platform: ${{ matrix.os }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-xp-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-xp-
+
+      - name: Build (workspace minus pymafft + C shim)
+        run: cargo build --workspace --exclude pymafft --exclude mafft-c-bindings --release
+
+      - name: Unit tests (FFI-independent crates)
+        run: >
+          cargo test --release --lib
+          -p mafft-types
+          -p mafft-io
+          -p mafft-fft
+          -p mafft-align
+          -p mafft-rs
+          -p mafft
+
+      - name: Smoke-test mafft-rs binary
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./target/release/mafft-rs.exe --version
+          else
+            ./target/release/mafft-rs --version
+          fi

@@ -1,0 +1,148 @@
+# Citation File Format — https://citation-file-format.github.io
+#
+# rust-MAFFT is a pure-Rust port of MAFFT, the multiple sequence alignment
+# software developed by Kazutaka Katoh and colleagues at the Computational
+# Biology Research Center (CBRC). The scientific contribution — the FFT-
+# anchored alignment algorithm, the iterative-refinement variants, the
+# scoring matrices — is theirs. This port re-engineers that work in Rust
+# while preserving byte-identical output.
+#
+# If you use rust-MAFFT in published work you MUST cite the original
+# MAFFT paper (Katoh & Standley 2013). The rust-MAFFT manuscript (Goiriz,
+# in preparation, Bioinformatics) describes the port and should be cited
+# alongside once published; until then, please cite Katoh & Standley.
+
+cff-version: 1.2.0
+message: >-
+  If you use rust-MAFFT in scientific work, please cite the original
+  MAFFT paper (Katoh & Standley 2013) — the scientific contribution is
+  theirs. Cite the rust-MAFFT manuscript additionally once it is
+  published.
+title: rust-MAFFT
+abstract: >-
+  Pure-Rust port of MAFFT 7.526 (Katoh & Standley 2013) producing
+  byte-identical output across the BAliBASE 3 benchmark (1930/1930)
+  for every supported alignment mode. Distributed as a Rust library
+  (`mafft`, `mafft-core`), a standalone CLI (`mafft-rs`), and Python
+  bindings (`pymafft`).
+type: software
+authors:
+  - family-names: Goiriz
+    given-names: Lucas
+    email: lucas@spearbit.com
+    # ORCID: add when ready
+
+version: "0.1.0"
+date-released: "2026-06-05"
+license: "MIT AND BSD-3-Clause"
+repository-code: "https://github.com/luksgrin/rust-MAFFT"
+url: "https://luksgrin.github.io/rust-MAFFT/"
+keywords:
+  - bioinformatics
+  - multiple-sequence-alignment
+  - msa
+  - mafft
+  - rust
+  - port
+
+# Preferred citation: the canonical MAFFT v7 paper that rust-MAFFT
+# implements. Update this once the rust-MAFFT manuscript is published —
+# at that point, the rust-MAFFT paper goes here and Katoh & Standley
+# 2013 moves into `references` (it stays required, just no longer
+# preferred-by-default).
+preferred-citation:
+  type: article
+  title: "MAFFT multiple sequence alignment software version 7: improvements in performance and usability"
+  authors:
+    - family-names: Katoh
+      given-names: Kazutaka
+    - family-names: Standley
+      given-names: Daron M.
+  journal: "Molecular Biology and Evolution"
+  volume: 30
+  issue: 4
+  start: 772
+  end: 780
+  year: 2013
+  month: 4
+  doi: "10.1093/molbev/mst010"
+  url: "https://academic.oup.com/mbe/article/30/4/772/1073398"
+  publisher:
+    name: Oxford University Press
+  issn: "1537-1719"
+
+references:
+  - type: article
+    title: "MAFFT: a novel method for rapid multiple sequence alignment based on fast Fourier transform"
+    authors:
+      - family-names: Katoh
+        given-names: Kazutaka
+      - family-names: Misawa
+        given-names: Kazuharu
+      - family-names: Kuma
+        given-names: Kei-ichi
+      - family-names: Miyata
+        given-names: Takashi
+    journal: "Nucleic Acids Research"
+    volume: 30
+    issue: 14
+    start: 3059
+    end: 3066
+    year: 2002
+    month: 7
+    doi: "10.1093/nar/gkf436"
+    url: "https://academic.oup.com/nar/article/30/14/3059/2904316"
+    publisher:
+      name: Oxford University Press
+    issn: "1362-4962"
+    notes: >-
+      The foundational MAFFT paper introducing the FFT-anchored
+      approach to multiple sequence alignment. Cite if the FFT-NS-1/2
+      modes are relevant to your work.
+
+  - type: article
+    title: "MAFFT version 5: improvement in accuracy of multiple sequence alignment"
+    authors:
+      - family-names: Katoh
+        given-names: Kazutaka
+      - family-names: Kuma
+        given-names: Kei-ichi
+      - family-names: Toh
+        given-names: Hiroyuki
+      - family-names: Miyata
+        given-names: Takashi
+    journal: "Nucleic Acids Research"
+    volume: 33
+    issue: 2
+    start: 511
+    end: 518
+    year: 2005
+    doi: "10.1093/nar/gki198"
+    url: "https://academic.oup.com/nar/article/33/2/511/2401127"
+    publisher:
+      name: Oxford University Press
+    notes: >-
+      MAFFT v5: introduction of iterative refinement, the BLOSUM
+      matrix integration, and the L-INS-i / G-INS-i / E-INS-i
+      strategies. Cite if you use any of the iterative modes.
+
+  - type: article
+    title: "PartTree: an algorithm to build an approximate tree from a large number of unaligned sequences"
+    authors:
+      - family-names: Katoh
+        given-names: Kazutaka
+      - family-names: Toh
+        given-names: Hiroyuki
+    journal: "Bioinformatics"
+    volume: 23
+    issue: 3
+    start: 372
+    end: 374
+    year: 2007
+    doi: "10.1093/bioinformatics/btl592"
+    publisher:
+      name: Oxford University Press
+    notes: >-
+      The PartTree guide-tree construction used by --parttree /
+      --dpparttree for large datasets (10K+ sequences). Cite if you
+      use --parttree.

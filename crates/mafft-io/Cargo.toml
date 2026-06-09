@@ -1,0 +1,20 @@
+[package]
+name = "mafft-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "I/O routines for MAFFT: FASTA, Clustal, PHYLIP, hat2, localhom formats"
+readme = "README.md"
+
+[dependencies]
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+noodles-fasta = "0.46"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

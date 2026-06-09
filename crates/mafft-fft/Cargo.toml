@@ -1,0 +1,18 @@
+[package]
+name = "mafft-fft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "FFT-based homology detection for MAFFT multiple sequence alignment"
+readme = "README.md"
+
+[dependencies]
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+rustfft = "6"
+num-complex = "0.4"

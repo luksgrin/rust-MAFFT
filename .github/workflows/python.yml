@@ -1,0 +1,206 @@
+name: Python Package
+
+on:
+  # Build on every push/PR (but don't publish)
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  # Publish on version tags
+  release:
+    types: [published]
+  # Manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------------------
+  # Build wheels for all (target, Python version) combos.
+  #
+  # Each wheel embeds the compiled `mafft-rs` CLI binary under
+  # `pymafft/_bin/`. `pip install pymafft` exposes `mafft-rs` on $PATH via
+  # the `[project.scripts]` entry in pyproject.toml — see
+  # `python/pymafft/__main__.py`. So the same wheel provides the
+  # programmatic API (`import pymafft`) AND the standalone CLI.
+  # ------------------------------------------------------------------
+  build-wheels:
+    name: Wheel (${{ matrix.target }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            manylinux: auto
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            manylinux: "2_28"
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # ----- Non-Linux: build the CLI binary on the host runner. -----
+      - name: Install Rust + target (non-Linux)
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build mafft-rs CLI (non-Linux)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          cargo build --release -p mafft-rs --target ${{ matrix.target }}
+          mkdir -p crates/pymafft/python/pymafft/_bin
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp target/${{ matrix.target }}/release/mafft-rs.exe \
+               crates/pymafft/python/pymafft/_bin/
+          else
+            cp target/${{ matrix.target }}/release/mafft-rs \
+               crates/pymafft/python/pymafft/_bin/
+          fi
+
+      # ----- Build the wheel. On Linux, also pre-build the CLI binary
+      #       inside the manylinux container via `before-script-linux`
+      #       so it links against the same glibc as the cdylib.
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          working-directory: crates/pymafft
+          args: --release --out dist -i python${{ matrix.python }}
+          sccache: "true"
+          before-script-linux: |
+            cd ../..
+            cargo build --release -p mafft-rs --target ${{ matrix.target }}
+            mkdir -p crates/pymafft/python/pymafft/_bin
+            cp target/${{ matrix.target }}/release/mafft-rs \
+               crates/pymafft/python/pymafft/_bin/
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v5
+        with:
+          name: wheels-${{ matrix.target }}-py${{ matrix.python }}
+          path: crates/pymafft/dist/*.whl
+
+  # ------------------------------------------------------------------
+  # Build sdist
+  # ------------------------------------------------------------------
+  build-sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: crates/pymafft
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v5
+        with:
+          name: sdist
+          path: crates/pymafft/dist/*.tar.gz
+
+  # ------------------------------------------------------------------
+  # Test wheels on native runners (one target per OS; cross-compiled
+  # aarch64-linux wheels are exercised via QEMU at publish time, not
+  # here — installing them on x86_64 would fail by design).
+  # ------------------------------------------------------------------
+  test-wheels:
+    name: Test (${{ matrix.target }}, Python ${{ matrix.python }})
+    needs: build-wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+        python: ["3.9", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Download wheels
+        uses: actions/download-artifact@v5
+        with:
+          name: wheels-${{ matrix.target }}-py${{ matrix.python }}
+          path: dist
+
+      - name: Install wheel + test deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest biopython
+          pip install --find-links dist pymafft
+
+      - name: Run binding test suite
+        working-directory: crates/pymafft
+        run: pytest tests/ -v
+
+      - name: Smoke-test bundled CLI
+        shell: bash
+        run: |
+          mafft-rs --help | head -1
+          python -m pymafft --help | head -1
+
+  # ------------------------------------------------------------------
+  # Publish to PyPI (only on release tags)
+  # ------------------------------------------------------------------
+  publish:
+    name: Publish to PyPI
+    needs: [build-wheels, build-sdist, test-wheels]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' && github.event.action == 'published'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pymafft/
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

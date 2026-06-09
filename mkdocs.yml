@@ -1,0 +1,132 @@
+site_name: rust-MAFFT
+site_description: >-
+  Pure-Rust port of MAFFT 7.526 — byte-identical to the C reference across
+  BAliBASE 3 (1930/1930). Library, CLI, and Python bindings.
+site_url: https://luksgrin.github.io/rust-MAFFT/
+site_author: Lucas Goiriz
+copyright: >-
+  &copy; 2026 Lucas Goiriz. MAFFT is BSD-3-Clause (Kazutaka Katoh et al.).
+  This port is MIT.
+
+repo_url: https://github.com/luksgrin/rust-MAFFT
+repo_name: luksgrin/rust-MAFFT
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+  palette:
+    # Light scheme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    # Dark scheme
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [crates/pymafft/python]
+          options:
+            docstring_style: google
+            docstring_section_style: spacy
+            show_root_heading: true
+            show_root_full_path: false
+            show_source: false
+            heading_level: 3
+            members_order: source
+            merge_init_into_class: true
+            show_signature_annotations: true
+            separate_signature: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Permalink
+  - pymdownx.details
+  - pymdownx.emoji:
+      # Enables `:material-language-rust:` / `:fontawesome-brands-github:` /
+      # `:simple-*:` shortcodes by routing them through Material's icon
+      # generators (which emit inline SVG, not unicode emoji glyphs).
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - getting-started/index.md
+      - Install: getting-started/install.md
+      - First alignment: getting-started/first-alignment.md
+      - Choosing a strategy: getting-started/choosing-a-strategy.md
+  - Python API:
+      - python-api/index.md
+      - Biopython interop: python-api/biopython.md
+  - CLI Reference: cli-reference.md
+  - Rust API ↗: https://docs.rs/mafft
+  - Architecture:
+      - architecture/index.md
+      - Workspace overview: architecture/workspace.md
+      - Byte-identity: architecture/byte-identity.md
+      - Cross-validation: architecture/cross-validation.md
+  - Citation: citation.md
+  - Contributing: contributing/index.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/luksgrin/rust-MAFFT
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/pymafft/
+    - icon: fontawesome/brands/rust
+      link: https://crates.io/crates/mafft

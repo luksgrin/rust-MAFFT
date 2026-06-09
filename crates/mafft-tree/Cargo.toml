@@ -1,0 +1,22 @@
+[package]
+name = "mafft-tree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Distance computation and guide tree construction for MAFFT alignment"
+readme = "README.md"
+
+[dependencies]
+mafft-types = { path = "../mafft-types", version = "0.1.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+
+[dev-dependencies]
+# See note in mafft-scoring/Cargo.toml — alias preserves `use mafft_sys`
+# in cross_validate_* test files while the real crate is internal-only.
+mafft-sys = { path = "../mafft-c-bindings", package = "mafft-c-bindings" }
+mafft-io = { path = "../mafft-io" }
