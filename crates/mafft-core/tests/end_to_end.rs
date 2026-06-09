@@ -2704,19 +2704,23 @@ fn upstream_sample_dpparttree_byte_identical() {
     assert_byte_equal_to_upstream_ref(&msa, "sample.dpparttree", "upstream DP-PartTree");
 }
 
-/// Sanity-read the upstream hat2 distance-matrix fixture and verify
-/// its structural invariants. We don't yet emit hat2 ourselves
+/// Sanity-read the hat2 distance-matrix fixture and verify its
+/// structural invariants. We don't yet emit hat2 ourselves
 /// (`--distout` is TODO gap #4), so this is read-only — but it
 /// regression-guards the hat2 parser against an upstream format
-/// change. Reference: `mafft-upstream/test/sample.hat2`
-/// (= `mafft --distout sample` would produce this).
+/// change.
+///
+/// The fixture is checked into `crates/mafft-core/tests/fixtures/`
+/// because upstream MAFFT does NOT commit `sample.hat2` to its repo —
+/// it's a build artifact you'd otherwise have to regenerate via
+/// `mafft --distout sample` on every fresh clone (broken in CI).
 #[test]
 fn upstream_sample_hat2_parses() {
     use mafft_io::read_hat2;
     use std::fs::File;
     use std::io::BufReader;
-    let f = File::open(test_data_path("sample.hat2"))
-        .expect("missing upstream sample.hat2");
+    let f = File::open(fixture_path("sample.hat2"))
+        .expect("missing fixture sample.hat2");
     let m = read_hat2(BufReader::new(f))
         .expect("upstream sample.hat2 parser failure");
     let n = m.nseq();

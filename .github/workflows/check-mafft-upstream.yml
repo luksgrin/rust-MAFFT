@@ -1,0 +1,89 @@
+name: Check MAFFT upstream
+
+# Manual canary: did upstream MAFFT publish anything since we pinned?
+#
+# Compares the SHA pinned in our submodule (`mafft-upstream/`) against
+# the current tip of the upstream default branch. Fails loudly if
+# upstream has moved — that signals it's time to:
+#   1. Pull the submodule (`git submodule update --remote mafft-upstream`)
+#   2. Re-apply our forensic-instrumentation patches if needed
+#   3. Re-run the workspace test suite (including cross-validation)
+#   4. Commit the new submodule pointer
+#
+# The workflow does NOT auto-update the submodule. That's a manual
+# decision because upstream changes can introduce algorithmic drift
+# (in which case we may want to stay pinned) or just a build-system
+# tweak (in which case bumping is safe). Either way, a human in the
+# loop is the right call.
+#
+# Triggered ONLY by manual dispatch — no schedule, no push. We don't
+# want this firing on every commit; it's a periodic sanity check.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Compare submodule pin vs upstream HEAD
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Need the submodule fetched so we can read its current SHA,
+          # but shallow is fine — we're not actually building anything.
+          submodules: true
+          fetch-depth: 1
+
+      - name: Fetch upstream and compare
+        working-directory: mafft-upstream
+        run: |
+          set -euo pipefail
+
+          PINNED=$(git rev-parse HEAD)
+          PINNED_SHORT=$(git rev-parse --short HEAD)
+          PINNED_SUBJECT=$(git log -1 --pretty=%s HEAD)
+
+          echo "::group::Pinned commit"
+          echo "  SHA:     $PINNED"
+          echo "  Short:   $PINNED_SHORT"
+          echo "  Subject: $PINNED_SUBJECT"
+          echo "::endgroup::"
+
+          # Resolve the upstream default branch dynamically (don't
+          # hardcode "main" — if upstream ever renames their default
+          # branch, this should still work).
+          DEFAULT_REF=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+          echo "Upstream default branch: $DEFAULT_REF"
+
+          git fetch origin "$DEFAULT_REF" --depth=50
+          LATEST=$(git rev-parse "origin/$DEFAULT_REF")
+          LATEST_SHORT=$(git rev-parse --short "origin/$DEFAULT_REF")
+          LATEST_SUBJECT=$(git log -1 --pretty=%s "origin/$DEFAULT_REF")
+
+          echo "::group::Latest upstream commit"
+          echo "  SHA:     $LATEST"
+          echo "  Short:   $LATEST_SHORT"
+          echo "  Subject: $LATEST_SUBJECT"
+          echo "::endgroup::"
+
+          if [ "$PINNED" = "$LATEST" ]; then
+            echo "::notice::mafft-upstream is up to date at $PINNED_SHORT ($PINNED_SUBJECT)"
+            exit 0
+          fi
+
+          # Drift detected — show what we're missing.
+          MISSING=$(git log --oneline "$PINNED..origin/$DEFAULT_REF" | wc -l)
+          echo "::group::Commits we are missing ($MISSING)"
+          git log --oneline "$PINNED..origin/$DEFAULT_REF"
+          echo "::endgroup::"
+
+          echo "::error::mafft-upstream submodule is behind origin/$DEFAULT_REF."
+          echo "::error::  pinned: $PINNED_SHORT — $PINNED_SUBJECT"
+          echo "::error::  latest: $LATEST_SHORT — $LATEST_SUBJECT"
+          echo "::error::  missing: $MISSING commit(s). See log group above."
+          echo ""
+          echo "To update locally:"
+          echo "  git submodule update --remote mafft-upstream"
+          echo "  cargo test --workspace --release --tests   # validate"
+          echo "  git add mafft-upstream && git commit -m 'Bump mafft-upstream to <SHA>'"
+          exit 1

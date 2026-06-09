@@ -89,9 +89,16 @@ jobs:
             biopython \
             maturin
 
-      - name: Build pymafft in-place (for mkdocstrings introspection)
+      - name: Build pymafft wheel + install (for mkdocstrings introspection)
         working-directory: crates/pymafft
-        run: maturin develop --release
+        # `maturin develop` requires an active virtualenv to know where
+        # to drop the .so. The bare GH runner from `actions/setup-python`
+        # is not in a venv, so we build a wheel and pip-install it
+        # against the runner's Python instead — same end state for
+        # mkdocstrings: `import pymafft` succeeds.
+        run: |
+          maturin build --release --out dist
+          pip install --force-reinstall dist/*.whl
 
       # ----- Build the site -----
       - name: mkdocs build
