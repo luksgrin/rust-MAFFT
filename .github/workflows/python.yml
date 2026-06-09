@@ -88,7 +88,13 @@ jobs:
           manylinux: ${{ matrix.manylinux || 'auto' }}
           working-directory: crates/pymafft
           args: --release --out dist -i python${{ matrix.python }}
-          sccache: "true"
+          # `sccache: true` was set here previously but breaks Linux
+          # builds: maturin-action exports RUSTC_WRAPPER=sccache and the
+          # manylinux container doesn't ship sccache, so the cargo call
+          # inside `before-script-linux` fails with "sccache: No such
+          # file or directory" before the wheel build even starts. The
+          # speed win on macOS/Windows is small relative to total matrix
+          # time (~3-5 min), so we just disable sccache across the board.
           before-script-linux: |
             cd ../..
             cargo build --release -p mafft-rs --target ${{ matrix.target }}
