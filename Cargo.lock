@@ -352,7 +352,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "mafft"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mafft-core",
  "mafft-io",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "mafft-align"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mafft-fft",
  "mafft-scoring",
@@ -372,14 +372,14 @@ dependencies = [
 
 [[package]]
 name = "mafft-c-bindings"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "mafft-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "mafft-align",
@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "mafft-fft"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mafft-scoring",
  "mafft-types",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "mafft-io"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mafft-types",
  "noodles-fasta",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "mafft-rs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "mafft-align",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "mafft-scoring"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mafft-c-bindings",
  "mafft-types",
@@ -441,7 +441,7 @@ version = "0.0.1"
 
 [[package]]
 name = "mafft-tree"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mafft-c-bindings",
  "mafft-io",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "mafft-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "num-complex",
 ]
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "pymafft"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mafft-core",
  "mafft-io",
