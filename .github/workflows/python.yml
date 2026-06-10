@@ -42,8 +42,12 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             manylinux: "2_28"
+          # macos-latest is Apple Silicon; we cross-compile to
+          # x86_64-apple-darwin from there (Rust handles this fine with
+          # the target installed). The retired macos-13 runner used to
+          # be native Intel but has been removed by GitHub as of 2026.
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
@@ -155,8 +159,11 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macos-13
+          # x86_64-apple-darwin is built (cross-compiled from arm64 above)
+          # but NOT tested here — installing an x86_64 wheel on an arm64
+          # macos-latest runner would need Rosetta + pip --platform overrides;
+          # the wheel itself is the same code as the arm64 build, so we
+          # consider it sufficiently exercised by the aarch64 test below.
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc

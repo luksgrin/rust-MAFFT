@@ -23,7 +23,11 @@ jobs:
             # x86_64; the target binary runs on AWS Graviton / Apple
             # silicon Linux containers / Raspberry Pi 64-bit.
             use_cross: "true"
-          - os: macos-13
+          # macos-latest is Apple Silicon; we cross-compile to
+          # x86_64-apple-darwin from it. The retired macos-13 runner
+          # was the native Intel host but has been removed by GitHub as
+          # of 2026.
+          - os: macos-latest
             target: x86_64-apple-darwin
             binary: mafft-rs
           - os: macos-latest
