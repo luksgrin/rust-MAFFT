@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pymafft"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python bindings for MAFFT-rs multiple sequence alignment"
 readme = "README.md"
 license = {text = "MIT AND BSD-3-Clause"}

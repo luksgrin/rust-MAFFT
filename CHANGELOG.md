@@ -10,9 +10,39 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
-## [0.1.0] - TBD
+## [0.1.1] - 2026-06-10
 
-Initial release.
+Release-pipeline fixes. No engine, library, or CLI behaviour changes
+from `0.1.0`; bumped only because `pymafft 0.1.0` was published to
+PyPI before the rest of the release-day workflows could be fixed.
+
+### Fixed
+
+- `release.yml`: added `permissions: contents: write` so
+  `softprops/action-gh-release@v2` can attach the cross-compiled
+  binaries to the GitHub release (previously failed with
+  "Resource not accessible by integration").
+- `docs.yml`: the `github-pages` deployment environment is now scoped
+  to allow tag-triggered deploys (`v*`) in addition to `main` pushes.
+- `python.yml`: x86_64-apple-darwin wheel is now cross-compiled from
+  the Apple Silicon `macos-latest` runner (the previously-targeted
+  `macos-13` Intel runner pool was retired by GitHub in 2026).
+- `python.yml`: Linux wheel build no longer changes the cwd inside the
+  manylinux container (`cd ../..` had broken maturin's manifest
+  resolution; replaced with `--manifest-path ../../Cargo.toml`).
+
+### Notes
+
+- `pymafft 0.1.0` was yanked on PyPI after this release. Use 0.1.1+
+  for any new installs. Programmatic and CLI behaviour is unchanged.
+
+## [0.1.0] - 2026-06-10 [YANKED]
+
+Initial release attempt. `pymafft` published to PyPI successfully but
+the crates.io publish (email verification not yet completed), GitHub
+release binary upload (missing `contents: write` permission), and
+docs deploy (environment-rule rejected the tag) all failed. Superseded
+by 0.1.1.
 
 ### Engine
 
@@ -64,5 +94,6 @@ Four parallel release channels off a single GitHub release tag:
 - Site at https://luksgrin.github.io/rust-MAFFT (Material for MkDocs)
 - Per-crate `cargo doc` published to https://docs.rs
 
-[Unreleased]: https://github.com/luksgrin/rust-MAFFT/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/luksgrin/rust-MAFFT/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.1.1
 [0.1.0]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.1.0
