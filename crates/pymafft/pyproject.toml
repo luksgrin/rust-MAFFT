@@ -4,13 +4,13 @@ build-backend = "maturin"
 
 [project]
 name = "pymafft"
-version = "0.1.1"
+version = "0.1.2"
 description = "Python bindings for MAFFT-rs multiple sequence alignment"
 readme = "README.md"
 license = {text = "MIT AND BSD-3-Clause"}
 requires-python = ">=3.9"
 authors = [
-    {name = "Lucas Goiriz", email = "luksgrin@users.noreply.github.com"},
+    {name = "Lucas Goiriz", email = "lucas.goiriz@csic.es"},
 ]
 keywords = ["bioinformatics", "alignment", "msa", "fasta", "mafft", "sequence"]
 classifiers = [

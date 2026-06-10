@@ -10,6 +10,32 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-10
+
+Metadata fixes. No engine, library, or CLI behaviour changes from
+0.1.1 / 0.1.0; bumped so that all distribution channels can publish
+together cleanly.
+
+### Fixed
+
+- `CITATION.cff`: dropped the SPDX expression `MIT AND BSD-3-Clause`
+  in favour of the single SPDX identifier `MIT` (Zenodo's `cffconvert`
+  pipeline rejected the expression form with "Citation metadata load
+  failed"). The BSD-3-Clause attribution for the algorithmic constructs
+  ported from upstream MAFFT remains in `LICENSE-BSD` and the workspace
+  `Cargo.toml` `license = "MIT AND BSD-3-Clause"` (where cargo accepts
+  expressions fine).
+- Maintainer email updated to `lucas.goiriz@csic.es` in workspace
+  authors and `pymafft` pyproject metadata.
+
+### Notes
+
+- v0.1.1 published partially: docs + GH-release binaries succeeded;
+  crates.io got 5 of 10 crates before hitting the new-crate rate
+  limit; PyPI publish was gated by a transient quay.io docker-pull
+  flake on one Linux wheel. v0.1.2 retries all channels with a valid
+  CITATION.cff.
+
 ## [0.1.1] - 2026-06-10
 
 Release-pipeline fixes. No engine, library, or CLI behaviour changes
@@ -94,6 +120,7 @@ Four parallel release channels off a single GitHub release tag:
 - Site at https://luksgrin.github.io/rust-MAFFT (Material for MkDocs)
 - Per-crate `cargo doc` published to https://docs.rs
 
-[Unreleased]: https://github.com/luksgrin/rust-MAFFT/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/luksgrin/rust-MAFFT/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.1.2
 [0.1.1]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.1.1
 [0.1.0]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.1.0

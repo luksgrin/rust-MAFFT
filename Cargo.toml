@@ -16,13 +16,13 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT AND BSD-3-Clause"
 repository = "https://github.com/luksgrin/rust-MAFFT"
 homepage = "https://github.com/luksgrin/rust-MAFFT"
 description = "MAFFT multiple sequence alignment - Rust rewrite"
-authors = ["Lucas Goiriz <luksgrin@users.noreply.github.com>"]
+authors = ["Lucas Goiriz <lucas.goiriz@csic.es>"]
 keywords = ["bioinformatics", "alignment", "msa", "fasta", "mafft"]
 categories = ["science", "command-line-utilities"]
 readme = "README.md"
