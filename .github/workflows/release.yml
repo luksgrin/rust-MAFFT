@@ -5,6 +5,13 @@ on:
     types: [published]
   workflow_dispatch:
 
+# `softprops/action-gh-release@v2` updates the release object to attach
+# the built binaries as assets. That's a write to the `contents` scope —
+# and since 2023, GH defaults workflow tokens to read-only. Grant the
+# minimum needed: `contents: write`, nothing else.
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build (${{ matrix.target }})
