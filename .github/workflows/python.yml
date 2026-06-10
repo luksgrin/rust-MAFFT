@@ -95,12 +95,20 @@ jobs:
           # file or directory" before the wheel build even starts. The
           # speed win on macOS/Windows is small relative to total matrix
           # time (~3-5 min), so we just disable sccache across the board.
+          #
+          # before-script-linux runs in the manylinux container with cwd
+          # = crates/pymafft (matches `working-directory:` above). We
+          # MUST NOT cd elsewhere — any leftover cwd change persists for
+          # maturin's own invocation and lands it on the workspace root
+          # Cargo.toml, which has no [package] and fails parse. Use
+          # --manifest-path for cargo and relative paths for cp.
           before-script-linux: |
-            cd ../..
-            cargo build --release -p mafft-rs --target ${{ matrix.target }}
-            mkdir -p crates/pymafft/python/pymafft/_bin
-            cp target/${{ matrix.target }}/release/mafft-rs \
-               crates/pymafft/python/pymafft/_bin/
+            cargo build --manifest-path ../../Cargo.toml \
+                        --release -p mafft-rs \
+                        --target ${{ matrix.target }}
+            mkdir -p python/pymafft/_bin
+            cp ../../target/${{ matrix.target }}/release/mafft-rs \
+               python/pymafft/_bin/
 
       - name: Upload wheels
         uses: actions/upload-artifact@v5
