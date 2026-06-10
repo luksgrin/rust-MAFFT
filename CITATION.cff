@@ -34,7 +34,9 @@ authors:
 
 version: "0.1.0"
 date-released: "2026-06-05"
-license: "MIT AND BSD-3-Clause"
+license:
+  - MIT
+  - BSD-3-Clause
 repository-code: "https://github.com/luksgrin/rust-MAFFT"
 url: "https://luksgrin.github.io/rust-MAFFT/"
 keywords:
