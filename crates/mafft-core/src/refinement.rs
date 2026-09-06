@@ -2306,17 +2306,34 @@ mod tests {
         let (topo, _) = make_6seq_topology();
         let nsteps = topo.steps.len();
 
-        // Verify the step_order logic directly.
         let forward: Vec<usize> = (0..nsteps).collect();
         let reverse: Vec<usize> = (0..nsteps).rev().collect();
-
-        // Even iteration → forward
-        assert_eq!(forward[0], 0, "forward should start at step 0");
-        // Odd iteration → reverse
-        assert_eq!(reverse[0], nsteps - 1, "reverse should start at last step");
+        assert_eq!(step_order(0, nsteps, false), forward, "even cycle walks forward");
+        assert_eq!(step_order(1, nsteps, false), reverse, "odd cycle walks in reverse");
+        assert_eq!(step_order(2, nsteps, false), forward);
+        assert_eq!(step_order(3, nsteps, false), reverse);
         // They must differ (nsteps > 1 for any nseq > 2)
         assert_ne!(forward, reverse,
             "forward and reverse step orders must differ for alternation");
+    }
+
+    /// Guard: C's `athread` (selected by `nthread > 0`) never reverses.
+    ///
+    /// The worker takes `branchtable[jobpos]` for `jobpos = 0 .. nbranch`
+    /// (`tditeration.c:728-730`) and `branchtable` is only shuffled when
+    /// `randomseed != 0` (`:522`; the script's default is 0), so every
+    /// cycle walks the steps in ascending order. Reversing the odd cycles
+    /// as the single-threaded loop does moved one gap column in one
+    /// sequence of `mtb_cds_120x1400.fa` under `--thread 1`.
+    #[test]
+    fn athread_never_reverses_the_walk() {
+        let (topo, _) = make_6seq_topology();
+        let nsteps = topo.steps.len();
+        let forward: Vec<usize> = (0..nsteps).collect();
+        for iter in 0..5 {
+            assert_eq!(step_order(iter, nsteps, true), forward,
+                "athread cycle {iter} must walk forward");
+        }
     }
 
     /// Guard: oscillation detection terminates refinement early.
