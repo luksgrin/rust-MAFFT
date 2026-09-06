@@ -138,7 +138,7 @@ unsafe fn alloc_c_char_mtx(seqs: &[Vec<u8>], capacity: usize) -> (Vec<*mut c_cha
 
 #[test]
 fn refine_branch_seg10_profile_dp_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/refine_branch_seg10_dna.txt");

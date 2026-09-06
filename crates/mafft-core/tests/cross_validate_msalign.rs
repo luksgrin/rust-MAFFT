@@ -88,7 +88,7 @@ fn align_via_both(
     }
 
     // ---- C side ----
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (c_s1, c_s2) = unsafe {
         init_c_protein_blosum62();
         let alloclen = (s1.len() + s2.len() + 1000) as c_int;
@@ -227,7 +227,7 @@ fn msalign_mid_state_matches_c() {
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
     // ---- Capture C state via the instrumented wrapper ----
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (c_imid, c_jmid, c_jumpi, c_jumpj, c_midw, c_midm, c_midn,
          c_jumpbacki, c_jumpbackj, c_jumpforwi, c_jumpforwj) = unsafe {
         init_c_protein_blosum62();
@@ -390,7 +390,7 @@ fn msalign_tanni_in_context_matches_c() {
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
     // ---- C side ----
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (c_s1, c_s2, c_width) = unsafe {
         init_c_protein_blosum62();
         let alloclen = (lgth1 + lgth2 + 1000) as c_int;
@@ -496,7 +496,7 @@ fn msalign_full_trace_c_reimpl_symmetric_matches() {
     let s1 = b"MKTIIALSYIFCLVFAKEDFREEKSPELLVNVPILTPVAGTHKAGKLITGSTMKAKEGNCGRDLLINGTGRLILSSSGKLPHRMNAIPRTNKPGSEDYTKVVNFLSGNLDRGQLSYLKLELKM";
     let s2 = b"MKTIIALSYIFCLVFAKEDFREEKSPELLVNVPILTPVAGTHKAGKLITGSTMKAKEGNCGRDPQLLLAGKSDESQRWSAALLINGTGRLILSSSGKLPHRMNAIPRTNKPGSEDYTKVVNFLSGNLDRGQLSYLKLELKM";
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (trace_w, real_w) = unsafe {
         init_c_protein_blosum62();
         let alloclen = (s1.len() + s2.len() + 1000) as c_int;
@@ -561,7 +561,7 @@ fn msalign_full_trace_c_reimpl_matches_real_c() {
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (trace_s1, trace_s2, trace_width, real_s1, real_s2, real_width) = unsafe {
         init_c_protein_blosum62();
         let alloclen = (lgth1 + lgth2 + 1000) as c_int;

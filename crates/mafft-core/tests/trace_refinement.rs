@@ -121,7 +121,7 @@ unsafe fn build_c_len(topo: &mafft_tree::Topology) -> *mut *mut c_double { unsaf
 
 #[test]
 fn trace_first_branch_vs_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     // Load byte-identical progressive output.
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
@@ -464,7 +464,7 @@ fn trace_first_branch_vs_c() {
 
 #[test]
 fn all_branches_weights_match_c_36seq() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     // Load byte-identical progressive output.
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
@@ -544,7 +544,7 @@ fn all_branches_weights_match_c_36seq() {
 /// a clean-state sweep misses.
 #[test]
 fn evolving_state_profile_align_vs_msalignmm_iter0() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
@@ -753,7 +753,7 @@ fn evolving_state_profile_align_vs_msalignmm_iter0() {
 /// Test profile_align on FULL (non-stripped) sequences vs C MSalignmm on FULL.
 #[test]
 fn full_sequence_profile_align_vs_msalignmm() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
@@ -858,7 +858,7 @@ fn full_sequence_profile_align_vs_msalignmm() {
 /// Confirm C's `searchAnchors` finds top-level segments before iteration.
 #[test]
 fn c_search_anchors_on_sample() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
     let nseq = input.sequences.len();
@@ -890,7 +890,7 @@ fn c_search_anchors_on_sample() {
 /// FFI-compare the refinement tree distance matrix (Rust vs dndpre formula).
 #[test]
 fn dndpre_distance_matrix_matches_rust() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
@@ -1005,7 +1005,7 @@ fn dump_rust_topology() {
 /// topology, cell-by-cell.
 #[test]
 fn tree_topology_rust_vs_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
@@ -1124,7 +1124,7 @@ fn tree_topology_rust_vs_c() {
 /// iter=1 expected output. Compare and identify first divergent branch.
 #[test]
 fn real_rust_refine_vs_c_falign_iter0_bytediff() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
@@ -1335,7 +1335,7 @@ fn real_rust_refine_vs_c_falign_iter0_bytediff() {
 /// this test faithfully reproduces the real refinement flow.
 #[test]
 fn trajectory_rust_vs_c_all_iters() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
@@ -1815,7 +1815,7 @@ fn trajectory_rust_vs_c_all_iters() {
 /// our Rust refinement after 1 iteration to see if states diverge.
 #[test]
 fn rust_refine_vs_c_direct_iter1() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
@@ -1948,7 +1948,7 @@ fn rust_refine_vs_c_direct_iter1() {
 /// branch with the SAME evolving state, and compare sequences / accept decisions.
 #[test]
 fn evolving_state_rust_vs_c_falign_iter0() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
@@ -2166,7 +2166,7 @@ fn evolving_state_rust_vs_c_falign_iter0() {
 /// — same as our Rust code) and concatenates.
 #[test]
 fn compare_segmented_falign_with_c_iter0() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
@@ -2368,7 +2368,7 @@ fn compare_segmented_falign_with_c_iter0() {
 /// for every branch of iter 0 on the clean FFT-NS-2 input.
 #[test]
 fn compare_alignable_regions_with_c_iter0() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");
@@ -2476,7 +2476,7 @@ fn compare_alignable_regions_with_c_iter0() {
 /// Reports the first branch where the produced alignments differ.
 #[test]
 fn full_iter0_profile_align_vs_msalignmm() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample.fftns2"))
         .expect("load sample.fftns2");

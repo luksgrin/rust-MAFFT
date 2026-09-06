@@ -65,7 +65,7 @@ unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<f64>]) -> *mut *mut c_double 
 
 #[test]
 fn constrained_align_matches_c_a_align() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -288,7 +288,7 @@ fn constrained_align_matches_c_a_align() {
 /// (outgap=0 → free terminal gaps, matching `headgp=tailgp=false`).
 #[test]
 fn constrained_align_with_gaps_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -463,7 +463,7 @@ fn constrained_align_with_gaps_matches_c() {
 /// between Rust Profile::from_aligned and C's match_calc_add path.
 #[test]
 fn constrained_align_multi_member_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -607,7 +607,7 @@ fn constrained_align_multi_member_matches_c() {
 /// the real localhom region from `build_local_homology_table`.
 #[test]
 fn constrained_align_real_2seq_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -827,7 +827,7 @@ fn constrained_align_real_2seq_matches_c() {
 /// table containing a region for each (s1, s2) pair.
 #[test]
 fn constrained_align_multi_member_with_constraints_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -1075,7 +1075,7 @@ fn constrained_align_multi_member_with_constraints_matches_c() {
 /// G__align11 port (global.rs).
 #[test]
 fn rust_global_align_matches_c_g__align11() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -1169,7 +1169,7 @@ fn rust_global_align_matches_c_g__align11() {
 /// Guards the §9c warp DP port in `global_align`.
 #[test]
 fn rust_global_align_matches_c_g__align11_warp() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -1278,7 +1278,7 @@ fn rust_global_align_matches_c_g__align11_warp() {
 /// trailing gap pushes the alignment longer.
 #[test]
 fn rust_global_align_matches_c_g__align11_warp_k03494_m92036() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -1362,7 +1362,7 @@ fn rust_global_align_matches_c_g__align11_warp_k03494_m92036() {
 /// This is a same-score tie-break inside the warp DP recurrence.
 #[test]
 fn rust_global_align_matches_c_g__align11_warp_u22180_m62903() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -1452,7 +1452,7 @@ fn rust_global_align_matches_c_g__align11_warp_u22180_m62903() {
 /// before the second constants() call brings C in line and the test passes.
 #[test]
 fn rust_global_align_realign_matches_c_g__align11_warp_u22180_m62903() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -1572,7 +1572,7 @@ fn rust_global_align_realign_matches_c_g__align11_warp_u22180_m62903() {
 /// real 36-seq sample's first 2 sequences. Guards the E-INS-i pairwise port.
 #[test]
 fn rust_genaffine_align_matches_c_gen_l__align11() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -1696,7 +1696,7 @@ fn rust_genaffine_align_matches_c_gen_l__align11() {
 /// (topology coincidentally identical), but n=15+ tips at some pair.
 #[test]
 fn rust_genaffine_align_matches_c_gen_l__align11_einsi_params() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
     let s1: &'static [u8] = b"MNGTEGDNFYVPFSNKTGLARSPYEYPQYYLAEPWKYSALAAYMFFLILVGFPVNFLTLFVTVQHKKLRTPLNYILLNLAMANLFMVLFGFTVTMYTSMNGYFVFGPTMCSIEGFFATLGGEVALWSLVVLAIERYIVICKPMGNFRFGNTHAIMGVAFTWIMALACAAPPLVGWSRYIPEGMQCSCGPDYYTLNPNFNNESYVVYMFVVHFLVPFVIIFFCYGRLLCTVKEAAAAQQESASTQKAEKEVTRMVVLMVIGFLVCWVPYASVAFYIFTHQGSDFGATFMTLPAFFAKSSALYNPVIYILMNKQFRNCMITTLCCGKNPLGDDESGASTSKTEVSSVSTSPVSPA";

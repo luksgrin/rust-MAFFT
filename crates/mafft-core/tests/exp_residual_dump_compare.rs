@@ -21,6 +21,12 @@
 #![allow(non_snake_case)]
 
 use std::os::raw::{c_char, c_double, c_int};
+use std::sync::Mutex;
+
+/// Serialises every test that calls into the C reference: `mafft_sys`
+/// functions read/write process-wide C globals (and `treeCnv` keeps a
+/// static scratch buffer), so two tests racing on them can crash.
+static C_MUTEX: Mutex<()> = Mutex::new(());
 
 unsafe fn init_c_protein() {
     unsafe {
@@ -120,6 +126,7 @@ fn parse_dump(path: &str) -> Vec<DumpEntry> {
 #[test]
 #[cfg_attr(target_os = "linux", ignore = "potential glibc teardown issue mirroring other FFI tests")]
 fn exp_residual_compare_per_step_with_a__align() {
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dump_path = "/tmp/rs_dp.txt";
     if !std::path::Path::new(dump_path).exists() {
         eprintln!("Dump not found at {dump_path}; run with RS_DP_DUMP=/tmp/rs_dp.txt first");

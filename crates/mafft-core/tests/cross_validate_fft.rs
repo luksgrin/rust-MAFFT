@@ -12,7 +12,7 @@ static C_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn fft_port_matches_c_forward_dc() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let n = 16;
     // Constant input: forward FFT should give 1.0 at index 0, 0 elsewhere.
     let signal: Vec<Complex64> = vec![Complex64::new(1.0, 0.0); n];
@@ -38,7 +38,7 @@ fn fft_port_matches_c_forward_dc() {
 
 #[test]
 fn fft_port_matches_c_random_input() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // Use a deterministic "random" input that exercises real and
     // imaginary parts and varied magnitudes.
     let n = 64;

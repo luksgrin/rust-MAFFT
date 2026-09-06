@@ -90,7 +90,7 @@ unsafe fn c_encode_points(seq: &[u8]) -> Vec<i32> {
 fn parttree_points_match_c() {
     // C globals are shared across all FFI tests in this binary; serialize
     // access. Recover from poison so a single failing test doesn't cascade.
-    let _g = C_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load mafft-upstream/test/sample");
 
@@ -114,7 +114,7 @@ fn parttree_points_match_c() {
 fn parttree_common_sextets_match_c() {
     // C globals are shared across all FFI tests in this binary; serialize
     // access. Recover from poison so a single failing test doesn't cascade.
-    let _g = C_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load mafft-upstream/test/sample");
     unsafe { init_c_protein(); }
@@ -160,7 +160,7 @@ fn parttree_lenfac_matches_c_formula() {
     // any drift here would be caught by reading `mafft_sys::lenfaca` etc.
     // C globals are shared across all FFI tests in this binary; serialize
     // access. Recover from poison so a single failing test doesn't cascade.
-    let _g = C_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     unsafe { init_c_protein(); }
     let a = unsafe { std::ptr::addr_of!(mafft_sys::lenfaca).read() };
     let b = unsafe { std::ptr::addr_of!(mafft_sys::lenfacb).read() };
@@ -202,7 +202,7 @@ fn parttree_distance_clamps_at_max6dist() {
 fn parttree_distance_matches_c() {
     // C globals are shared across all FFI tests in this binary; serialize
     // access. Recover from poison so a single failing test doesn't cascade.
-    let _g = C_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load mafft-upstream/test/sample");
     unsafe { init_c_protein(); }
@@ -367,7 +367,7 @@ fn parttree_pivot_pipeline_internally_consistent() {
 /// selfscore, orilen)` tuple at every sorted position.
 #[test]
 fn parttree_pivot_scores_match_c_pipeline() {
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load mafft-upstream/test/sample");
     let nseq = input.sequences.len();
@@ -476,7 +476,7 @@ fn parttree_pivot_scores_match_c_pipeline() {
 /// to port) and compares topology join steps in order.
 #[test]
 fn parttree_upgma_matches_c() {
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load mafft-upstream/test/sample");
     let nseq = input.sequences.len();
@@ -602,7 +602,7 @@ fn bb12041_ktuple_distance_diagnostic() {
     use mafft_tree::ktuple_distance;
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/bali3.BB12041.fa");
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(&path).expect("load BB12041");
     let nseq = input.sequences.len();
     println!("BB12041: {} sequences", nseq);

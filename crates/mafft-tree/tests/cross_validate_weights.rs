@@ -2,8 +2,14 @@
 
 use std::os::raw::{c_double, c_int};
 use std::ptr;
+use std::sync::Mutex;
 
 use mafft_tree::{Topology, BranchWeights, musclesupg, ClusterMethod, DistanceMatrix, JoinStep};
+
+/// Serialises every test that calls into the C reference: `mafft_sys`
+/// functions read/write process-wide C globals (and `treeCnv` keeps a
+/// static scratch buffer), so two tests racing on them can crash.
+static C_MUTEX: Mutex<()> = Mutex::new(());
 
 /// Build C's topology arrays (int*** with -1 sentinels) and branch length
 /// arrays (double**) from a Rust Topology, call treeCnv + calcBranchWeight
@@ -111,6 +117,7 @@ unsafe fn libc_alloc_zeroed(size: usize) -> *mut u8 { unsafe {
 
 #[test]
 fn branch_weights_match_c_6seq() {
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let nseq = 6;
     let mut dm = DistanceMatrix::new(nseq);
     for i in 0..nseq {
@@ -181,6 +188,7 @@ fn branch_weights_match_c_6seq() {
 /// Test that our per-group normalization matches C's fastconjuction_noname.
 #[test]
 fn per_group_normalization_matches_c() {
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     use std::os::raw::c_char;
 
     let nseq = 6;

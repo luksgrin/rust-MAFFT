@@ -52,7 +52,7 @@ unsafe fn init_c_protein_bl50() {
 
 #[test]
 fn bl50_alignable_reagion_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load mafft-upstream/test/sample");
@@ -167,7 +167,7 @@ fn bl50_step24_profile_dp_matches_c_a_align() {
                    this build uses fp-contract-none (see mafft_types::fp)");
         return;
     }
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     // Build the same topology the engine uses for FFT-NS-2 (ktuple
     // distance + UPGMA).

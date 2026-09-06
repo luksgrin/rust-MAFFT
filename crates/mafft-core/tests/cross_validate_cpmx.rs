@@ -11,10 +11,16 @@
 use mafft_types::fp::fmadd;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_double, c_int};
+use std::sync::Mutex;
 
 use mafft_align::Profile;
 use mafft_scoring::build_context;
 use mafft_types::{ScoringModel, SeqType};
+
+/// Serialises every test that calls into the C reference: `mafft_sys`
+/// functions read/write process-wide C globals (and `treeCnv` keeps a
+/// static scratch buffer), so two tests racing on them can crash.
+static C_MUTEX: Mutex<()> = Mutex::new(());
 
 unsafe fn init_c_protein() {
     unsafe {
@@ -56,6 +62,7 @@ unsafe fn init_c_protein() {
 #[test]
 #[cfg_attr(target_os = "linux", ignore = "free(): invalid pointer on glibc — see fn docstring")]
 fn rust_blend_matches_c_blend_cell_by_cell() {
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     use std::ffi::CString;
     use std::os::raw::{c_char, c_double, c_int};
     use mafft_align::profile_align_imp_with_boundary; // anchor unused import
@@ -461,6 +468,7 @@ fn rust_from_scratch_matches_rust_blend() {
 #[test]
 #[ignore]
 fn rust_profile_freqs_match_c_cpmx_calc_new() {
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // 8 aligned sequences of equal length, with realistic gaps.
     let seqs: Vec<Vec<u8>> = vec![
         b"MKTAYIAKQRQISFVKSHFSRQLEERLG--LIEVQAPILS---RVGDGTQDNL"
