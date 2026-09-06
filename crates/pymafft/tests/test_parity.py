@@ -361,21 +361,25 @@ class TestEdgeCases:
             assert len(s.ungapped()) == 2
 
     def test_mixed_lengths(self):
+        # All-`A` input is detected as nucleotide, so the output is
+        # lowercase like C MAFFT's; compare residues case-insensitively.
         seqs = ["A" * 50, "A" * 10, "A" * 100]
         result = pymafft.align(seqs)
         assert result.width >= 100  # at least as wide as longest input
         for original, aligned in zip(seqs, result.sequences):
-            assert aligned.ungapped() == original
+            assert aligned.ungapped().upper() == original
 
-    def test_case_passes_through_verbatim(self):
-        # pymafft passes residues through to the engine as-is (no auto-
-        # uppercase). The scoring matrix only has entries for uppercase
-        # protein residues — lowercase chars are scored as unknowns, so
-        # lowercase input may align differently from uppercase input.
-        # Just verify case is preserved end-to-end (`align` doesn't mutate
-        # the case of residues that survive alignment).
+    def test_case_follows_c_mafft(self):
+        # Residues take C MAFFT's case convention at read time, exactly as
+        # on the command line: protein is uppercased, nucleotide is
+        # lowercased. So lowercase protein input aligns (and is scored)
+        # the same as uppercase input, and comes back uppercase.
         upper = pymafft.align(["ACDEFGHIK", "ACDEFHIK"])
         assert upper.sequences[0].ungapped() == "ACDEFGHIK"
 
         lower = pymafft.align(["acdefghik", "acdefhik"])
-        assert lower.sequences[0].ungapped() == "acdefghik"
+        assert lower.sequences[0].ungapped() == "ACDEFGHIK"
+        assert lower.to_tuples() == upper.to_tuples()
+
+        dna = pymafft.align(["ACGTACGTAC", "ACGTACGAC"])
+        assert dna.sequences[0].ungapped() == "acgtacgtac"

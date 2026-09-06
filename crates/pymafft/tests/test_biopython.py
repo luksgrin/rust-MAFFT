@@ -7,9 +7,9 @@ glue:
     records = list(SeqIO.parse("input.fasta", "fasta"))
     result = pymafft.align(records, strategy="linsi", maxiterate=1000)
 
-The output side is FASTA-string-based: convert via `SeqIO.parse(StringIO(
-result.to_fasta()), "fasta")` to get a list of `SeqRecord` back, or build a
-`MultipleSeqAlignment` directly from the result.
+The output side has `result.to_biopython()` (a `MultipleSeqAlignment`,
+Biopython imported lazily) and the FASTA route: `SeqIO.parse(StringIO(
+result.to_fasta()), "fasta")` gives a list of `SeqRecord` back.
 
 The whole suite skips if biopython isn't installed (it's an optional dep).
 """
@@ -130,6 +130,20 @@ class TestOutputToBiopython:
         msa = MultipleSeqAlignment(aligned_records)
         assert len(msa) == 3
         assert msa.get_alignment_length() == result.width
+
+    def test_to_biopython(self, records):
+        """`to_biopython()` builds the `MultipleSeqAlignment` directly."""
+        result = pymafft.align(records)
+        msa = result.to_biopython()
+        assert isinstance(msa, MultipleSeqAlignment)
+        assert len(msa) == 3
+        assert msa.get_alignment_length() == result.width
+        assert [r.id for r in msa] == ["alpha", "beta", "gamma"]
+        assert [str(r.seq) for r in msa] == [s.sequence for s in result.sequences]
+        assert all(r.description == "" for r in msa)
+        # Same object as the documented FASTA route.
+        via_fasta = AlignIO.read(StringIO(result.to_fasta()), "fasta")
+        assert [str(r.seq) for r in msa] == [str(r.seq) for r in via_fasta]
 
     def test_to_tuples_dict_round_trip(self, records):
         """`dict(result.to_tuples())` gives a {name: aligned_seq} map."""
