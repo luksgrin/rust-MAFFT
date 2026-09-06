@@ -8,8 +8,11 @@
 
 ## Current parity matrix (36-seq protein sample, mafft-upstream/test/sample)
 
-`target/release/mafft-rs <args> sample` vs system `mafft <args> sample`
-(MAFFT 7.526), diffing the FASTA outputs.
+`target/release/mafft-rs <args> sample` vs the reference C build — the pinned
+`mafft-upstream` source compiled in-tree (`make -C mafft-upstream/core`,
+upstream Makefile default flags) on the same platform (MAFFT 7.526; see
+`docs/architecture/byte-identity.md` for why the platform matters) —
+diffing the FASTA outputs.
 
 | Mode / flags                                | C width | Rust width | diff lines | Status |
 |---------------------------------------------|---------|------------|------------|--------|
@@ -34,8 +37,8 @@
 | PartTree NW (`--parttree --nofft`)          | 752     | 752        | 0          | byte-exact ✓ |
 | `--parttree --reorder`                      | match   | match      | 0          | byte-exact ✓ |
 | `--add` / `--add --nofft` / `--add --keeplength` (30+6 fixture) | match | match | 0 | byte-exact ✓ |
-| RNA NW (`--nofft samplerna`)                | 360     | 360        | 62 (case)  | byte-exact mod case ✓ |
-| Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 62 (case)  | byte-exact mod case ✓ (needs `mxscarnamod`) |
+| RNA NW (`--nofft samplerna`)                | 360     | 360        | 0          | byte-exact ✓ (nucleotide output lowercased as in C since PR #2) |
+| Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0          | byte-exact ✓ (needs `mxscarnamod`) |
 | `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0          | byte-exact ✓ |
 | `--allowshift --globalpair --maxiterate 1000` | 1060  | 1060       | 0          | byte-exact ✓ (full BALIBASE 3 also 386/386) |
 | `--reorder` (FFT-NS-2, INS-i family)        | match   | match      | 0          | byte-exact ✓ |
@@ -50,6 +53,24 @@
 | `--seedtable FILE` (L/G/E-INS-i + FFT-NS-i, pre-computed hat3.seed) | match | match | 0 | byte-exact ✓ |
 | `--memsave` / `--nomemsave` (FFT-NS-2, FFT-NS-i, retree-1, --memsavetree, --nofft combos) | match | match | 0 | byte-exact ✓ |
 | `--retree {1,2,3,5}` × {FFT-NS-2, FFT-NS-i, L/G/E-INS-i} (20 combos) | match | match | 0 | byte-exact ✓ |
+| `--nuc` / `--amino` (forced type + case fold) | match | match | 0 | byte-exact ✓ (PR #2) |
+| `--thread 1` × {FFT-NS-i, L/G/E-INS-i} `--maxiterate 1000` (C `athread` rules) | match | match | 0 | byte-exact ✓ (PR #9) |
+
+## DNA parity (issue #1 integration, 2026-09-06)
+
+Fixtures under `crates/mafft-bin/tests/fixtures/`, expected bytes from the
+in-tree arm64 reference build (none is FP-policy sensitive).
+
+| Input / flags | Status |
+|---------------|--------|
+| `mtb_cds_120x1400.fa` (120 × 1.4 kb CDS), `--retree 2 --maxiterate 2` (1742 cols) | byte-exact ✓ (PR #2: `dndpre` offset 220, two-seq refinement) |
+| same, `--thread 1 --maxiterate {1,2,3,1000}`, ± `--retree 2` | byte-exact ✓ (PR #9: `athread` branch order, `Converged2.` / `Oscillating?`) |
+| `mtb_cds_first8.fa`, `--retree 2 --maxiterate 1000` | byte-exact ✓ (PR #10: `searchAnchors` trailing-flush index) |
+| `panaroo_tiny_dna_clusters/` (5 × 4 seqs), `--auto --adjustdirection --thread 1 --nuc` and without `--thread` | byte-exact ✓ (PR #6) |
+| `dna_pair_gapscale_min.fa`, `--localpair --maxiterate 0` | byte-exact ✓ (PR #2: pair-phase gap scale `3 * 600/1000`) |
+| `refine_njob2_min.fa`, `--maxiterate 1000` | byte-exact ✓ (PR #2: pairs are refined once, unweighted) |
+| BAliBASE `bali2dna` (141 sets), `--maxiterate 2` | 132/141 before PR #9/#10; not re-swept since — see "Open" below |
+| `input_handling/` corpus (22 files, 71 cells) | 70/71 (PR #4); residual R-A below |
 
 ## BALIBASE 3 sweep (RV11–RV50, 386 protein test sets)
 
@@ -77,19 +98,98 @@ Total: **1930/1930 alignments byte-identical** to C MAFFT 7.526.
 | `--parttree` (108-seq)                      | 1.70s   | 0.09s    | **18× faster** |
 | `--dpparttree` (108-seq)                    | 7.24s   | 0.08s    | **90× faster** |
 
-Test suite: **416 Rust integration tests pass, 0 failed, 6 ignored**
-(the ignored are deliberate diagnostic / bisection tools annotated at
-the call site). Plus **32 Python tests pass**.
+Performance after the flattened profile-DP / `L__align11` buffers (PR #2,
+medians of 5 interleaved runs vs the previous `mafft-rs`, Apple M4):
+`mtb_cds_120x1400 --retree 2 --maxiterate 2` 4.99 s → 4.62 s (1.08×),
+sample `--localpair --maxiterate 1000` 0.85 s → 0.77 s (1.11×),
+`--maxiterate 1000` 0.54 s → 0.48 s (1.14×), default 0.066 s → 0.055 s
+(1.21×). Output bytes unchanged.
+
+Test suite (2026-09-06, after PR #11): **537 Rust tests pass, 0 failed,
+7 ignored across 48 suites** (`cargo test --workspace --exclude pymafft
+--release`; six ignored are deliberate diagnostic / bisection tools
+annotated at the call site, one is residual R-A below). Plus **160 Python
+tests** (156 run per platform; 4 console-script tests skip without the
+bundled binary).
 
 ---
 
 ## Active items
 
-**Zero known correctness divergences.** What follows is the inventory
-of non-correctness gaps still on the radar. Items split into three
-groups: design choices we won't reverse without new evidence, known
-external-dependency limitations, and untested or unwired surface that
-could plausibly bite a user.
+**No known divergence from C MAFFT 7.526 on any realistic workflow
+(2026-09-06).** The two remaining tied-trace residuals (`--exp ≥ 4.30`
+on FFT-NS-2, item 6 below; R-A, the trailing zero-scoring residue in
+`--add`, below) are pathological-input tie-breaks with the same width and
+score. What follows is the inventory of non-correctness gaps still on
+the radar. Items split into three groups: design choices we won't
+reverse without new evidence, known external-dependency limitations, and
+untested or unwired surface that could plausibly bite a user.
+
+### Closed 2026-09-06 — issue #1 integration (PRs #2–#11)
+
+Fork work by Johan Henriksson (@mahogny, mahogny/rust-MAFFT) evaluated
+hunk by hunk and re-applied on top of main:
+
+- **PR #2** — DNA parity: pair-phase gap penalties ×3 for nucleotide
+  (`constants.c:316-322`), `dndpre` offset 220 vs 73, two-sequence
+  refinement (`njob == 2` → one unweighted cycle), nucleotide output
+  lowercased on read (`onlyAlpha_lower`), `--nuc` / `--amino`; library
+  API `run_from` / `run_from_with_progress` / `MafftError` / `Mafft` /
+  `Progress`; local rayon pool per `--thread` call; `MAFFT_RS_REFINE_STATS`;
+  per-target FP contraction policy `mafft_types::fp::{CONTRACTS_FMA,
+  fmadd}` with `fp-contract-fma` / `fp-contract-none` features and
+  `.fma` / `.nofma` fixtures; arm64 CI leg; flattened DP buffers.
+- **PR #3** — reference build defined as the in-tree C build;
+  `scripts/regen_policy_fixtures.sh` + `policy_fixtures.tsv` manifest;
+  CI regenerates policy fixtures and runs the `--bl 50` sentinel on both
+  platforms; weekly upstream drift check.
+- **PR #4** — input read path matches C: `N` counts toward DNA detection,
+  `seqcheck` illegal-residue exit 1, `.` never stripped (legal protein
+  residue, fatal nucleotide), blank-before-`>` format error, `--anysymbol`
+  `charfilter` / `replaceu` / `restoreu` incl. the `--add` file; `-`-only
+  `gappick0` on the pair path. 22-file corpus, 70/71 cells.
+- **PR #5** — in-memory entry points `run_from_seqs` / `Mafft::run_seqs`
+  sharing the CLI flag layer; `mafft` `cli` feature; `mafft-io`
+  `normalize_residues` / `find_illegal_residue` (now depends on
+  `mafft-scoring`).
+- **PR #6** — panaroo DNA cluster fixtures with expected outputs from the
+  in-tree reference build.
+- **PR #7** — `pymafft` routed through `run_from_seqs`; `align(...,
+  strategy="auto", seq_type, adjust_direction, threads, reorder, retree,
+  scoring, gap_open, gap_extend, quiet, progress)`, `run(args, seqs)`,
+  `MafftError`, `to_biopython()`; 160 tests.
+- **PR #8** — CI: reusable `build-test.yml`, single-Python wheel smoke on
+  PRs / full matrix on release, `paths-ignore` for docs-only changes,
+  checks on PRs against any base.
+- **PR #9** — `--thread N ≥ 1` follows C's `athread` refinement: ascending
+  branch order every cycle, per-cycle convergence, `Converged2.` /
+  `Oscillating?` rules, skipped branches keep `tscore = mscore`.
+- **PR #10** — `searchAnchors` trailing region flushed at C's loop-exit
+  index (`len - divWinSize`), closing the 8-seq FFT-NS-i DNA divergence.
+- **PR #11** — all FFI cross-validation tests serialised on `C_MUTEX`,
+  poison-tolerant guards, `TMorJTT` reset (test-only).
+
+### Open (non-blocking)
+
+- **R-A** (`input_handling/` corpus, `--add --anysymbol`): an added
+  sequence ending in a zero-scoring residue (`*` → `X`, or a literal
+  trailing `X`) is placed `…KWRR-----X` by C and `…KWRRX-----` by rust —
+  a tie-break in the `--add` profile DP, unrelated to input handling.
+  `add_anysymbol_gapped_existing_with_unusual_new` is `#[ignore]`d.
+- **`bali2dna` sweep** stood at 132/141 under `--maxiterate 2` after the
+  `dndpre` fix and has not been re-run since PR #9 / #10; the 9 remaining
+  sets were not analysed and may already be closed.
+- **`--thread N ≥ 2`**: C is nondeterministic (2 distinct outputs in 3
+  runs at `--thread 2` and `--thread 4` on the same input), so
+  byte-identity is undefined; rust stays deterministic and matches the
+  `--thread 1` path.
+- `mafft-align/src/profile.rs` still classifies `.` as a gap when counting
+  gap openings/closings (C tests `'-'` only, `mltaln9.c:12606-12660`); no
+  output change observed on the corpus (protein `.` is rare), left alone
+  rather than touched blind.
+- Under `--quiet`, C prints nothing for `Illegal character`; rust keeps
+  the one-line stderr message so a failing exit is never silent. stdout
+  and exit status match.
 
 ### Design choices (closed unless new evidence)
 
@@ -124,10 +224,12 @@ could plausibly bite a user.
 - **`--scarnalike`** requires `dash_client` in PATH. Wired, untestable
   without the binary.
 
-### Pending gaps (not yet addressed)
+### Formerly pending gaps — all closed (kept as inventory)
 
-The following are known gaps that have not been actioned. None block
-the 1930/1930 BALIBASE parity or any documented user workflow.
+Every item below is implemented and byte-identical to C; the entries
+are kept for the implementation notes and regression-test names. R-1 …
+R-8 in "Open research items" are the closure logs (all RESOLVED, June
+2026; they predate the PR workflow so carry dates rather than PR numbers).
 
 1. **DNA strand auto-detection — IMPLEMENTED.** Both
    `--adjustdirection` (6-mer mode) and
