@@ -11,11 +11,13 @@ name: Build and test (reusable)
 # Why two platforms: C MAFFT 7.526 is NOT bit-identical across CPU
 # architectures. clang on arm64 contracts a*b+c into fused multiply-adds
 # (on the order of a thousand fmadd-family instructions per binary);
-# gcc on x86-64 (the bioconda build) emits none. The two C builds
-# therefore disagree on some inputs (e.g. `--bl 50` on
-# mafft-upstream/test/sample: 712 columns on arm64, 738 on x86-64), and
-# "byte-identical to C" is only meaningful relative to a C build made on
-# the same platform. rust-MAFFT mirrors this: `mafft_types::fp::CONTRACTS_FMA`
+# gcc on x86-64 emits none. The two C builds therefore disagree on some
+# inputs (e.g. `--bl 50` on mafft-upstream/test/sample: 712 columns on
+# arm64, 738 on x86-64), and "byte-identical to C" is only meaningful
+# relative to a C build made on the same platform. The reference is
+# therefore defined as: the pinned mafft-upstream source, built in-tree
+# with the upstream Makefile's default flags, on the platform you run on
+# (never a downloaded binary). rust-MAFFT mirrors this: `mafft_types::fp::CONTRACTS_FMA`
 # defaults to the host's policy (true on aarch64, false elsewhere), and
 # the FFI cross_validate_* tests compare against the C compiled by
 # mafft-c-bindings/build.rs on the same runner. Running this job on both
@@ -153,6 +155,20 @@ jobs:
           echo "(reference: arm64/clang C = 712 columns, x86-64/gcc C = 738 columns)"
           diff sentinel.rs.fa sentinel.c.fa
           echo "FMA-policy sentinel: mafft-rs output IDENTICAL to same-platform C"
+
+      # The policy-sensitive fixtures (`<name>.fma` / `<name>.nofma` under
+      # crates/*/tests/fixtures, listed in policy_fixtures.tsv) are by
+      # definition the output of the pinned upstream source built in-tree
+      # with the default Makefile flags on the platform you run on -- i.e.
+      # exactly the C we just built. Regenerate each from that build and
+      # require it to be byte-identical to the checked-in variant for this
+      # runner's policy (`.nofma` on x86-64, `.fma` on aarch64). The script
+      # prints a unified diff and fails the job on any difference, and also
+      # fails if a variant file exists that the manifest does not describe.
+      - name: Regenerate policy-sensitive fixtures from the in-tree C build and diff
+        run: |
+          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
+          scripts/regen_policy_fixtures.sh mafft-upstream/scripts/mafft check
 
       # Upload C binaries + scripts + test data as a single artifact
       - name: Prepare C test bundle
