@@ -66,15 +66,8 @@ compile_error!(
 /// Resolution order: `fp-contract-fma` => `true`; `fp-contract-none` =>
 /// `false`; neither => `cfg!(target_arch = "aarch64")`. See the
 /// [module docs](self) for why.
-pub const CONTRACTS_FMA: bool = {
-    if cfg!(feature = "fp-contract-fma") {
-        true
-    } else if cfg!(feature = "fp-contract-none") {
-        false
-    } else {
-        cfg!(target_arch = "aarch64")
-    }
-};
+pub const CONTRACTS_FMA: bool = cfg!(feature = "fp-contract-fma")
+    || (!cfg!(feature = "fp-contract-none") && cfg!(target_arch = "aarch64"));
 
 /// Policy-dependent multiply-add: `a * b + c`.
 ///
