@@ -478,9 +478,15 @@ git commit -m "Bump MAFFT upstream to <version>"
 
 | Workflow | Triggers | What |
 |----------|----------|------|
-| **CI** (`ci.yml`) | push/PR to main/dev | Build + test Rust and C, smoke test binary |
-| **Python** (`python.yml`) | push/PR + release | Build wheels (Linux, macOS, Windows), test on Python 3.9-3.13, publish to PyPI on release |
-| **Release** (`release.yml`) | GitHub release | Build `mafft-rs` binaries for 4 platforms, attach to release |
+| **CI** (`ci.yml`) | push to main/dev, PR to any branch | Build + test Rust and C on x86-64 and arm64, smoke test binary, Windows cross-platform build |
+| **Python** (`python.yml`) | push to main/dev, PR to any branch | Smoke build: one wheel per target (Linux x86-64/aarch64, macOS x86-64/arm64, Windows) for Python 3.12 only, sdist, wheel tests on 3.12 |
+| | release, manual dispatch | Full matrix: 5 targets x Python 3.9-3.13, sdist, wheel tests on 3.9/3.12/3.13; publish to PyPI on release |
+| **Documentation** (`docs.yml`) | push to main/dev and PRs touching `docs/**`, `mkdocs.yml`, `crates/mafft-bin/src/**`, `crates/pymafft/**`, `scripts/gen-cli-reference.sh`; release; manual dispatch | Build the mkdocs site (regenerates the CLI reference, introspects pymafft); deploy to GitHub Pages from main/release/dispatch |
+| **Release** (`release.yml`) | GitHub release | Build `mafft-rs` binaries for 5 platforms, attach to release |
+| **Publish to crates.io** (`cargo-publish.yml`) | GitHub release | Publish all workspace crates in dependency order |
+
+CI and Python skip runs whose changes touch only documentation-like paths
+(`docs/**`, `**/*.md`, `mkdocs.yml`, `CITATION.cff`, `LICENSE*`).
 
 ## Acknowledgments and Citation
 

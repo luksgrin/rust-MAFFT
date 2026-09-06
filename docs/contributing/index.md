@@ -33,14 +33,32 @@ rust-MAFFT/
 ├── mkdocs.yml
 ├── mafft-upstream/          ← submodule: reference C MAFFT
 ├── .github/workflows/
-│   ├── ci.yml               ← every push: cargo build + test
-│   ├── docs.yml             ← every push to main: docs site to GH Pages
+│   ├── ci.yml               ← push/PR (non-docs changes): cargo build + test
+│   ├── docs.yml             ← push/PR touching docs inputs: build; main: deploy
 │   ├── release.yml          ← release: 5 pre-built binaries to GH releases
-│   ├── python.yml           ← release: 25 wheels + sdist to PyPI
+│   ├── python.yml           ← push/PR: 5 wheels (py3.12); release: 25 wheels + sdist to PyPI
 │   └── cargo-publish.yml    ← release: 10 crates to crates.io
 ├── README.md
 └── TODO.md                  ← parity roadmap, working scratchpad
 ```
+
+### CI on pull requests
+
+`ci.yml` and `python.yml` run on pushes to `main`/`dev` and on pull
+requests against *any* base branch (so stacked PRs get checks), but skip
+changes that touch only `docs/**`, `**/*.md`, `mkdocs.yml`,
+`CITATION.cff` or `LICENSE*`. `docs.yml` is the mirror image: it builds
+only when something the site is generated from changes (`docs/**`,
+`mkdocs.yml`, `crates/mafft-bin/src/**` for the CLI reference,
+`crates/pymafft/**` for mkdocstrings, `scripts/gen-cli-reference.sh`, the
+workflow itself) and always on release or manual dispatch.
+
+On push/PR `python.yml` builds one wheel per target for Python 3.12 and
+tests that wheel; the full 5 targets x Python 3.9-3.13 matrix runs on
+`release: published` and `workflow_dispatch`. The regime is chosen by
+the small `matrix` job at the top of the workflow, which emits the
+Python-version lists that `build-wheels` / `test-wheels` read through
+`fromJSON`.
 
 ## Building the docs locally
 

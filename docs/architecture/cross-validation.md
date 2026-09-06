@@ -111,7 +111,8 @@ cargo test -p mafft-core --release --features fp-contract-none --test end_to_end
 
 ## CI integration
 
-The `ci.yml` workflow runs the whole suite on every push on two
+The `ci.yml` workflow runs the whole suite on every push and pull
+request (documentation-only changes excepted) on two
 reference platforms via the reusable `build-test.yml` job: `Build
 (x86-64)` on `ubuntu-latest` (gcc, no contraction) and `Build (arm64)`
 on `macos-latest` (Apple clang, FMA contraction). Each leg builds the C

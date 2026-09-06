@@ -1,20 +1,73 @@
 name: Python Package
 
+# Two regimes, selected by the `matrix` job below:
+#
+#   * push / pull_request  -> SMOKE: one wheel per target for a single
+#                             Python (3.12), sdist, and the wheel tests
+#                             for that Python only. Nothing is published.
+#   * release / dispatch   -> FULL: every target x Python 3.9-3.13, sdist,
+#                             wheel tests on 3.9/3.12/3.13, then publish
+#                             (release only).
+#
+# Documentation-only changes (docs/, *.md, mkdocs.yml, citation, licences)
+# do not touch the wheels and are skipped via `paths-ignore`. Note that
+# `paths-ignore` makes a required status check go *missing* rather than
+# pass; keep that in mind if branch protection is ever enabled.
+
 on:
-  # Build on every push/PR (but don't publish)
   push:
     branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'mkdocs.yml'
+      - 'CITATION.cff'
+      - 'LICENSE*'
+  # Any base branch: stacked PRs (feature -> feature) get checks too.
   pull_request:
-    branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'mkdocs.yml'
+      - 'CITATION.cff'
+      - 'LICENSE*'
   # Publish on version tags
   release:
     types: [published]
-  # Manual trigger for testing
+  # Manual trigger for testing (runs the FULL matrix, does not publish)
   workflow_dispatch:
 
 jobs:
   # ------------------------------------------------------------------
-  # Build wheels for all (target, Python version) combos.
+  # Select the matrix regime. Emits JSON lists that the build/test jobs
+  # feed through `fromJSON` into their `strategy.matrix`, so the job
+  # bodies below exist exactly once and only the Python axis varies.
+  # ------------------------------------------------------------------
+  matrix:
+    name: Select matrix
+    runs-on: ubuntu-latest
+    outputs:
+      build-python: ${{ steps.select.outputs.build-python }}
+      test-python: ${{ steps.select.outputs.test-python }}
+    steps:
+      - id: select
+        env:
+          FULL: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "$FULL" = "true" ]; then
+            echo "regime: FULL (${{ github.event_name }})"
+            echo 'build-python=["3.9", "3.10", "3.11", "3.12", "3.13"]' >> "$GITHUB_OUTPUT"
+            echo 'test-python=["3.9", "3.12", "3.13"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "regime: SMOKE (${{ github.event_name }})"
+            echo 'build-python=["3.12"]' >> "$GITHUB_OUTPUT"
+            echo 'test-python=["3.12"]' >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
+  # ------------------------------------------------------------------
+  # Build wheels for all (target, Python version) combos of the selected
+  # regime.
   #
   # Each wheel embeds the compiled `mafft-rs` CLI binary under
   # `pymafft/_bin/`. `pip install pymafft` exposes `mafft-rs` on $PATH via
@@ -24,6 +77,7 @@ jobs:
   # ------------------------------------------------------------------
   build-wheels:
     name: Wheel (${{ matrix.target }}, Python ${{ matrix.python }})
+    needs: matrix
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -34,7 +88,8 @@ jobs:
           - x86_64-apple-darwin
           - aarch64-apple-darwin
           - x86_64-pc-windows-msvc
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # 3.9-3.13 on release/dispatch, 3.12 only on push/PR (see `matrix`).
+        python: ${{ fromJSON(needs.matrix.outputs.build-python) }}
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
@@ -148,27 +203,38 @@ jobs:
   # Test wheels on native runners (one target per OS; cross-compiled
   # aarch64-linux wheels are exercised via QEMU at publish time, not
   # here — installing them on x86_64 would fail by design).
+  #
+  # `target` is a real matrix axis and `include` only decorates each
+  # target with its runner. The previous layout (`include` as the sole
+  # source of targets next to a `python` axis) let each later include
+  # entry overwrite the target/os added by the previous one, so only the
+  # Windows tests ever ran.
   # ------------------------------------------------------------------
   test-wheels:
     name: Test (${{ matrix.target }}, Python ${{ matrix.python }})
-    needs: build-wheels
+    needs: [matrix, build-wheels]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+        target:
+          - x86_64-unknown-linux-gnu
           # x86_64-apple-darwin is built (cross-compiled from arm64 above)
           # but NOT tested here — installing an x86_64 wheel on an arm64
           # macos-latest runner would need Rosetta + pip --platform overrides;
           # the wheel itself is the same code as the arm64 build, so we
-          # consider it sufficiently exercised by the aarch64 test below.
+          # consider it sufficiently exercised by the aarch64-apple-darwin leg.
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+        # 3.9/3.12/3.13 on release/dispatch, 3.12 only on push/PR.
+        python: ${{ fromJSON(needs.matrix.outputs.test-python) }}
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-        python: ["3.9", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v5
         with:
