@@ -10,6 +10,13 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+The `--nuc` / `--amino` flags, the `run_from` / `MafftError` / `Mafft` /
+`Progress` library API, the nucleotide case fold, the DNA pair-phase gap
+scale, two-sequence refinement, the nucleotide `dndpre` offset, the `athread`
+convergence rule, `MAFFT_RS_REFINE_STATS` and the per-alphabet constant audit
+below were contributed by Johan Henriksson (@mahogny) and integrated from
+mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
+
 ### Added
 
 - `--nuc` / `--amino`: force the input sequence type, overriding the
