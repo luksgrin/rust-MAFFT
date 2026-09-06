@@ -93,6 +93,17 @@ Total: **1930/1930 alignments byte-identical** to C MAFFT 7.526 across the BBali
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
+### Reference build and platforms
+
+C MAFFT 7.526 is itself not bit-reproducible across CPU architectures — the compiler decides whether `a*b + c` is contracted into a fused multiply-add, and on some inputs that changes the alignment — so byte-identity is stated per platform. The reference is defined as the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags (`make -C mafft-upstream/core`), on the platform you run on; no fixture is generated from a downloaded binary.
+
+| Platform | Fused ops per C binary | `--bl 50` width (C = mafft-rs) |
+|----------|------------------------|--------------------------------|
+| arm64 / clang (macOS) | ~1140 | 712 |
+| x86-64 / gcc (Linux) | 0 | 738 |
+
+The BBaliBase 1930/1930 protein sweep above was run on macOS arm64. CI verifies the full byte-identity and FFI cross-validation suite against the in-tree C build on both ubuntu x86-64 and macOS arm64 on every push, and re-derives the policy-sensitive fixtures from that build. See [docs/architecture/byte-identity.md](docs/architecture/byte-identity.md); to reproduce the other platform's output on your host, build with `--features fp-contract-none` (x86-64 behaviour) or `--features fp-contract-fma` (arm64 behaviour) on a `-p <crate>` invocation.
+
 ## Building
 
 ### Prerequisites
@@ -359,7 +370,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 - **`num_complex::Complex64`** replaces the C `Fukusosuu` struct. A hand-ported bit-for-bit Cooley-Tukey FFT in `mafft-fft/src/fft_c_compat.rs` matches C's `fft.c` rounding exactly. Off-the-shelf FFT libraries vary in butterfly grouping order, producing 1-ULP correlation differences that flip FFT-anchor selection on flat-landscape matrices; the hand port is required for byte-identity.
 
-- **`f64` DP matrices with a per-target floating-point contraction policy.** The substitution matrix is stored as `Vec<Vec<i32>>` and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic (matches C's `n_dis_consweight_multi`). Whether `a + b * c` rounds once (fused multiply-add) or twice is decided by the C compiler, and C MAFFT 7.526 is therefore not bit-reproducible across architectures: arm64 clang contracts (~1030 `fmadd` per engine binary), baseline x86-64 gcc (bioconda) emits none, and on the 36-seq sample `--bl 50` gives width 712 vs 738 respectively. Every contraction-sensitive site goes through `mafft_types::fp::fmadd`, which is `mul_add` when `CONTRACTS_FMA` is set and plain `a * b + c` otherwise. The default mirrors the reference C build of the target you run on (fused on aarch64, not fused elsewhere); the `fp-contract-fma` / `fp-contract-none` cargo features force either policy. Fixtures whose bytes depend on it are committed as `<name>.fma` / `<name>.nofma`. `scripts/fma_census.sh <dir>` counts the fused instructions in any C MAFFT install so you can check which build you are comparing against.
+- **`f64` DP matrices with a per-target floating-point contraction policy.** The substitution matrix is stored as `Vec<Vec<i32>>` and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic (matches C's `n_dis_consweight_multi`). Whether `a + b * c` rounds once (fused multiply-add) or twice is decided by the C compiler, and C MAFFT 7.526 is therefore not bit-reproducible across architectures. The reference is the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags, on the platform you run on; CI measures that build at ~1140 fused ops per engine binary (`disttbfast` / `dvtditr` / `tbfast`) with arm64 clang and 0 with x86-64 gcc, and on the 36-seq sample `--bl 50` gives 712 columns on arm64 vs 738 on x86-64 — with `mafft-rs` matching the same-platform C on both (CI sentinel). Every contraction-sensitive site goes through `mafft_types::fp::fmadd`, which is `mul_add` when `CONTRACTS_FMA` is set and plain `a * b + c` otherwise. The default mirrors the reference C build of the target you run on (fused on aarch64, not fused elsewhere); the `fp-contract-fma` / `fp-contract-none` cargo features force either policy. Fixtures whose bytes depend on it are committed as `<name>.fma` / `<name>.nofma` and re-derived from the in-tree C build by `scripts/regen_policy_fixtures.sh` in CI. `scripts/fma_census.sh <dir>` counts the fused instructions in any C MAFFT build so you can check which build you are comparing against.
 
 - **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring. Sequential float summation is preserved at accept/reject decision boundaries to keep refinement output deterministic across thread counts.
 
@@ -451,7 +462,7 @@ Benchmark snapshot vs C MAFFT 7.526 (macOS arm64, alternating-run medians):
 
 ## Upstream MAFFT
 
-The original MAFFT C code is included as a git submodule at `mafft-upstream/`, pinned to commit `ee97999` (version 7.526). To update:
+The original MAFFT C code is included as a git submodule at `mafft-upstream/`, pinned to commit `0a2319b`. That is the current upstream HEAD (GitLab `sysimm/mafft`, branch `main`, checked 2026-09-06), two commits past the `v7.526` tag (`ee97999`); both are the Alpine 3.23 build fix and carry no algorithm change. The [Check MAFFT upstream](.github/workflows/check-mafft-upstream.yml) workflow compares the pin against upstream HEAD weekly (and on manual dispatch) and reports drift without auto-updating the submodule. To update:
 
 ```bash
 cd mafft-upstream
@@ -480,6 +491,14 @@ G-INS-i / E-INS-i), the scoring matrices, the PartTree heuristic for
 large datasets — all of it is theirs. This project is engineering on
 top of their science, and it would not exist without two decades of
 their public, open work on MAFFT. Thank you.
+
+Thanks also to **Johan Henriksson** ([@mahogny](https://github.com/mahogny)),
+whose work via issue #1 / PR #2 brought the nucleotide parity fixes (case
+fold, DNA pair-phase gap scale, `dndpre` offset, two-sequence refinement), the
+library entry points (`run_from` / `Mafft` / `MafftError` / `Progress`) and
+the profile-DP optimisation with flattened scratch buffers. The x86-64
+`--bl 50` divergence that led to the per-target floating-point contraction
+policy was his finding too.
 
 ### How to cite
 

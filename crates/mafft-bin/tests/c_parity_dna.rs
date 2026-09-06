@@ -1,8 +1,15 @@
 //! Byte-for-byte parity with C MAFFT 7.526 on nucleotide input.
 //!
-//! Every `.expected` file here is the verbatim stdout of C MAFFT 7.526
-//! (`conda` build, `mafft --version` → `v7.526 (2024/Apr/26)`) for the
-//! command named in the test, so these tests need no C installation.
+//! Every `.expected` file here is the verbatim stdout of C MAFFT 7.526 for
+//! the command named in the test, so these tests need no C installation.
+//! The files were first captured from an x86-64 build and then verified
+//! byte-identical (2026-09-06) against the reference build defined in
+//! `docs/architecture/byte-identity.md`: the pinned `mafft-upstream` source
+//! compiled in-tree with the upstream Makefile's default flags, on arm64.
+//! None of these inputs is sensitive to the floating-point contraction
+//! policy, so a single variant serves both platforms; if that ever changes,
+//! add the fixture to `crates/mafft-core/tests/fixtures/policy_fixtures.tsv`
+//! and regenerate with `scripts/regen_policy_fixtures.sh`.
 //!
 //! They pin two fixes and the class of input that detects them:
 //!

@@ -1,6 +1,6 @@
 name: Check MAFFT upstream
 
-# Manual canary: did upstream MAFFT publish anything since we pinned?
+# Canary: did upstream MAFFT publish anything since we pinned?
 #
 # Compares the SHA pinned in our submodule (`mafft-upstream/`) against
 # the current tip of the upstream default branch. Fails loudly if
@@ -16,11 +16,15 @@ name: Check MAFFT upstream
 # tweak (in which case bumping is safe). Either way, a human in the
 # loop is the right call.
 #
-# Triggered ONLY by manual dispatch — no schedule, no push. We don't
-# want this firing on every commit; it's a periodic sanity check.
+# Triggered weekly (Monday 06:00 UTC) and by manual dispatch — never on
+# push. We don't want this firing on every commit; it's a periodic sanity
+# check, and in both cases it only reports: it never updates the
+# submodule pointer.
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
 
 jobs:
   check:

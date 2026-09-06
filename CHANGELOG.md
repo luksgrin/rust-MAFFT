@@ -19,11 +19,22 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
 
 ### Added
 
+- **Policy-sensitive fixture regeneration** (`scripts/regen_policy_fixtures.sh`,
+  `crates/mafft-core/tests/fixtures/policy_fixtures.tsv`). The reference for
+  every `<name>.fma` / `<name>.nofma` fixture is now defined as the pinned
+  `mafft-upstream` source built in-tree with the upstream Makefile's default
+  flags on the platform you run on — never a downloaded binary. The script
+  regenerates each manifest entry from that build and either diffs (`check`)
+  or overwrites (`write`) the variant for the host's policy (`uname -m`,
+  overridable with `MAFFT_FP_POLICY=fma|nofma`); CI runs `check` on both the
+  x86-64 and the arm64 runner after the `--bl 50` sentinel. The upstream
+  drift check (`check-mafft-upstream.yml`) now also runs weekly and still
+  only reports.
 - **Floating-point contraction policy** (`mafft_types::fp`). C MAFFT 7.526
   is not bit-reproducible across CPU architectures: the arm64 macOS binaries
   contain ~1030 `fmadd`/`fmsub` instructions each (clang contracts `a*b+c`
   into a single-rounding FMA, `scripts/fma_census.sh` counts them), while
-  baseline x86-64 builds (bioconda, gcc `-O3`) contain none because baseline
+  baseline x86-64 builds (gcc `-O3`, same in-tree source) contain none because baseline
   x86-64 has no FMA unit. On the 36-seq protein sample with `--bl 50 --retree
   2 --maxiterate 0` the arm64 C binary gives width 712 and the x86-64 C
   binary gives 738. rust-MAFFT previously hard-coded `f64::mul_add` (always

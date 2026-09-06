@@ -1,0 +1,15 @@
+# Policy-sensitive fixtures: how each `<fixture_basename>.fma` / `.nofma`
+# pair in this directory is produced from the in-tree C build.
+#
+# Columns (tab-separated):
+#   fixture_basename   name without the .fma/.nofma suffix
+#   input_relpath      input FASTA, relative to the repository root
+#   mafft_args         arguments passed to the C `mafft` wrapper before the
+#                      input path (whitespace-separated, no quoting)
+#
+# Consumed by scripts/regen_policy_fixtures.sh (check | write). The reference
+# is the pinned mafft-upstream source built in-tree with the upstream
+# Makefile's default flags on the platform you run on; `.fma` is what that
+# build produces on arm64/aarch64 (clang contracts a*b+c), `.nofma` on
+# x86-64 (gcc does not). Never generate a variant from a downloaded binary.
+sample.bl50.fftns2	mafft-upstream/test/sample	--quiet --bl 50 --retree 2 --maxiterate 0
