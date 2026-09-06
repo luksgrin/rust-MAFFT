@@ -289,7 +289,7 @@ pub fn progressive_align_with_mergeoralign_n(
                     .map(|col| {
                         existing_grp.iter().all(|&i| {
                             let c = aligned[i].get(col).copied().unwrap_or(b'-');
-                            c == b'-' || c == b'.'
+                            c == b'-'
                         })
                     })
                     .collect();
@@ -630,7 +630,7 @@ fn commongappick_inplace(mseq: &mut Vec<Vec<u8>>) {
     for j in 0..len {
         let all_gap = (0..n).all(|i| {
             let c = mseq[i].get(j).copied().unwrap_or(b'-');
-            c == b'-' || c == b'.'
+            c == b'-'
         });
         if all_gap { keep[j] = false; }
     }
@@ -682,13 +682,13 @@ fn rs_profilealignment(
     }
 
     // Build per-row weights as 1/alcount for non-all-gap rows, 0 else.
-    let alcount0 = mseq0.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
-    let alcount2 = mseq2.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
+    let alcount0 = mseq0.iter().filter(|r| r.iter().any(|&c| c != b'-')).count().max(1);
+    let alcount2 = mseq2.iter().filter(|r| r.iter().any(|&c| c != b'-')).count().max(1);
     let eff0: Vec<f64> = mseq0.iter().map(|r| {
-        if r.iter().any(|&c| c != b'-' && c != b'.') { 1.0 / alcount0 as f64 } else { 0.0 }
+        if r.iter().any(|&c| c != b'-') { 1.0 / alcount0 as f64 } else { 0.0 }
     }).collect();
     let eff2: Vec<f64> = mseq2.iter().map(|r| {
-        if r.iter().any(|&c| c != b'-' && c != b'.') { 1.0 / alcount2 as f64 } else { 0.0 }
+        if r.iter().any(|&c| c != b'-') { 1.0 / alcount2 as f64 } else { 0.0 }
     }).collect();
 
     let mseq0_refs: Vec<&[u8]> = mseq0.iter().map(|v| v.as_slice()).collect();
@@ -1038,13 +1038,13 @@ fn insertnewgaps_with_profilealignment(
             let n_refs: Vec<&[u8]> = mseq2.iter().map(|v| v.as_slice()).collect();
             let n0 = m_refs.len();
             let _n2 = n_refs.len();
-            let alcount0 = mseq0.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
-            let alcount2 = mseq2.iter().filter(|r| r.iter().any(|&c| c != b'-' && c != b'.')).count().max(1);
+            let alcount0 = mseq0.iter().filter(|r| r.iter().any(|&c| c != b'-')).count().max(1);
+            let alcount2 = mseq2.iter().filter(|r| r.iter().any(|&c| c != b'-')).count().max(1);
             let w0: Vec<f64> = mseq0.iter().map(|r| {
-                if r.iter().any(|&c| c != b'-' && c != b'.') { 1.0 / alcount0 as f64 } else { 0.0 }
+                if r.iter().any(|&c| c != b'-') { 1.0 / alcount0 as f64 } else { 0.0 }
             }).collect();
             let w2: Vec<f64> = mseq2.iter().map(|r| {
-                if r.iter().any(|&c| c != b'-' && c != b'.') { 1.0 / alcount2 as f64 } else { 0.0 }
+                if r.iter().any(|&c| c != b'-') { 1.0 / alcount2 as f64 } else { 0.0 }
             }).collect();
             let prof0 = Profile::from_aligned(&m_refs, &w0, &scoring.amino_map, scoring.nalphabets);
             let prof2 = Profile::from_aligned(&n_refs, &w2, &scoring.amino_map, scoring.nalphabets);

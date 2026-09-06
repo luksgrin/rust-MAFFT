@@ -31,10 +31,11 @@ pub fn read_fasta(path: impl AsRef<Path>) -> Result<SequenceSet, IoError> {
 }
 
 /// Read a FASTA file preserving case and non-standard residues — used
-/// by `--anysymbol`/`--preservecase`. Strips only whitespace and
-/// digits (matching C MAFFT's `readData_pointer_casepreserve`); any
-/// other character is kept verbatim so the post-alignment restore
-/// pass can put the originals back.
+/// by `--anysymbol`/`--preservecase`. Strips only newline, space and
+/// carriage return (matching C MAFFT's `readData_pointer_casepreserve`
+/// → `charfilter`, `io.c:1329-1352`); any other character — digits,
+/// tabs, punctuation, lowercase — is kept verbatim so the
+/// post-alignment restore pass can put the originals back.
 pub fn read_fasta_casepreserve(path: impl AsRef<Path>) -> Result<SequenceSet, IoError> {
     let file = std::fs::File::open(path)?;
     let reader = BufReader::new(file);
@@ -48,13 +49,14 @@ pub fn read_fasta_from_reader_casepreserve<R: BufRead>(reader: R) -> Result<Sequ
     let mut current_name: Option<String> = None;
     let mut current_seq = Vec::new();
 
-    for line_result in reader.lines() {
+    for (idx, line_result) in reader.lines().enumerate() {
         let line = line_result?;
+        reject_blank_before_header(idx, &line)?;
         if let Some(header) = line.strip_prefix('>') {
             if let Some(name) = current_name.take() {
                 sequences.push(Sequence {
                     name,
-                    data: normalize_sequence_casepreserve(&current_seq),
+                    data: normalize_sequence_casepreserve(&current_seq)?,
                 });
                 current_seq.clear();
             }
@@ -66,7 +68,7 @@ pub fn read_fasta_from_reader_casepreserve<R: BufRead>(reader: R) -> Result<Sequ
     if let Some(name) = current_name.take() {
         sequences.push(Sequence {
             name,
-            data: normalize_sequence_casepreserve(&current_seq),
+            data: normalize_sequence_casepreserve(&current_seq)?,
         });
     }
     if sequences.is_empty() {
@@ -78,16 +80,35 @@ pub fn read_fasta_from_reader_casepreserve<R: BufRead>(reader: R) -> Result<Sequ
     Ok(SequenceSet { sequences, seq_type })
 }
 
-/// Case-preserving sequence normaliser — strips only whitespace and
-/// ASCII digits; all other characters (including `*`, `@`, lowercase,
-/// IUPAC) are kept so `--anysymbol`/`--preservecase` can replace then
-/// restore them. Mirrors C `readData_pointer_casepreserve` reading
-/// rules.
-fn normalize_sequence_casepreserve(raw: &[u8]) -> Vec<u8> {
-    raw.iter()
+/// Case-preserving sequence normaliser — mirrors C `charfilter`
+/// (`io.c:1329-1352`, reached via `load1SeqWithoutName_realloc_casepreserve`):
+/// drops only `\n`, space and `\r`; rejects `=`, `<`, `>`; keeps every
+/// other byte — `*`, `@`, digits, tabs, lowercase, IUPAC — so
+/// `--anysymbol`/`--preservecase` can replace then restore them. C keeps
+/// digits and tabs as (unusual) residues here, so a GenBank-style
+/// numbered sequence gains `X`/`n` columns under `--anysymbol`; we
+/// reproduce that rather than second-guess it.
+fn normalize_sequence_casepreserve(raw: &[u8]) -> Result<Vec<u8>, IoError> {
+    if raw.iter().any(|&c| c == b'=' || c == b'<' || c == b'>') {
+        return Err(IoError::IllegalTitleCharInSequence);
+    }
+    Ok(raw
+        .iter()
         .copied()
-        .filter(|&c| !c.is_ascii_whitespace() && !c.is_ascii_digit())
-        .collect()
+        .filter(|&c| c != b'\n' && c != b' ' && c != b'\r')
+        .collect())
+}
+
+/// C MAFFT refuses input where a description line is preceded by blanks
+/// (`scripts/mafft:1827-1834`: `grep -c '^[[:blank:]]\+>'` → exit 1).
+/// Without this check a lenient line parser would treat the line as
+/// sequence data and silently glue two records together.
+fn reject_blank_before_header(idx: usize, line: &str) -> Result<(), IoError> {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    if trimmed.len() != line.len() && trimmed.starts_with('>') {
+        return Err(IoError::BlankBeforeHeader { line: idx + 1, text: line.to_string() });
+    }
+    Ok(())
 }
 
 /// Read FASTA from any buffered reader.
@@ -100,8 +121,9 @@ pub fn read_fasta_from_reader<R: BufRead>(reader: R) -> Result<SequenceSet, IoEr
     let mut current_name: Option<String> = None;
     let mut current_seq = Vec::new();
 
-    for line_result in reader.lines() {
+    for (idx, line_result) in reader.lines().enumerate() {
         let line = line_result?;
+        reject_blank_before_header(idx, &line)?;
 
         if let Some(header) = line.strip_prefix('>') {
             // Flush previous sequence

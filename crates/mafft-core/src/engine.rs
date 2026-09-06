@@ -468,17 +468,22 @@ impl MafftEngine {
 
         let nseq = input.nseq();
         let quiet_mode = false;
-        // C `disttbfast.c:4453` calls `gappick0(bseq[i], seq[i])` for
-        // every sequence before the progressive merge — the engine
-        // works on RESIDUE-ONLY sequences regardless of whether the
-        // input FASTA had gaps. Without this, feeding a previously-
-        // aligned FASTA (gaps in input) produces a different alignment
-        // than C because the rust progressive sees the gapped form
-        // (closes R-6: 16+1 adversarial fixture diverged by 369 lines
-        // on combined_17.fa, byte-identical on the residue-only
-        // c17_ungapped.fa).
+        // C `disttbfast.c:4450` (`tbfast.c:3320`, `pairlocalalign.c:3372`)
+        // calls `gappick0(bseq[i], seq[i])` for every sequence before
+        // anything is aligned — the engine works on RESIDUE-ONLY
+        // sequences regardless of whether the input FASTA had gaps.
+        // Without this, feeding a previously-aligned FASTA (gaps in
+        // input) produces a different alignment than C because the rust
+        // progressive sees the gapped form (closes R-6: 16+1 adversarial
+        // fixture diverged by 369 lines on combined_17.fa, byte-identical
+        // on the residue-only c17_ungapped.fa).
+        //
+        // Only `-` is a gap here. `gappick0` (`mltaln9.c:10537`) leaves
+        // `.` alone: for protein it is a legal residue (`amino_n['.']` =
+        // 23, `blosum.c:12`), for nucleotide it is illegal and C exits
+        // before reaching this point (`seqcheck`, `mltaln9.c:60`).
         let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| {
-            s.data.iter().copied().filter(|&c| c != b'-' && c != b'.').collect()
+            s.data.iter().copied().filter(|&c| c != b'-').collect()
         }).collect();
         let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
 
@@ -526,8 +531,8 @@ impl MafftEngine {
             _ => None,
         };
         let mut pairwise_for_constraints = if let Some(aligner) = pair_kind {
-            let seq_refs: Vec<&[u8]> = input.sequences.iter()
-                .map(|s| s.data.as_slice()).collect();
+            let seq_refs: Vec<&[u8]> = sequences.iter()
+                .map(|s| s.as_slice()).collect();
             // C's `pairlocalalign` uses pairwise-specific gap penalties,
             // NOT the progressive ones (`scripts/mafft:91-92,201-203`).
             // For L-INS-i (`-L`): lgop=-2.00, lexp=-0.100, laof=0.100.
@@ -733,8 +738,8 @@ impl MafftEngine {
             let initial_topo = user_topo.clone()
                 .unwrap_or_else(|| musclesupg(&dm, self.cluster_method));
             let weights = mafft_tree::sequence_weights(&initial_topo);
-            let seq_refs: Vec<&[u8]> = input.sequences.iter()
-                .map(|s| s.data.as_slice()).collect();
+            let seq_refs: Vec<&[u8]> = sequences.iter()
+                .map(|s| s.as_slice()).collect();
             if let Some((ref mut table, _)) = pairwise_for_constraints {
                 mafft_align::recompute_importance(table, &seq_refs, &weights);
             }
@@ -812,8 +817,8 @@ impl MafftEngine {
         // Pass 0 uses k-mer; pass 1+ uses MSA. The MSA tree is rebuilt
         // INSIDE the retree loop from `msa.sequences` after each pass.
         let memsavetree_kmer_topo: Option<mafft_tree::Topology> = if self.memsavetree || self.youngestlinkage {
-            let seq_refs: Vec<&[u8]> = input.sequences.iter()
-                .map(|s| s.data.as_slice()).collect();
+            let seq_refs: Vec<&[u8]> = sequences.iter()
+                .map(|s| s.as_slice()).collect();
             let is_dna = scoring.seq_type.is_nucleotide();
             if self.youngestlinkage {
                 Some(mafft_tree::memsavetree::youngestlinkage_tree(&seq_refs, is_dna))
@@ -994,7 +999,7 @@ impl MafftEngine {
                     // For now, use standard local homology as fallback.
                     // Full BPP→constraint integration would convert base-pair
                     // probabilities into pairwise constraints here.
-                    let seq_refs: Vec<&[u8]> = input.sequences.iter().map(|s| s.data.as_slice()).collect();
+                    let seq_refs: Vec<&[u8]> = sequences.iter().map(|s| s.as_slice()).collect();
                     let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
                     let (table, _dist) = build_local_homology_table(
                         &seq_refs,

@@ -3,7 +3,9 @@ use mafft_types::SeqType;
 /// Detect whether sequences are DNA/RNA or protein by ATGC frequency.
 ///
 /// Mirrors the C `getnumlen()` heuristic: if >75% of the first `limit`
-/// residues are A, T, G, C, U (case-insensitive), the input is nucleotide.
+/// residues are A, T, G, C, U or N (case-insensitive), the input is
+/// nucleotide. `N` counts as nucleotide exactly as in C `countATGC`
+/// (`io.c:2065-2090`), so N-rich DNA is not mistaken for protein.
 pub fn detect_seq_type(sequences: &[Vec<u8>]) -> SeqType {
     detect_seq_type_with_limit(sequences, 1_000_000)
 }
@@ -15,7 +17,7 @@ pub fn detect_seq_type_with_limit(sequences: &[Vec<u8>], limit: usize) -> SeqTyp
     'outer: for seq in sequences {
         for &ch in seq {
             match ch.to_ascii_uppercase() {
-                b'A' | b'T' | b'G' | b'C' | b'U' => {
+                b'A' | b'T' | b'G' | b'C' | b'U' | b'N' => {
                     atgc += 1;
                     total += 1;
                 }

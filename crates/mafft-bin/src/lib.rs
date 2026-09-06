@@ -929,8 +929,7 @@ where
             } else {
                 read_fasta(path)
             };
-            result.map_err(|e|
-                MafftError::new(1, format!("Error reading {}: {e}", path.display())))?
+            result.map_err(|e| read_error(&path.display().to_string(), e))?
         }
         None => {
             let stdin = io::stdin();
@@ -940,7 +939,7 @@ where
             } else {
                 read_fasta_from_reader(reader)
             };
-            result.map_err(|e| MafftError::new(1, format!("Error reading stdin: {e}")))?
+            result.map_err(|e| read_error("stdin", e))?
         }
     };
 
@@ -949,6 +948,16 @@ where
     // where `$seqtype` is fixed at argument-parsing time). No-op unless one
     // of the flags was given.
     let input = force_seq_type(input, &args, anysymbol_read);
+
+    // C `seqcheck` (`mltaln9.c:60-85`) runs in every aligner driver
+    // before anything is aligned (`disttbfast.c:3470`, `tbfast.c:2483`,
+    // `pairlocalalign.c:3229`): the first residue outside the alphabet
+    // for the detected/forced type aborts the run with exit 1. On the
+    // `--anysymbol` path `replaceu` has already mapped everything onto
+    // the alphabet, so C never trips there and neither do we.
+    if !anysymbol_read {
+        seqcheck(&input, args.quiet)?;
+    }
 
     // `--adjustdirection` / `--adjustdirectionaccurately`: detect DNA
     // strand orientation and reverse-complement sequences on the
@@ -1068,7 +1077,7 @@ where
     // characters via name-keyed lookup. Mirrors C `replaceu` +
     // `restoreu` (`mafft-upstream/core/replaceu.c`, `restoreu.c`).
     let anysymbol = args.anysymbol || args.preservecase;
-    let originals: Option<std::collections::HashMap<String, Vec<u8>>> = if anysymbol {
+    let mut originals: Option<std::collections::HashMap<String, Vec<u8>>> = if anysymbol {
         let is_dna = input.seq_type.is_nucleotide();
         let map: std::collections::HashMap<String, Vec<u8>> = input.sequences.iter()
             .map(|s| (s.name.clone(), s.data.clone())).collect();
@@ -1380,16 +1389,35 @@ where
     // deliberately left at the original indentation (and `args` / `engine`
     // / `input` are rebound to shared/exclusive borrows) so this stays a
     // small, reviewable diff rather than a reindent of ~90 unchanged lines.
-    let (args_ref, engine_ref, input_ref) = (&args, &engine, &mut input);
+    let (args_ref, engine_ref, input_ref, originals_ref) = (&args, &engine, &mut input, &mut originals);
     let mut msa = in_pool(pool.as_ref(), move || -> Result<mafft_core::MultipleAlignment, MafftError> {
-        let (args, engine, input) = (args_ref, engine_ref, input_ref);
+        let (args, engine, input, originals) = (args_ref, engine_ref, input_ref, originals_ref);
         Ok(if let Some(add_path) = add_file {
-        let new_input = read_fasta(add_path).map_err(|e|
-            MafftError::new(1, format!("Error reading {}: {e}", add_path.display())))?;
+        // C concatenates the addfile onto `infile` (`scripts/mafft:1142`)
+        // before `replaceu` runs on the whole (`scripts/mafft:2305-2308`),
+        // so under `--anysymbol` the added sequences are read
+        // case-preserving, substituted, and restored exactly like the
+        // existing ones (`restoreu` walks every row, `restoreu.c:323`).
+        let new_input = if anysymbol {
+            read_fasta_casepreserve(add_path)
+        } else {
+            read_fasta(add_path)
+        }
+        .map_err(|e| read_error(&add_path.display().to_string(), e))?;
         // `--nuc` / `--amino` force the addfile's type too — C passes the
         // same `$seqtype` to `filter` (`scripts/mafft:1140`) and to every
         // downstream binary.
-        let new_input = force_seq_type(new_input, args, false);
+        let mut new_input = force_seq_type(new_input, args, anysymbol);
+        if let Some(map) = originals.as_mut() {
+            let is_dna = input.seq_type.is_nucleotide();
+            for s in new_input.sequences.iter_mut() {
+                map.insert(s.name.clone(), s.data.clone());
+                replace_unusual(&mut s.data, is_dna);
+            }
+        } else {
+            // Same `seqcheck` C applies to the combined infile.
+            seqcheck(&new_input, args.quiet)?;
+        }
         // `--maxambiguous F`: drop noisy sequences from the addfile
         // before they reach the alignment. C `scripts/mafft:1132-1140`
         // runs `filter -m F` only on `_addfile`, never on the primary
@@ -1566,17 +1594,20 @@ where
 
     // `--anysymbol`: restore each aligned row to its original characters
     // (case and non-standard residues intact). Mirrors C `restoreu`
-    // (`mafft-upstream/core/restoreu.c::fillorichar`): for each aligned
-    // sequence, walk every non-gap position and copy the next character
-    // from the gap-stripped original.
+    // (`mafft-upstream/core/restoreu.c`): the original is stripped of `-`
+    // only (`gappick_samestring`, `io.c:103-113`), then `fillorichar`
+    // (`restoreu.c:9-30`) copies its next character onto every aligned
+    // position that is not `-`. `.` is NOT a gap on either side: in the
+    // original it is a residue `replaceu` may have turned into `n`, and
+    // in the alignment it can only be a protein residue.
     if let Some(orig_map) = originals {
         for i in 0..msa.sequences.len() {
             let Some(orig) = orig_map.get(&msa.names[i]) else { continue };
             let orig_no_gaps: Vec<u8> = orig.iter().copied()
-                .filter(|c| *c != b'-' && *c != b'.').collect();
+                .filter(|c| *c != b'-').collect();
             let mut k = 0;
             for c in msa.sequences[i].iter_mut() {
-                if *c != b'-' && *c != b'.' && k < orig_no_gaps.len() {
+                if *c != b'-' && k < orig_no_gaps.len() {
                     *c = orig_no_gaps[k];
                     k += 1;
                 }
@@ -1763,6 +1794,66 @@ where
 
     if let Err(e) = write_result {
         return Err(MafftError::new(1, format!("Error writing output: {e}")));
+    }
+    Ok(())
+}
+
+/// Wrap a reader failure the way the CLI reports it. C's two
+/// format-check failures print their own message and nothing else
+/// (`scripts/mafft:1828-1832`, `io.c:1337`), so they are passed through
+/// verbatim; everything else keeps the `Error reading <what>:` prefix.
+fn read_error(what: &str, e: mafft_io::IoError) -> MafftError {
+    use mafft_io::IoError;
+    match e {
+        IoError::BlankBeforeHeader { .. } | IoError::IllegalTitleCharInSequence => {
+            MafftError::new(1, e.to_string())
+        }
+        _ => MafftError::new(1, format!("Error reading {what}: {e}")),
+    }
+}
+
+/// C `seqcheck` (`mltaln9.c:60-85`): the first character of any sequence
+/// with `amino_n[c] == -1` aborts with `Illegal character c`, exit 1.
+/// The alphabets are C's `locaminod` (`blosum.c:12`,
+/// `ARNDCQEGHILKMFPSTWYVBZX.-J`) and `locaminon` (`DNA.h:43`,
+/// `agctuAGCTUnNbdhkmnrsvwyx-O`), which `mafft_scoring` already holds.
+/// Consequences worth knowing: protein `U`/`O` are illegal (C tells the
+/// user to try `--anysymbol`), protein `.` is a legal residue, and
+/// nucleotide `.` is illegal. Case has already been folded by the
+/// reader, as in C (`io.c:1462-1467`), so `dorp`-dependent legality
+/// (e.g. nucleotide `O` → `o` → illegal) falls out the same way.
+///
+/// C's banner goes through `reporterr`, which `--quiet` silences; the
+/// one-line `Illegal character` message is kept even then so a failing
+/// exit status is never mute.
+fn seqcheck(set: &SequenceSet, quiet: bool) -> Result<(), MafftError> {
+    let alphabet: &[u8] = if set.seq_type.is_nucleotide() {
+        &mafft_scoring::DNA_ALPHABET.chars
+    } else {
+        &mafft_scoring::PROTEIN_ALPHABET.chars
+    };
+    for (si, s) in set.sequences.iter().enumerate() {
+        let Some((pos, &c)) = s.data.iter().enumerate().find(|(_, c)| !alphabet.contains(c)) else {
+            continue;
+        };
+        let c = c as char;
+        let mut msg = String::new();
+        if !quiet {
+            let rule = "========================================================================= \n";
+            msg.push_str(rule);
+            msg.push_str(rule);
+            msg.push_str("=== \n");
+            msg.push_str(&format!("=== Alphabet '{c}' is unknown.\n"));
+            msg.push_str(&format!("=== Please check site {} in sequence {}.\n", pos + 1, si + 1));
+            msg.push_str("=== \n");
+            msg.push_str("=== To make an alignment that has unusual characters (U, @, #, etc), try  \n");
+            msg.push_str("=== % mafft --anysymbol input > output\n");
+            msg.push_str("=== \n");
+            msg.push_str(rule);
+            msg.push_str(rule);
+        }
+        msg.push_str(&format!("Illegal character {c}"));
+        return Err(MafftError::new(1, msg));
     }
     Ok(())
 }
