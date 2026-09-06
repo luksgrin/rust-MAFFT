@@ -41,16 +41,63 @@
 //!
 //! For everything else, depend on `mafft`.
 //!
+//! # The command line's flag layer, in-process (`cli` feature)
+//!
+//! `MafftEngine` takes an [`AlignmentMode`]; the command line *chooses* one
+//! (`--auto` from sequence count and length) and does more before the engine
+//! runs (`--adjustdirection` strand detection, `--nuc` / `--amino` type
+//! forcing, the residue case fold). Re-deriving any of that in a caller is
+//! how it silently diverges from C MAFFT. With `features = ["cli"]` the
+//! [`cli`] module re-exports the `mafft-rs` crate, whose entry points take
+//! the same argv the shell would and go through the same code as the
+//! binary:
+//!
+//! ```no_run
+//! # #[cfg(feature = "cli")] {
+//! use mafft::cli::{run_from_seqs, SilentProgress};
+//! use mafft::{Sequence, SequenceSet, SeqType};
+//!
+//! let input = SequenceSet {
+//!     sequences: vec![
+//!         Sequence { name: "a".into(), data: b"atggctagcttggacc".to_vec() },
+//!         Sequence { name: "b".into(), data: b"atggctagcttgcacc".to_vec() },
+//!     ],
+//!     seq_type: SeqType::Dna,
+//! };
+//! // Same flags as `mafft --auto --adjustdirection --thread 1 --nuc FILE`,
+//! // but the sequences stay in memory and the rows come back as a value.
+//! let msa = run_from_seqs(
+//!     ["mafft", "--auto", "--adjustdirection", "--thread", "1", "--nuc"],
+//!     &input,
+//!     &SilentProgress,
+//! )?;
+//! assert_eq!(msa.names.len(), 2);
+//! # }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! `run_from(argv, &mut out)` is the same thing with a FASTA file in and
+//! formatted text out; `Mafft::new().auto().nuc().run_seqs(&input)` is the
+//! typed builder over either.
+//!
 //! # Related crates
 //!
 //! * [`mafft-rs`](https://crates.io/crates/mafft-rs) — standalone CLI:
-//!   `cargo install mafft-rs`
+//!   `cargo install mafft-rs`; also the crate behind the `cli` feature
 //! * [`pymafft`](https://pypi.org/project/pymafft/) — Python bindings
 //!   (`pip install pymafft`)
 
 pub use mafft_core::*;
 pub use mafft_types::*;
 pub use mafft_io::*;
+
+/// The `mafft-rs` crate's argv-driven entry points (`run_from`,
+/// `run_from_seqs`, `Mafft`, `MafftError`, `Progress`). Needs the `cli`
+/// feature.
+#[cfg(feature = "cli")]
+pub mod cli {
+    pub use mafft_rs::*;
+}
 
 /// Sub-crate re-exports under explicit names, for callers who prefer
 /// disambiguation over the flattened root namespace.
