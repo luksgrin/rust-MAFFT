@@ -52,8 +52,16 @@ struct DpScratch {
     mj: Vec<f64>,
     mpj: Vec<usize>,
     scarr: Vec<f64>,
-    cpmx1_sparse: Vec<Vec<(usize, f64)>>,
-    cpmx2_sparse: Vec<Vec<(usize, f64)>>,
+    /// Boundary-init match buffer (`initverticalw` / `currentw` row 0).
+    bcarr: Vec<f64>,
+    /// Sparse (C `cpmxpd`/`cpmxpdn`) views of the two profiles, as one flat
+    /// entry list per profile plus a `len + 1` offsets table: column `j`'s
+    /// non-zero `(alphabet_index, freq)` pairs are
+    /// `entries[offsets[j]..offsets[j + 1]]`, in alphabet order.
+    cpmx1_sparse_offsets: Vec<usize>,
+    cpmx1_sparse_entries: Vec<(usize, f64)>,
+    cpmx2_sparse_offsets: Vec<usize>,
+    cpmx2_sparse_entries: Vec<(usize, f64)>,
     wmrecords: Vec<f64>,
     prevwmrecords: Vec<f64>,
     warpi: Vec<i32>,
@@ -78,8 +86,11 @@ impl DpScratch {
             mj: Vec::new(),
             mpj: Vec::new(),
             scarr: Vec::new(),
-            cpmx1_sparse: Vec::new(),
-            cpmx2_sparse: Vec::new(),
+            bcarr: Vec::new(),
+            cpmx1_sparse_offsets: Vec::new(),
+            cpmx1_sparse_entries: Vec::new(),
+            cpmx2_sparse_offsets: Vec::new(),
+            cpmx2_sparse_entries: Vec::new(),
             wmrecords: Vec::new(),
             prevwmrecords: Vec::new(),
             warpi: Vec::new(),
@@ -93,8 +104,10 @@ impl DpScratch {
 }
 
 thread_local! {
-    static DP_H_POOL: RefCell<Vec<Vec<f64>>> = const { RefCell::new(Vec::new()) };
-    static DP_IJP_POOL: RefCell<Vec<Vec<i32>>> = const { RefCell::new(Vec::new()) };
+    /// Flat row-major `(n + 1) x (m + 1)` DP score / traceback matrices
+    /// (stride `m + 1`), pooled across calls on this thread.
+    static DP_H_POOL: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+    static DP_IJP_POOL: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
     static DP_SCRATCH: RefCell<DpScratch> = const { RefCell::new(DpScratch::new()) };
     /// `--c-compat` opt-in: mirrors C's `static TLS` memoization in
     /// `Salignmm.c::A__align` (lines 1091-1094, 1446-1450, 2203-2206).
@@ -203,23 +216,30 @@ fn cpmx_add_opening_closing(
     if n > 0 && gc_prev { closing[n - 1] += neweff; }
 }
 
-/// Grow `pool` so the first `rows` rows each hold at least `cols`
-/// cells. No per-cell reset — every read cell in `h` / `ijp` is
-/// unconditionally written by either the boundary init (`ijp[i][0]`,
-/// `ijp[0][j]`, `h[i][0]`, `h[0][j]`) or by the DP body before any
-/// traceback read, so stale data in unused cells (or in the
-/// `[rows..][cols..]` tail beyond the active region) cannot affect
-/// correctness. `fill` is the initial value for newly grown cells
-/// (only relevant the FIRST time a row reaches a given length).
-fn ensure_2d<T: Clone>(pool: &mut Vec<Vec<T>>, rows: usize, cols: usize, fill: T) {
-    while pool.len() < rows {
-        pool.push(Vec::new());
-    }
-    for row in pool.iter_mut().take(rows) {
-        if row.len() < cols {
-            row.resize(cols, fill.clone());
+/// Build the sparse (C `cpmxpd`/`cpmxpdn`) view of `freqs[..len]`: for
+/// each position, the non-zero `(alphabet_index, freq)` pairs with
+/// `alphabet_index < nalpha`, in alphabet order, appended to one flat
+/// `entries` list; `offsets` gets `len + 1` entries so column `j` is
+/// `entries[offsets[j]..offsets[j + 1]]`.
+fn build_sparse_cpmx(
+    freqs: &[Vec<f64>],
+    len: usize,
+    nalpha: usize,
+    offsets: &mut Vec<usize>,
+    entries: &mut Vec<(usize, f64)>,
+) {
+    offsets.clear();
+    offsets.reserve(len + 1);
+    entries.clear();
+    for col in &freqs[..len] {
+        offsets.push(entries.len());
+        for (l, &v) in col[..nalpha].iter().enumerate() {
+            if v != 0.0 {
+                entries.push((l, v));
+            }
         }
     }
+    offsets.push(entries.len());
 }
 
 /// A position-specific frequency matrix (profile).
@@ -811,7 +831,8 @@ fn match_calc_row_into(
     n: usize, m: usize, nalpha: usize,
     matrix: &[Vec<f64>],
     prof1_freqs: &[Vec<f64>],
-    cpmx2_sparse: &[Vec<(usize, f64)>],
+    cpmx2_sparse_offsets: &[usize],
+    cpmx2_sparse_entries: &[(usize, f64)],
 ) {
     if let Some(mm) = multi {
         // Multi-distance-class match (C partA__align_variousdist). C's
@@ -832,21 +853,45 @@ fn match_calc_row_into(
         }
         return;
     }
-    for l in 0..nalpha {
-        scarr[l] = 0.0;
-        for j in 0..nalpha {
+    // Exact-length views: one checked slice each per row call, after which
+    // every index in the loops below is within a statically known bound.
+    let prof1_row = &prof1_freqs[row_pos][..nalpha];
+    let scarr = &mut scarr[..nalpha];
+    let output = &mut output[..m];
+    let offsets = &cpmx2_sparse_offsets[..=m];
+    debug_assert!(offsets.windows(2).all(|w| w[0] <= w[1]));
+    debug_assert_eq!(offsets[m], cpmx2_sparse_entries.len());
+
+    // scarr[l] = sum_j matrix[j][l] * prof1[row_pos][j], accumulated over j
+    // in ascending order for every l (C `match_calc`, Salignmm.c:216-223).
+    // The nest is j-outer / l-inner where C is l-outer / j-inner: each
+    // scarr[l] still sees exactly the same ordered sequence of
+    // multiply-adds (fused or not per `mafft_types::fp`), so the result is
+    // bit-identical, while the inner loop
+    // walks `matrix[j]` contiguously with no per-cell bounds checks.
+    scarr.fill(0.0);
+    for (row, &f1) in matrix[..nalpha].iter().zip(prof1_row) {
+        for (s, &mv) in scarr.iter_mut().zip(&row[..nalpha]) {
             // C's match_calc `scarr[l] += a * b`: arm64 clang fuses it
             // into a single-rounding FMA, baseline x86-64 gcc rounds twice.
             // `fmadd` follows the per-target policy in `mafft_types::fp`
             // so the bit pattern matches whichever C build is the reference.
-            scarr[l] = fmadd(matrix[j][l], prof1_freqs[row_pos][j], scarr[l]);
+            *s = fmadd(mv, f1, *s);
         }
     }
-    for j in 0..m {
-        output[j] = 0.0;
-        for &(k, v) in &cpmx2_sparse[j] {
-            output[j] = fmadd(scarr[k], v, output[j]);
+    // output[j] = sum over column j's non-zero cpmx2 entries (alphabet
+    // order) of scarr[k] * v — C's `cpmxpd`/`cpmxpdn` walk. The entries
+    // are consumed sequentially from one flat list; `offsets` is monotone
+    // by construction (`build_sparse_cpmx`), so `take(count)` never
+    // over-reads, and `scarr[k]` is in bounds because every k was emitted
+    // from `0..nalpha`.
+    let mut entries = cpmx2_sparse_entries.iter();
+    for (out, w) in output.iter_mut().zip(offsets.windows(2)) {
+        let mut acc = 0.0f64;
+        for &(k, v) in entries.by_ref().take(w[1] - w[0]) {
+            acc = fmadd(scarr[k], v, acc);
         }
+        *out = acc;
     }
 }
 
@@ -1065,8 +1110,9 @@ pub fn profile_align_imp_multimtx(
     let DpScratch {
         mut ogcp1, mut fgcp1, mut ogcp2, mut fgcp2,
         mut initverticalw, mut currentw, mut previousw, mut lastverticalw,
-        mut mj, mut mpj, mut scarr,
-        mut cpmx1_sparse, mut cpmx2_sparse,
+        mut mj, mut mpj, mut scarr, mut bcarr,
+        mut cpmx1_sparse_offsets, mut cpmx1_sparse_entries,
+        mut cpmx2_sparse_offsets, mut cpmx2_sparse_entries,
         mut wmrecords, mut prevwmrecords,
         mut warpi, mut warpj, mut prevwarpi, mut prevwarpj,
         mut warpis, mut warpjs,
@@ -1106,27 +1152,20 @@ pub fn profile_align_imp_multimtx(
     let gf2_0 = prof2.nongap_freq.first().copied().unwrap_or(1.0);
     let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
 
-    // Build sparse representation of prof2 (C's cpmxpd/cpmxpdn, lines 196-212).
-    // For each position j, store only non-zero (alphabet_index, frequency) pairs.
-    // Pooled: shrink/grow the outer Vec to length m; clear each inner Vec
-    // (preserving its capacity) before refilling. For Vec<Vec<...>> this is
-    // a big win — the inner allocations are the expensive ones.
-    if cpmx2_sparse.len() < m {
-        cpmx2_sparse.resize_with(m, Vec::new);
-    } else {
-        cpmx2_sparse.truncate(m);
-    }
-    for j in 0..m {
-        let entries = &mut cpmx2_sparse[j];
-        entries.clear();
-        entries.reserve(nalpha);
-        for l in 0..nalpha {
-            let v = prof2.freqs[j][l];
-            if v != 0.0 {
-                entries.push((l, v));
-            }
-        }
-    }
+    // Build sparse representations of both profiles (C's cpmxpd/cpmxpdn,
+    // lines 196-212): per position, only the non-zero (alphabet_index,
+    // frequency) pairs, in alphabet order. Pooled flat buffers: the hot
+    // row scorer walks prof2's entries once per DP row, so a single
+    // contiguous entry list plus an offsets table avoids an outer-Vec
+    // indirection per column (and per-column allocations).
+    build_sparse_cpmx(
+        &prof1.freqs, n, nalpha,
+        &mut cpmx1_sparse_offsets, &mut cpmx1_sparse_entries,
+    );
+    build_sparse_cpmx(
+        &prof2.freqs, m, nalpha,
+        &mut cpmx2_sparse_offsets, &mut cpmx2_sparse_entries,
+    );
 
     // Ensure scarr has nalpha slots; cleared lazily per-row inside
     // `match_calc_row_into` (each cell is fully overwritten by the
@@ -1148,30 +1187,18 @@ pub fn profile_align_imp_multimtx(
     // unconditionally written by the boundary init below or the DP
     // body before any traceback read). The pool is restored at the
     // end of the function before constructing the return value.
-    let mut h: Vec<Vec<f64>> = DP_H_POOL.with_borrow_mut(std::mem::take);
-    let mut ijp: Vec<Vec<i32>> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
-    ensure_2d(&mut h, n + 1, m + 1, 0.0f64);
-    ensure_2d(&mut ijp, n + 1, m + 1, 0i32);
-
-    // initverticalw (C line 776): match_calc with prof2 pos 0 vs all prof1 positions.
-    // C calls match_calc with swapped profiles: cpmx2pt first, cpmx1pt second.
-    // Pooled (same Vec<Vec<...>> reuse pattern as cpmx2_sparse above).
-    if cpmx1_sparse.len() < n {
-        cpmx1_sparse.resize_with(n, Vec::new);
-    } else {
-        cpmx1_sparse.truncate(n);
-    }
-    for i in 0..n {
-        let entries = &mut cpmx1_sparse[i];
-        entries.clear();
-        entries.reserve(nalpha);
-        for l in 0..nalpha {
-            let v = prof1.freqs[i][l];
-            if v != 0.0 {
-                entries.push((l, v));
-            }
-        }
-    }
+    //
+    // Flat row-major layout, stride `m + 1`: cell (i, j) is `[i * stride + j]`.
+    // One allocation per matrix instead of `n + 1` row Vecs, and the DP body
+    // takes each row as a contiguous sub-slice.
+    // Grow-only (like the previous per-row pool): a call smaller than its
+    // predecessor reuses the buffer without re-zeroing it.
+    let stride = m + 1;
+    let cells = (n + 1) * stride;
+    let mut h: Vec<f64> = DP_H_POOL.with_borrow_mut(std::mem::take);
+    let mut ijp: Vec<i32> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
+    if h.len() < cells { h.resize(cells, 0.0); }
+    if ijp.len() < cells { ijp.resize(cells, 0); }
 
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
     // C fills initverticalw[0..lgth1-1] (0-based), then adds gap to [1..lgth1].
@@ -1191,13 +1218,10 @@ pub fn profile_align_imp_multimtx(
         let col = mm.match_col(n);
         initverticalw[..n].copy_from_slice(&col[..n]);
     } else {
-        // Reuse the pooled `scarr_buf` (already sized to nalpha and used
-        // by `match_calc_row`). We're outside the closure's call window so
-        // no aliasing concern. — Actually we can't; the closure captured
-        // it by move. Use a small stack-allocated array via Vec instead.
-        // The boundary init runs once per call so the alloc cost is
-        // negligible vs the inner DP.
-        let mut bcarr: Vec<f64> = vec![0.0f64; nalpha];
+        // Pooled boundary-init match buffer (nalpha slots; every slot is
+        // overwritten by the `for l` loop before it is read).
+        bcarr.clear();
+        bcarr.resize(nalpha, 0.0);
         for l in 0..nalpha {
             bcarr[l] = 0.0;
             for j in 0..nalpha {
@@ -1206,7 +1230,8 @@ pub fn profile_align_imp_multimtx(
         }
         for i in 0..n {
             initverticalw[i] = 0.0;
-            for &(k, v) in &cpmx1_sparse[i] {
+            let (start, end) = (cpmx1_sparse_offsets[i], cpmx1_sparse_offsets[i + 1]);
+            for &(k, v) in &cpmx1_sparse_entries[start..end] {
                 initverticalw[i] = fmadd(bcarr[k], v, initverticalw[i]);
             }
         }
@@ -1250,8 +1275,9 @@ pub fn profile_align_imp_multimtx(
         let row = mm.match_row(0, m);
         currentw[..m].copy_from_slice(&row[..m]);
     } else {
-        // Same pattern as initverticalw above — small boundary-init buffer.
-        let mut bcarr: Vec<f64> = vec![0.0f64; nalpha];
+        // Same pattern as initverticalw above — pooled boundary-init buffer.
+        bcarr.clear();
+        bcarr.resize(nalpha, 0.0);
         for l in 0..nalpha {
             bcarr[l] = 0.0;
             for j in 0..nalpha {
@@ -1260,7 +1286,8 @@ pub fn profile_align_imp_multimtx(
         }
         for j in 0..m {
             currentw[j] = 0.0;
-            for &(k, v) in &cpmx2_sparse[j] {
+            let (start, end) = (cpmx2_sparse_offsets[j], cpmx2_sparse_offsets[j + 1]);
+            for &(k, v) in &cpmx2_sparse_entries[start..end] {
                 currentw[j] = fmadd(bcarr[k], v, currentw[j]);
             }
         }
@@ -1312,8 +1339,8 @@ pub fn profile_align_imp_multimtx(
         }
     }
 
-    for j in 0..=m { h[0][j] = currentw[j]; }
-    for i in 0..=n { h[i][0] = initverticalw[i]; }
+    h[..=m].copy_from_slice(&currentw[..=m]);
+    for i in 0..=n { h[i * stride] = initverticalw[i]; }
 
     // Pooled. The DP body reads mj[j] / mpj[j] only for j in 1..=m, so
     // mj[0]/mpj[0] never matter. mj[1..=m] is initialised by the loop
@@ -1403,8 +1430,8 @@ pub fn profile_align_imp_multimtx(
         }
     }
 
-    for i in 0..=n { ijp[i][0] = i as i32 + 1; }
-    for j in 0..=m { ijp[0][j] = -(j as i32 + 1); }
+    for i in 0..=n { ijp[i * stride] = i as i32 + 1; }
+    for j in 0..=m { ijp[j] = -(j as i32 + 1); }
 
     // Pooled. previousw is fully overwritten by the i-loop swap (mem::swap
     // with currentw), then index 0 is set from initverticalw[i-1]; the rest
@@ -1484,7 +1511,8 @@ pub fn profile_align_imp_multimtx(
         // Fills currentw[0..m-1]. Position m doesn't exist in prof2.
         match_calc_row_into(
             i, &mut currentw, &mut scarr[..nalpha],
-            multi, n, m, nalpha, matrix, &prof1.freqs, &cpmx2_sparse,
+            multi, n, m, nalpha, matrix, &prof1.freqs,
+            &cpmx2_sparse_offsets, &cpmx2_sparse_entries,
         );
         // C: imp_match_out_vead(currentw, i, lgth2) — add impmtx[i][:] (Salignmm.c:1848).
         if let Some(imp) = impmtx {
@@ -1507,16 +1535,16 @@ pub fn profile_align_imp_multimtx(
         let gf1_i = if i < n { prof1.nongap_freq[i] } else { boundary.tail1 };
         let fgcp1_im1 = fgcp1[i - 1];
         let ogcp1_i = ogcp1[i];
-        // Bind h[i] / ijp[i] to local mutable slices: hoists the outer-Vec
-        // bounds check out of the inner loop. Same for h[i-1] (read by the
-        // dump path only; not needed inside the hot loop since currentw
-        // already carries the row-i score). Per-cell inner-Vec bounds
-        // checks are still present but the outer-Vec ones are amortized
-        // to once per row instead of M times per row.
-        // SAFETY: i < lasti <= n+1 and h/ijp are sized (n+1) x (m+1).
+        // Bind row i of the flat h / ijp matrices to local mutable slices
+        // of exactly `m + 1` cells (one checked range per row), so the
+        // inner loop indexes a slice of known length instead of re-deriving
+        // `i * stride + j` per cell.
+        // SAFETY (for the get_unchecked calls in j_loop): i < lasti <= n+1
+        // and h/ijp are sized (n+1) * (m+1), so this range is in bounds.
         // CONFIRMED MICRO-WIN ~ a few % on long FFT-NS-i inputs.
-        let h_row: &mut [f64] = &mut h[i];
-        let ijp_row: &mut [i32] = &mut ijp[i];
+        let row_start = i * stride;
+        let h_row: &mut [f64] = &mut h[row_start..row_start + stride];
+        let ijp_row: &mut [i32] = &mut ijp[row_start..row_start + stride];
         // Bind shared cold slices to locals so the inner loop sees them
         // as `&[T]` of statically-known length-bound rather than re-deriving
         // a slice pointer per access. This is purely about giving LLVM
@@ -1650,7 +1678,7 @@ pub fn profile_align_imp_multimtx(
                 for ii in 1..=n {
                     let _ = write!(fp, "R_H i={}", ii);
                     for jj in 0..m {
-                        let _ = write!(fp, " {:.17e}", h[ii][jj]);
+                        let _ = write!(fp, " {:.17e}", h[ii * stride + jj]);
                     }
                     let _ = writeln!(fp);
                 }
@@ -1678,46 +1706,48 @@ pub fn profile_align_imp_multimtx(
     // TERMGAPFAC and TERMGAPFAC_EX are both 0.0 (Salignmm.c:12-13), so the
     // additive correction terms drop out.
     if !tail_gap {
-        let last_row_corner = h[n - 1][m - 1];
+        let last_row_start = (n - 1) * stride;
+        let last_row_corner = h[last_row_start + m - 1];
         if impmtx.is_some() {
             // Atracking_localhom port: forward scan, `>=`, includes corner.
             let mut wm = lastverticalw[0];
             for i in 0..n {
                 if lastverticalw[i] >= wm {
                     wm = lastverticalw[i];
-                    ijp[n][m] = (n - i) as i32;
+                    ijp[n * stride + m] = (n - i) as i32;
                 }
             }
             for j in 0..m {
-                if h[n - 1][j] >= wm {
-                    wm = h[n - 1][j];
-                    ijp[n][m] = -((m - j) as i32);
+                let h_last_j = h[last_row_start + j];
+                if h_last_j >= wm {
+                    wm = h_last_j;
+                    ijp[n * stride + m] = -((m - j) as i32);
                 }
             }
-            h[n][m] = wm;
+            h[n * stride + m] = wm;
         } else {
             // Atracking port: reverse scan, strict `>`, excludes corner,
             // then corner fallback.
             let mut wm = last_row_corner - 1.0;
             for j in (0..m - 1).rev() {
-                let g = h[n - 1][j];
+                let g = h[last_row_start + j];
                 if g > wm {
                     wm = g;
-                    ijp[n][m] = -((m - j) as i32);
+                    ijp[n * stride + m] = -((m - j) as i32);
                 }
             }
             for i in (0..n - 1).rev() {
                 let g = lastverticalw[i];
                 if g > wm {
                     wm = g;
-                    ijp[n][m] = (n - i) as i32;
+                    ijp[n * stride + m] = (n - i) as i32;
                 }
             }
             if last_row_corner > wm {
                 wm = last_row_corner;
-                ijp[n][m] = 0;
+                ijp[n * stride + m] = 0;
             }
-            h[n][m] = wm;
+            h[n * stride + m] = wm;
         }
     }
 
@@ -1730,7 +1760,7 @@ pub fn profile_align_imp_multimtx(
     let mut k = 0;
     while k <= klim {
         let (ifi, jfi): (i32, i32);
-        let v = ijp[iin as usize][jin as usize];
+        let v = ijp[iin as usize * stride + jin as usize];
         if v >= warpbase {
             // Warp transition (`Salignmm.c:479-482`). Jump to anchor
             // (warpis[idx], warpjs[idx]).
@@ -1811,7 +1841,7 @@ pub fn profile_align_imp_multimtx(
         }
     }
 
-    let best_score = h[n][m];
+    let best_score = h[n * stride + m];
 
     if let Ok(f) = std::env::var("RS_DP_CORNER") {
         use std::io::Write;
@@ -1819,9 +1849,9 @@ pub fn profile_align_imp_multimtx(
         static CALL_NO: AtomicUsize = AtomicUsize::new(0);
         let cn = CALL_NO.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-            let corner = h[n - 1][m - 1];
+            let corner = h[(n - 1) * stride + m - 1];
             let _ = writeln!(fp, "call={} constraint={} wm={:.18e} h[n-1][m-1]={:.18e} h[n][m]={:.18e}",
-                cn, if impmtx.is_some() {1} else {0}, best_score, corner, h[n][m]);
+                cn, if impmtx.is_some() {1} else {0}, best_score, corner, h[n * stride + m]);
         }
     }
     if let Ok(prefix) = std::env::var("RS_IJP_DUMP_PREFIX") {
@@ -1834,10 +1864,11 @@ pub fn profile_align_imp_multimtx(
         if cn == target_call {
             let fname = format!("{}_call_{}.txt", prefix, cn);
             if let Ok(mut fp) = std::fs::File::create(&fname) {
-                let _ = writeln!(fp, "n={} m={} corner_h={:.18e} best={:.18e}", n, m, h[n-1][m-1], best_score);
+                let _ = writeln!(fp, "n={} m={} corner_h={:.18e} best={:.18e}", n, m, h[(n - 1) * stride + m - 1], best_score);
                 for i in 0..=n {
                     for j in 0..=m {
-                        let _ = writeln!(fp, "ijp[{}][{}]={} h[{}][{}]={:.18e}", i, j, ijp[i][j], i, j, h[i][j]);
+                        let c = i * stride + j;
+                        let _ = writeln!(fp, "ijp[{}][{}]={} h[{}][{}]={:.18e}", i, j, ijp[c], i, j, h[c]);
                     }
                 }
             }
@@ -1857,18 +1888,15 @@ pub fn profile_align_imp_multimtx(
     // Return the scratch Vecs to the thread-local pool too. Each one
     // keeps its current capacity, so the next call on this thread
     // benefits from amortised allocation when input sizes are
-    // comparable. The `match_calc_row` closure consumed `scarr` and
-    // `cpmx2_sparse` by move (it had to so the closure could carry the
-    // mutable scarr borrow); recover them by dropping the closure and
-    // putting the moved values back via the helpers' returns. Actually
-    // simpler: we already destructured the pool at function entry, so
-    // here we only need to put each named local back.
+    // comparable. We destructured the pool at function entry, so here we
+    // only need to put each named local back.
     DP_SCRATCH.with_borrow_mut(|s| {
         *s = DpScratch {
             ogcp1, fgcp1, ogcp2, fgcp2,
             initverticalw, currentw, previousw, lastverticalw,
-            mj, mpj, scarr,
-            cpmx1_sparse, cpmx2_sparse,
+            mj, mpj, scarr, bcarr,
+            cpmx1_sparse_offsets, cpmx1_sparse_entries,
+            cpmx2_sparse_offsets, cpmx2_sparse_entries,
             wmrecords, prevwmrecords,
             warpi, warpj, prevwarpi, prevwarpj,
             warpis, warpjs,
