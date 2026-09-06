@@ -8,75 +8,85 @@ on:
 
 jobs:
   # ------------------------------------------------------------------
-  # Build: compile C binaries and Rust workspace
+  # Build: compile the C reference in-tree, build the Rust workspace and
+  # run the full test suite (lib + integration + FFI cross-validation).
+  #
+  # Runs once per reference platform via the reusable build-test.yml:
+  # C MAFFT is not bit-identical across architectures (clang/arm64
+  # contracts to FMA, gcc/x86-64 does not), so byte-identity has to be
+  # checked against a same-platform C build on BOTH platforms. See the
+  # header of build-test.yml and docs/architecture/byte-identity.md.
+  #
+  # Only the x86-64 leg uploads artifacts; the "Test C:" / "Test Rust:"
+  # jobs below consume them and are x86-64 only.
   # ------------------------------------------------------------------
   build:
-    name: Build
-    runs-on: ubuntu-latest
+    name: "Build (x86-64)"
+    uses: ./.github/workflows/build-test.yml
+    with:
+      os: ubuntu-latest
+      upload-artifacts: true
+
+  build-arm64:
+    name: "Build (arm64)"
+    uses: ./.github/workflows/build-test.yml
+    with:
+      os: macos-latest
+      # pymafft's cdylib needs maturin's linker dance on macOS, not a
+      # plain `cargo build`; everything else (including the FFI shim and
+      # every cross_validate_* binary) builds and runs natively.
+      cargo-exclude: "--exclude pymafft"
+
+  # ------------------------------------------------------------------
+  # FP-policy cross-check: run the fixture-based (non-FFI) test binaries
+  # on the arm64 runner with the x86-64 policy forced via
+  # `--features fp-contract-none`. `fixture_path_fp` then selects the
+  # `<name>.nofma` fixtures, so this checks the x86-64 references from
+  # an arm64 host (the mirror image, fp-contract-fma on ubuntu, is
+  # deliberately not run).
+  #
+  # Only non-FFI binaries are selected: the cross_validate_* tests
+  # compare against the C compiled on this runner, which contracts to
+  # FMA, so under fp-contract-none they would be comparing two different
+  # policies and are meaningless here.
+  #
+  # `--features` cannot be passed at the virtual-workspace root, hence
+  # one `cargo test -p` per package.
+  #
+  # NOTE: `continue-on-error: true` is TEMPORARY. The fp-contract
+  # features and the .fma/.nofma fixture convention land together with
+  # the FMA-policy code; until that agent confirms the .nofma fixture
+  # set is complete this job is advisory only. Remove the flag (and this
+  # note) once it is green.
+  # ------------------------------------------------------------------
+  policy-cross-check:
+    name: "FP policy: fp-contract-none fixtures on arm64"
+    runs-on: macos-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: true
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo registry + target
+      - name: Cache Cargo
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-policy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-policy-
 
-      - name: Build C binaries
-        run: make -C mafft-upstream/core
-
-      - name: Build Rust workspace
-        run: cargo build --workspace
-
-      - name: Build Rust binary (release)
-        run: cargo build -p mafft-rs --release
-
-      - name: Run Rust tests (lib only, fast)
-        run: cargo test --workspace --lib
-
-      - name: Run Rust integration tests (release)
-        # `--tests` runs every `tests/*.rs` integration binary across the
-        # workspace (end_to_end + cross_validate_* + trace_refinement,
-        # etc.). Prior to this, only the named `end_to_end` binary ran, so
-        # the cross-validate FFI tests + the imp_matrix correctness tests
-        # were silently uncovered by CI.
-        run: cargo test --workspace --release --tests
-
-      - name: Smoke test Rust binary
+      - name: Fixture tests under fp-contract-none (non-FFI binaries only)
         run: |
-          ./target/release/mafft-rs -q mafft-upstream/test/sample > /dev/null
-          echo "mafft-rs smoke test: PASS"
-
-      # Upload C binaries + scripts + test data as a single artifact
-      - name: Prepare C test bundle
-        run: |
-          mkdir -p c-test-bundle/binaries c-test-bundle/scripts c-test-bundle/test
-          cp mafft-upstream/binaries/* c-test-bundle/binaries/
-          cp mafft-upstream/scripts/* c-test-bundle/scripts/
-          cp -r mafft-upstream/test/* c-test-bundle/test/
-
-      - name: Upload C test bundle
-        uses: actions/upload-artifact@v5
-        with:
-          name: c-test-bundle
-          path: c-test-bundle/
-          retention-days: 1
-
-      - name: Upload Rust binary
-        uses: actions/upload-artifact@v5
-        with:
-          name: mafft-rs
-          path: target/release/mafft-rs
-          retention-days: 1
+          set -x
+          cargo test -p mafft-core  --release --features fp-contract-none --test end_to_end
+          cargo test -p mafft-rs    --release --features fp-contract-none --test c_parity_dna
+          cargo test -p mafft-align --release --features fp-contract-none \
+            --test imp_matrix_correctness --test imp_zero_equiv
 
   # ------------------------------------------------------------------
   # MAFFT C alignment tests (each mode runs as a separate job)
@@ -268,18 +278,19 @@ jobs:
           echo "Rust binary test: PASS"
 
   # ------------------------------------------------------------------
-  # Cross-platform sanity build — release.yml / python.yml ship macOS
-  # and Windows artifacts; we should at least know that `cargo build`
-  # + lib tests work on those hosts on every PR. The Linux `build` job
-  # above stays the authoritative byte-identity gate (it's the only
-  # one that runs the FFI cross-validation suite against C MAFFT).
+  # Cross-platform sanity build — release.yml / python.yml ship Windows
+  # artifacts; we should at least know that `cargo build` + lib tests
+  # work there on every PR. macOS used to be in this light matrix but is
+  # now covered by the full `build-arm64` job above (C build, FFI
+  # cross-validation, byte-identity); Linux `build` and `build-arm64`
+  # are the two authoritative byte-identity gates.
   #
   # Excluded:
   #   - pymafft           : its cdylib needs maturin's linker dance,
   #                         not a plain `cargo build`
   #   - mafft-c-bindings  : compiles MAFFT's C source which links
-  #                         pthread + uses POSIX-only headers; works
-  #                         on macOS, fails on Windows MSVC
+  #                         pthread + uses POSIX-only headers; fails on
+  #                         Windows MSVC
   #
   # We also limit `cargo test` to the crates that have NO dev-dep on
   # mafft-c-bindings — otherwise the cross_validate_* test binaries
@@ -290,7 +301,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
