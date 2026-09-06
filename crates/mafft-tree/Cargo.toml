@@ -12,8 +12,8 @@ description = "Distance computation and guide tree construction for MAFFT alignm
 readme = "README.md"
 
 [dependencies]
-mafft-types = { path = "../mafft-types", version = "0.1.0" }
-mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+mafft-types = { path = "../mafft-types", version = "0.2.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.2.0" }
 
 # Floating-point contraction policy (see `mafft_types::fp`). Mutually
 # exclusive; with neither, the build fuses `a*b+c` on aarch64 (mirroring the
