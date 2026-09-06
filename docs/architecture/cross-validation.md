@@ -24,17 +24,50 @@ The bindings are dev-deps of `mafft-scoring`, `mafft-tree`, `mafft-core`
 
 ## What gets compared
 
-Roughly ~140 tests across `crates/*/tests/cross_validate_*.rs`:
+103 FFI test functions across 15 files (counted from `#[test]`
+attributes in `crates/*/tests/cross_validate*.rs`):
 
-| Layer | Files | What's compared |
+| Layer | File (tests) | What's compared |
 |--|--|--|
-| Scoring | `cross_validate_weights.rs`, `cross_validate_calcw.rs` | Per-cell weight vectors, branch lengths, `calcW` SP-component |
-| Distance | `cross_validate_parttree.rs`, `cross_validate_dist*.rs` | k-mer distances, PartTree pivots, UPGMA pair-merge order |
-| Pairwise DP | `cross_validate_galign11.rs`, `cross_validate_lalign11.rs` | NW / SW pairwise alignments — final score AND traceback |
-| Profile DP | `cross_validate_profile_align.rs`, `cross_validate_msalign.rs` | Profile DP outputs row-by-row |
-| FFT | `cross_validate_falign.rs`, `cross_validate_localhom.rs` | FFT-anchored DP including localhom constraint integration |
-| `--add` machinery | `cross_validate_insertnewgaps.rs` | New-merge-gap insertion, profilealignment |
-| End-to-end | `crates/mafft-core/tests/end_to_end.rs` | Full alignment outputs vs C-canonical fixtures |
+| Scoring | `mafft-scoring/tests/cross_validate.rs` (21) | BLOSUM45/50/62/80, JTT, TM and DNA `n_dis` matrices cell-by-cell (plain and FFT variants), penalty values, amino-acid index mapping |
+| Weights | `mafft-tree/tests/cross_validate_weights.rs` (3) | Branch-length weights, per-group normalisation |
+| Distance / trees | `mafft-tree/tests/cross_validate_parttree.rs` (9), `cross_validate_memsavetree.rs` (5) | k-mer (sextet) distances, PartTree pivots and UPGMA order, memsavetree / youngestlinkage topology step-by-step |
+| Column profiles | `mafft-core/tests/cross_validate_cpmx.rs` (3), `cross_validate_profile.rs` (4) | `cpmx` column profile matrices, inter-group scores, unnormalised / unequal weights |
+| Pairwise & constrained DP | `mafft-core/tests/cross_validate_constrained_align.rs` (12) | `G__align11` (incl. warp variants), `genL__align11` (E-INS-i params), constraint-mode `A__align` with gaps and multi-member groups |
+| Profile DP | `mafft-core/tests/cross_validate_profile_align.rs` (5), `cross_validate_msalign.rs` (10) | `A__align` with `imp` matrix / non-zero `penalty_ex` / shifted matrices, `MSalignmm` recursion, base case, free tail, asymmetric lengths |
+| FFT | `mafft-core/tests/cross_validate_fft.rs` (2), `cross_validate_bl50_fft.rs` (2) | Hand-ported Cooley-Tukey vs C `fft.c`; alignable-region detection and step-24 profile DP on the `--bl 50` sentinel |
+| Refinement | `mafft-core/tests/cross_validate_counteff.rs` (2), `cross_validate_bb20027_dp.rs` (2), `cross_validate_refine_branch_dna.rs` (1) | Pass-1 widths and `counteff` weights on BB20027, segment-10 DNA refinement profile DP |
+| `--add` machinery | `mafft-core/tests/cross_validate_insertnewgaps.rs` (1) | New-merge-gap insertion, `profilealignment` compression cell-by-cell |
+
+Three further `mafft-core` test binaries also link the C shim but are
+forensic rather than parity tests: `trace_refinement.rs` (15),
+`exp_residual_dump_compare.rs` (1) and `exp_residual_step10.rs` (1).
+
+The fixture-based end-to-end tests do **not** use the FFI; they compare
+against committed C-canonical outputs: `mafft-core/tests/end_to_end.rs`
+(120), `mafft-bin/tests/c_parity_dna.rs` (5), and the `imp` matrix
+tests in `mafft-align/tests/` (3).
+
+## Platform-relative comparison
+
+C MAFFT 7.526 itself differs between clang/arm64 (which contracts
+`a*b + c` into fused multiply-adds) and gcc/x86-64 (which does not) —
+see [Byte-identity is per platform
+build](byte-identity.md#byte-identity-is-per-platform-build). The FFI
+tests compare Rust against the C that `mafft-c-bindings/build.rs`
+compiled on the *same* machine, so they are meaningful only when Rust's
+policy matches that C build. The default `mafft_types::fp::CONTRACTS_FMA`
+(true on `aarch64`, false elsewhere) does exactly that on both CI
+runners. Do not run the `cross_validate_*` binaries with
+`--features fp-contract-none` on arm64 or `--features fp-contract-fma`
+on x86-64: the C side would still be using the host compiler's policy
+and the comparison would be between two different policies.
+
+The fixture-based tests, by contrast, *can* be run under the foreign
+policy: `fixture_path_fp` selects `<name>.fma` or `<name>.nofma` by
+`CONTRACTS_FMA`, so `--features fp-contract-none` on an arm64 host
+checks the x86-64 references. That is what the CI `policy-cross-check`
+job does.
 
 ## Why per-function FFI tests, not just end-to-end
 
@@ -66,18 +99,32 @@ cargo test -p mafft-fft  --release --tests
 cargo test -p mafft-core --release --tests
 
 # Just one file
-cargo test -p mafft-core --release --test cross_validate_falign
+cargo test -p mafft-core --release --test cross_validate_fft
 
 # Just one test
-cargo test -p mafft-core --release --test cross_validate_falign -- falign_matches_c_basic
+cargo test -p mafft-core --release --test cross_validate_fft -- fft_port_matches_c_forward_dc
+
+# Fixture tests under the x86-64 policy on an arm64 host (non-FFI only;
+# see "Platform-relative comparison" above)
+cargo test -p mafft-core --release --features fp-contract-none --test end_to_end
 ```
 
 ## CI integration
 
-The `ci.yml` workflow runs the whole suite on every push (`ubuntu-latest`),
-alongside a parallel set of jobs that exercise the C MAFFT binaries on
-the same `mafft-upstream/test/sample` input and compare to canonical
-output files. Both must pass.
+The `ci.yml` workflow runs the whole suite on every push on two
+reference platforms via the reusable `build-test.yml` job: `Build
+(x86-64)` on `ubuntu-latest` (gcc, no contraction) and `Build (arm64)`
+on `macos-latest` (Apple clang, FMA contraction). Each leg builds the C
+submodule in-tree, prints an FMA census of the binaries it just built,
+runs `cargo test --workspace --lib` and `cargo test --workspace --release
+--tests`, and finishes with an end-to-end sentinel that diffs
+`mafft-rs --bl 50 --retree 2 --maxiterate 0` against the same-platform C
+`mafft` wrapper (712 columns on arm64, 738 on x86-64).
+
+A parallel set of x86-64 jobs exercises the C MAFFT binaries on the
+same `mafft-upstream/test/sample` input and compares to canonical output
+files, and a `policy-cross-check` job runs the non-FFI fixture tests on
+arm64 under `--features fp-contract-none`. All must pass.
 
 ## Dump-mode debugging
 

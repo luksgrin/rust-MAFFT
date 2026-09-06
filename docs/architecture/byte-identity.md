@@ -1,8 +1,10 @@
 # Byte-identity
 
 rust-MAFFT's output matches C MAFFT 7.526 byte-for-byte across BAliBASE
-3 (1930/1930 fixtures) for every supported mode. This page explains why
-that's the bar and what it cost to hit it.
+3 (1930/1930 fixtures) for every supported mode, *when both are built on
+the same platform*. This page explains why that's the bar, what it cost
+to hit it, and why the "same platform" qualifier is not a hedge but a
+property of the C reference itself.
 
 ## Why hold to byte-identity
 
@@ -19,6 +21,74 @@ every downstream pipeline to choose:
 Both are non-starters for adoption. Byte-identity removes the choice:
 the Rust binary is a drop-in replacement, no warm-up trust period
 required.
+
+## Byte-identity is per platform build
+
+C MAFFT 7.526 is not bit-identical across CPU architectures. The
+upstream Makefile compiles with `-O3` and no `-ffp-contract` setting,
+which leaves the floating-point contraction policy to the compiler:
+
+| C reference build | Compiler | Fused multiply-adds per binary |
+|--|--|--|
+| arm64 (Apple Silicon, `make` in-tree) | clang | on the order of a thousand — 1025 in the census that motivated this section; 882 scalar `fmadd`-family (1139 including vector `fmla`/`fmls`) with Apple clang 21 |
+| x86-64 (bioconda, `make` in-tree on Linux) | gcc | 0 |
+
+clang fuses `a*b + c` into a single `fmadd` (one rounding); gcc on
+x86-64 emits a multiply followed by an add (two roundings). Both are
+valid C, and the resulting binaries disagree on some inputs. The known
+sentinel case is `--bl 50 --retree 2 --maxiterate 0` on the 36-sequence
+`mafft-upstream/test/sample`:
+
+| Platform | C MAFFT columns | rust-MAFFT columns (default policy) |
+|--|--|--|
+| arm64 / clang | 712 | 712 |
+| x86-64 / gcc | 738 | 738 |
+
+So "byte-identical to C" is always relative to a C build made on the
+same platform, and rust-MAFFT tracks that platform rather than picking
+one universal answer.
+
+### The `fp` policy module
+
+`mafft_types::fp` centralises the decision:
+
+- `mafft_types::fp::CONTRACTS_FMA` — a `const bool`. Defaults to `true`
+  on `aarch64` (mirroring clang's behaviour there) and `false`
+  elsewhere.
+- `mafft_types::fp::fmadd(a, b, c)` — computes `a*b + c` with a single
+  rounding when `CONTRACTS_FMA` is set, and as two separate operations
+  otherwise. Every hot loop that has to match a contracted C expression
+  goes through it rather than calling `f64::mul_add` directly.
+- Cargo features `fp-contract-fma` / `fp-contract-none` override the
+  default. They are defined on `mafft-types` and forwarded by every
+  crate in the workspace, so `cargo test -p mafft-core --features
+  fp-contract-none` builds the whole dependency graph under the x86-64
+  policy on any host. (`--features` cannot be passed at the
+  virtual-workspace root; use `-p <crate>`.)
+
+### Fixture convention
+
+Where a C-canonical fixture differs between the two policies it is
+committed twice, as `<name>.fma` and `<name>.nofma`, and the test
+helper `fixture_path_fp(name)` picks the one matching `CONTRACTS_FMA`.
+Fixtures without a suffix are identical under both policies. Regenerate
+a `.fma` fixture from a clang/arm64 C build and a `.nofma` one from a
+gcc/x86-64 C build; never from the other.
+
+### What CI checks
+
+- The `Build (x86-64)` and `Build (arm64)` jobs each build the C
+  submodule in-tree and run the full suite (lib, integration and FFI
+  `cross_validate_*` tests) against it, so the claim is checked on both
+  reference platforms. Each job prints an FMA census of the C binaries
+  it just built and runs the `--bl 50` sentinel above, diffing
+  `mafft-rs` against the same-platform C `mafft` wrapper.
+- A `policy-cross-check` job runs the fixture-based (non-FFI) test
+  binaries on the arm64 runner with `--features fp-contract-none`, which
+  checks the `.nofma` fixtures from an arm64 host. The FFI tests are
+  deliberately excluded there: they compare against the C compiled on
+  the same runner, which contracts, so under `fp-contract-none` the two
+  sides would be running different policies.
 
 ## Design decisions that fall out
 
@@ -46,18 +116,25 @@ alignment segmentation and ultimately different output bytes.
 
 ### FP order matters
 
-In several hot loops we use `f64::mul_add` (FMA) explicitly to match
-clang's `FP_CONTRACT`-on behavior. One concrete case
-(`calcW` in `mafft-scoring/src/weighting.rs`):
+In several hot loops the C compiler's contraction policy decides the
+result: with clang on arm64, `a*b + c` becomes a single fused
+multiply-add (one rounding); with gcc on x86-64 it stays two operations
+(two roundings). rust-MAFFT reproduces whichever the host's C build
+does through `mafft_types::fp::fmadd`, which fuses only when
+`CONTRACTS_FMA` is set (see [above](#byte-identity-is-per-platform-build)).
+One concrete case (`calcW` in `mafft-tree/src/weighting.rs`), matching
+clang's `fmadd d2, b, c, d3; fmadd d0, a, b, d2` sequence:
 
 ```rust
-// matches clang FP_CONTRACT=ON asm exactly; without this we drift
-// 5 of 6 BAliBASE residuals
-let s = a.mul_add(b, b.mul_add(c, a * c));
+// a*b + (b*c + a*c), fused exactly where clang fuses it; under the
+// x86-64 policy `fmadd` degrades to the unfused mul + add gcc emits.
+let s = fmadd(a, b, fmadd(b, c, a * c));
 ```
 
-Doing this as a naive `a*b + b*c + a*c` produces visibly different
-weights on `BB40043`, `BB30018`, `BB40010`, `BB30010`, `BB40004`.
+Doing this as a naive `a*b + b*c + a*c` on arm64 produces visibly
+different weights on `BB40043`, `BB30018`, `BB40010`, `BB30010`,
+`BB40004` — and doing it fused on x86-64 would drift from the gcc build
+the same way.
 
 ### Tie-break ordering
 
@@ -77,10 +154,12 @@ produces an off-by-one column on `BB30013`.
 
 ## Cross-validation harness
 
-The byte-identity bar is held in place by ~140 FFI tests
-(`crates/*/tests/cross_validate_*.rs`) that compile MAFFT's C source
-in-tree via `mafft-c-bindings` and call both implementations on the
-same inputs, comparing outputs byte-for-byte.
+The byte-identity bar is held in place by 103 FFI test functions across
+15 files (`crates/*/tests/cross_validate*.rs`) that compile MAFFT's C
+source in-tree via `mafft-c-bindings` and call both implementations on
+the same inputs, comparing outputs byte-for-byte. Because the C is
+compiled on the same machine, these tests check Rust's default policy
+against the matching C build on whichever platform they run.
 
 This is documented in detail on the
 [Cross-validation page](cross-validation.md).
@@ -100,9 +179,11 @@ function first; it's probably weird because the C output requires it.
   own modes / flags, and the byte-identical existing modes must keep
   working.
 - Performance optimisation is fine wherever it doesn't change the
-  observable output. We've shaved cycles via `mul_add` collapsing,
-  pre-computed boundary tables, and LTO+fat codegen — none of which
-  alter the alignment.
+  observable output. We've shaved cycles via pre-computed boundary
+  tables and LTO+fat codegen — none of which alter the alignment.
+  Collapsing arithmetic into `f64::mul_add` is *not* in this category:
+  it changes rounding, so it must go through `fp::fmadd` and be
+  justified by the C assembly on the matching platform.
 - The Python and CLI surfaces can evolve independently of the engine.
   Pretty-printing, progress callbacks, alternate output formats — all
   on the table.
