@@ -16,7 +16,7 @@ name: Publish to crates.io
 #     `cargo-workspaces` honours that flag and skips them.
 #
 # Publish order is computed automatically from the dependency graph:
-#   mafft-sys (stub, no deps) → mafft-types → mafft-io, mafft-scoring →
+#   mafft-sys (stub, no deps) → mafft-types → mafft-scoring → mafft-io →
 #   mafft-fft → mafft-align, mafft-tree → mafft-core → mafft, mafft-rs
 #
 # `--from-git` tells cargo-workspaces to publish the exact commit the

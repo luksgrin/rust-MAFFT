@@ -6,16 +6,33 @@ use mafft_types::SeqType;
 /// residues are A, T, G, C, U or N (case-insensitive), the input is
 /// nucleotide. `N` counts as nucleotide exactly as in C `countATGC`
 /// (`io.c:2065-2090`), so N-rich DNA is not mistaken for protein.
-pub fn detect_seq_type(sequences: &[Vec<u8>]) -> SeqType {
+///
+/// Accepts anything that iterates over byte slices — `&[Vec<u8>]`,
+/// `&Vec<Vec<u8>>`, or an iterator of borrowed rows such as
+/// `set.sequences.iter().map(|s| &s.data)` — so callers need not copy the
+/// residues into a fresh `Vec<Vec<u8>>` just to ask the question.
+///
+/// Only alphabetic bytes are counted (gap characters and everything else
+/// are skipped), so the answer is the same whether the residues have been
+/// through the FASTA reader's normalisation or not.
+pub fn detect_seq_type<I>(sequences: I) -> SeqType
+where
+    I: IntoIterator,
+    I::Item: AsRef<[u8]>,
+{
     detect_seq_type_with_limit(sequences, 1_000_000)
 }
 
-pub fn detect_seq_type_with_limit(sequences: &[Vec<u8>], limit: usize) -> SeqType {
+pub fn detect_seq_type_with_limit<I>(sequences: I, limit: usize) -> SeqType
+where
+    I: IntoIterator,
+    I::Item: AsRef<[u8]>,
+{
     let mut atgc = 0u64;
     let mut total = 0u64;
 
     'outer: for seq in sequences {
-        for &ch in seq {
+        for &ch in seq.as_ref() {
             match ch.to_ascii_uppercase() {
                 b'A' | b'T' | b'G' | b'C' | b'U' | b'N' => {
                     atgc += 1;
