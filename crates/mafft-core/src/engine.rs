@@ -153,10 +153,11 @@ pub struct MafftEngine {
     /// repeats — mirroring C's `parallelizationstrategy = BESTFIRST`.
     pub bestfirst: bool,
     /// `--thread N`. C selects a different refinement implementation on
-    /// `nthread > 0` (`tditeration.c:1433`), and the two converge by
-    /// different rules — see `RefinementParams::per_cycle_convergence`.
+    /// `nthread > 0` (`tditeration.c:1433`): `athread` walks the tree in
+    /// a fixed order and converges/stops by different rules than the
+    /// single-threaded loop — see `RefinementParams::per_cycle_convergence`.
     /// `0` (the default, and what C's script passes for both no `--thread`
-    /// and `--thread 0`) selects the single-threaded rule.
+    /// and `--thread 0`) selects the single-threaded rules.
     pub nthread: usize,
     /// `--oneiteration` "one-vs-others" refinement (C's
     /// `disttbfast -r` → `dooneiteration` in

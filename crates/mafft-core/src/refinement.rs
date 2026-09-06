@@ -79,26 +79,51 @@ pub struct RefinementParams {
     /// refinement). Populated by the caller from
     /// `mafft_tree::generate_subalignments_table` output.
     pub skip_branches: Vec<(bool, bool)>,
-    /// Use C's `athread` convergence rule instead of the single-threaded one.
+    /// Use C's `athread` refinement rules instead of the single-threaded
+    /// `TreeDependentIteration` ones.
     ///
     /// C picks the refinement implementation on `nthread > 0`
-    /// (`tditeration.c:1433`), and the two do not converge the same way:
+    /// (`tditeration.c:1433`). With one worker thread `athread` is fully
+    /// deterministic, but it walks the tree and stops by different rules
+    /// than the single-threaded loop, and every one of them is modelled
+    /// here:
     ///
-    /// * `nthread == 0` — `TreeDependentIteration` checks
+    /// * **Branch order.** `TreeDependentIteration` alternates direction:
+    ///   even cycles walk `l = 0 .. locnjob-2`, odd cycles walk it in
+    ///   reverse (`tditeration.c:1641-1648`). `athread` hands out
+    ///   `branchtable[jobpos]` for `jobpos = 0 .. nbranch` (`:728-730`),
+    ///   and `branchtable` is the identity unless `randomseed != 0`
+    ///   shuffles it (`:522`, default seed 0) — so the ascending order is
+    ///   used in **every** cycle.
+    /// * **Convergence.** `TreeDependentIteration` checks
     ///   `converged >= locnjob * 2` after **every branch** and `goto end`s
-    ///   immediately, mid-cycle (`tditeration.c:2328-2342`).
-    /// * `nthread > 0` — `athread`'s collector checks once per **cycle**
-    ///   whether any branch gained (`maxgain > 0.0`, `tditeration.c:589`);
-    ///   if none did it prints `Converged.` and sets `*collectingpt = -1`,
-    ///   which only takes effect at the top of the next cycle where the
-    ///   `else` arm `pthread_exit`s (`:527-551`). So the converging cycle
-    ///   always runs to completion.
+    ///   immediately, mid-cycle (`:2328-2342`). `athread`'s collector
+    ///   checks once per **cycle** whether any branch gained
+    ///   (`maxgain > 0.0`, `:590`); if none did it prints `Converged.` and
+    ///   sets `*collectingpt = -1`, which only takes effect at the top of
+    ///   the next cycle (`:527-551`), so the converging cycle always runs
+    ///   to completion.
+    /// * **Oscillation.** `TreeDependentIteration` compares each branch's
+    ///   `tscore` with the same branch's score 2, 4, 6 … cycles earlier and
+    ///   exits immediately (`:2345-2372`). `athread` has two different
+    ///   checks, both of which stop at the **end** of the cycle: the worker
+    ///   compares the branch's `tscore` with the same branch's score in
+    ///   **every** earlier cycle `<= iterate-2` (step 1, `:1217-1230`) and
+    ///   raises `*finishpt` (`Converged2.`, `:636-637`); the collector
+    ///   compares the `tscore` of the **last accepted** branch of the cycle
+    ///   (`tscorelist[thread]`, `:1184`) with the same quantity from cycles
+    ///   `1 .. iterate-1` (`Oscillating?`, `:609-619`).
+    /// * **Skipped branches** (`--skipiterate`) are not aligned but still
+    ///   record `tscore = mscore` (`:1064-1067`, `:1234`), so they take part
+    ///   in the `Converged2.` check.
     ///
-    /// That difference is visible in C's own output: at `maxiterate 2`,
-    /// 22 of 85 segments print `Converged.` alone (converged in cycle 0, so
-    /// cycle 1 never starts), 56 print `Converged.` and `Reached 2`
-    /// (converged in the last cycle, so the loop ended normally), and 7
-    /// print `Reached 2` alone.
+    /// The convergence difference is visible in C's own output: at
+    /// `maxiterate 2`, 22 of 85 segments print `Converged.` alone
+    /// (converged in cycle 0, so cycle 1 never starts), 56 print
+    /// `Converged.` and `Reached 2` (converged in the last cycle, so the
+    /// loop ended normally), and 7 print `Reached 2` alone. The order
+    /// difference is what separated `--thread 1` from C on
+    /// `mtb_cds_120x1400.fa` by one gap column in one sequence (`s97`).
     pub per_cycle_convergence: bool,
 }
 
@@ -303,18 +328,22 @@ fn iterative_refine_inner(
     // history[iteration][(step_idx, side)] = score after processing that branch.
     let mut history: Vec<std::collections::HashMap<BranchId, f64>> = Vec::new();
 
+    // `athread` bookkeeping (only read when `params.per_cycle_convergence`):
+    // C's `*finishpt` (`tditeration.c:1230`), and `tscorehistory[iterate]`
+    // = tscore of the cycle's last accepted branch (`:619`).
+    let mut athread_finish = false;
+    let mut athread_tscorehistory: Vec<f64> = Vec::new();
+
     let mut iteration = 0;
     for iter in 0..params.max_iterations {
         iteration = iter + 1;
         let mut any_change = false;
         let mut iter_scores: std::collections::HashMap<BranchId, f64> = std::collections::HashMap::new();
+        // C `tscorelist[thread_no]` (`tditeration.c:1184`): reset per cycle
+        // (`:520`), overwritten on every accept.
+        let mut last_accepted_tscore: Option<f64> = None;
 
-        // C alternates step traversal direction: even → forward, odd → reverse.
-        let step_order: Vec<usize> = if iter % 2 == 0 {
-            (0..nsteps).collect()
-        } else {
-            (0..nsteps).rev().collect()
-        };
+        let step_order = step_order(iter, nsteps, params.per_cycle_convergence);
 
         for &step_idx in &step_order {
             for (side, group1, group2) in &branch_map[step_idx] {
@@ -332,7 +361,11 @@ fn iterative_refine_inner(
                 let skipped = params.skip_branches.get(step_idx)
                     .map(|&(l, r)| if *side == 0 { l } else { r })
                     .unwrap_or(false);
-                if skipped {
+                // `athread` (`tditeration.c:1064-1067`, `:1234`) still computes the
+                // branch's `mscore` and records `tscore = mscore` for the
+                // `Converged2.` check, so in that mode fall through to the
+                // scoring and only skip the re-alignment.
+                if skipped && !params.per_cycle_convergence {
                     iter_scores.insert(branch_id, 0.0);
                     continue;
                 }
@@ -415,12 +448,16 @@ fn iterative_refine_inner(
                     unalign_level: params.unalign_level,
                 });
 
-                counters.visited += 1;
-                let new_seqs = realign_all(
-                    group1, group2, &alignment.sequences, &weights, scoring, &gap,
-                    constraints, params.use_fft, mm_input.as_ref(),
-                    params.minimum_weight,
-                );
+                let new_seqs = if skipped {
+                    None
+                } else {
+                    counters.visited += 1;
+                    realign_all(
+                        group1, group2, &alignment.sequences, &weights, scoring, &gap,
+                        constraints, params.use_fft, mm_input.as_ref(),
+                        params.minimum_weight,
+                    )
+                };
 
                 if let Some((new_seqs, _new_score, dp_impmatch)) = new_seqs {
                     // C's identity check (tditeration.c:2184-2185): compare only
@@ -514,6 +551,7 @@ fn iterative_refine_inner(
                                 }
                             }
                             any_change = true;
+                            last_accepted_tscore = Some(tscore);
                             converged_count = 0;
                             iter_scores.insert(branch_id, tscore);
                         } else {
@@ -537,9 +575,26 @@ fn iterative_refine_inner(
                     return iteration;
                 }
 
-                // Oscillation detection: check if this branch's score matches
-                // the score from 2, 4, 6... iterations ago (same branch).
-                if iter >= 2 {
+                if params.per_cycle_convergence {
+                    // `athread` worker, `tditeration.c:1217-1230`: the
+                    // branch's tscore equals its tscore in ANY earlier cycle
+                    // `ii <= iterate-2` (step 1, not 2) -> `*finishpt = 1`.
+                    // The collector turns that into `Converged2.` at the end
+                    // of the cycle (`:636-637`); the cycle itself completes.
+                    if iter >= 2 && !athread_finish {
+                        let tscore = iter_scores[&branch_id];
+                        for ii in (0..=iter - 2).rev() {
+                            if let Some(&prev_score) = history[ii].get(&branch_id) {
+                                if tscore == prev_score {
+                                    athread_finish = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } else if iter >= 2 {
+                    // Oscillation detection: check if this branch's score matches
+                    // the score from 2, 4, 6... iterations ago (same branch).
                     let tscore = iter_scores[&branch_id];
                     let mut oscillating = false;
                     let mut ii = history.len() as isize - 2; // iterate-2
@@ -571,11 +626,32 @@ fn iterative_refine_inner(
         // converged counter. The BB12019 / BB12029 / BB30018 / BB40043
         // 4-line FFT-NS-i divergences come from that early exit.
         if params.per_cycle_convergence {
-            // C `athread`: no branch gained this cycle -> converged. The
-            // cycle we just finished still counts; the stop lands before the
-            // next one (`tditeration.c:589` + `:527-551`).
-            if !any_change {
-                counters.exit = "converged";
+            // C `athread` collector (`tditeration.c:588-640`). Every stop
+            // here lands before the NEXT cycle (`:527-551`), so the cycle we
+            // just finished always counts.
+            match last_accepted_tscore {
+                // No branch gained (`maxgain > 0.0` false) -> `Converged.`
+                None => {
+                    counters.exit = "converged";
+                    return iteration;
+                }
+                // Some gain: compare the last accepted branch's tscore with
+                // the same quantity from cycles `iterate-1 .. 1` (`:609-619`,
+                // `i > 0`, so cycle 0 is never compared), then record it.
+                Some(tscore) => {
+                    let oscillating = (1..iter).rev().any(|i| athread_tscorehistory[i] == tscore);
+                    athread_tscorehistory.push(tscore);
+                    debug_assert_eq!(athread_tscorehistory.len(), iter + 1);
+                    if oscillating {
+                        counters.exit = "oscillation";
+                        return iteration;
+                    }
+                }
+            }
+            // `*finishpt` raised by a worker this cycle -> `Converged2.`
+            // (`:636-637`).
+            if athread_finish {
+                counters.exit = "converged2";
                 return iteration;
             }
         }
@@ -583,6 +659,23 @@ fn iterative_refine_inner(
     }
 
     iteration
+}
+
+/// The order in which a refinement cycle visits the tree's steps.
+///
+/// C `TreeDependentIteration` alternates direction: even cycles walk
+/// `l = 0 .. locnjob-2`, odd cycles walk it in reverse
+/// (`tditeration.c:1641-1648`). `athread` never does: it consumes
+/// `branchtable[0..nbranch]`, which is the identity permutation under the
+/// default `randomseed = 0` (`:522`, `:728-730`), so every cycle is a
+/// forward walk. This is what separated `--thread 1` from C by one gap
+/// column on `mtb_cds_120x1400.fa`.
+fn step_order(iter: usize, nsteps: usize, athread: bool) -> Vec<usize> {
+    if athread || iter % 2 == 0 {
+        (0..nsteps).collect()
+    } else {
+        (0..nsteps).rev().collect()
+    }
 }
 
 /// Re-align all sequences split into two groups.
