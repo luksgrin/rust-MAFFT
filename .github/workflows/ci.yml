@@ -1,10 +1,26 @@
 name: CI
 
+# Documentation-only changes (docs/, *.md, mkdocs.yml, citation, licences)
+# cannot affect the build and are skipped via `paths-ignore`. Note that
+# `paths-ignore` makes a required status check go *missing* rather than
+# pass; keep that in mind if branch protection is ever enabled.
 on:
   push:
     branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'mkdocs.yml'
+      - 'CITATION.cff'
+      - 'LICENSE*'
+  # Any base branch: stacked PRs (feature -> feature) get checks too.
   pull_request:
-    branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'mkdocs.yml'
+      - 'CITATION.cff'
+      - 'LICENSE*'
 
 jobs:
   # ------------------------------------------------------------------

@@ -4,17 +4,27 @@ name: Documentation
 #
 # Build (and deploy) the mkdocs-material site.
 #
-# Build runs on every push to main/dev and every PR — same coverage as
-# ci.yml / python.yml — so broken cross-links or mkdocstrings import
-# failures are caught before merge. Deploy is gated to events that
-# legitimately represent the published state of the project.
+# Build runs on pushes to main/dev and on PRs (against any base branch)
+# that touch something the site is generated from, so broken
+# cross-links or mkdocstrings import failures are caught before merge.
+# Deploy is gated to events that legitimately represent the published
+# state of the project.
 #
 # Triggers:
-#   * push to main          → build + DEPLOY
-#   * release published     → build + DEPLOY (picks up version bumps)
-#   * workflow_dispatch     → build + DEPLOY (manual override)
-#   * push to dev           → build only (preview/regression check)
-#   * pull_request to main  → build only (preview/regression check)
+#   * push to main          → build + DEPLOY   (when `paths` match)
+#   * release published     → build + DEPLOY   (always; picks up version bumps)
+#   * workflow_dispatch     → build + DEPLOY   (always; manual override)
+#   * push to dev           → build only       (when `paths` match)
+#   * pull_request          → build only       (when `paths` match)
+#
+# `paths` lists everything the rendered site depends on:
+#   * docs/**, mkdocs.yml                 — the site source itself
+#   * crates/mafft-bin/src/**             — docs/cli-reference.md is
+#                                           regenerated from `mafft-rs --help`
+#   * crates/pymafft/**                   — mkdocstrings introspects the
+#                                           installed pymafft wheel
+#   * scripts/gen-cli-reference.sh        — the CLI-reference generator
+#   * .github/workflows/docs.yml          — this file
 #
 # The site source lives on `main` under `docs/` + `mkdocs.yml`. The
 # rendered HTML is published to GitHub Pages via the official
@@ -26,8 +36,21 @@ name: Documentation
 on:
   push:
     branches: [main, dev]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'crates/mafft-bin/src/**'
+      - 'crates/pymafft/**'
+      - 'scripts/gen-cli-reference.sh'
+      - '.github/workflows/docs.yml'
   pull_request:
-    branches: [main, dev]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'crates/mafft-bin/src/**'
+      - 'crates/pymafft/**'
+      - 'scripts/gen-cli-reference.sh'
+      - '.github/workflows/docs.yml'
   release:
     types: [published]
   workflow_dispatch:
