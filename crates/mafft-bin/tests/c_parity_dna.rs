@@ -25,6 +25,10 @@
 //!   substitutions and indels. Uniform-random or fixture-only corpora did
 //!   not reliably surface the gap-scale bug; this shape did (16/30 before
 //!   the fix), so it is the regression guard for that whole class.
+//! * `panaroo_tiny_dna_clusters/` — five real 4-sequence gene clusters from
+//!   the panaroo-rs tiny/core parity corpus (issue #1), the exact workload
+//!   panaroo-rs hands to MAFFT: `--auto --adjustdirection --thread 1 --nuc`.
+//!   See the README in that directory for provenance and regeneration.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -145,5 +149,100 @@ fn r2_real_ancestor_clusters_match_c_under_auto() {
         "{} of {} clusters differ from C MAFFT 7.526: {failures:?}",
         failures.len(),
         inputs.len()
+    );
+}
+
+/// The five panaroo-rs clusters, sorted, with a sanity check on the count.
+fn panaroo_cluster_inputs() -> Vec<PathBuf> {
+    let dir = fixtures().join("panaroo_tiny_dna_clusters");
+    let mut inputs: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("panaroo_tiny_dna_clusters")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "fa"))
+        .collect();
+    inputs.sort();
+    assert_eq!(inputs.len(), 5, "expected 5 clusters in {}", dir.display());
+    inputs
+}
+
+/// Run every panaroo cluster through `run_from` with `flags` and compare
+/// against the reference file named by `expected_ext`.
+fn panaroo_clusters_match(flags: &[&str], expected_ext: &str) {
+    let inputs = panaroo_cluster_inputs();
+    let mut failures = Vec::new();
+    for input in &inputs {
+        let expected = input.with_extension(expected_ext);
+        let got = run(flags, input);
+        let want = std::fs::read(&expected).expect("read expected");
+        if got != want {
+            failures.push(input.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} panaroo clusters differ from C MAFFT 7.526 \
+         ({flags:?}, .{expected_ext}): {failures:?}",
+        failures.len(),
+        inputs.len()
+    );
+}
+
+/// panaroo-rs invokes MAFFT once per gene family as
+/// `mafft --auto --adjustdirection --thread 1 --nuc <cluster.fa>`. Every
+/// cluster must be byte-identical to the in-tree C reference build.
+#[test]
+fn panaroo_tiny_clusters_match_c_under_panaroo_argv() {
+    panaroo_clusters_match(
+        &["--auto", "--adjustdirection", "--thread", "1", "--nuc"],
+        "expected",
+    );
+}
+
+/// Same clusters without `--thread 1`: C takes its single-threaded
+/// `TreeDependentIteration` path instead of `athread`, whose convergence
+/// semantics differ (see `fftnsi_120seq_dna_matches_c`). The two references
+/// are byte-identical on these inputs today; pinning both keeps either
+/// C path from drifting unnoticed.
+#[test]
+fn panaroo_tiny_clusters_match_c_without_thread() {
+    panaroo_clusters_match(&["--auto", "--adjustdirection", "--nuc"], "nothread.expected");
+}
+
+/// The in-memory entry point on the panaroo workload: parse each cluster
+/// with `read_fasta`, align it via `run_from_seqs` with the panaroo argv (no
+/// input path), and require the (name, row) list to equal the C reference
+/// parsed the same way. `read_fasta` keeps `-`, keeps the full header
+/// (including the `_R_` prefix `--adjustdirection` adds) and folds DNA to
+/// lowercase, which is already the case C writes, so the comparison is exact.
+#[test]
+fn panaroo_tiny_clusters_run_from_seqs_matches_c() {
+    use mafft_rs::{run_from_seqs, SilentProgress};
+
+    let argv: Vec<OsString> =
+        ["mafft-rs", "--quiet", "--auto", "--adjustdirection", "--thread", "1", "--nuc"]
+            .iter()
+            .map(OsString::from)
+            .collect();
+    let mut failures = Vec::new();
+    for input in &panaroo_cluster_inputs() {
+        let name = input.file_name().unwrap().to_string_lossy().into_owned();
+        let set = mafft_io::read_fasta(input).expect("read cluster");
+        let msa = run_from_seqs(argv.clone(), &set, &SilentProgress)
+            .unwrap_or_else(|e| panic!("run_from_seqs {name}: {}", e.message()));
+        let got: Vec<(String, Vec<u8>)> = msa.names.into_iter().zip(msa.sequences).collect();
+        let want: Vec<(String, Vec<u8>)> = mafft_io::read_fasta(input.with_extension("expected"))
+            .expect("read expected")
+            .sequences
+            .into_iter()
+            .map(|s| (s.name, s.data))
+            .collect();
+        if got != want {
+            failures.push(name);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of 5 panaroo clusters differ from C MAFFT 7.526 via run_from_seqs: {failures:?}",
+        failures.len()
     );
 }
