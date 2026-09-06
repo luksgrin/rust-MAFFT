@@ -185,6 +185,22 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
 
 ### Fixed
 
+- **FFT-NS-i's last refinement segment could start one column early.**
+  `searchAnchors` (C `mltaln9.c`) slides a 20-column window over the
+  alignment with `for( i=1; i<len-divWinSize; i++ )` and, when a
+  high-conservation region is still open at the end, closes it with
+  `seg->end = i` — the loop's *exit* value `len - divWinSize`. The port
+  closed it with the last *iterated* column (`len - divWinSize - 1`), which
+  puts the trailing anchor one column to the left whenever `start + len` is
+  even. Segments 1..n-1 were unaffected, so this only showed on inputs whose
+  final anchor region runs to the end of the alignment: the first 8
+  sequences of `mtb_cds_120x1400.fa` under `--retree 2 --maxiterate 1000`
+  (C anchor 1412, ours 1411; one gap column moved in `s5`, with and without
+  `--nofft` / `--thread 1`), while 5-7, 9-12, 20, 30 and all 120 sequences
+  were already identical. Pinned by
+  `c_parity_dna::fftnsi_first8_dna_trailing_anchor_matches_c`
+  (`crates/mafft-bin/tests/fixtures/mtb_cds_first8.fa`, expected bytes from
+  the in-tree arm64 build) and a unit test on the flush index.
 - **DNA pairwise gap penalties were a third of C MAFFT's, so L-INS-i /
   G-INS-i / E-INS-i diverged on nucleotide input.** C scales the pair-phase
   gap penalties by `3 * 600/1000` for nucleotide and `600/1000` for protein
