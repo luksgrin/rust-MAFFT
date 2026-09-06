@@ -66,10 +66,16 @@ Every progressive merge step matches in score and width; every refinement iterat
 | `--auto` (small/medium/large brackets)      | match   | match      | 0    | ✓ byte-exact |
 | `--seed FILE`, `--seedtable FILE`           | match   | match      | 0    | ✓ byte-exact |
 | `--treein`, `--treeout`, `--treein --treeout` | match | match      | 0    | ✓ byte-exact |
-| RNA NW (`--nofft samplerna`)                | 360     | 360        | 0‡   | ✓ byte-exact (case-insensitive) |
+| RNA NW (`--nofft samplerna`)                | 360     | 360        | 0    | ✓ byte-exact |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0‡   | ✓ byte-exact (needs `mxscarnamod`) |
+| `--nuc`, `--amino` (forced sequence type)   | match   | match      | 0    | ✓ byte-exact |
 
-‡ For RNA / Q-INS-i: we uppercase residues; C preserves case. With `diff -i` RNA produces 0 lines.
+‡ Q-INS-i requires the external `mxscarnamod` binary.
+
+Residue case matches C MAFFT: nucleotide output is lowercased and protein
+output uppercased at read time (C `io.c:1462-1467`, `io.c:1755`), driven by
+the detected type or by `--nuc` / `--amino`; `--anysymbol` / `--preservecase`
+keep the input's own case.
 
 ### BBaliBase 3 parity sweep
 
@@ -103,7 +109,7 @@ cd rust-MAFFT
 cargo build --release
 ```
 
-The binary is at `target/release/mafft-rs`. To match C MAFFT's symlink-based shortcuts (`linsi` / `ginsi` / `einsi` / `fftns` / `fftnsi` / `nwns` / `nwnsi` / `qinsi` / `xinsi`), drop the binary on your `PATH` and create symlinks:
+The binary is at `target/release/mafft-rs`. By default it mirrors the floating-point contraction of the reference C build for your architecture (fused multiply-add on aarch64, none elsewhere — see [Key design decisions](#key-design-decisions)); to reproduce the *other* architecture's C output, build with `cargo build --release -p mafft-rs --features fp-contract-none` (or `fp-contract-fma`). To match C MAFFT's symlink-based shortcuts (`linsi` / `ginsi` / `einsi` / `fftns` / `fftnsi` / `nwns` / `nwnsi` / `qinsi` / `xinsi`), drop the binary on your `PATH` and create symlinks:
 
 ```bash
 ln -s mafft-rs linsi
@@ -126,6 +132,11 @@ cargo test --workspace --exclude pymafft --lib
 # Build C reference for FFI cross-validation (optional; cargo test --tests
 # triggers this automatically via mafft-c-bindings' build.rs)
 make -C mafft-upstream/core
+
+# Run the suite under the other floating-point contraction policy (fixtures
+# switch to their `.nofma` / `.fma` variants; the FFI tests that compare
+# against the in-tree C build skip when the policies do not match)
+cargo test --workspace --exclude pymafft --release --features fp-contract-none
 ```
 
 ### Python bindings
@@ -348,7 +359,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 - **`num_complex::Complex64`** replaces the C `Fukusosuu` struct. A hand-ported bit-for-bit Cooley-Tukey FFT in `mafft-fft/src/fft_c_compat.rs` matches C's `fft.c` rounding exactly. Off-the-shelf FFT libraries vary in butterfly grouping order, producing 1-ULP correlation differences that flip FFT-anchor selection on flat-landscape matrices; the hand port is required for byte-identity.
 
-- **`f64` DP matrices with `f64::mul_add` (FMA).** The substitution matrix is stored as `Vec<Vec<i32>>` and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic (matches C's `n_dis_consweight_multi`). gcc/clang `-O3` with `FP_CONTRACT=on` fuse `a + b * c` into a single-rounding FMA; plain Rust `+=` produces two roundings. Rust uses `mul_add` in `match_calc_row` and gap-frequency-modulated penalties to match C bit-for-bit.
+- **`f64` DP matrices with a per-target floating-point contraction policy.** The substitution matrix is stored as `Vec<Vec<i32>>` and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic (matches C's `n_dis_consweight_multi`). Whether `a + b * c` rounds once (fused multiply-add) or twice is decided by the C compiler, and C MAFFT 7.526 is therefore not bit-reproducible across architectures: arm64 clang contracts (~1030 `fmadd` per engine binary), baseline x86-64 gcc (bioconda) emits none, and on the 36-seq sample `--bl 50` gives width 712 vs 738 respectively. Every contraction-sensitive site goes through `mafft_types::fp::fmadd`, which is `mul_add` when `CONTRACTS_FMA` is set and plain `a * b + c` otherwise. The default mirrors the reference C build of the target you run on (fused on aarch64, not fused elsewhere); the `fp-contract-fma` / `fp-contract-none` cargo features force either policy. Fixtures whose bytes depend on it are committed as `<name>.fma` / `<name>.nofma`. `scripts/fma_census.sh <dir>` counts the fused instructions in any C MAFFT install so you can check which build you are comparing against.
 
 - **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring. Sequential float summation is preserved at accept/reject decision boundaries to keep refinement output deterministic across thread counts.
 

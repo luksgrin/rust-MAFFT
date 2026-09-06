@@ -154,8 +154,19 @@ fn bl50_alignable_reagion_matches_c() {
 /// compares the inner DP against C and would re-fire if any future
 /// change reintroduces a 1-ULP FMA-vs-non-FMA accumulation
 /// difference.
+///
+/// FP-contraction note: the C side is compiled in-tree on this machine, so
+/// on arm64 it fuses `a*b+c` (clang). The cell-by-cell comparison is only
+/// meaningful when Rust fuses too; under `--features fp-contract-none` the
+/// step-24 DP legitimately diverges from the fused C (that divergence *is*
+/// the 712-vs-738 `--bl 50` architecture split), so the test is skipped.
 #[test]
 fn bl50_step24_profile_dp_matches_c_a_align() {
+    if !mafft_types::fp::CONTRACTS_FMA {
+        eprintln!("skipped: compares against in-tree C compiled with FMA contraction; \
+                   this build uses fp-contract-none (see mafft_types::fp)");
+        return;
+    }
     let _guard = C_MUTEX.lock().unwrap();
 
     // Build the same topology the engine uses for FFT-NS-2 (ktuple

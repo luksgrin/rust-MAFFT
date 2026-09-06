@@ -15,6 +15,21 @@ readme = "README.md"
 mafft-types = { path = "../mafft-types", version = "0.1.0" }
 mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
 
+# Floating-point contraction policy (see `mafft_types::fp`). Mutually
+# exclusive; with neither, the build fuses `a*b+c` on aarch64 (mirroring the
+# arm64 clang reference C build) and not elsewhere (mirroring baseline
+# x86-64 gcc). Forwarded to every dependency that carries FP arithmetic so
+# `--features fp-contract-none` on any crate switches the whole stack.
+[features]
+fp-contract-fma = [
+    "mafft-types/fp-contract-fma",
+    "mafft-scoring/fp-contract-fma",
+]
+fp-contract-none = [
+    "mafft-types/fp-contract-none",
+    "mafft-scoring/fp-contract-none",
+]
+
 [dev-dependencies]
 # See note in mafft-scoring/Cargo.toml — alias preserves `use mafft_sys`
 # in cross_validate_* test files while the real crate is internal-only.

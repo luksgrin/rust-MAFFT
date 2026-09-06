@@ -3,6 +3,7 @@
 /// Ports the C `counteff_simple_double()` from mltaln9.c (global weights)
 /// and `weightFromABranch()` from treeOperation.c (per-branch weights).
 
+use mafft_types::fp::fmadd;
 use crate::topology::Topology;
 
 /// Small constant added to all weights to prevent zero weights.
@@ -465,8 +466,11 @@ fn calc_w(nodes: &[WNode], ob: usize, op: usize, nseq: usize) -> f64 {
     // producing a 1-2 ULP drift in `s` that cascades into calcW's value and
     // (since calcW feeds branch_weight which multiplies through every leaf
     // path) into the per-cluster eff used for cpmx — surfaces as the
-    // BB30018/BB40043/BB40010 1-column residue shifts.
-    let s = a.mul_add(b, b.mul_add(c, a * c));
+    // BB30018/BB40043/BB40010 1-column residue shifts. `fmadd` reproduces
+    // clang's sequence on the fused policy and collapses to the plain
+    // mul+add that baseline x86-64 gcc emits under `fp-contract-none`
+    // (see `mafft_types::fp`).
+    let s = fmadd(a, b, fmadd(b, c, a * c));
     if s == 0.0 { return 1.0; }
 
     let value = (a * b * (c + a) * (c + b) / (c * (a + b) * s)).sqrt();

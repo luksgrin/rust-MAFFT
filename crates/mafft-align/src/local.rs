@@ -2,7 +2,151 @@
 ///
 /// Ports the C `L__align11()` from Lalign11.c.
 
+use std::cell::RefCell;
+
 use crate::dp::{AlignOp, Alignment, GapModel};
+
+/// Per-thread scratch buffers for [`local_align`], reused across calls.
+///
+/// `L__align11` runs once per sequence pair in the pairwise (L-INS-i)
+/// stage, so the O(n*m) traceback matrix and the O(m) row buffers are the
+/// dominant allocations. Pooling them mirrors C's `static TLS` buffers in
+/// `Lalign11.c`. Every cell that is read is written earlier in the same
+/// call (boundary init or DP body), so stale data from a previous call
+/// cannot leak into the result.
+#[derive(Default)]
+struct LocalScratch {
+    /// `amino_map[seq2[j]]` for `j in 0..m`, or `usize::MAX` when the
+    /// residue is outside the scored alphabet (so `row.get(idx)` is `None`).
+    seq2_idx: Vec<usize>,
+    initverticalw: Vec<f64>,
+    currentw: Vec<f64>,
+    previousw: Vec<f64>,
+    m_arr: Vec<f64>,
+    mp_arr: Vec<i32>,
+    /// Row-major `(n + 1) x (m + 1)` traceback matrix.
+    ijp: Vec<i32>,
+}
+
+impl LocalScratch {
+    const fn new() -> Self {
+        Self {
+            seq2_idx: Vec::new(),
+            initverticalw: Vec::new(),
+            currentw: Vec::new(),
+            previousw: Vec::new(),
+            m_arr: Vec::new(),
+            mp_arr: Vec::new(),
+            ijp: Vec::new(),
+        }
+    }
+}
+
+thread_local! {
+    static LOCAL_SCRATCH: RefCell<LocalScratch> = const { RefCell::new(LocalScratch::new()) };
+}
+
+/// Traceback code for a local reset (`Lalign11.c` `localstop`).
+const LOCALSTOP: i32 = i32::MIN;
+
+/// One row of the `L__align11` DP: the `for (j=1; j<=lgth2; j++)` body of
+/// `Lalign11.c:208`. `HAS_ROW` is true when row `i` has a scoring-matrix
+/// row (`i < n` and `seq1[i]` is in the scored alphabet); otherwise the
+/// match term is C's null-terminator score, emulated as `0.0`.
+///
+/// The match score is added here (`match + wm`) instead of pre-filling
+/// `currentw` with match scores and then doing `currentw[j] += wm`; the
+/// two operands and their order are unchanged, so the result is
+/// bit-identical while the separate row-fill pass disappears.
+///
+/// Bounds: the caller re-slices every buffer to exactly `m + 1` cells
+/// (`seq2_idx` to exactly `m`) with checked `[..]` slicing before each
+/// call, and `j` runs over `1..m + 1`, so all indexing below is in range;
+/// the `debug_assert!`s pin those lengths.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn local_dp_row<const HAS_ROW: bool>(
+    i: usize,
+    m: usize,
+    f_open: f64,
+    f_ext: f64,
+    localthr: f64,
+    score_row: &[f64],
+    seq2_idx: &[usize],
+    prev: &[f64],
+    cur: &mut [f64],
+    m_state: &mut [f64],
+    mp_state: &mut [i32],
+    ijp_row: &mut [i32],
+    maxwm: &mut f64,
+    endali: &mut i32,
+    endalj: &mut i32,
+) {
+    debug_assert_eq!(prev.len(), m + 1);
+    debug_assert_eq!(cur.len(), m + 1);
+    debug_assert_eq!(m_state.len(), m + 1);
+    debug_assert_eq!(mp_state.len(), m + 1);
+    debug_assert_eq!(ijp_row.len(), m + 1);
+    debug_assert!(!HAS_ROW || seq2_idx.len() == m);
+
+    let mut mi = prev[0];
+    let mut mpi: i32 = 0;
+    for j in 1..m + 1 {
+        let prev_diag = prev[j - 1];
+        let mut wm = prev_diag;
+        let mut trace: i32 = 0;
+
+        let g = mi + f_open;
+        if g > wm {
+            wm = g;
+            trace = -((j as i32) - mpi);
+        }
+        if prev_diag > mi {
+            mi = prev_diag;
+            mpi = (j as i32) - 1;
+        }
+        mi += f_ext;
+
+        let m_j = m_state[j];
+        let g = m_j + f_open;
+        if g > wm {
+            wm = g;
+            trace = (i as i32) - mp_state[j];
+        }
+        let m_new = if prev_diag > m_j {
+            mp_state[j] = (i as i32) - 1;
+            prev_diag
+        } else {
+            m_j
+        };
+        m_state[j] = m_new + f_ext;
+
+        if *maxwm < wm {
+            *maxwm = wm;
+            *endali = i as i32;
+            *endalj = j as i32;
+        }
+        if wm < localthr {
+            trace = LOCALSTOP;
+            wm = localthr;
+        }
+        ijp_row[j] = trace;
+
+        // Match term: `mtx[seq1[i]][seq2[j]]` for real cells, 0 at the
+        // boundary column `j == m` and for out-of-alphabet residues (C
+        // reads the null terminator there). `seq2_idx[j]` is `usize::MAX`
+        // for unmapped residues, so `get` yields `None` -> 0.0.
+        let match_score = if HAS_ROW && j < m {
+            match score_row.get(seq2_idx[j]) {
+                Some(&s) => s,
+                None => 0.0,
+            }
+        } else {
+            0.0
+        };
+        cur[j] = match_score + wm;
+    }
+}
 
 /// Result of a local alignment, including the offsets into original sequences.
 #[derive(Debug, Clone)]
@@ -79,31 +223,58 @@ pub fn local_align(
     let localthr = -score_offset * 600.0;
 
     let n_alpha = matrix.len();
-    let score_at = |c1: u8, c2: u8| -> f64 {
-        let i = amino_map[c1 as usize] as usize;
-        let j = amino_map[c2 as usize] as usize;
-        if i < n_alpha && j < n_alpha {
-            matrix[i][j]
-        } else {
-            0.0
-        }
+    // Residue -> alphabet index, or `usize::MAX` when the residue is not in
+    // the scored alphabet (mirrors the `j < n_alpha` guard of the original
+    // `score_at`; `row.get(usize::MAX)` is always `None`).
+    let map_idx = |c: u8| -> usize {
+        let idx = amino_map[c as usize] as usize;
+        if idx < n_alpha { idx } else { usize::MAX }
+    };
+    // Scoring-matrix row for a seq1 residue, or `None` if unmapped.
+    let row_for = |c: u8| -> Option<&[f64]> {
+        let idx = amino_map[c as usize] as usize;
+        if idx < n_alpha { Some(matrix[idx].as_slice()) } else { None }
     };
 
+    let LocalScratch {
+        mut seq2_idx,
+        mut initverticalw,
+        mut currentw,
+        mut previousw,
+        mut m_arr,
+        mut mp_arr,
+        mut ijp,
+    } = LOCAL_SCRATCH.with_borrow_mut(std::mem::take);
+
+    seq2_idx.clear();
+    seq2_idx.extend(seq2.iter().map(|&c| map_idx(c)));
+
     // initverticalw[k] = match(seq1[k], seq2[0]) for k in 0..n; 0 at k=n
-    let mut initverticalw = vec![0.0f64; n + 1];
+    initverticalw.clear();
+    initverticalw.resize(n + 1, 0.0);
+    let seq2_0 = seq2_idx[0];
     for k in 0..n {
-        initverticalw[k] = score_at(seq1[k], seq2[0]);
+        initverticalw[k] = match row_for(seq1[k]) {
+            Some(row) => row.get(seq2_0).copied().unwrap_or(0.0),
+            None => 0.0,
+        };
     }
     // currentw[k] = match(seq1[0], seq2[k]) initially — row 0
-    let mut currentw = vec![0.0f64; m + 1];
-    let mut previousw = vec![0.0f64; m + 1];
-    for k in 0..m {
-        currentw[k] = score_at(seq1[0], seq2[k]);
+    currentw.clear();
+    currentw.resize(m + 1, 0.0);
+    previousw.clear();
+    previousw.resize(m + 1, 0.0);
+    if let Some(row) = row_for(seq1[0]) {
+        for k in 0..m {
+            currentw[k] = row.get(seq2_idx[k]).copied().unwrap_or(0.0);
+        }
     }
 
     // m[j] / mp[j]: best H(k, j-1) + (i-k-1)*ext (k < i)
-    let mut m_arr = vec![0.0f64; m + 1];
-    let mut mp_arr = vec![0i32; m + 1];
+    m_arr.clear();
+    m_arr.resize(m + 1, 0.0);
+    mp_arr.clear();
+    mp_arr.resize(m + 1, 0);
     for j in 1..=m {
         if j - 1 < m {
             m_arr[j] = currentw[j - 1];
@@ -111,10 +282,16 @@ pub fn local_align(
         mp_arr[j] = 0;
     }
 
-    const LOCALSTOP: i32 = i32::MIN;
-    let mut ijp = vec![vec![0i32; m + 1]; n + 1];
-    for i in 0..=n { ijp[i][0] = LOCALSTOP; }
-    for j in 0..=m { ijp[0][j] = LOCALSTOP; }
+    // Row-major (n+1) x (m+1) traceback matrix. Pooled and grow-only: every
+    // cell the traceback reads (0 < i <= n, 0 < j <= m, plus column 0 and
+    // row 0) is written first by the boundary init below or by
+    // `local_dp_row`, so stale cells from a larger previous call are never
+    // observed.
+    let ijp_stride = m + 1;
+    let cells = (n + 1) * ijp_stride;
+    if ijp.len() < cells { ijp.resize(cells, 0); }
+    for i in 0..=n { ijp[i * ijp_stride] = LOCALSTOP; }
+    for j in 0..=m { ijp[j] = LOCALSTOP; }
 
     let mut maxwm = f64::NEG_INFINITY;
     let mut endali = 0i32;
@@ -122,63 +299,43 @@ pub fn local_align(
 
     for i in 1..=n {
         std::mem::swap(&mut previousw, &mut currentw);
-        // Fill currentw with match scores for row i (0 at boundary i=n)
-        if i < n {
-            for k in 0..m {
-                currentw[k] = score_at(seq1[i], seq2[k]);
-            }
-        } else {
-            for k in 0..m { currentw[k] = 0.0; }
-        }
-        currentw[m] = 0.0; // boundary cell
 
         // currentw[0] = initverticalw[i] (row column-0 match score)
         currentw[0] = if i < n { initverticalw[i] } else { 0.0 };
 
-        let mut mi = previousw[0];
-        let mut mpi: i32 = 0;
+        // Scoring-matrix row for seq1[i]; `None` at the boundary row i == n
+        // (C reads the null terminator: match score 0) or if unmapped.
+        let score_row = if i < n { row_for(seq1[i]) } else { None };
 
-        for j in 1..=m {
-            let mut wm = previousw[j - 1];
-            ijp[i][j] = 0;
-
-            let g = mi + f_open;
-            if g > wm {
-                wm = g;
-                ijp[i][j] = -((j as i32) - mpi);
-            }
-            if previousw[j - 1] > mi {
-                mi = previousw[j - 1];
-                mpi = (j as i32) - 1;
-            }
-            mi += f_ext;
-
-            let g = m_arr[j] + f_open;
-            if g > wm {
-                wm = g;
-                ijp[i][j] = (i as i32) - mp_arr[j];
-            }
-            if previousw[j - 1] > m_arr[j] {
-                m_arr[j] = previousw[j - 1];
-                mp_arr[j] = (i as i32) - 1;
-            }
-            m_arr[j] += f_ext;
-
-            if maxwm < wm {
-                maxwm = wm;
-                endali = i as i32;
-                endalj = j as i32;
-            }
-            if wm < localthr {
-                ijp[i][j] = LOCALSTOP;
-                wm = localthr;
-            }
-            currentw[j] += wm;
+        // Exact-length views (checked slicing) so the row kernel's indices
+        // are in bounds by construction.
+        let row_start = i * ijp_stride;
+        let ijp_row = &mut ijp[row_start..row_start + ijp_stride];
+        let prev = &previousw[..=m];
+        let cur = &mut currentw[..=m];
+        let m_state = &mut m_arr[..=m];
+        let mp_state = &mut mp_arr[..=m];
+        match score_row {
+            Some(row) => local_dp_row::<true>(
+                i, m, f_open, f_ext, localthr, row, &seq2_idx[..m],
+                prev, cur, m_state, mp_state, ijp_row,
+                &mut maxwm, &mut endali, &mut endalj,
+            ),
+            None => local_dp_row::<false>(
+                i, m, f_open, f_ext, localthr, &[], &[],
+                prev, cur, m_state, mp_state, ijp_row,
+                &mut maxwm, &mut endali, &mut endalj,
+            ),
         }
     }
 
     // Empty alignment: no positive cell found
     if endali == 0 || endalj == 0 || maxwm <= 0.0 {
+        LOCAL_SCRATCH.with_borrow_mut(|s| {
+            *s = LocalScratch {
+                seq2_idx, initverticalw, currentw, previousw, m_arr, mp_arr, ijp,
+            };
+        });
         return LocalAlignment {
             alignment: Alignment {
                 seq1: Vec::new(),
@@ -200,9 +357,10 @@ pub fn local_align(
     // by stepping back one cell to (endali-1, endalj-1) effectively. The
     // `*curpt += wm` at (endali, endalj) added wm to a 0 match, so the
     // returned `score = maxwm` already equals H(endali-1, endalj-1).
-    let mut ops: Vec<AlignOp> = Vec::new();
-    let mut a1: Vec<u8> = Vec::new();
-    let mut a2: Vec<u8> = Vec::new();
+    let traceback_cap = endali.max(0) as usize + endalj.max(0) as usize;
+    let mut ops: Vec<AlignOp> = Vec::with_capacity(traceback_cap);
+    let mut a1: Vec<u8> = Vec::with_capacity(traceback_cap);
+    let mut a2: Vec<u8> = Vec::with_capacity(traceback_cap);
     let mut iin = endali;
     let mut jin = endalj;
     // If we ended at the boundary (i=n or j=m), there's no residue at
@@ -217,7 +375,7 @@ pub fn local_align(
     loop {
         if iin <= 0 || jin <= 0 { break; }
         if (iin as usize) > n || (jin as usize) > m { break; }
-        let v = ijp[iin as usize][jin as usize];
+        let v = ijp[iin as usize * ijp_stride + jin as usize];
 
         if v == LOCALSTOP {
             // No residue emitted at the localstop cell; chain ends.
@@ -272,7 +430,7 @@ pub fn local_align(
         last_jfi = jfi;
 
         if ifi <= 0 || jfi <= 0
-            || ijp[ifi as usize][jfi as usize] == LOCALSTOP
+            || ijp[ifi as usize * ijp_stride + jfi as usize] == LOCALSTOP
         {
             break;
         }
@@ -286,6 +444,12 @@ pub fn local_align(
 
     let offset1 = last_ifi.max(0) as usize;
     let offset2 = last_jfi.max(0) as usize;
+
+    LOCAL_SCRATCH.with_borrow_mut(|s| {
+        *s = LocalScratch {
+            seq2_idx, initverticalw, currentw, previousw, m_arr, mp_arr, ijp,
+        };
+    });
 
     LocalAlignment {
         alignment: Alignment {

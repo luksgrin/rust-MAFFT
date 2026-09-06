@@ -18,6 +18,7 @@
 ///   traverse backward (N-1 → 0). Within each step, k always goes 0→1.
 /// - Total branches per iteration: (nseq-1)*2 - 1.
 
+use mafft_types::fp::fmadd;
 use mafft_align::{
     profile_align, profile_align_imp,
     profile_align_imp_with_boundary, profile_align_imp_multimtx,
@@ -78,6 +79,27 @@ pub struct RefinementParams {
     /// refinement). Populated by the caller from
     /// `mafft_tree::generate_subalignments_table` output.
     pub skip_branches: Vec<(bool, bool)>,
+    /// Use C's `athread` convergence rule instead of the single-threaded one.
+    ///
+    /// C picks the refinement implementation on `nthread > 0`
+    /// (`tditeration.c:1433`), and the two do not converge the same way:
+    ///
+    /// * `nthread == 0` — `TreeDependentIteration` checks
+    ///   `converged >= locnjob * 2` after **every branch** and `goto end`s
+    ///   immediately, mid-cycle (`tditeration.c:2328-2342`).
+    /// * `nthread > 0` — `athread`'s collector checks once per **cycle**
+    ///   whether any branch gained (`maxgain > 0.0`, `tditeration.c:589`);
+    ///   if none did it prints `Converged.` and sets `*collectingpt = -1`,
+    ///   which only takes effect at the top of the next cycle where the
+    ///   `else` arm `pthread_exit`s (`:527-551`). So the converging cycle
+    ///   always runs to completion.
+    ///
+    /// That difference is visible in C's own output: at `maxiterate 2`,
+    /// 22 of 85 segments print `Converged.` alone (converged in cycle 0, so
+    /// cycle 1 never starts), 56 print `Converged.` and `Reached 2`
+    /// (converged in the last cycle, so the loop ended normally), and 7
+    /// print `Reached 2` alone.
+    pub per_cycle_convergence: bool,
 }
 
 impl Default for RefinementParams {
@@ -92,6 +114,7 @@ impl Default for RefinementParams {
             minimum_weight: 0.00001,
             bestfirst: false,
             skip_branches: Vec::new(),
+            per_cycle_convergence: false,
         }
     }
 }
@@ -175,6 +198,34 @@ fn build_branch_map(
     branch_map
 }
 
+/// Is `MAFFT_RS_REFINE_STATS` set? When it is, the refinement entry points
+/// print a one-line work summary to stderr.
+///
+/// C's `dvtditr` reports its refinement work directly (`Segment n/N`, then a
+/// `IIII-BBBB-S ... accepted/rejected` line per branch), so the two sides can
+/// be compared cycle-for-cycle. Rust had no equivalent, which made
+/// "did both run the same number of cycles?" unanswerable from outside and
+/// any speed comparison meaningless. Off by default, so CLI output and the
+/// `Progress` sink are unchanged.
+#[derive(Default)]
+struct RefineCounters {
+    /// Branches visited (the re-alignment DP ran). Comparable to the count of
+    /// `IIII-BBBB-S` lines C's `dvtditr` prints.
+    visited: usize,
+    /// Of those, branches whose re-alignment actually changed the columns —
+    /// C prints these as `accepted.`/`rejected.` rather than `identical`.
+    branches: usize,
+    accepted: usize,
+    /// Why the cycle loop ended: `maxiter`, `converged` or `oscillation`.
+    exit: &'static str,
+}
+
+fn refine_stats_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MAFFT_RS_REFINE_STATS").is_some())
+}
+
 /// Iteratively refine a multiple alignment.
 ///
 /// At each tree branch, splits ALL sequences into two groups (subtree vs
@@ -186,8 +237,38 @@ pub fn iterative_refine(
     params: &RefinementParams,
     constraints: Option<&LocalHomologyTable>,
 ) -> usize {
+    // Thin reporting wrapper so every exit path (max-iterations, convergence,
+    // oscillation) is counted in one place — see `refine_stats_enabled`.
+    let nseq0 = alignment.nseq();
+    let len0 = alignment.sequences.first().map_or(0, |s| s.len());
+    let mut counters = RefineCounters { exit: "maxiter", ..Default::default() };
+    let iterations =
+        iterative_refine_inner(alignment, topology, scoring, params, constraints, &mut counters);
+    if refine_stats_enabled() {
+        eprintln!(
+            "refine: nseq={nseq0} len={len0} cycles={iterations}/{} visited={} changed={} accepted={} exit={}",
+            params.max_iterations, counters.visited, counters.branches, counters.accepted, counters.exit,
+        );
+    }
+    iterations
+}
+
+fn iterative_refine_inner(
+    alignment: &mut MultipleAlignment,
+    topology: &Topology,
+    scoring: &ScoringContext,
+    params: &RefinementParams,
+    constraints: Option<&LocalHomologyTable>,
+    counters: &mut RefineCounters,
+) -> usize {
     let nseq = alignment.nseq();
-    if nseq <= 2 || topology.steps.is_empty() {
+    // C refines two sequences too: `dvtditr.c:704-708` sets
+    // `weight = 0; niter = 1` for `njob == 2` rather than skipping, and
+    // `tditeration.c:1425` gates branch-weight computation on
+    // `locnjob > 2`, so the pair is refined once, unweighted.
+    // `BranchWeights` already yields uniform weights at nseq <= 2 and the
+    // engine caps the iteration count, so only the early-return had to go.
+    if nseq < 2 || topology.steps.is_empty() {
         return 0;
     }
 
@@ -334,6 +415,7 @@ pub fn iterative_refine(
                     unalign_level: params.unalign_level,
                 });
 
+                counters.visited += 1;
                 let new_seqs = realign_all(
                     group1, group2, &alignment.sequences, &weights, scoring, &gap,
                     constraints, params.use_fft, mm_input.as_ref(),
@@ -352,6 +434,21 @@ pub fn iterative_refine(
                     let s2 = group2[0];
                     let changed = alignment.sequences[s1] != new_seqs[s1]
                         || alignment.sequences[s2] != new_seqs[s2];
+                    // COMPAT: this two-row test decides whether a whole
+                    // re-alignment is kept, and it is deliberately NOT a
+                    // full comparison. On a 120x1.4kb FFT-NS-i run, 213
+                    // re-alignments per run have both representatives
+                    // unchanged while other rows DID change; every one of
+                    // them is discarded here. C does exactly the same: its
+                    // identity test is `!strcmp(aseq[s1],bseq[s1]) *
+                    // !strcmp(aseq[s2],bseq[s2])` (tditeration.c:2184-2185),
+                    // and the copy-back `strcpy( aseq[i], bseq[i] )` runs
+                    // only on the accept path (tditeration.c:1769) — so C
+                    // throws the same 213 away. Widening this to "any row
+                    // changed" looks like an obvious fix and is a
+                    // divergence: it would send those branches through the
+                    // score comparison, changing accept/reject decisions
+                    // and the `converged_count` sequence.
 
                     if !changed {
                         // Identical — no change, count toward convergence
@@ -389,6 +486,8 @@ pub fn iterative_refine(
                         let tscore = new_sub + new_imp;
 
                         let threshold = old_score - params.cut / 100.0 * old_score;
+                        counters.branches += 1;
+                        if tscore > threshold { counters.accepted += 1; }
                         if std::env::var("RUST_MAFFT_TRACE").is_ok() {
                             eprintln!("ACCEPT iter={iter} step={step_idx} side={side} old={:.3} new={:.3} accept={}",
                                 old_score, tscore, tscore > threshold);
@@ -433,7 +532,8 @@ pub fn iterative_refine(
                     converged_count += 1;
                 }
 
-                if converged_count >= convergence_target {
+                if !params.per_cycle_convergence && converged_count >= convergence_target {
+                    counters.exit = "converged";
                     return iteration;
                 }
 
@@ -453,6 +553,7 @@ pub fn iterative_refine(
                         ii -= 2;
                     }
                     if oscillating {
+                        counters.exit = "oscillation";
                         return iteration;
                     }
                 }
@@ -469,6 +570,15 @@ pub fn iterative_refine(
         // identical branches that don't change the score but still bump the
         // converged counter. The BB12019 / BB12029 / BB30018 / BB40043
         // 4-line FFT-NS-i divergences come from that early exit.
+        if params.per_cycle_convergence {
+            // C `athread`: no branch gained this cycle -> converged. The
+            // cycle we just finished still counts; the stop lands before the
+            // next one (`tditeration.c:589` + `:527-551`).
+            if !any_change {
+                counters.exit = "converged";
+                return iteration;
+            }
+        }
         let _ = any_change;
     }
 
@@ -1453,7 +1563,7 @@ fn compute_split_score(
         for (j_local, &j) in group2.iter().enumerate() {
             let wj = w2n[j_local];
             let s_wi = pairwise_score(&sequences[i], &sequences[j], scoring) * wi;
-            total = s_wi.mul_add(wj, total);
+            total = fmadd(s_wi, wj, total);
         }
     }
     total
@@ -1635,7 +1745,8 @@ pub fn bestfirst_refine(
     constraints: Option<&LocalHomologyTable>,
 ) -> usize {
     let nseq = alignment.nseq();
-    if nseq <= 2 || topology.steps.is_empty() {
+    // `nseq == 2` is refined too — see `iterative_refine` (C `dvtditr.c:704-708`).
+    if nseq < 2 || topology.steps.is_empty() {
         return 0;
     }
 
@@ -1785,10 +1896,11 @@ fn intergroup_score_c_order(
             // C `mltaln9.c:426`: `efficient = eff1[i] * eff2[j]`
             // (one rounding), then `mltaln9.c:466`:
             // `*value += (double)tmpscore * (double)efficient`
-            // (with FP_CONTRACT on at clang -O3 this is one fma).
+            // (one fma under arm64 clang, two roundings under baseline
+            // x86-64 gcc — `fmadd` follows the `mafft_types::fp` policy).
             let efficient = wi * wj;
             let tmpscore = pairwise_score(&sequences[i], &sequences[j], scoring);
-            total = tmpscore.mul_add(efficient, total);
+            total = fmadd(tmpscore, efficient, total);
         }
     }
     total
@@ -1946,7 +2058,8 @@ pub fn segmented_iterative_refine(
     constraints: Option<&LocalHomologyTable>,
 ) -> usize {
     let nseq = alignment.nseq();
-    if nseq <= 2 || topology.steps.is_empty() {
+    // `nseq == 2` is refined too — see `iterative_refine` (C `dvtditr.c:704-708`).
+    if nseq < 2 || topology.steps.is_empty() {
         return 0;
     }
 
@@ -1958,7 +2071,18 @@ pub fn segmented_iterative_refine(
     );
     if anchors.len() <= 2 {
         // No anchors found → behave like single-segment refinement.
+        if refine_stats_enabled() {
+            eprintln!("refine-segments: anchors={} segments=1 (unsegmented)", anchors.len());
+        }
         return iterative_refine(alignment, topology, scoring, params, constraints);
+    }
+    if refine_stats_enabled() {
+        eprintln!(
+            "refine-segments: anchors={} segments={} len={}",
+            anchors.len(),
+            anchors.windows(2).filter(|w| w[0] < w[1]).count(),
+            alignment.sequences.first().map_or(0, |s| s.len()),
+        );
     }
 
     let mut total_iters = 0usize;

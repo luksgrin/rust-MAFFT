@@ -13,3 +13,9 @@ readme = "README.md"
 
 [dependencies]
 num-complex = "0.4"
+
+# Floating-point contraction policy (see `src/fp.rs`). Mutually exclusive;
+# with neither, `CONTRACTS_FMA` is `cfg!(target_arch = "aarch64")`.
+[features]
+fp-contract-fma = []
+fp-contract-none = []

@@ -10,6 +10,264 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+The `--nuc` / `--amino` flags, the `run_from` / `MafftError` / `Mafft` /
+`Progress` library API, the nucleotide case fold, the DNA pair-phase gap
+scale, two-sequence refinement, the nucleotide `dndpre` offset, the `athread`
+convergence rule, `MAFFT_RS_REFINE_STATS` and the per-alphabet constant audit
+below were contributed by Johan Henriksson (@mahogny) and integrated from
+mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
+
+### Added
+
+- **Floating-point contraction policy** (`mafft_types::fp`). C MAFFT 7.526
+  is not bit-reproducible across CPU architectures: the arm64 macOS binaries
+  contain ~1030 `fmadd`/`fmsub` instructions each (clang contracts `a*b+c`
+  into a single-rounding FMA, `scripts/fma_census.sh` counts them), while
+  baseline x86-64 builds (bioconda, gcc `-O3`) contain none because baseline
+  x86-64 has no FMA unit. On the 36-seq protein sample with `--bl 50 --retree
+  2 --maxiterate 0` the arm64 C binary gives width 712 and the x86-64 C
+  binary gives 738. rust-MAFFT previously hard-coded `f64::mul_add` (always
+  fused, and emulated in slow software on x86-64), so it matched only the
+  arm64 build; @mahogny's fork removed every `mul_add` and matched only the
+  x86-64 build. All 74 library call sites now go through
+  `mafft_types::fp::fmadd(a, b, c)`, which is `a.mul_add(b, c)` when
+  `mafft_types::fp::CONTRACTS_FMA` is `true` and `a * b + c` otherwise, with
+  operand order and nesting preserved from the C source. The policy is
+  chosen by cargo features, forwarded by every workspace crate:
+  `fp-contract-fma` (always fuse), `fp-contract-none` (never fuse), both is
+  a compile error, neither means "mirror the reference C build of the
+  target you run on": fused on `aarch64`, not fused elsewhere. Sites that
+  arm64 clang deliberately does *not* contract (e.g. `sequence_weights`'s
+  `rootnode[s] += len * eff[s]`) stay plain on every target. Fixtures whose
+  bytes depend on the policy are committed as `<name>.fma` (arm64 C) and
+  `<name>.nofma` (x86-64 C) with the plain name removed; `fixture_path_fp`
+  in the mafft-core tests picks the variant matching `CONTRACTS_FMA`. Only
+  `sample.bl50.fftns2` needed the split (the `.nofma` copy is the x86-64
+  fixture from mahogny/rust-MAFFT). The FFI test that compares the step-24
+  BL50 profile DP against the in-tree C build skips under
+  `fp-contract-none`, since the C it compiles on an arm64 host is fused.
+- `--nuc` / `--amino`: force the input sequence type, overriding the
+  ATGC-frequency auto-detection (matches C MAFFT `scripts/mafft:547-550`,
+  `seqtype="-D"` / `seqtype="-P"`). Mutually exclusive; inert when absent,
+  so auto-detection is unchanged for every existing command line.
+- `mafft_rs::run_from(argv, out)`: the argv-driven, non-exiting form of
+  `run()`. Same clap definition and therefore exactly the same flag
+  semantics (`--auto`'s size heuristic, `--adjustdirection`'s strand
+  detection, …), but every path where `run()` calls `std::process::exit(N)`
+  returns a `MafftError` carrying the same message text and exit code, and
+  the alignment is written to a caller-supplied `io::Write` instead of
+  stdout. `--output FILE` still writes to that file.
+- `mafft_rs::MafftError`, with `code()` and `message()`.
+- `mafft_rs::Mafft`: a typed builder that constructs an argv and hands it
+  to `run_from`, so it cannot drift from the command line.
+- `mafft_io::apply_case_convention`: applies C MAFFT's residue-case fold
+  (lowercase nucleotide, uppercase protein) to a parsed `SequenceSet`.
+- `MAFFT_RS_REFINE_STATS=1` prints one line per iterative-refinement call to
+  stderr: `refine: nseq=.. len=.. cycles=n/max visited=.. changed=..
+  accepted=.. exit=maxiter|converged|oscillation`, plus a
+  `refine-segments: anchors=.. segments=..` line for the segmented
+  (FFT-NS-i) path. C's `dvtditr` reports its refinement work directly
+  (`Segment n/N`, then one line per branch), so this makes "did both sides
+  run the same cycles?" answerable without a debugger — a speed comparison
+  is meaningless otherwise. Off by default; CLI output is unchanged.
+- Progress sink: `mafft_rs::Progress` (one method, `message(&self, &str)`)
+  with `StderrProgress` (current behaviour) and `SilentProgress`, plus a
+  blanket impl so any `Fn(&str)` is a sink.
+  `mafft_rs::run_from_with_progress(argv, out, &(dyn Progress + Sync))`
+  routes the run's 12 progress messages there instead of stderr, and
+  `Mafft::progress(sink)` does the same for the builder. Both default to
+  stderr, so `run_from`, `run` and the CLI are unchanged. The sink is taken
+  by shared reference and called through `&self`, so one sink can serve a
+  whole worker pool. Only progress is routed — failures come back as
+  `MafftError`, and non-fatal `Warning:` / `Could not …` diagnostics plus
+  `--scoreout`'s score line stay on stderr, so a silent sink cannot hide
+  either a problem or requested output. The sink covers every progress
+  message `mafft-rs` emits; two further lines in `mafft-core` (the
+  Q-INS-i/X-INS-i BPP line and the `--skipiterate` banner) are not routed —
+  see the `progress` module docs for why.
+
+### Changed
+
+- `--thread N` now builds a *local* rayon pool and `install()`s the
+  alignment into it instead of calling `build_global()`. A process-global
+  pool can only be initialised once, so an in-process caller running many
+  alignments was previously stuck with the first call's thread count.
+  No change for the CLI.
+- `run()` is now a thin wrapper around `run_from` (unchanged signature and
+  observable behaviour: same stdout, stderr, exit codes and messages).
+
+### Performance
+
+- **Flattened the profile-DP and `L__align11` scratch buffers.** In
+  `profile_align_imp_multimtx` (mafft-align `profile.rs`) the sparse
+  `cpmxpd`/`cpmxpdn` views of both profiles are now one flat entry list
+  plus a `len + 1` offsets table each instead of `Vec<Vec<(usize, f64)>>`,
+  the `h`/`ijp` DP matrices are flat row-major `(n + 1) * (m + 1)` buffers
+  with stride `m + 1` (thread-local pools of `Vec<f64>`/`Vec<i32>`, grow-only
+  as before), `match_calc_row_into` walks the scoring matrix j-outer /
+  l-inner over contiguous rows and consumes the cpmx2 entries sequentially
+  through exact-length slices and iterators, and the boundary-init `bcarr`
+  buffer is pooled instead of allocated twice per call. In `local_align`
+  (`local.rs`) a thread-local `LocalScratch` pool replaces seven allocations
+  per call, `seq2` is mapped to alphabet indices once, the match score is
+  added inside the DP cell (same operands, same order) instead of in a
+  separate row-fill pass, and the j-loop body is the const-generic
+  `local_dp_row::<HAS_ROW>` kernel over `m + 1`-cell row slices. No
+  `unsafe` was added and every multiply-add still goes through
+  `mafft_types::fp::fmadd` with unchanged operand order, so output is
+  byte-identical to C MAFFT 7.526 (arm64) on the 36-sequence protein sample
+  (default, `--maxiterate 1000`, `--localpair`/`--globalpair`/`--genafpair
+  --maxiterate 1000`, `--bl 50 --retree 2 --maxiterate 0`, `--parttree`) and
+  on the DNA reproducers (`mtb_cds_120x1400.fa --retree 2 --maxiterate 2`,
+  1742 columns), and the `fp-contract-none` build still reproduces the
+  x86-64 width 738 on `--bl 50`. Wall-clock medians of 5 interleaved runs on
+  Apple Silicon (M4): `mtb_cds_120x1400 --retree 2 --maxiterate 2` 4.99 s ->
+  4.62 s (1.08x), sample `--localpair --maxiterate 1000` 0.85 s -> 0.77 s
+  (1.11x), sample `--maxiterate 1000` 0.54 s -> 0.48 s (1.14x), sample
+  default 0.066 s -> 0.055 s (1.21x). Extracted from the data-layout /
+  allocation hunks of mahogny/rust-MAFFT 0b3955d ("fixes and optimization")
+  by Johan Henriksson (@mahogny) and re-applied on top of the `fmadd`
+  migration.
+
+### Fixed
+
+- **DNA pairwise gap penalties were a third of C MAFFT's, so L-INS-i /
+  G-INS-i / E-INS-i diverged on nucleotide input.** C scales the pair-phase
+  gap penalties by `3 * 600/1000` for nucleotide and `600/1000` for protein
+  (`constants.c:316-322` vs `:672-677`), keeping the offset at `1 * 600/1000`;
+  the pair phase here applied the protein factor unconditionally (a variable
+  named `scale_protein`). Gaps were too cheap, so the local/global pairwise
+  step bought extra matches with gaps C refuses, and the `hat3` constraints
+  and final alignment followed. Now `pair_penalty_scales(is_nucleotide)`,
+  with a unit test pinning the `3 *`. Protein and FFT-NS-2 were never
+  affected (protein has no `3 *` in C either; FFT-NS-2 does not use these
+  penalties).
+
+  **DNA pairwise alignments will change.** Any `--localpair`, `--globalpair`,
+  `--genafpair` or `--auto` run on nucleotide input can now produce a
+  different alignment than before. As with the case fold, this is a
+  correction *toward* the C MAFFT 7.526 reference the crate claims
+  byte-identity with, not a behaviour of our own: on 60 synthetic clusters
+  L-INS-1 went from 24/60 to 60/60 byte-identical with C, and on 30
+  clusters evolved from real biological ancestors `--auto` went from 14/30
+  to 30/30. Minimal reproducer: two 15 bp sequences under
+  `--localpair --maxiterate 0` (`crates/mafft-bin/tests/fixtures/dna_pair_gapscale_min.fa`).
+- Two latent instances of the per-alphabet-constant class, found by the
+  audit recorded under Notes rather than by a parity failure. Neither was
+  reachable from the engine, so no output changes: `GapModel::default()` was
+  protein-shaped *and* arithmetically wrong (`-918`; C truncates toward zero,
+  giving `-917`) and is now correct and documented as protein-only; and the
+  **public** `FftAlignParams::dna()` inherited that protein gap default
+  instead of DNA's `-2753`, which would have mis-scaled gaps for any
+  downstream caller using it. `GapPenalties::default()` holds unscaled
+  `ppenalty`-style units unlike every other `GapPenalties` in the tree; it is
+  unused, and now says so.
+- **`--thread N` (N >= 1) now uses C's `athread` convergence rule.** C picks
+  its refinement implementation on `nthread > 0` (`tditeration.c:1433`) and
+  the two do not converge alike: the single-threaded path tests
+  `converged >= locnjob * 2` after **every branch** and stops immediately,
+  mid-cycle (`:2328-2342`), while `athread`'s collector tests once per
+  **cycle** whether any branch gained (`maxgain > 0.0`, `:589`) and only
+  stops at the top of the next cycle, where the `else` arm `pthread_exit`s
+  (`:527-551`) — so the converging cycle always completes. C's own output
+  shows it: at `--maxiterate 2`, 22 of 85 segments print `Converged.` alone,
+  56 print `Converged.` *and* `Reached 2`, and 7 print `Reached 2` alone.
+  We modelled only the single-threaded rule. Now selected by
+  `MafftEngine::nthread`, matching C's `-C` mapping exactly (both no
+  `--thread` and `--thread 0` give C `-C 0`, i.e. the single-threaded rule).
+
+  **DNA output changes for `--thread N >= 1` with refinement.** On the
+  120-sequence reproducer, distance from C `--thread 1` goes 6 lines → 2,
+  and the synthetic cluster corpus under
+  `--auto --adjustdirection --thread 1 --nuc` goes 59/60 → **60/60**. The
+  no-`--thread` path is untouched and remains byte-identical to C.
+  A 2-line residue remains on the 120-sequence input (one sequence, a
+  single-column gap shift at equal width); it is not yet explained.
+- **DNA refinement guide trees used the protein `dndpre` offset, reordering
+  UPGMA merges.** For modes with no `pairlocalalign` step (FFT-NS-i and
+  friends) the refinement tree is rebuilt the way C's `dndpre` does. C's
+  script does not pass `-h` to that `dndpre` call, so `constants()` uses its
+  DEFAULT `poffset` — and the alphabets do not share one: `DEFAULTOFS_N =
+  -369` (`DNA.h:3`) gives a matrix shift of 220, `DEFAULTOFS_B = -123`
+  (`blosum.c:3`) gives 73. The shift was hardcoded to the protein 73.
+
+  On DNA that produced refinement distances differing from C's `hat2`
+  outright (on a 120-sequence 1.4 kb input, leaf pair (0,58): C 0.253, ours
+  0.307), which swapped two UPGMA merges, which changed the group on 131 of
+  237 refinement branches and so the final alignment. Now
+  `dndpre_offset_shift(is_nucleotide)`, with a unit test pinning both values
+  against the C constants.
+
+  **DNA output changes for FFT-NS-i and any refinement mode without a
+  pairwise phase.** Byte-parity with C MAFFT 7.526 over BAliBASE `bali2dna`
+  (141 real DNA benchmark sets) under `--maxiterate 2` goes **67/141 → 132/141**,
+  and the 120-sequence reproducer becomes byte-identical. Protein is
+  unaffected (it already used 73), as are FFT-NS-2 and `--localpair`, which
+  never reach this path.
+- **Two-sequence inputs were never refined.** Every refinement entry point
+  returned early at `nseq <= 2`. C does not skip a pair: `dvtditr.c:704-708`
+  sets `weight = 0; niter = 1` for `njob == 2`, `tditeration.c:772` then
+  uses uniform weights, and `:1425` gates branch-weight computation on
+  `locnjob > 2`. So a pair is refined exactly once, unweighted — which can
+  change it (e.g. `AA`/`CC` under `--maxiterate 1000`: C gives `aa`/`cc`,
+  we gave `aa-`/`-cc`). Guards relaxed to `nseq < 2` and the iteration cap
+  mirrors `niter = 1`; `BranchWeights` already yielded uniform weights at 2.
+  Affects `--maxiterate N > 0` and every `*-INS-i` mode, including `--auto`,
+  on exactly-two-sequence input, DNA and protein alike.
+- **Nucleotide output case now matches C MAFFT.** DNA/RNA alignments were
+  emitted in uppercase; C MAFFT emits them in lowercase. C folds residue
+  case as it reads — `io.c:1462-1467` (`load1SeqWithoutName_realloc`) calls
+  `onlyAlpha_lower` when `dorp == 'd'` and `onlyAlpha_upper` otherwise, and
+  `readData_pointer` repeats the nucleotide pass with `seqLower`
+  (`io.c:1755`; its `upperCase != -1` guard is only reachable from the
+  legacy non-FASTA `FRead` header parser, so it is always true for FASTA
+  input). rust-MAFFT's reader applied `onlyAlpha_upper` unconditionally.
+  It now folds per the sequence type, and `--nuc` / `--amino` re-apply the
+  fold for the type they force, because C's `$seqtype` fixes `dorp` before
+  any sequence is read.
+
+  **This changes existing output**: a DNA/RNA alignment that previously
+  came back uppercase now comes back lowercase. That is the point — it is
+  what C MAFFT 7.526 produces, and whole-file case flips were breaking
+  byte-for-byte comparisons against a C-MAFFT reference. Protein output is
+  unchanged (uppercase, as before and as in C). `--anysymbol` /
+  `--preservecase` are unchanged too: they keep the input's own case, in
+  both C and here.
+
+  This closes the parity caveat the README recorded as
+  "byte-exact (case-insensitive)"; `--nofft samplerna` is now byte-exact
+  with `cmp`, not just with `diff -i`.
+- `--adjustdirection` / `--adjustdirectionaccurately` help text claimed the
+  k-mer strand detection was "not yet implemented"; it has been implemented
+  since TODO R-5 (2026-06-03).
+
+### Notes
+
+- **Per-alphabet constant audit.** Three bugs were found reactively where a
+  constant correct for one alphabet was applied on a path serving both
+  (`scale_protein` in the pair phase, the `dndpre` offset, and the two latent
+  ones above). Every value in the translation deriving from C's
+  `constants()`, `DNA.h`, `blosum.c` or `JTT.c` has now been enumerated and
+  checked against *both* C branches (nucleotide `constants.c:296-326`,
+  protein `:664-682` / `:895-910`) — 17 live sites, all correct.
+  `mafft_scoring::penalties` carries a test asserting every one of them for
+  both alphabets at once, including that the `offset*` values take C's `1 *`
+  factor on the nucleotide branch while the gap penalties take `3 *`, so a
+  future edit cannot give one alphabet the other's constant unnoticed.
+
+- C MAFFT 7.526 genuinely produces different output for *no* `--thread` than
+  for `--thread 1` — it selects a different refinement implementation on
+  `nthread > 0` (`tditeration.c:1433`), and the two converge by different
+  rules. This was previously recorded here as "C-side sensitivity" that
+  rust-MAFFT could not match; that was wrong, and rust-MAFFT now reproduces
+  both paths (see the `--thread` entry under Fixed). Both are deterministic:
+  5/5 identical over repeat runs.
+- Still genuinely unmatchable: `--thread N` for **N >= 2**. C is
+  nondeterministic there — the same binary on the same input produced 2
+  distinct outputs over 3 runs at both `--thread 2` and `--thread 4` — so
+  byte-identity with C is impossible in principle at those thread counts.
+  rust-MAFFT remains deterministic across all thread counts.
+
 ## [0.1.2] - 2026-06-10
 
 Metadata fixes. No engine, library, or CLI behaviour changes from

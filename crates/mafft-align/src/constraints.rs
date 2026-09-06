@@ -4,6 +4,7 @@
 /// as a `LocalHomologyTable`, which is then used to guide progressive
 /// alignment in L-INS-i and E-INS-i modes.
 
+use mafft_types::fp::fmadd;
 use rayon::prelude::*;
 
 use mafft_types::{HomologyRegion, LocalHomologyTable};
@@ -88,14 +89,15 @@ pub fn build_imp_matrix(
                         if k1 < lgth1 && k2 < lgth2 {
                             // C `mltaln9.c:15665`:
                             //   impmtx[k1][k2] += tmpptr->importance * effij;
-                            // gcc -O3 fuses into a single `fmadd` (single
-                            // rounding). Plain Rust `+=` is 2 roundings, and
+                            // arm64 clang fuses into a single `fmadd` (one
+                            // rounding; baseline x86-64 gcc does not, see
+                            // `mafft_types::fp`). Plain Rust `+=` is 2 roundings, and
                             // the resulting per-cell ULP drift accumulates
                             // over the diagonal sum into a multi-unit
                             // impmatch drift that flips accept/reject
                             // decisions late in iterative refinement
                             // (BB30028 L-INS-i iter=3 fingerprint).
-                            imp[k1][k2] = region.importance.mul_add(effij, imp[k1][k2]);
+                            imp[k1][k2] = fmadd(region.importance, effij, imp[k1][k2]);
                         }
                         k1 += 1;
                         k2 += 1;
@@ -891,8 +893,9 @@ pub fn build_homology_table_with_unalign(
                     // `delta = off * 600` and doing `v + delta` is two
                     // rounded ops and drifts ~1 ULP per cell — enough to
                     // flip a tied DP cell (BB12003 first-divergent cell
-                    // (2, 18) in the warp pairwise DP). Use mul_add to
-                    // mirror C's FMA fusion exactly. Same fix shape as
+                    // (2, 18) in the warp pairwise DP). Use `fmadd` to
+                    // mirror the reference build's contraction (arm64 clang
+                    // fuses, baseline x86-64 gcc does not). Same fix shape as
                     // §B.10 (calcW) and the other FP_CONTRACT divergences.
                     let dyn_matrix: Vec<Vec<f64>> = matrix
                         .iter().enumerate()
@@ -902,7 +905,7 @@ pub fn build_homology_table_with_unalign(
                                     if i == gap_idx || j == gap_idx {
                                         v
                                     } else {
-                                        off.mul_add(600.0, v)
+                                        fmadd(off, 600.0, v)
                                     }
                                 })
                                 .collect()
@@ -915,7 +918,7 @@ pub fn build_homology_table_with_unalign(
                         if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
                             let _ = writeln!(fp, "R_DYNMTX_INPUTS i={} j={} selfi={:.17e} selfj={:.17e} bunbo={:.17e} pscore={:.17e}",
                                 i, j, selfscore[i], selfscore[j], bunbo, alignment.score);
-                            // delta is no longer pre-computed (now fused via mul_add per cell);
+                            // delta is no longer pre-computed (now computed via `fmadd` per cell);
                             // print off*600 as the reference for diffing.
                             let _ = writeln!(fp, "R_DYNMTX_OUTPUT dist={:.17e} off={:.17e} delta={:.17e}",
                                 dist_for_offset, off, off * 600.0);

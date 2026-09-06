@@ -8,6 +8,7 @@
 //! to step 12's output), computes cpmx via both paths, and verifies
 //! they're bit-identical.
 
+use mafft_types::fp::fmadd;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_double, c_int};
 
@@ -426,8 +427,8 @@ fn rust_from_scratch_matches_rust_blend() {
     let mut blend_freqs = vec![vec![0.0f64; scoring.nalphabets]; len];
     for j in 0..len {
         for k in 0..scoring.nalphabets {
-            blend_freqs[j][k] = prof1.freqs[j][k].mul_add(eff1, blend_freqs[j][k]);
-            blend_freqs[j][k] = prof2.freqs[j][k].mul_add(eff2, blend_freqs[j][k]);
+            blend_freqs[j][k] = fmadd(prof1.freqs[j][k], eff1, blend_freqs[j][k]);
+            blend_freqs[j][k] = fmadd(prof2.freqs[j][k], eff2, blend_freqs[j][k]);
         }
     }
 

@@ -1,0 +1,180 @@
+name: Build and test (reusable)
+
+# Reusable "build the C reference in-tree, build the Rust workspace, run
+# the unit + integration + FFI cross-validation suites" job. It is
+# invoked from ci.yml once per reference platform:
+#
+#   * ubuntu-latest (x86-64, gcc)   -> the historical byte-identity gate
+#   * macos-latest  (arm64,  clang) -> same gate against an FMA-contracting
+#                                      C build
+#
+# Why two platforms: C MAFFT 7.526 is NOT bit-identical across CPU
+# architectures. clang on arm64 contracts a*b+c into fused multiply-adds
+# (on the order of a thousand fmadd-family instructions per binary);
+# gcc on x86-64 (the bioconda build) emits none. The two C builds
+# therefore disagree on some inputs (e.g. `--bl 50` on
+# mafft-upstream/test/sample: 712 columns on arm64, 738 on x86-64), and
+# "byte-identical to C" is only meaningful relative to a C build made on
+# the same platform. rust-MAFFT mirrors this: `mafft_types::fp::CONTRACTS_FMA`
+# defaults to the host's policy (true on aarch64, false elsewhere), and
+# the FFI cross_validate_* tests compare against the C compiled by
+# mafft-c-bindings/build.rs on the same runner. Running this job on both
+# runners is what makes that claim checked rather than asserted.
+#
+# macOS toolchain notes: mafft-upstream/core/Makefile hardcodes
+# `CC = gcc` and `CFLAGS = -O3 -std=c99 -Denablemultithread`, all of
+# which Apple's `gcc` shim (= clang) accepts; no `CC=clang` override or
+# other env is needed. The `all` target also copies the binaries into
+# mafft-upstream/binaries/ and the wrapper scripts into
+# mafft-upstream/scripts/, which is what `MAFFT_BINARIES` below relies on.
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: Runner label (ubuntu-latest or macos-latest)
+        required: true
+        type: string
+      cargo-exclude:
+        description: >-
+          Extra `--exclude <crate>` flags for the workspace cargo invocations
+          (e.g. "--exclude pymafft" on macOS, where the pyo3 cdylib needs
+          maturin's linker setup rather than a plain `cargo build`).
+        required: false
+        type: string
+        default: ""
+      upload-artifacts:
+        description: >-
+          Upload the C test bundle + mafft-rs binary for the downstream
+          "Test C:" / "Test Rust:" jobs. Only one platform should do this,
+          since the artifact names are fixed.
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Toolchain report
+        run: |
+          echo "host: $(uname -m) / $(uname -s)"
+          cc --version | head -1
+          rustc --version
+          cargo --version
+
+      - name: Build C binaries
+        run: make -C mafft-upstream/core
+
+      # Every CI log states which contraction behaviour the C reference
+      # used on this runner has, so a byte-identity result can never be
+      # read out of context. The inline census always runs (it only needs
+      # objdump, available on both runners: binutils on Linux,
+      # llvm-objdump via Xcode on macOS); scripts/fma_census.sh (added
+      # alongside the fp-policy code) runs in addition when present.
+      - name: FMA census of the C reference
+        run: |
+          BINS="mafft-upstream/core/disttbfast mafft-upstream/core/tbfast mafft-upstream/core/dvtditr"
+          case "$(uname -m)" in
+            arm64|aarch64) PAT='\b(fmadd|fmsub|fnmadd|fnmsub|fmla|fmls)\b' ;;
+            *)             PAT='\b(vfmadd|vfmsub|vfnmadd|vfnmsub)[0-9a-z]*' ;;
+          esac
+          echo "== fused multiply-add census of the freshly built C reference ($(uname -m))"
+          for b in $BINS; do
+            n=$(objdump -d "$b" | grep -cE "$PAT" || true)
+            printf '  %-40s %6s FMA-family instructions\n' "$b" "$n"
+          done
+          echo "  (expected: ~1000 per binary for clang/arm64, 0 for gcc/x86-64)"
+          if [ -x scripts/fma_census.sh ]; then
+            echo "== scripts/fma_census.sh"
+            scripts/fma_census.sh mafft-upstream/core
+          else
+            echo "== scripts/fma_census.sh not present in this checkout; inline census only"
+          fi
+
+      - name: Build Rust workspace
+        run: cargo build --workspace ${{ inputs.cargo-exclude }}
+
+      - name: Build Rust binary (release)
+        run: cargo build -p mafft-rs --release
+
+      - name: Run Rust tests (lib only, fast)
+        run: cargo test --workspace ${{ inputs.cargo-exclude }} --lib
+
+      - name: Run Rust integration tests (release)
+        # `--tests` runs every `tests/*.rs` integration binary across the
+        # workspace (end_to_end + cross_validate_* + trace_refinement,
+        # etc.). Prior to this, only the named `end_to_end` binary ran, so
+        # the cross-validate FFI tests + the imp_matrix correctness tests
+        # were silently uncovered by CI. The cross_validate_* binaries
+        # link the C compiled by mafft-c-bindings/build.rs on THIS runner,
+        # so they check Rust's default fp policy against the matching C
+        # build (FMA on arm64/clang, none on x86-64/gcc).
+        run: cargo test --workspace ${{ inputs.cargo-exclude }} --release --tests
+
+      - name: Smoke test Rust binary
+        run: |
+          ./target/release/mafft-rs -q mafft-upstream/test/sample > /dev/null
+          echo "mafft-rs smoke test: PASS"
+
+      # Cheap end-to-end sentinel for the FMA policy: `--bl 50` on the
+      # 36-sequence sample is the known platform-sensitive case (712
+      # columns with the arm64/clang C build, 738 with x86-64/gcc). The
+      # Rust binary built with its default policy must reproduce the C
+      # built on the same runner byte-for-byte. The C wrapper script is
+      # driven the same way the in-tree test/ recipes do it: point
+      # MAFFT_BINARIES at the freshly populated mafft-upstream/binaries/.
+      - name: FMA-policy sentinel (mafft-rs vs C, --bl 50)
+        run: |
+          export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
+          ARGS="--quiet --bl 50 --retree 2 --maxiterate 0"
+          ./target/release/mafft-rs $ARGS mafft-upstream/test/sample > sentinel.rs.fa
+          ./mafft-upstream/scripts/mafft $ARGS mafft-upstream/test/sample > sentinel.c.fa
+          width() { awk '/^>/{if(n++) exit; next}{w+=length($0)} END{print w}' "$1"; }
+          echo "host: $(uname -m)  mafft-rs width: $(width sentinel.rs.fa)  C mafft width: $(width sentinel.c.fa)"
+          echo "(reference: arm64/clang C = 712 columns, x86-64/gcc C = 738 columns)"
+          diff sentinel.rs.fa sentinel.c.fa
+          echo "FMA-policy sentinel: mafft-rs output IDENTICAL to same-platform C"
+
+      # Upload C binaries + scripts + test data as a single artifact
+      - name: Prepare C test bundle
+        if: ${{ inputs.upload-artifacts }}
+        run: |
+          mkdir -p c-test-bundle/binaries c-test-bundle/scripts c-test-bundle/test
+          cp mafft-upstream/binaries/* c-test-bundle/binaries/
+          cp mafft-upstream/scripts/* c-test-bundle/scripts/
+          cp -r mafft-upstream/test/* c-test-bundle/test/
+
+      - name: Upload C test bundle
+        if: ${{ inputs.upload-artifacts }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: c-test-bundle
+          path: c-test-bundle/
+          retention-days: 1
+
+      - name: Upload Rust binary
+        if: ${{ inputs.upload-artifacts }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: mafft-rs
+          path: target/release/mafft-rs
+          retention-days: 1

@@ -7,6 +7,37 @@ C MAFFT 7.526. Upstream does not ship references for every alignment mode
 Regenerating any of these requires the C binaries to be built
 (`make -C mafft-upstream/core`).
 
+## Per-policy fixtures: `<name>.fma` / `<name>.nofma`
+
+C MAFFT 7.526 is not bit-reproducible across CPU architectures: the arm64
+clang build contracts `a*b+c` into fused multiply-adds (~1030 `fmadd` per
+engine binary, see `scripts/fma_census.sh`), the baseline x86-64 gcc build
+(bioconda) emits none. Where that changes the output, the fixture is
+committed twice and the plain name is removed:
+
+- `<name>.fma` — output of the arm64 C binary (fused).
+- `<name>.nofma` — output of the x86-64 C binary (not fused).
+
+`fixture_path_fp(name)` in `end_to_end.rs` returns the variant matching
+`mafft_types::fp::CONTRACTS_FMA` (the build's contraction policy, selected by
+the `fp-contract-fma` / `fp-contract-none` cargo features, defaulting to
+fused on aarch64 only) and falls back to the plain `<name>` when no variant
+exists. Do not commit a plain `<name>` alongside a variant pair.
+
+### `sample.bl50.fftns2.fma` / `sample.bl50.fftns2.nofma`
+
+C's alignment output for `mafft --bl 50 --retree 2 --maxiterate 0
+mafft-upstream/test/sample`: width 712 from the arm64 macOS binary, width
+738 from the x86-64 bioconda binary (the latter contributed by @mahogny,
+mahogny/rust-MAFFT). `fftns2_bl50_byte_identical_to_c` asserts against the
+variant matching the build's policy.
+
+```bash
+mafft --quiet --bl 50 --retree 2 --maxiterate 0 mafft-upstream/test/sample \
+  > crates/mafft-core/tests/fixtures/sample.bl50.fftns2.fma    # on arm64
+  > crates/mafft-core/tests/fixtures/sample.bl50.fftns2.nofma  # on x86-64
+```
+
 ## `sample.nwns2`
 
 C's alignment output for `mafft --nofft mafft-upstream/test/sample`. The

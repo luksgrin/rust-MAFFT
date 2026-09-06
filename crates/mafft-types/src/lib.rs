@@ -9,9 +9,11 @@ mod segment;
 mod complex;
 mod seq;
 mod scoring;
+pub mod fp;
 
 pub use local_hom::*;
 pub use segment::*;
 pub use complex::*;
 pub use seq::*;
 pub use scoring::*;
+pub use fp::{fmadd, CONTRACTS_FMA};
