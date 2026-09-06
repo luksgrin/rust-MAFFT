@@ -307,7 +307,11 @@ class TestRun:
         with pytest.raises(pymafft.MafftError) as info:
             pymafft.run(["--no-such-flag"], ["ACGT", "ACGA"])
         assert info.value.code == proc.returncode
-        assert info.value.message.strip() == proc.stderr.decode().strip()
+        # clap prints the program name from argv[0]: `mafft-rs.exe` when the
+        # console script is invoked on Windows, `mafft-rs` for the in-process
+        # call. Normalise that one token; the rest must be identical.
+        cli_err = proc.stderr.decode().strip().replace("mafft-rs.exe", "mafft-rs")
+        assert info.value.message.strip() == cli_err
 
 
 # ---------------------------------------------------------------------------
