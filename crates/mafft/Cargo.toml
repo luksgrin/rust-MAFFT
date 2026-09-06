@@ -19,3 +19,20 @@ readme = "README.md"
 mafft-core = { path = "../mafft-core", version = "0.1.0" }
 mafft-types = { path = "../mafft-types", version = "0.1.0" }
 mafft-io = { path = "../mafft-io", version = "0.1.0" }
+
+# Floating-point contraction policy (see `mafft_types::fp`). Mutually
+# exclusive; with neither, the build fuses `a*b+c` on aarch64 (mirroring the
+# arm64 clang reference C build) and not elsewhere (mirroring baseline
+# x86-64 gcc). Forwarded to every dependency that carries FP arithmetic so
+# `--features fp-contract-none` on any crate switches the whole stack.
+[features]
+fp-contract-fma = [
+    "mafft-core/fp-contract-fma",
+    "mafft-types/fp-contract-fma",
+    "mafft-io/fp-contract-fma",
+]
+fp-contract-none = [
+    "mafft-core/fp-contract-none",
+    "mafft-types/fp-contract-none",
+    "mafft-io/fp-contract-none",
+]
