@@ -10,6 +10,41 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+### Added
+
+- `--nuc` / `--amino`: force the input sequence type, overriding the
+  ATGC-frequency auto-detection (matches C MAFFT `scripts/mafft:547-550`,
+  `seqtype="-D"` / `seqtype="-P"`). Mutually exclusive; inert when absent,
+  so auto-detection is unchanged for every existing command line.
+- `mafft_rs::run_from(argv, out)`: the argv-driven, non-exiting form of
+  `run()`. Same clap definition and therefore exactly the same flag
+  semantics (`--auto`'s size heuristic, `--adjustdirection`'s strand
+  detection, …), but every path where `run()` calls `std::process::exit(N)`
+  returns a `MafftError` carrying the same message text and exit code, and
+  the alignment is written to a caller-supplied `io::Write` instead of
+  stdout. `--output FILE` still writes to that file.
+- `mafft_rs::MafftError`, with `code()` and `message()`.
+- `mafft_rs::Mafft`: a typed builder that constructs an argv and hands it
+  to `run_from`, so it cannot drift from the command line.
+- `mafft_io::apply_case_convention`: applies C MAFFT's residue-case fold
+  (lowercase nucleotide, uppercase protein) to a parsed `SequenceSet`.
+
+### Changed
+
+- `--thread N` now builds a *local* rayon pool and `install()`s the
+  alignment into it instead of calling `build_global()`. A process-global
+  pool can only be initialised once, so an in-process caller running many
+  alignments was previously stuck with the first call's thread count.
+  No change for the CLI.
+- `run()` is now a thin wrapper around `run_from` (unchanged signature and
+  observable behaviour: same stdout, stderr, exit codes and messages).
+
+### Fixed
+
+- `--adjustdirection` / `--adjustdirectionaccurately` help text claimed the
+  k-mer strand detection was "not yet implemented"; it has been implemented
+  since TODO R-5 (2026-06-03).
+
 ## [0.1.2] - 2026-06-10
 
 Metadata fixes. No engine, library, or CLI behaviour changes from

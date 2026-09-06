@@ -68,6 +68,7 @@ Every progressive merge step matches in score and width; every refinement iterat
 | `--treein`, `--treeout`, `--treein --treeout` | match | match      | 0    | ✓ byte-exact |
 | RNA NW (`--nofft samplerna`)                | 360     | 360        | 0‡   | ✓ byte-exact (case-insensitive) |
 | Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0‡   | ✓ byte-exact (needs `mxscarnamod`) |
+| `--nuc`, `--amino` (forced sequence type)   | match   | match      | 0    | ✓ byte-exact |
 
 ‡ For RNA / Q-INS-i: we uppercase residues; C preserves case. With `diff -i` RNA produces 0 lines.
 

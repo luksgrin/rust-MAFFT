@@ -140,6 +140,40 @@ pub fn read_fasta_from_reader<R: BufRead>(reader: R) -> Result<SequenceSet, IoEr
     })
 }
 
+/// Apply C MAFFT's residue-case convention to an already-parsed set:
+/// lowercase for DNA/RNA, uppercase for everything else.
+///
+/// C canonicalises case as it reads — `io.c:1462-1467`
+/// (`load1SeqWithoutName_realloc`) calls `onlyAlpha_lower` when
+/// `dorp == 'd'` and `onlyAlpha_upper` otherwise, and `readData_pointer`
+/// repeats the nucleotide pass with `seqLower` (`io.c:1755`). The
+/// `upperCase != -1` guard there is only reachable from the legacy
+/// non-FASTA `FRead` header parser (`io.c:1174-1184`), so for FASTA input
+/// it is always true. Net effect: C MAFFT's default output is lowercase
+/// for DNA/RNA and uppercase for protein, whatever case the input used.
+///
+/// The fold is idempotent, so it is safe to re-apply after `--nuc` /
+/// `--amino` override the detected type — which is what C does, since
+/// `$seqtype` fixes `dorp` before any sequence is read
+/// (`scripts/mafft:547-550`).
+///
+/// Deliberately NOT applied by [`read_fasta_casepreserve`]: on the
+/// `--anysymbol` / `--preservecase` path C reads with
+/// `readData_pointer_casepreserve` and restores the original characters
+/// after alignment (`replaceu` + `restoreu`), so the input case survives.
+pub fn apply_case_convention(set: &mut SequenceSet) {
+    let nucleotide = set.seq_type.is_nucleotide();
+    for seq in set.sequences.iter_mut() {
+        for ch in seq.data.iter_mut() {
+            *ch = if nucleotide {
+                ch.to_ascii_lowercase()
+            } else {
+                ch.to_ascii_uppercase()
+            };
+        }
+    }
+}
+
 /// Normalize a raw sequence: keep only alpha + gap chars, convert '*' to '-'.
 ///
 /// Mirrors the C `onlyAlpha_lower()` + `kake2hiku()` pipeline.
@@ -247,5 +281,24 @@ mod tests {
         assert_eq!(seqs.nseq(), 2);
         assert!(seqs.sequences[0].name.contains("M63632"));
         assert!(seqs.sequences[1].name.contains("U22180"));
+    }
+
+    // --- C MAFFT residue-case convention (io.c:1462-1467, io.c:1755) ---
+
+    #[test]
+    fn apply_case_convention_is_idempotent_and_follows_seq_type() {
+        // Safe to re-apply after `--nuc` / `--amino` override the type.
+        let mut set = SequenceSet {
+            sequences: vec![Sequence { name: "a".into(), data: b"AtGc".to_vec() }],
+            seq_type: mafft_types::SeqType::Dna,
+        };
+        apply_case_convention(&mut set);
+        assert_eq!(set.sequences[0].data, b"atgc".to_vec());
+        apply_case_convention(&mut set);
+        assert_eq!(set.sequences[0].data, b"atgc".to_vec());
+
+        set.seq_type = mafft_types::SeqType::Protein;
+        apply_case_convention(&mut set);
+        assert_eq!(set.sequences[0].data, b"ATGC".to_vec());
     }
 }
