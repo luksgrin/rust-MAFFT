@@ -132,11 +132,14 @@ is `Vec` allocation for `ijp`, `h`, `cpmx2_sparse`, and per-row
 buffers.
 
 The DP body has FMA throughout (`§4` BL50 close, `§B.2` audit, `§C.2.1`
-profile-build fusion) and matches C's gcc-O3 inner loop arithmetic
-1-for-1 — but C's `A__align` re-uses `static TLS` buffers across calls
-(see `MAFFT_UPSTREAM_REPORT.md`) while our Rust allocates fresh per
-call. The remaining gap is almost certainly allocator-driven, not
-arithmetic.
+profile-build fusion) and matches C's inner loop arithmetic 1-for-1 on
+the same platform (since 2026-09-06 through `mafft_types::fp::fmadd`,
+fused on aarch64 and not on x86-64, mirroring the reference C build —
+see `docs/architecture/byte-identity.md`) — but C's `A__align` re-uses
+`static TLS` buffers across calls (the BB20027 deep-dive in
+`balibase_parity_run.md` records the static-state investigation) while,
+at the time of this snapshot, our Rust allocated fresh per call. The
+remaining gap was thought to be allocator-driven, not arithmetic.
 
 ## Closing the FFT-NS-i gap — three candidate paths
 
@@ -199,3 +202,41 @@ path (3) — anti-diagonal SIMD restructuring — would close it
 meaningfully, and that's a multi-day project with regression risk on
 the warp DP, gap-skip trackers, and traceback ordering. Currently
 not worth pursuing without a sustained-bottleneck workload.
+
+### Update (2026-09-06): flattened scratch buffers landed
+
+The data-layout half of path (1) shipped with the issue #1 integration
+(PR #2, extracted from Johan Henriksson's fork, mahogny/rust-MAFFT
+0b3955d):
+
+- `profile_align_imp_multimtx`: `h` / `ijp` are flat row-major
+  `(n + 1) * (m + 1)` buffers (stride `m + 1`) from the existing
+  thread-local pools instead of `Vec<Vec<_>>`; the sparse `cpmxpd` /
+  `cpmxpdn` column profiles are one flat entry list plus a `len + 1`
+  offsets table each; `match_calc_row_into` walks the scoring matrix
+  j-outer / l-inner over contiguous rows; the boundary-init `bcarr`
+  buffer is pooled instead of allocated twice per call.
+- `local_align` (`L__align11`): a thread-local `LocalScratch` replaces
+  seven allocations per call, `seq2` is mapped to alphabet indices once,
+  the match score is added inside the DP cell (same operands, same
+  order), and the j-loop body is the const-generic `local_dp_row::<HAS_ROW>`
+  kernel.
+
+Every multiply-add still goes through `mafft_types::fp::fmadd` with
+unchanged operand order, so output is byte-identical (verified on the
+36-seq sample across the default / `--maxiterate 1000` / L-, G-, E-INS-i /
+`--bl 50` / `--parttree` runs and on the 120 × 1.4 kb DNA reproducer, and
+the `fp-contract-none` build still gives x86-64's 738 columns on `--bl 50`).
+Wall-clock medians of 5 interleaved runs, Apple M4, vs the previous
+`mafft-rs`: `mtb_cds_120x1400 --retree 2 --maxiterate 2` 4.99 s → 4.62 s
+(1.08×), sample `--localpair --maxiterate 1000` 0.85 s → 0.77 s (1.11×),
+sample `--maxiterate 1000` 0.54 s → 0.48 s (1.14×), sample default
+0.066 s → 0.055 s (1.21×).
+
+So the "allocator-driven" reading above was partly right: the win came
+from contiguity and fewer allocations, not from pooling alone. Path (2)
+stays reverted (the 3-state gap-run machine is the minimum that matches
+C) and path (3) stays open. `MAFFT_RS_REFINE_STATS=1` now prints per-call
+refinement statistics (`cycles`, `visited`, `accepted`, exit reason) so
+any future C-vs-Rust timing can first confirm both sides ran the same
+refinement work.

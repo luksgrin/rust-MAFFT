@@ -332,14 +332,16 @@ struct Args {
 
     /// Treat N (DNA/RNA ambiguous) as a wildcard that matches anything
     /// positively (mirrors C MAFFT's `--nwildcard`, internal flag
-    /// `-:`). Currently accepted but the N-row scoring tweak is not
-    /// yet wired; affects only DNA workflows. See `TODO.md`.
+    /// `-:`): fills the DNA matrix's `n` row with 25%-self-score values
+    /// (C `constants.c::nscore`). Affects only DNA workflows; also
+    /// enabled implicitly when `--unalignlevel` > 0, as in C.
     #[arg(long)]
     nwildcard: bool,
 
     /// Treat N (DNA/RNA ambiguous) as scoring 0 against everything
-    /// (mirrors C MAFFT's `--nzero`). Currently accepted but the
-    /// N-row scoring tweak is not yet wired. See `TODO.md`.
+    /// (mirrors C MAFFT's `--nzero`). This is the default in both C
+    /// MAFFT and mafft-rs, so the flag is a no-op unless it overrides
+    /// a prior `--nwildcard`.
     #[arg(long)]
     nzero: bool,
 
@@ -376,16 +378,17 @@ struct Args {
 
     /// Use the "youngest" linkage scheme (matches C
     /// `--youngestlinkage`). C's `youngestlinkage` is a separate
-    /// algorithm, not just a `sueff` value, and is NOT yet ported.
-    /// Flag accepted as a no-op for compatibility. See `TODO.md`.
+    /// algorithm, not just a `sueff` value; ported as
+    /// `mafft_tree::youngestlinkage_tree` (k-mer and MSA passes of
+    /// `compacttree_memsaveselectable`), byte-identical to C.
     #[arg(long)]
     youngestlinkage: bool,
 
     /// Use C MAFFT's `BESTFIRST` parallelisation strategy for
-    /// iterative refinement — score every branch first, then refine
-    /// in score-order. Default is `BAATARI2` (simple hill climbing).
-    /// Currently accepted as a no-op; the BESTFIRST refinement loop
-    /// architecture is a separate port. See `TODO.md`.
+    /// iterative refinement — evaluate every branch against a frozen
+    /// baseline each cycle, then apply the single best move. Default is
+    /// `BAATARI2` (simple hill climbing). Byte-identical to C
+    /// `--thread 1 --bestfirst` (iterate cap 254, as C's script sets).
     #[arg(long)]
     bestfirst: bool,
 
@@ -398,16 +401,16 @@ struct Args {
 
     /// Skip refinement of branches whose distance-from-tip exceeds F
     /// (matches C `--skipiterate F` → `dvtditr -E $fixthreshold`).
-    /// Currently accepted as a no-op; the branch-skip gate is not
-    /// yet wired into the refinement loop. See `TODO.md`.
+    /// Large F skips refinement entirely with C's WARNING; small F
+    /// skips every branch whose subtree is a strict subset of a
+    /// sub-alignment cluster (`dvtditr.c:997-1006`). Byte-identical to C.
     #[arg(long, value_name = "F", allow_hyphen_values = true)]
     skipiterate: Option<f64>,
 
-    /// Run only one iteration of the disttbfast distance refinement
-    /// (matches C `--oneiteration` → `disttbfast -r`). Currently
-    /// accepted as a no-op; our distance recomputation already
-    /// runs once per retree pass — closer investigation needed
-    /// before forcing a single iteration here. See `TODO.md`.
+    /// Run C's one-vs-others refinement after the progressive merge
+    /// (matches C `--oneiteration` → `disttbfast -r`,
+    /// `disttbfast.c::dooneiteration`). Applies to FFT-NS-2 / FFT-NS-i
+    /// only; a no-op for L/G/E-INS-i, as in C. Byte-identical to C.
     #[arg(long)]
     oneiteration: bool,
 
@@ -545,8 +548,9 @@ struct Args {
     /// byte-for-byte. Off by default — the stateless progressive
     /// engine is the design goal. Enable when downstream byte-equality
     /// with C MAFFT 7.526 is hard-required on inputs that surface the
-    /// `A__align` static-state artifact (BB20027-class cases, see
-    /// `MAFFT_UPSTREAM_REPORT.md`).
+    /// `A__align` static-state artifact (BB20027-class cases, see the
+    /// deep-dive in `balibase_parity_run.md`; every BAliBASE fixture is
+    /// byte-identical without this flag today).
     #[arg(long = "c-compat")]
     c_compat: bool,
 }
@@ -1467,16 +1471,13 @@ fn align_prepared<'a>(
     // `--youngestlinkage` (C `treeext=youngestlinkage` →
     // `compacttree=4` → `compacttree_memsaveselectable(howcompact=2)`)
     // uses a per-step cluster-distance recompute via k-mer tables.
-    // Rust now has a dedicated port (`youngestlinkage_tree`) — see
+    // Rust has a dedicated port (`youngestlinkage_tree`) — see
     // `crates/mafft-tree/src/memsavetree.rs`. Byte-identical to C on
-    // first14 (small inputs where initial mindist[] survives); partial
-    // closure on larger inputs (subtle tie-break / iteration-order
-    // differences remain).
+    // first14/15/30/36 and the 36-seq sample (TODO.md R-8).
     engine.youngestlinkage = args.youngestlinkage;
-    // Iteration-strategy stubs (gap #3 in TODO.md). All accepted at
-    // the CLI for compatibility; the actual algorithm changes are
-    // tracked separately. `--simplehillclimbing` is a TRUE no-op
-    // (matches the default in both C MAFFT and us), so emit no note.
+    // Iteration-strategy flags (TODO.md "formerly pending gaps" #3, all
+    // implemented). `--simplehillclimbing` is a TRUE no-op (matches the
+    // default in both C MAFFT and us), so emit no note.
     // --bestfirst is now wired to the engine's BESTFIRST refinement
     // path (see refinement.rs::bestfirst_refine).
     engine.bestfirst = args.bestfirst;

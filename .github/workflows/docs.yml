@@ -4,7 +4,7 @@ name: Documentation
 #
 # Build (and deploy) the mkdocs-material site.
 #
-# Build runs on pushes to main/dev and on PRs (against any base branch)
+# Build runs on pushes to main and on PRs (against any base branch)
 # that touch something the site is generated from, so broken
 # cross-links or mkdocstrings import failures are caught before merge.
 # Deploy is gated to events that legitimately represent the published
@@ -14,7 +14,6 @@ name: Documentation
 #   * push to main          → build + DEPLOY   (when `paths` match)
 #   * release published     → build + DEPLOY   (always; picks up version bumps)
 #   * workflow_dispatch     → build + DEPLOY   (always; manual override)
-#   * push to dev           → build only       (when `paths` match)
 #   * pull_request          → build only       (when `paths` match)
 #
 # `paths` lists everything the rendered site depends on:
@@ -35,7 +34,7 @@ name: Documentation
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
@@ -137,8 +136,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # Deploy only from `main`, releases, or manual dispatch. PR builds
-    # and `dev` pushes run the build job for regression-check purposes
-    # but never replace the published site.
+    # run the build job for regression-check purposes but never replace
+    # the published site.
     if: >-
       github.event_name == 'release' ||
       github.event_name == 'workflow_dispatch' ||

@@ -6,7 +6,7 @@ name: CI
 # pass; keep that in mind if branch protection is ever enabled.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths-ignore:
       - 'docs/**'
       - '**/*.md'

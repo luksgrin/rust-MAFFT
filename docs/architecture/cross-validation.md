@@ -24,8 +24,9 @@ The bindings are dev-deps of `mafft-scoring`, `mafft-tree`, `mafft-core`
 
 ## What gets compared
 
-103 FFI test functions across 15 files (counted from `#[test]`
-attributes in `crates/*/tests/cross_validate*.rs`):
+82 FFI test functions across 15 files (counted from `#[test]`
+attributes in `crates/*/tests/cross_validate*.rs`; 4 of them are
+`#[ignore]`d bisection tools):
 
 | Layer | File (tests) | What's compared |
 |--|--|--|
@@ -43,10 +44,18 @@ Three further `mafft-core` test binaries also link the C shim but are
 forensic rather than parity tests: `trace_refinement.rs` (15),
 `exp_residual_dump_compare.rs` (1) and `exp_residual_step10.rs` (1).
 
+Together that is 99 test functions linking the C shim.
+
 The fixture-based end-to-end tests do **not** use the FFI; they compare
-against committed C-canonical outputs: `mafft-core/tests/end_to_end.rs`
-(120), `mafft-bin/tests/c_parity_dna.rs` (5), and the `imp` matrix
-tests in `mafft-align/tests/` (3).
+against committed C-canonical outputs generated from the in-tree
+reference build: `mafft-core/tests/end_to_end.rs` (120),
+`mafft-bin/tests/c_parity_dna.rs` (10: the panaroo DNA clusters, the
+120 × 1.4 kb CDS under `--retree 2 --maxiterate 2` and `--thread 1`, the
+8-sequence trailing-anchor case), `mafft-bin/tests/input_handling_vs_c.rs`
+(25: the 22-file read-path corpus incl. C's exit-1 cases),
+`mafft-bin/tests/inmemory_parity.rs` (23: `run_from_seqs` vs `run_from`)
+and the `imp` matrix tests in `mafft-align/tests/` (3). The whole
+workspace is 537 passing tests + 7 ignored across 48 suites (2026-09-06).
 
 ## Platform-relative comparison
 

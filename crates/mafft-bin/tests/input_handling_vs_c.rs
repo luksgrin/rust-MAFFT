@@ -3,7 +3,7 @@
 //! Every `.expected` file under `fixtures/input_handling/` is the verbatim
 //! stdout of the arm64 C MAFFT 7.526 binary (`mafft --version` →
 //! `v7.526 (2024/Apr/26)`) for the command named in the test; the exit-1
-//! cases pin the exit status and message instead. See `REPORT.md` at the
+//! cases pin the exit status and message instead. See `fixtures/input_handling/README.md` at the
 //! repository root for the C read-path analysis these tests encode.
 //!
 //! What C does by default (no `--anysymbol`), with the source it comes from:
@@ -309,7 +309,7 @@ fn add_keeplength_gapped_existing_with_unusual_new() {
 /// literal trailing `X` and no `--anysymbol`, so it is an `--add`
 /// tie-break, not an input-handling issue.
 #[test]
-#[ignore = "diverges from C: trailing-X placement in --add DP (see REPORT.md, residual R-A)"]
+#[ignore = "diverges from C: trailing-X placement in --add DP (see fixtures/input_handling/README.md, residual R-A)"]
 fn add_anysymbol_gapped_existing_with_unusual_new() {
     expect_add_identical("add_anysymbol", &["--anysymbol"]);
 }

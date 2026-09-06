@@ -186,10 +186,11 @@ produces an off-by-one column on `BB30013`.
 
 ## Cross-validation harness
 
-The byte-identity bar is held in place by 103 FFI test functions across
-15 files (`crates/*/tests/cross_validate*.rs`) that compile MAFFT's C
-source in-tree via `mafft-c-bindings` and call both implementations on
-the same inputs, comparing outputs byte-for-byte. Because the C is
+The byte-identity bar is held in place by 82 FFI test functions across
+15 files (`crates/*/tests/cross_validate*.rs`; 99 including the three
+forensic binaries) that compile MAFFT's C source in-tree via
+`mafft-c-bindings` and call both implementations on the same inputs,
+comparing outputs byte-for-byte. Because the C is
 compiled on the same machine, these tests check Rust's default policy
 against the matching C build on whichever platform they run.
 

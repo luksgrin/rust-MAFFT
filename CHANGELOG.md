@@ -137,8 +137,30 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
   slices, so the readers no longer copy every row into a `Vec<Vec<u8>>`
   just to detect the type. Existing `&Vec<Vec<u8>>` callers are unchanged.
 
+- **DNA parity fixtures** with expected outputs captured from the in-tree
+  reference build: the five panaroo-rs gene clusters
+  (`crates/mafft-bin/tests/fixtures/panaroo_tiny_dna_clusters/`, run as
+  `--auto --adjustdirection --thread 1 --nuc` and without `--thread`), the
+  120 × 1.4 kb CDS reproducer (`mtb_cds_120x1400.fa`, `.thread1` and
+  `.fftnsi` variants), its first 8 sequences (`mtb_cds_first8.fa`), and the
+  minimal reproducers `dna_pair_gapscale_min.fa` / `refine_njob2_min.fa`.
+  Consumed by `crates/mafft-bin/tests/c_parity_dna.rs`.
+- **Input-handling corpus**: 22 inputs × {default, `--anysymbol`,
+  `--localpair --maxiterate 0`, `--nuc`, `--add` modes} = 71 cells in
+  `crates/mafft-bin/tests/fixtures/input_handling/`, with C's stdout as
+  `.expected` and C's exit-1 cases pinned by status + message
+  (`tests/input_handling_vs_c.rs`; the evaluation notes are in that
+  directory's `README.md`).
+
 ### Changed
 
+- CI: the build/test job is the reusable `build-test.yml`, run once per
+  reference platform (ubuntu x86-64, macOS arm64). `python.yml` builds one
+  wheel per target for Python 3.12 on push / pull request and the full
+  5 targets × Python 3.9–3.13 matrix on release / dispatch. `ci.yml`,
+  `python.yml` and `docs.yml` run on pull requests against *any* base
+  branch; `ci.yml` and `python.yml` skip documentation-only changes
+  (`docs/**`, `**/*.md`, `mkdocs.yml`, `CITATION.cff`, `LICENSE*`).
 - `--thread N` now builds a *local* rayon pool and `install()`s the
   alignment into it instead of calling `build_global()`. A process-global
   pool can only be initialised once, so an in-process caller running many
@@ -185,6 +207,23 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
 
 ### Fixed
 
+- **The input read path now matches C MAFFT's.** Four rules were wrong or
+  missing, found by running the 22-file corpus above against C (23 of 71
+  cells differed; 1 remains — see Notes): (1) type detection now counts `N`
+  as nucleotide (`io.c` `countATGC`), so N-rich DNA is no longer aligned as
+  protein; (2) C's `seqcheck` (`mltaln9.c:60-85`) is applied after reading
+  and to the `--add` file, so protein `U` / `O` and any letter outside the
+  alphabet exit 1 with `Illegal character c` (banner unless `--quiet`)
+  instead of being aligned silently, and nucleotide `.` is fatal as in C;
+  (3) `.` is never stripped — it is a legal protein residue (index 23) and
+  C's `gappick0` / `commongappick` remove `-` only, which also fixes the
+  L-INS/G-INS/E-INS pair phase seeing gapped input; (4) `--anysymbol`
+  follows `charfilter` (drop only `\n`, space, `\r`; `= < >` inside a
+  sequence exit 1), `replaceu` (digits / tabs kept as `X` / `n` residues)
+  and `restoreu` (originals copied onto every non-`-` position), including
+  for the `--add` file. A blank before `>` is rejected with C's format
+  message and exit 1 instead of gluing the header into the previous
+  sequence. `mafft_io::IoError` gained two variants carrying C's messages.
 - **FFT-NS-i's last refinement segment could start one column early.**
   `searchAnchors` (C `mltaln9.c`) slides a 20-column window over the
   alignment with `for( i=1; i<len-divWinSize; i++ )` and, when a
@@ -397,6 +436,13 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
   distinct outputs over 3 runs at both `--thread 2` and `--thread 4` — so
   byte-identity with C is impossible in principle at those thread counts.
   rust-MAFFT remains deterministic across all thread counts.
+- One input-handling cell still differs from C: with `--add --anysymbol`,
+  an added sequence ending in `*` (→ `X`) is placed `…KWRR-----X` by C and
+  `…KWRRX-----` here. It reproduces with a literal trailing `X` and no
+  `--anysymbol`, so it is a tie-break in the `--add` profile DP on a
+  zero-scoring terminal residue, not an input-handling bug; the test
+  `add_anysymbol_gapped_existing_with_unusual_new` is `#[ignore]`d with
+  that reason (residual R-A in `TODO.md`).
 - **FFI cross-validation tests serialised; poison-tolerant guards.** The
   test binaries that link the C reference (`mafft_sys`) call functions that
   read/write ~150 process-wide C globals (and `treeCnv` keeps a static scratch

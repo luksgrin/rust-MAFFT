@@ -41,7 +41,7 @@ impl Default for GenAffineGapModel {
 
 /// Perform generalized-affine local alignment.
 ///
-/// - `seq1`, `seq2`: raw residue sequences (uppercase ASCII).
+/// - `seq1`, `seq2`: raw residue sequences, case-folded per sequence type (uppercase protein, lowercase nucleotide) as the reader emits them.
 /// - `matrix`: substitution score matrix (alphabet × alphabet).
 /// - `amino_map`: ASCII char → internal index.
 /// - `gap_model`: affine penalties + skip-open penalty.

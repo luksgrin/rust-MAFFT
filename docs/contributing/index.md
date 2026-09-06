@@ -14,8 +14,9 @@ cd rust-MAFFT
 # Sanity-build the Rust workspace
 cargo build --workspace --release
 
-# Full test suite (~430 tests; ~30s on a modern machine)
-cargo test --workspace --release --tests
+# Full test suite (537 tests + 7 ignored across 48 suites; builds the
+# C reference in-tree on the first run)
+cargo test --workspace --exclude pymafft --release
 ```
 
 The `mafft-upstream/` submodule pins the reference C MAFFT version that
@@ -33,7 +34,9 @@ rust-MAFFT/
 ├── mkdocs.yml
 ├── mafft-upstream/          ← submodule: reference C MAFFT
 ├── .github/workflows/
-│   ├── ci.yml               ← push/PR (non-docs changes): cargo build + test
+│   ├── ci.yml               ← push/PR (non-docs changes): build + test on x86-64 and arm64 (via build-test.yml)
+│   ├── build-test.yml       ← reusable job: C in-tree, cargo test, FMA census, sentinel, fixture check
+│   ├── check-mafft-upstream.yml ← weekly: report drift of the submodule pin vs upstream HEAD
 │   ├── docs.yml             ← push/PR touching docs inputs: build; main: deploy
 │   ├── release.yml          ← release: 5 pre-built binaries to GH releases
 │   ├── python.yml           ← push/PR: 5 wheels (py3.12); release: 25 wheels + sdist to PyPI
@@ -44,7 +47,7 @@ rust-MAFFT/
 
 ### CI on pull requests
 
-`ci.yml` and `python.yml` run on pushes to `main`/`dev` and on pull
+`ci.yml` and `python.yml` run on pushes to `main` and on pull
 requests against *any* base branch (so stacked PRs get checks), but skip
 changes that touch only `docs/**`, `**/*.md`, `mkdocs.yml`,
 `CITATION.cff` or `LICENSE*`. `docs.yml` is the mirror image: it builds

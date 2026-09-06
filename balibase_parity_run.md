@@ -1,5 +1,17 @@
 # BALIBASE 3 parity sweep (2026-05-18 → 2026-05-20)
 
+> **Historical record.** The numbers in this file describe the state of
+> the port in May 2026 (218-set Drive5 mirror, default mode 97.2 %,
+> refinement modes 58–84 %). Every divergence recorded here has since
+> been closed: the current sweep is **1930/1930** byte-identical across
+> the 386-set BAliBASE 3 corpus in FFT-NS-i, L-INS-i, G-INS-i, E-INS-i and
+> G-INS-i `--allowshift` (see `README.md` and `TODO.md`). The file is
+> kept for the BB20027 deep-dive (cached `cpmx` / `A__align` static-state
+> investigation, the `--c-compat` experiment) that later fixes built on,
+> and is referenced from `crates/mafft-tree/src/distance.rs` and
+> `PROFILING.md`. `MAFFT_UPSTREAM_REPORT.md`, cited below, was removed
+> from the tree in June 2026.
+
 ## Final results across modes
 
 | Mode | Flags | Match | Diverge (tied) | Diverge (width) | Total match % |

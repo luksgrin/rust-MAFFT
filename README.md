@@ -72,6 +72,24 @@ Every progressive merge step matches in score and width; every refinement iterat
 
 ‡ Q-INS-i requires the external `mxscarnamod` binary.
 
+### DNA and input-handling parity (issue #1 integration)
+
+| Input / flags | Status |
+|---------------|--------|
+| 120 × 1.4 kb CDS (`mtb_cds_120x1400.fa`), FFT-NS-i `--retree 2 --maxiterate 2` (1742 columns) | ✓ byte-exact |
+| Same input, `--thread 1 --maxiterate 1/2/3/1000` (C's `athread` refinement rules) | ✓ byte-exact |
+| First 8 sequences of the above, `--retree 2 --maxiterate 1000` (trailing `searchAnchors` region) | ✓ byte-exact |
+| panaroo gene clusters (5 × 4 seqs, ~300–2300 bp), `--auto --adjustdirection --thread 1 --nuc` | ✓ byte-exact |
+| DNA L-INS-1 / `--auto` on synthetic clusters (pair-phase gap scale ×3, `dndpre` offset 220) | ✓ 60/60 and 30/30 |
+| Two-sequence input under `--maxiterate 1000` (C refines a pair exactly once, unweighted) | ✓ byte-exact |
+| Input read path corpus (22 files × `default` / `--anysymbol` / `--localpair --maxiterate 0` / `--nuc` / `--add` modes, 71 cells incl. C's exit-1 cases) | ✓ 70/71 (see [Known limitations](#b-intentional-residuals-tied-trace)) |
+
+`--thread 1` and no `--thread` are *different* C code paths (`tditeration.c:1433`
+selects `athread` on `nthread > 0`), with different branch order and
+convergence rules; `mafft-rs` reproduces both byte-for-byte. C's own
+`--thread N` for N ≥ 2 is nondeterministic, so byte-identity there is not
+defined; `mafft-rs` stays deterministic at every thread count.
+
 Residue case matches C MAFFT: nucleotide output is lowercased and protein
 output uppercased at read time (C `io.c:1462-1467`, `io.c:1755`), driven by
 the detected type or by `--nuc` / `--amino`; `--anysymbol` / `--preservecase`
@@ -134,7 +152,7 @@ ln -s mafft-rs einsi
 ### Run tests
 
 ```bash
-# All integration tests across the workspace (419 tests)
+# Whole workspace: 48 suites, 537 tests pass, 7 ignored diagnostics
 cargo test --workspace --exclude pymafft --release
 
 # Just unit tests (faster; no FFI / no C build)
@@ -158,7 +176,7 @@ uv venv .venv
 uv pip install maturin pytest biopython
 cargo build --release -p mafft-rs   # the CLI the option-parity tests compare against
 maturin develop --release
-uv run pytest tests/ -v   # 160 tests (32 API + 23 parity/shape + 82 CLI-option parity + 18 Biopython interop + 5 console script)
+uv run pytest tests/ -v   # 160 tests (32 API + 23 parity/shape + 82 CLI-option parity + 18 Biopython interop + 5 console script; 4 console-script tests skip unless the wheel bundles the binary)
 ```
 
 ## Usage
@@ -178,8 +196,18 @@ mafft-rs -o aligned.fasta sequences.fasta
 # Quiet mode (suppress progress messages)
 mafft-rs -q sequences.fasta > aligned.fasta
 
-# Control thread count (0 = all cores)
+# Control thread count (0 = all cores). As in C MAFFT, `--thread N` with
+# N >= 1 also selects the `athread` refinement rules (ascending branch
+# order, per-cycle convergence), so `--thread 1` output differs from
+# no-`--thread` output exactly as C's does; N >= 2 is nondeterministic in C
+# but deterministic here.
 mafft-rs --thread 4 sequences.fasta > aligned.fasta
+
+# Force the sequence type instead of detecting it from ATGC frequency
+# (also fixes the residue case: nucleotide output is lowercase, protein
+# uppercase, as in C)
+mafft-rs --nuc genes.fasta > aligned.fasta
+mafft-rs --amino proteins.fasta > aligned.fasta
 ```
 
 ### Alignment strategies
@@ -392,16 +420,22 @@ crates/
   mafft-sys/         Reserved name on crates.io (0.0.1 stub; future real FFI
                      shim with vendored C source will land here as 0.1.0+)
   mafft-types/       Shared Rust types (HomologyRegion, Sequence, ScoringContext, etc.)
-  mafft-io/          FASTA, Clustal, PHYLIP, hat2 I/O
+  mafft-io/          FASTA, Clustal, PHYLIP, hat2 I/O; C's read-path rules (residue filter,
+                     case convention, `seqcheck` illegal-residue test — depends on mafft-scoring
+                     for the alphabets)
   mafft-scoring/     Substitution matrices (BLOSUM, JTT, TM, DNA) and gap penalties
   mafft-fft/         FFT-based homology detection (hand-ported Cooley-Tukey, bit-for-bit C-compat)
   mafft-align/       Pairwise and profile alignment algorithms (NW, SW, generalized affine, warp DP)
   mafft-tree/        Distance computation, NJ, UPGMA, guide tree construction, PartTree, memsavetree
   mafft-core/        Progressive alignment engine, iterative refinement, MafftEngine, `--add` machinery
-  mafft/             Ergonomic top-level crate — `cargo add mafft` re-exports mafft-core/types/io
-  mafft-bin/         CLI binary (`mafft-rs`; `cargo install mafft-rs`)
-  pymafft/           Python bindings via PyO3 (`pip install pymafft`)
+  mafft/             Ergonomic top-level crate — `cargo add mafft` re-exports mafft-core/types/io;
+                     optional `cli` feature re-exports the `mafft-rs` flag layer as `mafft::cli`
+  mafft-bin/         CLI binary (`mafft-rs`; `cargo install mafft-rs`) and library target `mafft_rs`
+                     (`run_from`, `run_from_seqs`, `Mafft` builder, `Progress`, `MafftError`)
+  pymafft/           Python bindings via PyO3 (`pip install pymafft`); routes through `mafft_rs::run_from_seqs`
 ```
+
+Of the 12 crates, 10 are published to crates.io; `mafft-c-bindings` and `pymafft` are `publish = false` (the latter ships as a PyPI wheel).
 
 The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindings` is only used as a dev-dependency for cross-validation tests.
 
@@ -421,33 +455,39 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 - **Platform-independent sort tie-break.** C MAFFT calls `qsort()` directly inside `splitseq_mq` to sort sequences by their distance to the pivot. `qsort` is part of the host C library — BSD on macOS, glibc on Linux, MSVC on Windows — and its three implementations disagree on the relative order of *truly tied* elements. That makes C MAFFT's `--parttree --reorder` output platform-dependent on inputs containing exactly-duplicate sequences. Rust ships a hand-written BSD-qsort algorithm (`mafft-tree/src/bsd_qsort.rs`, Bentley-McIlroy) and uses it everywhere `dcompare_sort` is called, so the `mafft-rs` binary produces the **same output on every platform it's built for**, matching macOS C MAFFT 7.526 byte-for-byte.
 
-- **Thread-local scratch pools.** The hot inner DP loop (`profile_align_imp_multimtx` in `crates/mafft-align/src/profile.rs`) is specialised at codegen time via a `#[inline(always)] fn j_loop<const TW: bool, const STRICT: bool>` helper, dispatched from the i-loop with a 4-way match — LLVM strips the warp arithmetic from the FFT-NS-i path and replaces per-cell branches on `strict_part_tiebreak` with const choices. Per-call scratch vectors come from thread-local pools (`DpScratch` / `DP_H_POOL` / `DP_IJP_POOL`) to amortise allocation across calls, matching C `A__align`'s static-TLS buffer strategy.
+- **Thread-local, flattened scratch buffers.** The hot inner DP loop (`profile_align_imp_multimtx` in `crates/mafft-align/src/profile.rs`) is specialised at codegen time via a `#[inline(always)] fn j_loop<const TW: bool, const STRICT: bool>` helper, dispatched from the i-loop with a 4-way match — LLVM strips the warp arithmetic from the FFT-NS-i path and replaces per-cell branches on `strict_part_tiebreak` with const choices. The `h` / `ijp` DP matrices are flat row-major `(n+1)×(m+1)` buffers and the sparse column profiles are one flat entry list plus an offsets table, all drawn from thread-local pools (matching C `A__align`'s static-TLS buffer strategy); `L__align11` uses a pooled `LocalScratch` the same way. This layout change (1.08–1.21× on Apple Silicon, see [Performance](#performance)) keeps every multiply-add on `fp::fmadd` with unchanged operand order, so output bytes are unaffected.
+
+- **One flag layer, three front ends.** `--auto`'s size heuristic, `--adjustdirection`, `--nuc` / `--amino`, `--reorder`, `--thread` — the flag → behaviour layer lives once, in the `mafft-rs` library target (`crates/mafft-bin/src/lib.rs`), and is reached three ways: the binary (`run`), `run_from(argv, out)` / `run_from_seqs(argv, &SequenceSet, &sink)` / the `Mafft` builder from Rust (also as `mafft::cli` behind the `cli` feature), and `pymafft` (which calls `run_from_seqs`). Every failure is a `MafftError` carrying the CLI's exit code and message; progress goes to a `Progress` sink. `--thread N` builds a *local* rayon pool per call, so an in-process caller can vary the thread count.
+
+- **Input read path mirrors C.** Type detection counts `N` as nucleotide (`countATGC`), the residue filter and case fold follow `onlyAlpha_lower` / `onlyAlpha_upper`, only `-` is ever stripped (`gappick0`; `.` is a legal protein residue and fatal for nucleotides), C's `seqcheck` alphabets reject `U` / `O` / unknown letters with `Illegal character c` and exit 1, and `--anysymbol` reproduces `charfilter` / `replaceu` / `restoreu` including the `--add` file. Pinned by the 22-file corpus in `crates/mafft-bin/tests/fixtures/input_handling/`.
 
 ### Test suite
 
-**419 Rust tests + 72 Python tests** (release build, all suites green):
+**537 Rust tests pass + 7 ignored across 48 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, 2026-09-06):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust lib tests (`--lib`, all crates)  | ~170 | All `#[cfg(test)] mod tests` blocks |
-| Rust binary tests (`mafft-rs`)        | 23   | CLI helper functions |
-| Rust integration (`end_to_end`)       | 117  | Mode-level byte-identity vs C across every supported flag/mode combo |
-| Rust FFI cross-validation             | ~80  | Cell-by-cell FFI equality: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances |
-| `trace_refinement`, `integration`, `imp_*` | ~32 | End-to-end trajectory cross-checks |
-| Python tests                          | 72   | API, strategies, file I/O, **parity with `mafft-rs` and C `mafft` binaries**, output-shape invariants, edge cases, **Biopython interop** |
+| Rust lib tests (`--lib`, all crates)  | 248 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
+| `mafft-core/tests/end_to_end.rs`      | 120 (2 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
+| Rust FFI cross-validation (`cross_validate*.rs`, 15 files) | 82 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
+| `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
+| `mafft-bin/tests/` (`input_handling_vs_c`, `inmemory_parity`, `c_parity_dna`) | 58 (1 ignored) | CLI-level byte-identity: the 22-file input corpus, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`) |
+| `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
+| Python tests                          | 160 | API (32), parity/shape (23), **CLI-option parity against the `mafft-rs` binary** (82), Biopython interop (18), console script (5) |
 
 Regression guards for C parity live in:
 - `crates/mafft-core/tests/end_to_end.rs` — mode-level byte-identity
 - `crates/mafft-core/tests/cross_validate_*.rs` — FFI-level cell/function equality
 - `crates/mafft-tree/tests/cross_validate_*.rs` — PartTree, memsavetree, weights
+- `crates/mafft-bin/tests/*.rs` — CLI-level and in-memory-API byte-identity, DNA and input-handling corpora
 
-Any regression in DP indexing, boundary handling, FFT anchor placement, refinement-tree distance, profile blending, or `--add` profilealignment fails at least one of them.
+Any regression in DP indexing, boundary handling, FFT anchor placement, refinement-tree distance, profile blending, `--add` profilealignment, the input read path or the `--thread` refinement rules fails at least one of them.
 
-6 tests are `#[ignore]`-gated as deliberate diagnostic / bisection tools (annotated at the call site).
+7 tests are `#[ignore]`-gated: six deliberate diagnostic / bisection tools (annotated at the call site) and the one documented input-handling residual below.
 
 ## Known limitations
 
-These three categories cover everything `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526 for.
+These three categories cover everything `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526 for. No other divergence from C is known (2026-09-06).
 
 ### A. External-dependency-blocked modes
 
@@ -459,15 +499,18 @@ These modes are wired correctly but require third-party binaries not shipped by 
 | `--qinsi` (Q-INS-i) | `mxscarnamod` built from `mafft-upstream/extensions` | Wired; byte-identical to C (mod RNA case) when present |
 | `--scarnalike` | `dash_client` in PATH | Wired; untested without the binary |
 
-### B. Intentional residual (pathological-value tied-trace)
+### B. Intentional residuals (tied-trace)
 
-A single mode-and-value combination is known to produce a tied-trace divergence from C MAFFT — same alignment width, same sum-of-pairs score, but a few residues placed at neighbouring columns due to a DP tie-break that depends on accumulated floating-point state. No realistic workflow hits this:
+Two configurations are known to produce a tied-trace divergence from C MAFFT — same alignment width, same sum-of-pairs score, but a residue placed at a neighbouring column due to a DP tie-break on a zero-scoring cell. No realistic workflow hits either:
 
 | Configuration | Effect |
 |---------------|--------|
 | `--exp ≥ 4.30` on FFT-NS-2 (no refinement) | 16-line content diff at same width (517) and same score on the 36-seq sample. Default `--exp` is 0; closes with `--nofft` or any `--maxiterate ≥ 1`. |
+| `--add --anysymbol` with an added sequence whose *last* residue is a zero-scoring unusual character (`*` → `X`) | C places it `…KWRR-----X`, rust `…KWRRX-----`. Reproduces with a literal trailing `X` and no `--anysymbol`, so it is a `--add` profile-DP tie-break, not an input-handling bug. Test `add_anysymbol_gapped_existing_with_unusual_new` is `#[ignore]`d with this reason. |
 
-Full diagnostic infrastructure is in place (`RS_DP_DUMP` env var, `exp_residual_dump_compare` and `exp_residual_step10` FFI tests) for any future closure attempt. The divergence is below per-step FFI replay resolution: per-step `fft_profile_align` output is byte-identical to C's `Falign` on the same inputs; the end-to-end shift comes from accumulated FP order in tied DP cells that the per-step replay can't reproduce.
+Full diagnostic infrastructure is in place for the first (`RS_DP_DUMP` env var, `exp_residual_dump_compare` and `exp_residual_step10` FFI tests). The divergence is below per-step FFI replay resolution: per-step `fft_profile_align` output is byte-identical to C's `Falign` on the same inputs; the end-to-end shift comes from accumulated FP order in tied DP cells that the per-step replay can't reproduce.
+
+Not a divergence but worth knowing: C MAFFT's own `--thread N` output for N ≥ 2 varies between runs of the same binary on the same input, so there is no single C output to be identical to. `mafft-rs` is deterministic at every thread count and matches C's `--thread 1` path exactly (see [DNA and input-handling parity](#dna-and-input-handling-parity-issue-1-integration)).
 
 ### C. Out-of-scope by design
 
@@ -480,10 +523,6 @@ These modes are intentionally not implemented. `mafft-rs` either rejects the fla
 | **Alternative pairwise aligners** | `--blastpair`, `--lastpair`, `--lastmultipair`, `--fastapair`, `--fastswpair`, `--hybridpair`, `--longshortpair`, `--shortlongpair` | Require external BLAST/LAST/FASTA binaries with non-trivial output-parsing glue. Use the built-in `--localpair` / `--globalpair` / `--genafpair` aligners instead. |
 | **DASH-only sequence-filter flags** | `--excludehomologs`, `--originalseqonly` | C documents both as "works with `--dash` only"; the DASH structure-DB pipeline falls under the RNA-structure category above. Wired as no-ops, matching what C does without `--dash`. |
 | **MPI parallelism** | `--mpi` | `mafft-rs` uses Rayon for in-process multithreading. |
-
-### Case preservation
-
-C preserves the input case of residues (e.g., lowercase RNA); `mafft-rs` uppercases all residues before alignment. The alignment itself (gap placement) is identical — `rna_nofft_case_insensitive_identical_to_c` verifies this with `diff -i`.
 
 ## Performance
 
@@ -500,6 +539,8 @@ Benchmark snapshot vs C MAFFT 7.526 (macOS arm64, alternating-run medians):
 | `--maxiterate 50 --globalpair` (108-seq)    | 35.32s  | 22.62s   | **rust 1.56× faster** |
 | `--parttree` (108-seq)                      | 1.70s   | 0.09s    | **rust 18× faster**   |
 | `--dpparttree` (108-seq)                    | 7.24s   | 0.08s    | **rust 90× faster**   |
+
+The table above predates the flattened profile-DP / `L__align11` scratch buffers that landed with the issue #1 integration. Measured against the previous `mafft-rs` build (medians of 5 interleaved runs, Apple M4): `mtb_cds_120x1400 --retree 2 --maxiterate 2` 4.99 s → 4.62 s (1.08×), 36-seq sample `--localpair --maxiterate 1000` 0.85 s → 0.77 s (1.11×), `--maxiterate 1000` 0.54 s → 0.48 s (1.14×), default 0.066 s → 0.055 s (1.21×) — with output bytes unchanged. `MAFFT_RS_REFINE_STATS=1` prints one line per refinement call (`cycles`, `visited`, `accepted`, exit reason) so a speed comparison against C's `dvtditr` log can first confirm both sides did the same work.
 
 ## Upstream MAFFT
 
@@ -519,10 +560,11 @@ git commit -m "Bump MAFFT upstream to <version>"
 
 | Workflow | Triggers | What |
 |----------|----------|------|
-| **CI** (`ci.yml`) | push to main/dev, PR to any branch | Build + test Rust and C on x86-64 and arm64, smoke test binary, Windows cross-platform build |
-| **Python** (`python.yml`) | push to main/dev, PR to any branch | Smoke build: one wheel per target (Linux x86-64/aarch64, macOS x86-64/arm64, Windows) for Python 3.12 only, sdist, wheel tests on 3.12 |
+| **CI** (`ci.yml`, via reusable `build-test.yml`) | push to main, PR to any branch | Build the in-tree C reference and the Rust workspace on ubuntu x86-64 and macOS arm64; full test suite (lib + integration + FFI) on both; FMA census of the C binaries; `--bl 50` sentinel diff vs same-platform C; `regen_policy_fixtures.sh check`; FP-policy cross-check (`fp-contract-none` fixtures on arm64); C-binary regression tests on x86-64 |
+| **Python** (`python.yml`) | push to main, PR to any branch | Smoke build: one wheel per target (Linux x86-64/aarch64, macOS x86-64/arm64, Windows) for Python 3.12 only, sdist, wheel tests on 3.12 |
 | | release, manual dispatch | Full matrix: 5 targets x Python 3.9-3.13, sdist, wheel tests on 3.9/3.12/3.13; publish to PyPI on release |
-| **Documentation** (`docs.yml`) | push to main/dev and PRs touching `docs/**`, `mkdocs.yml`, `crates/mafft-bin/src/**`, `crates/pymafft/**`, `scripts/gen-cli-reference.sh`; release; manual dispatch | Build the mkdocs site (regenerates the CLI reference, introspects pymafft); deploy to GitHub Pages from main/release/dispatch |
+| **Documentation** (`docs.yml`) | push to main and PRs touching `docs/**`, `mkdocs.yml`, `crates/mafft-bin/src/**`, `crates/pymafft/**`, `scripts/gen-cli-reference.sh`; release; manual dispatch | Build the mkdocs site (regenerates the CLI reference, introspects pymafft); deploy to GitHub Pages from main/release/dispatch |
+| **Check MAFFT upstream** (`check-mafft-upstream.yml`) | weekly schedule, manual dispatch | Compare the `mafft-upstream` pin against upstream HEAD and report drift (never auto-updates) |
 | **Release** (`release.yml`) | GitHub release | Build `mafft-rs` binaries for 5 platforms, attach to release |
 | **Publish to crates.io** (`cargo-publish.yml`) | GitHub release | Publish all workspace crates in dependency order |
 
