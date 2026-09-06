@@ -72,7 +72,39 @@ result = pymafft.align(seqs, strategy="einsi")
 
 # FFT-NS-i: progressive + iterative refinement
 result = pymafft.align(seqs, strategy="fftnsi", maxiterate=100)
+
+# --auto: let MAFFT pick from the number and length of the sequences
+result = pymafft.align(seqs, strategy="auto")
 ```
+
+### CLI-equivalent options
+
+Every keyword is one `mafft-rs` command-line flag, applied by the CLI's own
+flag layer, so the result is byte-identical to the command line's for the
+same flags.
+
+```python
+# `mafft --auto --adjustdirection --thread 1 --nuc` over in-memory records
+result = pymafft.align(genes, strategy="auto", adjust_direction=True,
+                       threads=1, seq_type="nuc")
+
+# Substitution matrix and gap penalties (`--bl 50 --op 1.0 --ep 0.2`)
+result = pymafft.align(seqs, scoring="bl50", gap_open=1.0, gap_extend=0.2)
+
+# Guide-tree order output, one more tree rebuild
+result = pymafft.align(seqs, reorder=True, retree=3)
+
+# Progress lines (the CLI's stderr) to a callable; quiet by default
+result = pymafft.align(seqs, strategy="auto", progress=print)
+
+# Any other flag, verbatim
+result = pymafft.run(["--nofft", "--maxiterate", "2", "--quiet"], seqs)
+```
+
+Failures raise `pymafft.MafftError` (a `ValueError`) with the CLI's exit
+code in `.code` and stderr text in `.message`, e.g. `Illegal character U`
+for a residue outside the alphabet. Nucleotide output is lowercase and
+protein output uppercase, as with C MAFFT.
 
 ### Work with results
 
@@ -89,6 +121,7 @@ result[0].ungapped()     # sequence without gaps
 # Export
 result.to_fasta()        # FASTA-formatted string
 result.to_tuples()       # list of (name, sequence) tuples
+result.to_biopython()    # Bio.Align.MultipleSeqAlignment (Biopython imported lazily)
 
 # Iterate
 for seq in result:
@@ -104,6 +137,7 @@ for seq in result:
 | `ginsi` | `--globalpair` | Global iterative (accurate) |
 | `linsi` | `--localpair` | Local iterative (most accurate for <200 seqs) |
 | `einsi` | `--genafpair` | Generalized affine (large internal gaps) |
+| `auto` | `--auto` | Chosen from sequence count and length |
 
 ## License
 

@@ -332,6 +332,44 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
   k-mer strand detection was "not yet implemented"; it has been implemented
   since TODO R-5 (2026-06-03).
 
+### Python
+
+- `pymafft` now runs every alignment through the CLI's flag layer
+  (`mafft_rs::run_from_seqs`) instead of driving `MafftEngine` directly. Each
+  keyword is one `mafft-rs` flag, so nothing about a flag's meaning is
+  re-derived in Python and the output is byte-identical to the command
+  line's for the same flags (82 option-parity tests compare `to_fasta()`
+  against the binary's stdout on the same fixtures). `align`, `align_file`
+  and `align_fasta_string` keep `strategy` / `maxiterate` with their
+  previous defaults and gain keyword-only options: `strategy="auto"`
+  (`--auto`), `seq_type="nuc"|"amino"` (`--nuc` / `--amino`; `None` detects
+  as the CLI does), `adjust_direction=True|"accurately"`
+  (`--adjustdirection` / `--adjustdirectionaccurately`), `threads`
+  (`--thread`), `reorder`, `retree`, `scoring="bl62"|"jtt200"|"tm100"`
+  (`--bl` / `--jtt` / `--tm`), `gap_open` / `gap_extend` (`--op` / `--ep`),
+  `quiet` (default `True`) and `progress` (a callable receiving the lines
+  the CLI prints on stderr; with `quiet=False` and no callable they go to
+  stderr as before). The GIL is released while the alignment runs.
+- `pymafft.run(args, sequences, *, progress=None)`: escape hatch that
+  passes an explicit flag list straight to `run_from_seqs`, for flags
+  without a keyword.
+- `pymafft.MafftError`, a `ValueError` subclass carrying the CLI's exit code
+  (`.code`) and stderr text (`.message`); `except ValueError` keeps working.
+- `AlignmentResult.to_biopython()` returns a `Bio.Align.MultipleSeqAlignment`;
+  Biopython is imported lazily, only inside that call.
+- **Two behaviour changes inherited from the reader fixes above**, because
+  Python input now takes the same path as a FASTA file on the command line:
+  (1) nucleotide alignments come back lowercase (they were uppercase) and
+  protein input is uppercased on read, so `align(["acdefghik", …])` returns
+  `ACDEFGHIK`; (2) residues outside the alphabet (protein `U` / `O`,
+  nucleotide `.`, …) raise `MafftError` (`Illegal character U`, code 1)
+  instead of being aligned as unknowns — as C MAFFT does; use
+  `run(["--anysymbol", …], seqs)` to keep them. Two tests were updated for
+  this (`test_mixed_lengths`, and `test_case_passes_through_verbatim`
+  became `test_case_follows_c_mafft`).
+- `pymafft` depends on the `mafft-rs` crate (path dependency); its
+  `fp-contract-*` features are forwarded there too.
+
 ### Notes
 
 - **Per-alphabet constant audit.** Three bugs were found reactively where a

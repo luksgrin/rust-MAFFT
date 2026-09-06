@@ -255,7 +255,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest biopython
-          pip install --find-links dist pymafft
+          # --no-index: install ONLY the wheel we just built. Without it pip
+          # also consults PyPI, and when the published version equals the
+          # workspace version (any change without a bump) it may pick the
+          # published wheel instead, so the tests silently run against the
+          # old package. Seen on the Windows runners of PR #7.
+          pip install --no-index --find-links dist pymafft
+          # No pipes here: the step runs with pipefail, and `pip show | head`
+          # makes pip exit 120 ("Pipe to stdout was broken") once head closes.
+          python -c "import pymafft; print('pymafft', pymafft.__version__, 'from', pymafft.__file__)"
 
       - name: Run binding test suite
         working-directory: crates/pymafft

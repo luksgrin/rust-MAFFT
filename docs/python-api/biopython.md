@@ -23,7 +23,19 @@ how Biopython itself treats `id` as the stable identifier.
 
 ## pymafft → MultipleSeqAlignment
 
-Two routes — pick by style preference, the result is identical.
+Three routes — pick by style preference, the result is identical.
+
+=== "Built in"
+
+    ```python
+    msa = result.to_biopython()
+    assert msa.get_alignment_length() == result.width
+    ```
+
+    Each row becomes a `SeqRecord` with `id` set to the row name and an
+    empty `description`. Biopython is imported lazily, inside this call
+    only — pymafft still has no runtime dependency on it, and the method
+    raises `ImportError` if it is missing.
 
 === "Via FASTA string"
 
@@ -59,9 +71,20 @@ import pymafft
 records = list(SeqIO.parse("opsins.fasta", "fasta"))
 result  = pymafft.align(records, strategy="linsi", maxiterate=1000)
 
-msa = AlignIO.read(StringIO(result.to_fasta()), "fasta")
-AlignIO.write([msa], "opsins.aligned.aln", "clustal")
+AlignIO.write([result.to_biopython()], "opsins.aligned.aln", "clustal")
 ```
+
+The alignment options are the CLI's, so the panaroo-style nucleotide call
+works the same way over `SeqRecord`s:
+
+```python
+records = list(SeqIO.parse("cluster.fasta", "fasta"))
+result  = pymafft.align(records, strategy="auto", adjust_direction=True,
+                        threads=1, seq_type="nuc")
+```
+
+Note that `--adjustdirection` prefixes reverse-complemented rows with `_R_`
+in the row name, exactly as the command line does.
 
 ## Header caveat
 
@@ -77,6 +100,6 @@ names differ.
 
 ## Tests
 
-The interop guarantees above are exercised by 17 tests in
+The interop guarantees above are exercised by 18 tests in
 `crates/pymafft/tests/test_biopython.py`. The suite skips cleanly when
 Biopython isn't installed (via `pytest.importorskip("Bio")`).
