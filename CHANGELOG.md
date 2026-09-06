@@ -96,6 +96,46 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
   message `mafft-rs` emits; two further lines in `mafft-core` (the
   Q-INS-i/X-INS-i BPP line and the `--skipiterate` banner) are not routed —
   see the `progress` module docs for why.
+- `mafft_rs::run_from_seqs(argv, &SequenceSet, &(dyn Progress + Sync)) ->
+  Result<MultipleAlignment, MafftError>` and `Mafft::run_seqs(&SequenceSet)`:
+  the in-memory form of `run_from`. Same clap definition, same flag layer
+  (`--auto`'s size heuristic, `--adjustdirection`, `--nuc` / `--amino`,
+  `--reorder`, `--thread`, `--add FILE`, …), but the primary input is a
+  borrowed `SequenceSet` instead of the positional INPUT file and the
+  alignment comes back as a `MultipleAlignment` (names + aligned rows by
+  value, plus guide tree / distance matrix / step trace) instead of FASTA
+  text. The rows are byte-for-byte what `run_from` prints for the same
+  sequences and flags — same order, `_R_` names, case and gap characters —
+  which `tests/inmemory_parity.rs` asserts on the 36-sequence protein sample,
+  the 120 x 1400 bp CDS fixture and synthetic reverse-complement /
+  mixed-case inputs. Input is normalised the way the FASTA reader would
+  (residue filter, case convention, type detection when `seq_type` is
+  `Unknown`) and copied only when that changes something; a canonical set
+  reaches the engine borrowed. `--output FILE` is still honoured; the
+  `--treeout` / `--distout` side files need an INPUT path and warn as they do
+  for stdin. Errors are the same `MafftError`s as `run_from`. Internally
+  `run_from_with_progress` is now `parse_argv` → `preflight` → `read_input`
+  → `align_prepared` → `write_alignment`, with `run_from_seqs` swapping
+  `read_input` for `prepare_in_memory`; the CLI's bytes are unchanged
+  (verified with `cmp` against the pre-change binary and arm64 C MAFFT on
+  eight command lines). `mafft-rs` re-exports `MultipleAlignment`,
+  `Sequence`, `SequenceSet` and `SeqType` so a caller needs no other crate.
+- `mafft` gains an opt-in `cli` feature that re-exports the `mafft-rs` crate
+  as `mafft::cli`, so a library user can reach `run_from` / `run_from_seqs`
+  / `Mafft` from the umbrella crate. Off by default because it brings clap.
+- `mafft_io::normalize_residues`, `residues_are_normalized` and
+  `residues_follow_case_convention` expose the FASTA reader's own residue
+  filter and case rule for residues that never went through a file, and say
+  whether applying them would change anything; `normalize_residues` returns
+  the case-preserving reader's `= < >` error so an in-memory caller fails
+  where a file would. `mafft_io::find_illegal_residue` is C `seqcheck`'s
+  alphabet test (`locaminod` / `locaminon`, taken from `mafft-scoring`, on
+  which `mafft-io` now depends); `mafft-rs` runs it in `align_prepared`, so
+  a file and an in-memory `SequenceSet` are refused with the same
+  `Illegal character c` (exit 1). `detect_seq_type` (and
+  `detect_seq_type_with_limit`, now exported) accept any iterator of byte
+  slices, so the readers no longer copy every row into a `Vec<Vec<u8>>`
+  just to detect the type. Existing `&Vec<Vec<u8>>` callers are unchanged.
 
 ### Changed
 
@@ -106,6 +146,9 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
   No change for the CLI.
 - `run()` is now a thin wrapper around `run_from` (unchanged signature and
   observable behaviour: same stdout, stderr, exit codes and messages).
+- The FASTA path no longer clones every aligned row into the output
+  `SequenceSet`; the rows are moved out of the `MultipleAlignment`. Output
+  bytes are unchanged.
 
 ### Performance
 

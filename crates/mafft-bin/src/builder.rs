@@ -27,7 +27,10 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{run_from_with_progress, MafftError, Progress, StderrProgress};
+use crate::{
+    run_from_seqs, run_from_with_progress, MafftError, MultipleAlignment, Progress, SequenceSet,
+    StderrProgress,
+};
 
 /// Builds a `mafft-rs` argv and runs it in-process via [`crate::run_from`].
 ///
@@ -243,6 +246,42 @@ impl Mafft {
         let mut buf = Vec::new();
         self.run(&mut buf)?;
         Ok(buf)
+    }
+
+    /// Align sequences that are already in memory and get the alignment
+    /// back as a value — the builder form of [`crate::run_from_seqs`].
+    ///
+    /// The flags set on this builder mean exactly what they mean on the
+    /// command line; `seqs` takes the place of the positional INPUT, so a
+    /// builder with [`Mafft::input`] set is an error here. No FASTA is
+    /// parsed or printed; see [`crate::run_from_seqs`] for how `seqs` is
+    /// normalised and when it is copied.
+    ///
+    /// ```no_run
+    /// use mafft_rs::{Mafft, SilentProgress, Sequence, SequenceSet, SeqType};
+    ///
+    /// let input = SequenceSet {
+    ///     sequences: vec![
+    ///         Sequence { name: "a".into(), data: b"atggctagcttggacc".to_vec() },
+    ///         Sequence { name: "b".into(), data: b"atggctagcttgcacc".to_vec() },
+    ///     ],
+    ///     seq_type: SeqType::Dna,
+    /// };
+    /// let msa = Mafft::new()
+    ///     .auto()
+    ///     .adjust_direction()
+    ///     .thread(1)
+    ///     .nuc()
+    ///     .progress(SilentProgress)
+    ///     .run_seqs(&input)?;
+    /// assert_eq!(msa.names.len(), 2);
+    /// # Ok::<(), mafft_rs::MafftError>(())
+    /// ```
+    pub fn run_seqs(&self, seqs: &SequenceSet) -> Result<MultipleAlignment, MafftError> {
+        match &self.progress {
+            Some(sink) => run_from_seqs(self.to_argv(), seqs, &**sink),
+            None => run_from_seqs(self.to_argv(), seqs, &StderrProgress),
+        }
     }
 }
 

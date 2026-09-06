@@ -39,6 +39,26 @@ let msa = engine.align(&input);
 | `AlignmentMode::GInsi` | Globally alignable sequences |
 | `AlignmentMode::EInsi` | Sequences with large gaps |
 
+## The command line's flag layer (`cli` feature)
+
+`--auto` chooses the mode from the input; `--adjustdirection` flips strands
+before aligning; `--nuc` / `--amino` force the type and the case fold. To
+get exactly that behaviour in-process instead of re-deriving it, enable the
+`cli` feature and use `mafft::cli`, which re-exports the
+[`mafft-rs`](https://crates.io/crates/mafft-rs) library:
+
+```toml
+mafft = { version = "0.1", features = ["cli"] }
+```
+
+```rust,no_run
+use mafft::cli::{run_from_seqs, SilentProgress};
+use mafft::{read_fasta};
+
+let input = read_fasta("input.fasta").unwrap();
+let msa = run_from_seqs(["mafft", "--auto", "--nuc"], &input, &SilentProgress).unwrap();
+```
+
 ## When to depend on a sub-crate instead
 
 Use the underlying crates directly only when you need finer control:

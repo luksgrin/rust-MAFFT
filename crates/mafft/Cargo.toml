@@ -19,6 +19,10 @@ readme = "README.md"
 mafft-core = { path = "../mafft-core", version = "0.1.0" }
 mafft-types = { path = "../mafft-types", version = "0.1.0" }
 mafft-io = { path = "../mafft-io", version = "0.1.0" }
+# The command line's flag layer (`--auto`, `--adjustdirection`, `--nuc`, …)
+# as a library: `run_from`, `run_from_seqs`, the `Mafft` builder. Optional
+# because it brings clap along; enable with `features = ["cli"]`.
+mafft-rs = { path = "../mafft-bin", version = "0.1.0", optional = true }
 
 # Floating-point contraction policy (see `mafft_types::fp`). Mutually
 # exclusive; with neither, the build fuses `a*b+c` on aarch64 (mirroring the
@@ -26,13 +30,21 @@ mafft-io = { path = "../mafft-io", version = "0.1.0" }
 # x86-64 gcc). Forwarded to every dependency that carries FP arithmetic so
 # `--features fp-contract-none` on any crate switches the whole stack.
 [features]
+# `mafft::cli`: the argv-driven entry points of the `mafft-rs` crate
+# (`run_from`, `run_from_seqs`, `Mafft`, `Progress`), so a library user can
+# get the CLI's exact flag semantics — including `--auto` and
+# `--adjustdirection` — without re-deriving them. Off by default: it pulls
+# in clap.
+cli = ["dep:mafft-rs"]
 fp-contract-fma = [
     "mafft-core/fp-contract-fma",
     "mafft-types/fp-contract-fma",
     "mafft-io/fp-contract-fma",
+    "mafft-rs?/fp-contract-fma",
 ]
 fp-contract-none = [
     "mafft-core/fp-contract-none",
     "mafft-types/fp-contract-none",
     "mafft-io/fp-contract-none",
+    "mafft-rs?/fp-contract-none",
 ]

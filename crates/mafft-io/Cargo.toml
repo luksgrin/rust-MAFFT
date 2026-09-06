@@ -13,6 +13,9 @@ readme = "README.md"
 
 [dependencies]
 mafft-types = { path = "../mafft-types", version = "0.1.0" }
+# For the C `seqcheck` alphabets (`find_illegal_residue`); the alphabet
+# tables stay in `mafft-scoring` so there is exactly one copy of them.
+mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
 noodles-fasta = "0.46"
 thiserror = "2"
 
@@ -24,9 +27,11 @@ thiserror = "2"
 [features]
 fp-contract-fma = [
     "mafft-types/fp-contract-fma",
+    "mafft-scoring/fp-contract-fma",
 ]
 fp-contract-none = [
     "mafft-types/fp-contract-none",
+    "mafft-scoring/fp-contract-none",
 ]
 
 [dev-dependencies]

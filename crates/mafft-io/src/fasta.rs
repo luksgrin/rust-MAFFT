@@ -74,9 +74,7 @@ pub fn read_fasta_from_reader_casepreserve<R: BufRead>(reader: R) -> Result<Sequ
     if sequences.is_empty() {
         return Err(IoError::EmptyInput);
     }
-    let seq_type = detect_seq_type(
-        &sequences.iter().map(|s| s.data.clone()).collect::<Vec<_>>(),
-    );
+    let seq_type = detect_seq_type(sequences.iter().map(|s| &s.data));
     Ok(SequenceSet { sequences, seq_type })
 }
 
@@ -95,8 +93,22 @@ fn normalize_sequence_casepreserve(raw: &[u8]) -> Result<Vec<u8>, IoError> {
     Ok(raw
         .iter()
         .copied()
-        .filter(|&c| c != b'\n' && c != b' ' && c != b'\r')
+        .filter(|&c| keep_casepreserve(c))
         .collect())
+}
+
+/// Bytes C's `charfilter` (`io.c:1329-1352`) keeps: everything except
+/// `\n`, space and `\r`. Digits, tabs and punctuation survive as
+/// (unusual) residues; `=`, `<`, `>` pass this test but are rejected
+/// by [`normalize_sequence_casepreserve`] / [`is_title_only_char`].
+fn keep_casepreserve(c: u8) -> bool {
+    c != b'\n' && c != b' ' && c != b'\r'
+}
+
+/// `=`, `<`, `>` — legal only in description lines on the
+/// case-preserving path (`charfilter`, `io.c:1337`).
+fn is_title_only_char(c: u8) -> bool {
+    c == b'=' || c == b'<' || c == b'>'
 }
 
 /// C MAFFT refuses input where a description line is preceded by blanks
@@ -109,6 +121,50 @@ fn reject_blank_before_header(idx: usize, line: &str) -> Result<(), IoError> {
         return Err(IoError::BlankBeforeHeader { line: idx + 1, text: line.to_string() });
     }
     Ok(())
+}
+
+/// Apply the FASTA reader's residue filter to residues that are already in
+/// memory, so an in-memory caller ends up with exactly the bytes a FASTA
+/// round trip would have produced — and fails exactly where the reader
+/// would.
+///
+/// `casepreserve = false` is the default reader's rule (keep letters, `-`
+/// and `.`, turn `*` into `-`, drop everything else — see
+/// [`read_fasta`]; it cannot fail); `casepreserve = true` is the
+/// `--anysymbol` / `--preservecase` rule (drop only `\n`, space and `\r`,
+/// reject `=`, `<`, `>` with [`IoError::IllegalTitleCharInSequence`] — see
+/// [`read_fasta_casepreserve`]). Neither touches case; that is
+/// [`apply_case_convention`]'s job and depends on the sequence type.
+pub fn normalize_residues(raw: &[u8], casepreserve: bool) -> Result<Vec<u8>, IoError> {
+    if casepreserve {
+        normalize_sequence_casepreserve(raw)
+    } else {
+        Ok(normalize_sequence(raw))
+    }
+}
+
+/// `true` when [`normalize_residues`] would return `raw` unchanged, i.e.
+/// the residues already look like they came out of the FASTA reader.
+/// Lets a caller holding borrowed data skip the copy when nothing needs
+/// to change. Residues the reader would reject are not "unchanged".
+pub fn residues_are_normalized(raw: &[u8], casepreserve: bool) -> bool {
+    if casepreserve {
+        raw.iter().all(|&c| keep_casepreserve(c) && !is_title_only_char(c))
+    } else {
+        // `*` is not dropped but it is rewritten, so it is not "unchanged".
+        raw.iter().all(|&c| c.is_ascii_alphabetic() || c == b'-' || c == b'.')
+    }
+}
+
+/// `true` when [`apply_case_convention`] would leave `data` unchanged for
+/// a set of type `seq_type`: no uppercase letters for nucleotides, no
+/// lowercase letters otherwise.
+pub fn residues_follow_case_convention(data: &[u8], seq_type: mafft_types::SeqType) -> bool {
+    if seq_type.is_nucleotide() {
+        !data.iter().any(|c| c.is_ascii_uppercase())
+    } else {
+        !data.iter().any(|c| c.is_ascii_lowercase())
+    }
 }
 
 /// Read FASTA from any buffered reader.
@@ -154,9 +210,7 @@ pub fn read_fasta_from_reader<R: BufRead>(reader: R) -> Result<SequenceSet, IoEr
         return Err(IoError::EmptyInput);
     }
 
-    let seq_type = detect_seq_type(
-        &sequences.iter().map(|s| s.data.clone()).collect::<Vec<_>>(),
-    );
+    let seq_type = detect_seq_type(sequences.iter().map(|s| &s.data));
 
     let mut set = SequenceSet { sequences, seq_type };
     apply_case_convention(&mut set);
@@ -363,5 +417,88 @@ mod tests {
         let lower = read_fasta_from_reader(io::Cursor::new(&b">a\nacgtacgtacgtacgt\n"[..])).unwrap();
         assert_eq!(upper.seq_type, lower.seq_type);
         assert_eq!(upper.sequences[0].data, lower.sequences[0].data);
+    }
+}
+
+/// The in-memory helpers must agree with the readers byte for byte: an
+/// in-memory caller relies on them to reproduce a FASTA round trip.
+#[cfg(test)]
+mod in_memory_helper_tests {
+    use super::*;
+    use mafft_types::SeqType;
+
+    #[test]
+    fn normalize_residues_matches_the_readers() {
+        let raw = b"MNG*T.E-G 123\t\r\n@x";
+        assert_eq!(normalize_residues(raw, false).unwrap(), normalize_sequence(raw));
+        assert_eq!(
+            normalize_residues(raw, true).unwrap(),
+            normalize_sequence_casepreserve(raw).unwrap()
+        );
+        assert_eq!(normalize_residues(raw, false).unwrap(), b"MNG-T.E-Gx");
+        // `charfilter`: digits and the tab are residues; only \n, space, \r go.
+        assert_eq!(normalize_residues(raw, true).unwrap(), b"MNG*T.E-G123\t@x");
+        // `= < >` inside a sequence are fatal on the case-preserving path
+        // only, exactly as in the reader.
+        assert!(matches!(
+            normalize_residues(b"MN=G", true),
+            Err(IoError::IllegalTitleCharInSequence)
+        ));
+        assert_eq!(normalize_residues(b"MN=G", false).unwrap(), b"MNG");
+    }
+
+    #[test]
+    fn residues_are_normalized_iff_normalize_is_identity() {
+        for casepreserve in [false, true] {
+            for raw in [
+                &b"ACGT-acgt."[..],
+                b"MNG*T",
+                b"AC GT",
+                b"AC1GT",
+                b"AC\tGT",
+                b"@x",
+                b"A=C",
+                b"A<C>",
+                b"",
+            ] {
+                let identity = normalize_residues(raw, casepreserve).is_ok_and(|v| v == raw);
+                assert_eq!(
+                    residues_are_normalized(raw, casepreserve),
+                    identity,
+                    "casepreserve={casepreserve} raw={raw:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn case_convention_check_matches_apply() {
+        for (data, seq_type) in [
+            (&b"acgt-"[..], SeqType::Dna),
+            (b"ACGT-", SeqType::Dna),
+            (b"MKV-", SeqType::Protein),
+            (b"mkv-", SeqType::Protein),
+            (b"MkV", SeqType::Unknown),
+        ] {
+            let mut set = SequenceSet {
+                sequences: vec![Sequence { name: "s".into(), data: data.to_vec() }],
+                seq_type,
+            };
+            apply_case_convention(&mut set);
+            let unchanged = set.sequences[0].data == data;
+            assert_eq!(residues_follow_case_convention(data, seq_type), unchanged, "{data:?}");
+        }
+    }
+
+    #[test]
+    fn detect_accepts_borrowed_rows() {
+        let set = SequenceSet {
+            sequences: vec![Sequence { name: "s".into(), data: b"ATGCGATCGATCG".to_vec() }],
+            seq_type: SeqType::Unknown,
+        };
+        let borrowed = detect_seq_type(set.sequences.iter().map(|s| &s.data));
+        let owned: Vec<Vec<u8>> = set.sequences.iter().map(|s| s.data.clone()).collect();
+        assert_eq!(borrowed, detect_seq_type(&owned));
+        assert_eq!(borrowed, SeqType::Dna);
     }
 }

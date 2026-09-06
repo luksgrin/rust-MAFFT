@@ -356,6 +356,7 @@ version = "0.1.2"
 dependencies = [
  "mafft-core",
  "mafft-io",
+ "mafft-rs",
  "mafft-types",
 ]
 
@@ -407,6 +408,7 @@ dependencies = [
 name = "mafft-io"
 version = "0.1.2"
 dependencies = [
+ "mafft-scoring",
  "mafft-types",
  "noodles-fasta",
  "tempfile",

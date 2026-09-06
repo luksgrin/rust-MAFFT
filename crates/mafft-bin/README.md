@@ -43,6 +43,37 @@ mafft-rs --localpair --maxiterate 1000 input.fasta > aligned.fasta
 mafft-rs --quiet input.fasta > aligned.fasta
 ```
 
+## Embedding
+
+The same flag layer is available in-process. `run_from` takes the argv the
+shell would have received and writes what the binary would have printed;
+`run_from_seqs` takes sequences that are already in memory and returns the
+alignment as a value — same `--auto` choice, same `--adjustdirection`, same
+rows.
+
+```rust,no_run
+use mafft_rs::{run_from_seqs, SilentProgress, Sequence, SequenceSet, SeqType};
+
+let input = SequenceSet {
+    sequences: vec![
+        Sequence { name: "a".into(), data: b"atggctagcttggacc".to_vec() },
+        Sequence { name: "b".into(), data: b"atggctagcttgcacc".to_vec() },
+    ],
+    seq_type: SeqType::Dna,
+};
+let msa = run_from_seqs(
+    ["mafft", "--auto", "--adjustdirection", "--thread", "1", "--nuc"],
+    &input,
+    &SilentProgress,
+)?;
+assert_eq!(msa.names.len(), 2);
+# Ok::<(), mafft_rs::MafftError>(())
+```
+
+`Mafft::new().auto().nuc().run_seqs(&input)` is the typed-builder form;
+`Mafft::new().input("in.fa").run_to_vec()` the file form. Failures come back
+as `MafftError` with the CLI's exit code and message.
+
 ## Documentation
 
 CLI reference: [luksgrin.github.io/rust-MAFFT/cli-reference/](https://luksgrin.github.io/rust-MAFFT/cli-reference/)
