@@ -261,8 +261,9 @@ jobs:
           # published wheel instead, so the tests silently run against the
           # old package. Seen on the Windows runners of PR #7.
           pip install --no-index --find-links dist pymafft
-          python -c "import pymafft, sys; print('pymafft from', pymafft.__file__)"
-          pip show pymafft | head -3
+          # No pipes here: the step runs with pipefail, and `pip show | head`
+          # makes pip exit 120 ("Pipe to stdout was broken") once head closes.
+          python -c "import pymafft; print('pymafft', pymafft.__version__, 'from', pymafft.__file__)"
 
       - name: Run binding test suite
         working-directory: crates/pymafft
