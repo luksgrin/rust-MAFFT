@@ -12,7 +12,10 @@
 descriptors, `HomologyRegion` for local-homology constraint lists,
 plus a `Complex64` alias used by the FFT layer. No engine logic, no
 I/O — just the data structures every other rust-MAFFT crate agrees
-on.
+on, and the floating-point contraction policy `mafft_types::fp`
+(`CONTRACTS_FMA`, `fmadd`; cargo features `fp-contract-fma` /
+`fp-contract-none`) that decides whether `a*b + c` rounds once or
+twice, mirroring the reference C build of the target platform.
 
 ## Install
 

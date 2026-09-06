@@ -95,10 +95,11 @@ MAFFT_BINARIES=$PWD/mafft-upstream/binaries \
 ## `samplerna.nwns2`
 
 C's alignment output for `mafft --nofft mafft-upstream/test/samplerna` (a
-5-sequence RNA input). The `rna_nofft_case_insensitive_identical_to_c` test
-asserts Rust's output matches this byte-for-byte **after case normalization**
-on both sides. C preserves the input lowercase; Rust currently uppercases
-before alignment. The alignment columns themselves are identical.
+5-sequence RNA input). Since the nucleotide case fold (lowercase output, as
+C's `onlyAlpha_lower`) landed in 2026-09, Rust's output matches this
+byte-for-byte including case. The `rna_nofft_case_insensitive_identical_to_c`
+test keeps its historical name and still lowercases both sides before
+comparing, so it asserts column-for-column equality.
 
 ```bash
 MAFFT_BINARIES=$PWD/mafft-upstream/binaries \

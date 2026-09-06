@@ -649,12 +649,11 @@ fn nofft_ep_override_byte_identical_to_c() {
 
 /// RNA NW-NS-2 must match C byte-for-byte, ignoring ASCII case.
 ///
-/// Guards the nucleotide alignment path end-to-end. Currently the only
-/// difference between our output and C's is that C preserves the input
-/// lowercase while Rust uppercases residues before alignment; the gap
-/// placement is identical. This test normalizes case on both sides so it
-/// asserts alignment equality (column-for-column) without being sensitive
-/// to that pre-alignment casing choice.
+/// Guards the nucleotide alignment path end-to-end. Since the nucleotide
+/// case fold (lowercase output, as C's `onlyAlpha_lower`) the output also
+/// matches C's case; the test keeps its historical name and still
+/// normalizes case on both sides so it asserts alignment equality
+/// (column-for-column) independently of the case convention.
 ///
 /// Reference: `tests/fixtures/samplerna.nwns2`
 /// (`mafft --nofft mafft-upstream/test/samplerna`).

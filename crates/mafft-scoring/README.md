@@ -10,10 +10,13 @@
 
 The MAFFT scoring stack ported to pure Rust: BLOSUM62 (default for
 protein), JTT, transmembrane (TM), and DNA matrices, plus the
-gap-opening / gap-extension constants that every alignment mode reads.
-Also hosts `calcW` — the inner-loop SP-component computation — whose
-exact `mul_add` shape matches clang `FP_CONTRACT=ON` output, a
-necessary condition for byte-identity with C MAFFT.
+gap-opening / gap-extension constants that every alignment mode reads,
+checked for both alphabets at once against C's `constants()`. Also hosts
+the C `seqcheck` alphabets (`PROTEIN_ALPHABET` / `DNA_ALPHABET`) that
+`mafft-io` uses to reject illegal residues the way C MAFFT does.
+Multiply-adds that must match the C reference go through
+`mafft_types::fp::fmadd`, which fuses on aarch64 and not elsewhere,
+mirroring the platform's C build.
 
 ## Install
 

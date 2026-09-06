@@ -11,9 +11,14 @@
 Reads sequences and their associated constraint / distance data from
 disk (or any `BufRead`), and writes alignment results back out. Reuses
 [`noodles-fasta`](https://crates.io/crates/noodles-fasta) under the
-hood for the FASTA parser. Handles MAFFT's case-preservation and
-gap-character normalisation conventions so the engine sees byte-for-
-byte the same input as the C reference.
+hood for the FASTA parser. Reproduces C MAFFT's read path so the engine
+sees byte-for-byte the same input as the C reference: type detection
+(`N` counts as nucleotide), the residue filter and case convention
+(lowercase nucleotide, uppercase protein; `--anysymbol` keeps the input
+case), `*` → `-`, and the `seqcheck` illegal-residue test
+(`find_illegal_residue`, using the alphabets from `mafft-scoring`).
+`normalize_residues` applies the same rules to sequences that never
+went through a file.
 
 ## Install
 

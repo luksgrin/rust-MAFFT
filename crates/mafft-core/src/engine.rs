@@ -182,9 +182,9 @@ pub struct MafftEngine {
     /// F }`. C's `--youngestlinkage` is a separate algorithm
     /// (memory-saving k-mer tree builder with on-demand cluster
     /// distance recompute); rust wires it via `self.memsavetree`,
-    /// which uses the same algorithm family and is byte-identical
-    /// to C youngest-linkage on small inputs but diverges on
-    /// larger ones (see `TODO.md`).
+    /// which uses the same algorithm family; the dedicated
+    /// `--youngestlinkage` port (`mafft_tree::youngestlinkage_tree`)
+    /// is byte-identical to C (see `TODO.md` R-8).
     pub cluster_method: mafft_tree::ClusterMethod,
     /// Disable FFT: force pure DP for all alignment steps.
     pub nofft: bool,
@@ -252,8 +252,9 @@ pub struct MafftEngine {
     /// carrying per-thread cross-call state. Default false (stateless,
     /// pure progressive engine). Enable to reproduce C's output on
     /// inputs where the §B.2 / BALIBASE-corpus residual divergences
-    /// matter for downstream byte-equality requirements. See
-    /// `MAFFT_UPSTREAM_REPORT.md` for the diagnosis.
+    /// matter for downstream byte-equality requirements. See the
+    /// BB20027 deep-dive in `balibase_parity_run.md` for the diagnosis
+    /// (historical: every BALIBASE fixture is now byte-identical without it).
     pub c_compat: bool,
 }
 

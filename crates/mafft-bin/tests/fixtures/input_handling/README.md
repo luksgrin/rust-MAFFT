@@ -1,8 +1,16 @@
 # Input handling vs C MAFFT 7.526 — evaluation of fork hunks B-1 and B-2
 
+> Evaluation notes written on branch `issue1/input-hunks` (merged as PR #4,
+> 2026-09-06). The `.expected` files in this directory are the corpus's
+> C reference; the tests in `crates/mafft-bin/tests/input_handling_vs_c.rs`
+> consume them. The residual R-A (section 5) is still open — see `TODO.md`.
+
 Branch `issue1/input-hunks` (base `origin/main` = 3e54a54). Reference: arm64 C
-MAFFT `v7.526 (2024/Apr/26)` at `/Users/apophis/.local/bin/mafft`. Source
-citations are into the `mafft-upstream` submodule (`core/`), file:line.
+MAFFT `v7.526 (2024/Apr/26)` at `/Users/apophis/.local/bin/mafft` when the
+notes were written; the `.expected` files were re-checked byte-for-byte
+against the in-tree reference build (`make -C mafft-upstream/core`, arm64 /
+clang, 2026-09-06 — see the end of this file). Source citations are into the
+`mafft-upstream` submodule (`core/`), file:line.
 
 The two hunks under study come from fork commit 0b3955d,
 `crates/mafft-bin/src/lib.rs`:
@@ -226,3 +234,29 @@ rule, the `= < >` exit 1, `-`-only restore, and restoring `--add` sequences.
   (the new `input_handling_vs_c.rs` contributes 24 passed / 1 ignored).
 * `cargo test --workspace --exclude pymafft --release`: 493 passed, 0 failed, 7 ignored, exit 0.
 * New test file against main (fix files stashed): 13 failed, 11 passed, 1 ignored.
+
+## 9. Re-check against the in-tree reference build (2026-09-06)
+
+The project's byte-identity reference is the pinned `mafft-upstream` source
+built in-tree (`make -C mafft-upstream/core`, upstream Makefile default
+flags), not an installed binary (`docs/architecture/byte-identity.md`). All
+62 `.expected` files in this directory were regenerated from that build on
+arm64 / Apple clang and compared with `cmp`: **62/62 identical**, and the
+seven exit-1 cells (`prot_unusual_UOJBZX` default/linsi1,
+`prot_header_leading_ws`, `prot_equals` anysymbol, `dna_gaps_inside`
+default/linsi1/nuc) exit 1 from the in-tree build too. None of these inputs
+is sensitive to the floating-point contraction policy, so a single variant
+serves both CI platforms; if that changes, add the file to
+`crates/mafft-core/tests/fixtures/policy_fixtures.tsv`.
+
+```bash
+make -C mafft-upstream/core
+export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
+D=crates/mafft-bin/tests/fixtures/input_handling
+mafft-upstream/scripts/mafft --quiet                            $D/<name>.fa | cmp - $D/<name>.default.expected
+mafft-upstream/scripts/mafft --quiet --anysymbol                $D/<name>.fa | cmp - $D/<name>.anysymbol.expected
+mafft-upstream/scripts/mafft --quiet --localpair --maxiterate 0 $D/<name>.fa | cmp - $D/<name>.linsi1.expected
+mafft-upstream/scripts/mafft --quiet --nuc                      $D/<name>.fa | cmp - $D/<name>.nuc.expected
+mafft-upstream/scripts/mafft --quiet [--keeplength|--anysymbol] --add $D/add_new_unusual.fa $D/add_existing_gapped.fa \
+    | cmp - $D/add_existing_gapped.add[_keeplength|_anysymbol].expected
+```
