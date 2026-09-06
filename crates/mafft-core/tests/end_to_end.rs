@@ -25,6 +25,18 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Like [`fixture_path`], but for fixtures whose bytes depend on the
+/// floating-point contraction policy (`mafft_types::fp`). Such a fixture is
+/// committed twice: `<name>.fma` (output of the arm64 C build, which fuses
+/// `a*b+c`) and `<name>.nofma` (output of the baseline x86-64 C build, which
+/// does not). Returns the variant matching `CONTRACTS_FMA`, falling back to
+/// the plain `<name>` when no variant exists.
+fn fixture_path_fp(name: &str) -> PathBuf {
+    let suffix = if mafft_types::fp::CONTRACTS_FMA { ".fma" } else { ".nofma" };
+    let variant = fixture_path(&format!("{name}{suffix}"));
+    if variant.exists() { variant } else { fixture_path(name) }
+}
+
 #[test]
 fn align_sample_fasta() {
     let engine = MafftEngine::new(AlignmentMode::FftNs2);
@@ -409,19 +421,25 @@ fn fftns2_bl45_byte_identical_to_c() {
 }
 
 /// `--bl 50` (FFT-NS-2 with BLOSUM50) must match C byte-for-byte.
-/// Closed 2026-05-08 by the FMA fix in `profile_align_imp_with_boundary`
-/// (see TODO §4) — gcc -O3 fuses `a + b * c` into FMA, Rust's `+` and `*`
-/// don't, so direct DP cells diverge by 1 ULP per accumulation. The
-/// flatter BL50 score landscape (vs BL62/30/45/80) exposed this as a
-/// tie-break divergence at step 24's profile DP. Fix: use `f64::mul_add`
-/// in match_calc_row and DP gap-frequency computations to match C's FMA.
 ///
-/// Reference: `tests/fixtures/sample.bl50.fftns2`.
+/// The flatter BL50 score landscape (vs BL62/30/45/80) makes this the most
+/// tie-break-sensitive of the BLOSUM fixtures, and it is the one that exposes
+/// the floating-point contraction policy (`mafft_types::fp`): C MAFFT 7.526
+/// itself is not bit-reproducible across architectures here. The arm64 clang
+/// build fuses `a + b * c` into FMA (~1025 `fmadd` per binary) and produces
+/// width 712; the baseline x86-64 gcc build (bioconda) has no FMA and
+/// produces width 738. Closed 2026-05-08 on arm64 by matching clang's fusion
+/// in `profile_align_imp_with_boundary` (TODO §4); the x86-64 divergence was
+/// found by @mahogny when the same test failed against the conda binary.
+///
+/// Reference: `tests/fixtures/sample.bl50.fftns2.fma` (arm64 C, width 712)
+/// or `tests/fixtures/sample.bl50.fftns2.nofma` (x86-64 C, width 738),
+/// selected by `fixture_path_fp` according to `CONTRACTS_FMA`.
 #[test]
 fn fftns2_bl50_byte_identical_to_c() {
     use mafft_types::ScoringModel;
-    let c_ref = read_fasta(fixture_path("sample.bl50.fftns2"))
-        .expect("missing tests/fixtures/sample.bl50.fftns2");
+    let c_ref = read_fasta(fixture_path_fp("sample.bl50.fftns2"))
+        .expect("missing tests/fixtures/sample.bl50.fftns2.{fma,nofma}");
     let input = read_fasta(test_data_path("sample")).unwrap();
 
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
@@ -2849,7 +2867,7 @@ fn linsi_exp_0_1_byte_identical_to_c() {
 /// `--exp 0.1` FFT-NS-2 regression guard (no refinement). Guards
 /// the boundary-init FP-order fix in
 /// `profile_align_imp_multimtx`: the `initverticalw` boundary init
-/// previously used nested `mul_add(C, D, mul_add(A, B, init))`
+/// previously used nested `fmadd(C, D, fmadd(A, B, init))`
 /// which differs by 1 ULP from clang's `init + (A*B + C*D)` order.
 #[test]
 fn fftns2_exp_0_1_byte_identical_to_c() {
