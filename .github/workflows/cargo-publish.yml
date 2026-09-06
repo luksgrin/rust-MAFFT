@@ -17,7 +17,8 @@ name: Publish to crates.io
 #
 # Publish order is computed automatically from the dependency graph:
 #   mafft-sys (stub, no deps) → mafft-types → mafft-scoring → mafft-io →
-#   mafft-fft → mafft-align, mafft-tree → mafft-core → mafft, mafft-rs
+#   mafft-fft → mafft-align, mafft-tree → mafft-core → mafft-rs → mafft
+#   (`mafft` has an optional `cli` dependency on `mafft-rs`, so it goes last)
 #
 # `--from-git` tells cargo-workspaces to publish the exact commit the
 # release tag points to (no version bump performed here).

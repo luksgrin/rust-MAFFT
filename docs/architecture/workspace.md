@@ -33,6 +33,7 @@ flowchart TD
     tree[mafft-tree] --> types & scoring
     core[mafft-core] --> types & scoring & align & tree & fft & io
     mafft[mafft] --> core & types & io
+    mafft -. feature cli .-> bin
     bin[mafft-bin / mafft-rs] --> core & io & types & tree & scoring & align
     pymafft[pymafft] --> core & io & types
 ```
@@ -53,14 +54,70 @@ flowchart TD
   the git submodule) can't be published as-is and is correctly marked
   `publish = false`.
 
-## Two ergonomic entry points
+## Three ergonomic entry points
 
 - **`cargo add mafft`** — most users. `mafft` re-exports the engine,
   types, and I/O. `use mafft::*` is enough for the majority of work.
 - **`cargo install mafft-rs`** — for the CLI binary on `$PATH`.
+- **`cargo add mafft-rs`** (or `mafft` with `features = ["cli"]`) — to
+  embed the *command line's* behaviour in a program. See below.
 
 For finer control, depend on individual sub-crates (`mafft-core`,
 `mafft-fft`, etc.) directly.
+
+## Embedding the CLI's flag layer
+
+`MafftEngine::align` takes an `AlignmentMode`. The command line does more
+than call it: `--auto` *chooses* the mode from sequence count and length,
+`--adjustdirection` runs strand detection first, `--nuc` / `--amino` force
+the type and the residue case fold, `--reorder` changes the output order.
+That flag → behaviour layer lives in `mafft-bin` (`crates/mafft-bin/src/lib.rs`),
+and a program that re-derived any of it would quietly drift from C MAFFT.
+The `mafft-rs` library target therefore exposes it directly, argv in:
+
+| Entry point | Input | Output |
+|-------------|-------|--------|
+| `run_from(argv, &mut out)` | `INPUT` file / stdin, as on the command line | formatted text (`--format`) into `out` |
+| `run_from_with_progress(argv, &mut out, &sink)` | same | same, progress lines to `sink` |
+| `run_from_seqs(argv, &SequenceSet, &sink)` | sequences already in memory | `MultipleAlignment` (names + rows by value) |
+| `Mafft::new()…run()` / `.run_to_vec()` / `.run_seqs(&set)` | typed builder over the above | as above |
+
+All of them parse `argv` with the same clap definition and run the same
+stages — `parse_argv → preflight → (read_input | prepare_in_memory) →
+align_prepared → write_alignment` — so `run_from_seqs` returns exactly the
+rows `run_from` would print, including `--reorder`'s order and
+`--adjustdirection`'s `_R_` name prefixes. Every failure is a `MafftError`
+carrying the CLI's exit code and message.
+
+```rust,no_run
+use mafft_rs::{run_from_seqs, SilentProgress, Sequence, SequenceSet, SeqType};
+
+let input = SequenceSet {
+    sequences: vec![
+        Sequence { name: "a".into(), data: b"atggctagcttggacc".to_vec() },
+        Sequence { name: "b".into(), data: b"atggctagcttgcacc".to_vec() },
+    ],
+    seq_type: SeqType::Dna,
+};
+// The same flags `mafft --auto --adjustdirection --thread 1 --nuc FILE`
+// would take, minus FILE: the sequences are already here.
+let msa = run_from_seqs(
+    ["mafft", "--auto", "--adjustdirection", "--thread", "1", "--nuc"],
+    &input,
+    &SilentProgress,
+)?;
+for (name, row) in msa.names.iter().zip(&msa.sequences) {
+    println!(">{name}\n{}", std::str::from_utf8(row).unwrap());
+}
+# Ok::<(), mafft_rs::MafftError>(())
+```
+
+Copies on this path: the input is borrowed and handed to the engine as-is
+when it is already canonical (the reader's residue filter, the case
+convention for its type, a declared `seq_type`); otherwise one normalised
+copy is made. Flags that rewrite the input (`--adjustdirection`, `--seed`,
+`--anysymbol`) copy once more, exactly as on the file path. The returned
+rows are moved out of the engine's result, not copied.
 
 ## Internal crates
 
