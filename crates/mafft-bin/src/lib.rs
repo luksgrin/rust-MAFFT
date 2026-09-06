@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{self, BufReader, Write};
 use std::path::PathBuf;
 
@@ -5,12 +6,17 @@ use clap::Parser;
 
 use mafft_core::{MafftEngine, AlignmentMode};
 use mafft_io::{read_fasta, read_fasta_from_reader, read_fasta_casepreserve, read_fasta_from_reader_casepreserve};
-use mafft_types::{Sequence, SequenceSet, ScoringModel};
+use mafft_types::ScoringModel;
 
 pub mod builder;
 pub mod progress;
 pub use builder::Mafft;
 pub use progress::{Progress, SilentProgress, StderrProgress};
+
+/// The types [`run_from_seqs`] takes and returns, re-exported so a caller
+/// that only depends on `mafft-rs` can name them.
+pub use mafft_core::MultipleAlignment;
+pub use mafft_types::{SeqType, Sequence, SequenceSet};
 
 /// MAFFT-rs: Multiple sequence alignment (Rust implementation)
 #[derive(Parser, Debug)]
@@ -761,15 +767,19 @@ fn in_pool<R: Send>(pool: Option<&rayon::ThreadPool>, f: impl FnOnce() -> R + Se
 ///
 /// Inert unless one of the flags is present, so auto-detection and the
 /// reader's own case fold are unchanged for every existing command line.
-fn force_seq_type(mut set: SequenceSet, args: &Args, casepreserve: bool) -> SequenceSet {
-    let forced = if args.nuc {
-        Some(mafft_types::SeqType::Dna)
+fn forced_seq_type(args: &Args) -> Option<SeqType> {
+    if args.nuc {
+        Some(SeqType::Dna)
     } else if args.amino {
-        Some(mafft_types::SeqType::Protein)
+        Some(SeqType::Protein)
     } else {
         None
-    };
-    if let Some(seq_type) = forced {
+    }
+}
+
+/// Apply [`forced_seq_type`] to an owned set (the file path).
+fn force_seq_type(mut set: SequenceSet, args: &Args, casepreserve: bool) -> SequenceSet {
+    if let Some(seq_type) = forced_seq_type(args) {
         set.seq_type = seq_type;
         if !casepreserve {
             mafft_io::apply_case_convention(&mut set);
@@ -867,8 +877,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let mut args = Args::try_parse_from(argv).map_err(MafftError::from_clap)?;
-    apply_progname_defaults(&mut args);
+    let args = parse_argv(argv)?;
 
     // --cite: print the citation block and exit cleanly. Comes before
     // every other flag handler so `--cite` is safe to combine with any
@@ -877,7 +886,165 @@ where
         return print_citation(&mut *out)
             .map_err(|e| MafftError::new(1, format!("Error writing output: {e}")));
     }
+    preflight(&args)?;
+    let pool = thread_pool(&args);
+    let input = read_input(&args)?;
+    let (msa, seq_type) = align_prepared(&args, Cow::Owned(input), pool.as_ref(), progress)?;
 
+    // Build the output SequenceSet (with gaps). `msa` is not needed after
+    // this point, so its rows are moved rather than copied.
+    let output_seqs = SequenceSet {
+        sequences: msa
+            .sequences
+            .into_iter()
+            .zip(msa.names)
+            .map(|(data, name)| Sequence { name, data })
+            .collect(),
+        seq_type,
+    };
+    write_alignment(&args, &output_seqs, Some(out))
+}
+
+/// [`run_from_with_progress`] for sequences that are already in memory,
+/// returning the alignment as a value instead of formatted text.
+///
+/// `argv` is parsed with the same clap definition and goes through the
+/// same flag layer as the command line — `--auto`, `--adjustdirection`,
+/// `--nuc` / `--amino`, `--reorder`, `--thread`, `--add FILE`, … all mean
+/// exactly what they mean to `mafft-rs`. The only difference is where the
+/// primary input comes from: `seqs` takes the place of the positional
+/// `INPUT` file, so `argv` must not name one (that is an error), and there
+/// is no FASTA to parse on the way in or to print and re-parse on the way
+/// out. The rows of the result are byte-for-byte what [`run_from`] would
+/// have printed for the same sequences and flags: same order (including
+/// `--reorder`), same names (including `--adjustdirection`'s `_R_`
+/// prefix), same case, same gap characters.
+///
+/// # Input
+///
+/// `seqs` is treated the way the FASTA reader would treat the same
+/// residues: the reader's residue filter and case convention are applied
+/// (see [`mafft_io::normalize_residues`] and
+/// [`mafft_io::apply_case_convention`]), so `"ACGT"` and `"acgt"` are the
+/// same nucleotide input. `seqs.seq_type` is honoured unless it is
+/// [`SeqType::Unknown`], in which case the type is detected from the
+/// residues exactly as it is for a file; `--nuc` / `--amino` override
+/// either. Names are used as given (a FASTA header's text after `>`).
+///
+/// The set is borrowed. When it is already in canonical form — normalised
+/// residues, the case convention for its type, and a declared `seq_type`
+/// — it is handed to the engine without being copied; otherwise one
+/// normalised copy is made. Flags that must rewrite the input
+/// (`--adjustdirection`, `--seed`, `--anysymbol`) copy once more, as they
+/// do on the file path.
+///
+/// # Output and side files
+///
+/// The returned [`MultipleAlignment`] carries `names` and `sequences`
+/// (aligned rows, by value) plus the guide tree, distance matrix and
+/// per-step trace the engine already records. `--output FILE` is still
+/// honoured — the formatted alignment (`--format`, `--linewidth`) is
+/// written there as well. `--treeout` / `--distout` / `--nodeout` derive
+/// their file names from the `INPUT` path, so with in-memory input they
+/// warn and skip, as they do for stdin. `--cite` has no output sink here
+/// and is reported like `--pdbidlist`: an `Err` with
+/// [`MafftError::code`] `0` whose message is the citation block.
+///
+/// # Errors
+///
+/// Every failure is the same [`MafftError`] (code and message) that
+/// [`run_from`] returns for the same flags and sequences, except for
+/// errors that cannot occur on the file path (an `INPUT` given alongside
+/// in-memory sequences).
+///
+/// ```no_run
+/// use mafft_rs::{run_from_seqs, SilentProgress, Sequence, SequenceSet, SeqType};
+///
+/// let input = SequenceSet {
+///     sequences: vec![
+///         Sequence { name: "a".into(), data: b"atggctagcttggacc".to_vec() },
+///         Sequence { name: "b".into(), data: b"atggctagcttgcacc".to_vec() },
+///     ],
+///     seq_type: SeqType::Dna,
+/// };
+/// let msa = run_from_seqs(
+///     ["mafft-rs", "--auto", "--adjustdirection", "--thread", "1", "--nuc"],
+///     &input,
+///     &SilentProgress,
+/// )?;
+/// for (name, row) in msa.names.iter().zip(&msa.sequences) {
+///     println!(">{name}\n{}", std::str::from_utf8(row).unwrap());
+/// }
+/// # Ok::<(), mafft_rs::MafftError>(())
+/// ```
+pub fn run_from_seqs<I, T>(
+    argv: I,
+    seqs: &SequenceSet,
+    progress: &(dyn Progress + Sync),
+) -> Result<MultipleAlignment, MafftError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let args = parse_argv(argv)?;
+    if let Some(path) = &args.input {
+        return Err(MafftError::new(
+            1,
+            format!(
+                "run_from_seqs: the sequences are supplied in memory, so argv must not name \
+                 an INPUT file (got {})",
+                path.display()
+            ),
+        ));
+    }
+    if args.cite {
+        let mut text = Vec::new();
+        print_citation(&mut text)
+            .map_err(|e| MafftError::new(1, format!("Error writing output: {e}")))?;
+        let mut text = String::from_utf8_lossy(&text).into_owned();
+        if text.ends_with('\n') {
+            text.pop();
+        }
+        return Err(MafftError::new(0, text));
+    }
+    preflight(&args)?;
+    let pool = thread_pool(&args);
+    let input = prepare_in_memory(seqs, &args)?;
+    let (msa, seq_type) = align_prepared(&args, input, pool.as_ref(), progress)?;
+
+    // `--output FILE` is the one output flag that still has somewhere to
+    // go. The rows are returned too, so this path has to copy them.
+    if args.output.is_some() {
+        let output_seqs = SequenceSet {
+            sequences: msa
+                .sequences
+                .iter()
+                .zip(&msa.names)
+                .map(|(data, name)| Sequence { name: name.clone(), data: data.clone() })
+                .collect(),
+            seq_type,
+        };
+        write_alignment(&args, &output_seqs, None)?;
+    }
+    Ok(msa)
+}
+
+/// Parse `argv` with the CLI's clap definition and apply the `linsi` /
+/// `ginsi` / … program-name defaults, exactly as [`run`] does.
+fn parse_argv<I, T>(argv: I) -> Result<Args, MafftError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let mut args = Args::try_parse_from(argv).map_err(MafftError::from_clap)?;
+    apply_progname_defaults(&mut args);
+    Ok(args)
+}
+
+/// The flag checks C MAFFT's shell script performs before it reads any
+/// input. Shared by the file and in-memory entry points so both reject the
+/// same command lines with the same words.
+fn preflight(args: &Args) -> Result<(), MafftError> {
     // C `scripts/mafft:969-990` disables `--pdbidlist` and
     // `--pdbfilelist` with "temporarily unavailable, 2018/Dec." and
     // `exit`s before any structural alignment runs. Match that exact
@@ -897,30 +1064,35 @@ where
         return Err(MafftError::new(1,
             "The --nodeout option supports only progressive method (--maxiterate 0) for now."));
     }
+    Ok(())
+}
 
-    // Configure thread pool. This builds a LOCAL rayon pool and installs
-    // the alignment into it (see `in_pool` below) rather than calling
-    // `build_global()`: a process-global pool can only be initialised
-    // once, so a library caller invoking `run_from` repeatedly would have
-    // been stuck with the first call's `--thread` value forever. The
-    // remaining `.ok()` is not the "already initialised" swallow it used
-    // to be — a local `build()` can only fail if the OS refuses to spawn
-    // threads, and falling back to rayon's default pool there is exactly
-    // what the previous code did.
-    let pool = if args.thread > 0 {
+/// `--thread N`: build a LOCAL rayon pool for the alignment to run in (see
+/// `in_pool`) rather than calling `build_global()`: a process-global pool
+/// can only be initialised once, so a library caller invoking `run_from`
+/// repeatedly would have been stuck with the first call's `--thread` value
+/// forever. The `.ok()` is not the "already initialised" swallow it used
+/// to be — a local `build()` can only fail if the OS refuses to spawn
+/// threads, and falling back to rayon's default pool there is exactly
+/// what the previous code did.
+fn thread_pool(args: &Args) -> Option<rayon::ThreadPool> {
+    if args.thread > 0 {
         rayon::ThreadPoolBuilder::new()
             .num_threads(args.thread)
             .build()
             .ok()
     } else {
         None
-    };
+    }
+}
 
-    // Read input. `--anysymbol`/`--preservecase` need every original
-    // character preserved (case + non-standard residues) so the
-    // post-alignment restore pass can put them back; the default
-    // reader normalizes (`* → -`, drops non-alpha) which would lose
-    // exactly the chars we need.
+/// Read the primary input the way the command line does: from `INPUT` or
+/// stdin, with the case-preserving reader when `--anysymbol` /
+/// `--preservecase` need every original character kept for the
+/// post-alignment restore pass (the default reader normalizes `* → -` and
+/// drops non-alpha, which would lose exactly the chars we need), then
+/// `--nuc` / `--amino`.
+fn read_input(args: &Args) -> Result<SequenceSet, MafftError> {
     let anysymbol_read = args.anysymbol || args.preservecase;
     let input = match &args.input {
         Some(path) => {
@@ -947,14 +1119,90 @@ where
     // branches on `is_nucleotide()` runs (mirrors C `scripts/mafft:547-550`,
     // where `$seqtype` is fixed at argument-parsing time). No-op unless one
     // of the flags was given.
-    let input = force_seq_type(input, &args, anysymbol_read);
+    Ok(force_seq_type(input, args, anysymbol_read))
+}
+
+/// Bring caller-supplied sequences to the state [`read_input`] leaves a
+/// file's contents in — the reader's residue filter, the residue-case
+/// convention for the effective type, and `--nuc` / `--amino` — copying
+/// only when something actually has to change.
+///
+/// The effective type is `--nuc` / `--amino` if given, else the caller's
+/// `seq_type` if declared, else the same ATGC-frequency detection the
+/// reader runs. Detection only counts letters, so its answer is the same
+/// on raw and on normalised residues, and it can run on the borrowed data.
+///
+/// The residue rules are the reader's own ([`mafft_io::normalize_residues`]
+/// is what both readers call), so the one input-level failure the
+/// case-preserving reader can produce — `=`, `<` or `>` inside a sequence
+/// — is reported here with the same code and message as for a file. The
+/// alphabet check (`seqcheck`) is not done here: it runs in
+/// [`align_prepared`] for both paths.
+fn prepare_in_memory<'a>(set: &'a SequenceSet, args: &Args) -> Result<Cow<'a, SequenceSet>, MafftError> {
+    let casepreserve = args.anysymbol || args.preservecase;
+    let seq_type = forced_seq_type(args).unwrap_or(if set.seq_type == SeqType::Unknown {
+        mafft_io::detect_seq_type(set.sequences.iter().map(|s| &s.data))
+    } else {
+        set.seq_type
+    });
+
+    let already_canonical = set.seq_type == seq_type
+        && set.sequences.iter().all(|s| {
+            mafft_io::residues_are_normalized(&s.data, casepreserve)
+                && (casepreserve || mafft_io::residues_follow_case_convention(&s.data, seq_type))
+        });
+    if already_canonical {
+        return Ok(Cow::Borrowed(set));
+    }
+
+    let mut owned = SequenceSet {
+        sequences: set
+            .sequences
+            .iter()
+            .map(|s| {
+                Ok(Sequence {
+                    name: s.name.clone(),
+                    data: mafft_io::normalize_residues(&s.data, casepreserve)
+                        .map_err(|e| read_error("in-memory input", e))?,
+                })
+            })
+            .collect::<Result<_, MafftError>>()?,
+        seq_type,
+    };
+    if !casepreserve {
+        mafft_io::apply_case_convention(&mut owned);
+    }
+    Ok(Cow::Owned(owned))
+}
+
+/// Everything between "the primary input is in memory, typed and
+/// normalised" and "the alignment is done": the remaining flag validation,
+/// `--seed`, `--anysymbol`, `--auto`, the `Args` → [`MafftEngine`]
+/// mapping, `--add`, `--adjustdirection`, the alignment itself, and the
+/// `--distout` / `--scoreout` / `--treeout` side effects. Shared verbatim
+/// by [`run_from_with_progress`] and [`run_from_seqs`] so the two cannot
+/// drift.
+///
+/// `input` is a [`Cow`] so an in-memory caller's set is only copied when a
+/// flag has to rewrite it; the file path always owns its input. Returns
+/// the alignment and the sequence type it was aligned as (which decides
+/// the CLUSTAL conservation marks on output).
+fn align_prepared<'a>(
+    args: &Args,
+    mut input: Cow<'a, SequenceSet>,
+    pool: Option<&rayon::ThreadPool>,
+    progress: &(dyn Progress + Sync),
+) -> Result<(MultipleAlignment, SeqType), MafftError> {
 
     // C `seqcheck` (`mltaln9.c:60-85`) runs in every aligner driver
     // before anything is aligned (`disttbfast.c:3470`, `tbfast.c:2483`,
     // `pairlocalalign.c:3229`): the first residue outside the alphabet
     // for the detected/forced type aborts the run with exit 1. On the
     // `--anysymbol` path `replaceu` has already mapped everything onto
-    // the alphabet, so C never trips there and neither do we.
+    // the alphabet, so C never trips there and neither do we. It lives
+    // here, not in `read_input`, so the in-memory entry point is held to
+    // the same alphabet as a file.
+    let anysymbol_read = args.anysymbol || args.preservecase;
     if !anysymbol_read {
         seqcheck(&input, args.quiet)?;
     }
@@ -1037,7 +1285,6 @@ where
     // The combined sequence list (seeds then user input) is what the
     // engine sees; the original user_nseq is preserved here so we can
     // restore the input subset and report mode names accurately.
-    let mut input = input;
     let seed_groups_aligned: Vec<Vec<Vec<u8>>>;
     let mut seed_seq_count: usize = 0;
     if !args.seed_files.is_empty() {
@@ -1056,7 +1303,7 @@ where
                     name: format!("_seed_{}", s.name),
                     data: ungapped,
                 };
-                input.sequences.insert(seed_seq_count, renamed);
+                input.to_mut().sequences.insert(seed_seq_count, renamed);
                 seed_seq_count += 1;
             }
         }
@@ -1081,7 +1328,7 @@ where
         let is_dna = input.seq_type.is_nucleotide();
         let map: std::collections::HashMap<String, Vec<u8>> = input.sequences.iter()
             .map(|s| (s.name.clone(), s.data.clone())).collect();
-        for s in input.sequences.iter_mut() {
+        for s in input.to_mut().sequences.iter_mut() {
             replace_unusual(&mut s.data, is_dna);
         }
         Some(map)
@@ -1111,7 +1358,7 @@ where
     let mut mode = if let Some(ref a) = auto_choice {
         a.mode.clone()
     } else {
-        determine_mode(&args)
+        determine_mode(args)
     };
 
     // `--seed` / `--seedtable`: C MAFFT forces `iterate ≥ 2` when seed
@@ -1389,8 +1636,8 @@ where
     // deliberately left at the original indentation (and `args` / `engine`
     // / `input` are rebound to shared/exclusive borrows) so this stays a
     // small, reviewable diff rather than a reindent of ~90 unchanged lines.
-    let (args_ref, engine_ref, input_ref, originals_ref) = (&args, &engine, &mut input, &mut originals);
-    let mut msa = in_pool(pool.as_ref(), move || -> Result<mafft_core::MultipleAlignment, MafftError> {
+    let (args_ref, engine_ref, input_ref, originals_ref) = (args, &engine, &mut input, &mut originals);
+    let mut msa = in_pool(pool, move || -> Result<mafft_core::MultipleAlignment, MafftError> {
         let (args, engine, input, originals) = (args_ref, engine_ref, input_ref, originals_ref);
         Ok(if let Some(add_path) = add_file {
         // C concatenates the addfile onto `infile` (`scripts/mafft:1142`)
@@ -1452,7 +1699,7 @@ where
             };
             // Combine existing + added, run adjust with nadd, split back.
             let nadd = new_input.nseq();
-            let mut combined = input.clone();
+            let mut combined = input.clone().into_owned();
             combined.sequences.extend(new_input.sequences.iter().cloned());
             let adjusted = adjust_direction_mode_add(&combined, mode, nadd);
             mafft_types::SequenceSet {
@@ -1510,7 +1757,7 @@ where
             } else {
                 AdjustMode::Kmer
             };
-            *input = adjust_direction_mode(input, mode);
+            *input = Cow::Owned(adjust_direction_mode(input, mode));
         }
         engine.align(input)
     })
@@ -1761,35 +2008,35 @@ where
         }
     }
 
-    // Build output SequenceSet (with gaps)
-    let output_seqs = SequenceSet {
-        sequences: msa.sequences.iter().zip(msa.names.iter()).map(|(seq, name)| {
-            Sequence {
-                name: name.clone(),
-                data: seq.clone(),
-            }
-        }).collect(),
-        seq_type: input.seq_type,
-    };
+    Ok((msa, input.seq_type))
+}
 
-    // Write output. `--output FILE` still goes to that file, exactly as on
-    // the command line; otherwise the alignment goes to `out` (stdout for
-    // `run`, a caller-supplied sink for a library call).
-    let write_result: Result<(), String> = match &args.output {
-        Some(path) => {
+/// Write `output_seqs` where the command line would: to `--output FILE`
+/// when given, otherwise to `out` (stdout for [`run`], a caller-supplied
+/// sink for [`run_from`]). With neither, nothing is written — that is
+/// [`run_from_seqs`] without `--output`, whose alignment is returned as a
+/// value instead.
+fn write_alignment(
+    args: &Args,
+    output_seqs: &SequenceSet,
+    out: Option<&mut dyn Write>,
+) -> Result<(), MafftError> {
+    let write_result: Result<(), String> = match (&args.output, out) {
+        (Some(path), _) => {
             let file = std::fs::File::create(path).map_err(|e|
                 MafftError::new(1, format!("Error creating {}: {e}", path.display())))?;
             let mut writer = io::BufWriter::new(file);
-            write_output(&output_seqs, &mut writer, &args)
+            write_output(output_seqs, &mut writer, args)
                 .map_err(|e| e.to_string())
                 .and_then(|()| writer.flush().map_err(|e| e.to_string()))
         }
-        None => {
-            let mut writer = io::BufWriter::new(&mut *out);
-            write_output(&output_seqs, &mut writer, &args)
+        (None, Some(out)) => {
+            let mut writer = io::BufWriter::new(out);
+            write_output(output_seqs, &mut writer, args)
                 .map_err(|e| e.to_string())
                 .and_then(|()| writer.flush().map_err(|e| e.to_string()))
         }
+        (None, None) => Ok(()),
     };
 
     if let Err(e) = write_result {
@@ -1814,48 +2061,44 @@ fn read_error(what: &str, e: mafft_io::IoError) -> MafftError {
 
 /// C `seqcheck` (`mltaln9.c:60-85`): the first character of any sequence
 /// with `amino_n[c] == -1` aborts with `Illegal character c`, exit 1.
-/// The alphabets are C's `locaminod` (`blosum.c:12`,
-/// `ARNDCQEGHILKMFPSTWYVBZX.-J`) and `locaminon` (`DNA.h:43`,
-/// `agctuAGCTUnNbdhkmnrsvwyx-O`), which `mafft_scoring` already holds.
-/// Consequences worth knowing: protein `U`/`O` are illegal (C tells the
-/// user to try `--anysymbol`), protein `.` is a legal residue, and
-/// nucleotide `.` is illegal. Case has already been folded by the
-/// reader, as in C (`io.c:1462-1467`), so `dorp`-dependent legality
-/// (e.g. nucleotide `O` → `o` → illegal) falls out the same way.
+/// Which residues are legal is decided by [`mafft_io::find_illegal_residue`]
+/// (C's `locaminod` / `locaminon` alphabets from `mafft_scoring`); this
+/// function only formats the failure. It is called from
+/// [`align_prepared`], so the file path and [`run_from_seqs`] apply the
+/// identical rule. Case has already been folded by the reader /
+/// [`prepare_in_memory`], as in C (`io.c:1462-1467`), so
+/// `dorp`-dependent legality (e.g. nucleotide `O` → `o` → illegal) falls
+/// out the same way.
 ///
 /// C's banner goes through `reporterr`, which `--quiet` silences; the
 /// one-line `Illegal character` message is kept even then so a failing
 /// exit status is never mute.
 fn seqcheck(set: &SequenceSet, quiet: bool) -> Result<(), MafftError> {
-    let alphabet: &[u8] = if set.seq_type.is_nucleotide() {
-        &mafft_scoring::DNA_ALPHABET.chars
-    } else {
-        &mafft_scoring::PROTEIN_ALPHABET.chars
+    let Some(bad) = mafft_io::find_illegal_residue(set) else {
+        return Ok(());
     };
-    for (si, s) in set.sequences.iter().enumerate() {
-        let Some((pos, &c)) = s.data.iter().enumerate().find(|(_, c)| !alphabet.contains(c)) else {
-            continue;
-        };
-        let c = c as char;
-        let mut msg = String::new();
-        if !quiet {
-            let rule = "========================================================================= \n";
-            msg.push_str(rule);
-            msg.push_str(rule);
-            msg.push_str("=== \n");
-            msg.push_str(&format!("=== Alphabet '{c}' is unknown.\n"));
-            msg.push_str(&format!("=== Please check site {} in sequence {}.\n", pos + 1, si + 1));
-            msg.push_str("=== \n");
-            msg.push_str("=== To make an alignment that has unusual characters (U, @, #, etc), try  \n");
-            msg.push_str("=== % mafft --anysymbol input > output\n");
-            msg.push_str("=== \n");
-            msg.push_str(rule);
-            msg.push_str(rule);
-        }
-        msg.push_str(&format!("Illegal character {c}"));
-        return Err(MafftError::new(1, msg));
+    let c = bad.byte as char;
+    let mut msg = String::new();
+    if !quiet {
+        let rule = "========================================================================= \n";
+        msg.push_str(rule);
+        msg.push_str(rule);
+        msg.push_str("=== \n");
+        msg.push_str(&format!("=== Alphabet '{c}' is unknown.\n"));
+        msg.push_str(&format!(
+            "=== Please check site {} in sequence {}.\n",
+            bad.position + 1,
+            bad.seq_index + 1
+        ));
+        msg.push_str("=== \n");
+        msg.push_str("=== To make an alignment that has unusual characters (U, @, #, etc), try  \n");
+        msg.push_str("=== % mafft --anysymbol input > output\n");
+        msg.push_str("=== \n");
+        msg.push_str(rule);
+        msg.push_str(rule);
     }
-    Ok(())
+    msg.push_str(&format!("Illegal character {c}"));
+    Err(MafftError::new(1, msg))
 }
 
 /// `--anysymbol` preprocessor — substitute every character outside
@@ -3053,5 +3296,121 @@ atggcaagcttagacctttgcaggtacgcatggaactagggcctttaggcattgacctag
             prev = Some(out);
         }
         std::fs::remove_file(&path).ok();
+    }
+
+    // --- in-memory input (`run_from_seqs`) ------------------------------
+
+    fn dna_set_typed(data: &[&[u8]], seq_type: SeqType) -> SequenceSet {
+        SequenceSet {
+            sequences: data
+                .iter()
+                .enumerate()
+                .map(|(i, d)| Sequence { name: format!("s{i}"), data: d.to_vec() })
+                .collect(),
+            seq_type,
+        }
+    }
+
+    /// A canonical set — normalised residues, the type's case, a declared
+    /// type — must reach the engine without being copied.
+    #[test]
+    fn prepare_in_memory_borrows_a_canonical_set() {
+        let a = Args::parse_from(["mafft-rs"]);
+        let set = dna_set_typed(&[b"acgt-acgt", b"acgtacgt."], SeqType::Dna);
+        assert!(matches!(prepare_in_memory(&set, &a).unwrap(), Cow::Borrowed(_)));
+        let prot = dna_set_typed(&[b"MKALV-WQHY"], SeqType::Protein);
+        assert!(matches!(prepare_in_memory(&prot, &a).unwrap(), Cow::Borrowed(_)));
+        // `--nuc` agreeing with the declared type changes nothing either.
+        let nuc = Args::parse_from(["mafft-rs", "--nuc"]);
+        assert!(matches!(prepare_in_memory(&set, &nuc).unwrap(), Cow::Borrowed(_)));
+        // With `--preservecase` the case is not checked, so mixed case borrows.
+        let pc = Args::parse_from(["mafft-rs", "--preservecase"]);
+        let mixed = dna_set_typed(&[b"ACgt*@"], SeqType::Dna);
+        assert!(matches!(prepare_in_memory(&mixed, &pc).unwrap(), Cow::Borrowed(_)));
+    }
+
+    /// Anything the reader would have changed forces exactly one copy, and
+    /// the copy is what the reader would have produced.
+    #[test]
+    fn prepare_in_memory_copies_and_normalises_when_it_must() {
+        let a = Args::parse_from(["mafft-rs"]);
+        // Wrong case for the declared type.
+        let upper = dna_set_typed(&[b"ACGT"], SeqType::Dna);
+        let got = prepare_in_memory(&upper, &a).unwrap();
+        assert!(matches!(got, Cow::Owned(_)));
+        assert_eq!(got.sequences[0].data, b"acgt");
+        assert_eq!(got.seq_type, SeqType::Dna);
+        // Residues the reader filters: `*` → `-`, digits / spaces dropped.
+        let noisy = dna_set_typed(&[b"acg t*1a"], SeqType::Dna);
+        let got = prepare_in_memory(&noisy, &a).unwrap();
+        assert!(matches!(got, Cow::Owned(_)));
+        assert_eq!(got.sequences[0].data, b"acgt-a");
+        // Undeclared type: detected, and the field set — which needs a copy
+        // even though the residues were already canonical.
+        let unknown = dna_set_typed(&[b"acgtacgtacgt"], SeqType::Unknown);
+        let got = prepare_in_memory(&unknown, &a).unwrap();
+        assert!(matches!(got, Cow::Owned(_)));
+        assert_eq!(got.seq_type, SeqType::Dna);
+        assert_eq!(got.sequences[0].data, b"acgtacgtacgt");
+        // `--amino` over a nucleotide-looking set: protein type and case.
+        let amino = Args::parse_from(["mafft-rs", "--amino"]);
+        let got = prepare_in_memory(&unknown, &amino).unwrap();
+        assert_eq!(got.seq_type, SeqType::Protein);
+        assert_eq!(got.sequences[0].data, b"ACGTACGTACGT");
+        // `--preservecase` keeps digits and tabs (C `charfilter`), drops
+        // only \n, space and \r, and never folds.
+        let pc = Args::parse_from(["mafft-rs", "--preservecase"]);
+        let mixed = dna_set_typed(&[b"AcG1 t\r"], SeqType::Dna);
+        let got = prepare_in_memory(&mixed, &pc).unwrap();
+        assert_eq!(got.sequences[0].data, b"AcG1t");
+        // ... and rejects `= < >` in a sequence with the reader's message.
+        let bad = dna_set_typed(&[b"Ac=Gt"], SeqType::Dna);
+        let err = prepare_in_memory(&bad, &pc).unwrap_err();
+        assert_eq!(err.code(), 1);
+        assert_eq!(err.message(), mafft_io::IoError::IllegalTitleCharInSequence.to_string());
+        // By default `=` is silently dropped, as `onlyAlpha_*` does.
+        assert_eq!(prepare_in_memory(&bad, &a).unwrap().sequences[0].data, b"acgt");
+    }
+
+    /// The in-memory preparation and the file reader agree on every input
+    /// the reader accepts, for every combination of the flags that steer it.
+    #[test]
+    fn prepare_in_memory_matches_the_reader() {
+        let text = ">a\nATGGCtagc*TTGG 12\n>b\nnnATGGCTAGC.TTGCACC\n";
+        for flags in [&[][..], &["--nuc"], &["--amino"], &["--preservecase"], &["--anysymbol", "--nuc"]] {
+            let mut argv = vec!["mafft-rs"];
+            argv.extend_from_slice(flags);
+            let args = Args::parse_from(argv);
+            let casepreserve = args.anysymbol || args.preservecase;
+            let via_reader = if casepreserve {
+                read_fasta_from_reader_casepreserve(text.as_bytes())
+            } else {
+                read_fasta_from_reader(text.as_bytes())
+            }
+            .unwrap();
+            let via_reader = force_seq_type(via_reader, &args, casepreserve);
+            // The in-memory caller hands over the raw bytes, untyped.
+            let raw = SequenceSet {
+                sequences: vec![
+                    Sequence { name: "a".into(), data: b"ATGGCtagc*TTGG 12".to_vec() },
+                    Sequence { name: "b".into(), data: b"nnATGGCTAGC.TTGCACC".to_vec() },
+                ],
+                seq_type: SeqType::Unknown,
+            };
+            let prepared = prepare_in_memory(&raw, &args).unwrap();
+            assert_eq!(prepared.seq_type, via_reader.seq_type, "{flags:?}");
+            for (p, r) in prepared.sequences.iter().zip(&via_reader.sequences) {
+                assert_eq!(p.name, r.name, "{flags:?}");
+                assert_eq!(p.data, r.data, "{flags:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn run_from_seqs_rejects_an_input_path() {
+        let set = dna_set_typed(&[b"acgt"], SeqType::Dna);
+        let err = run_from_seqs(["mafft-rs", "in.fa"], &set, &SilentProgress).unwrap_err();
+        assert_eq!(err.code(), 1);
+        assert!(err.message().contains("in.fa"));
     }
 }
