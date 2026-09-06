@@ -26,8 +26,8 @@ crates/
 ```mermaid
 flowchart TD
     types[mafft-types]
-    io[mafft-io] --> types
     scoring[mafft-scoring] --> types
+    io[mafft-io] --> types & scoring
     fft[mafft-fft] --> types & scoring
     align[mafft-align] --> types & scoring & fft
     tree[mafft-tree] --> types & scoring
@@ -35,8 +35,18 @@ flowchart TD
     mafft[mafft] --> core & types & io
     mafft -. feature cli .-> bin
     bin[mafft-bin / mafft-rs] --> core & io & types & tree & scoring & align
-    pymafft[pymafft] --> core & io & types
+    pymafft[pymafft] --> core & io & types & bin
 ```
+
+`mafft-types` carries the floating-point contraction policy
+(`mafft_types::fp::{CONTRACTS_FMA, fmadd}`, features `fp-contract-fma` /
+`fp-contract-none`) that every crate with FP arithmetic forwards.
+`mafft-io` depends on `mafft-scoring` for the C `seqcheck` alphabets used by
+`find_illegal_residue`, so there is exactly one copy of them. `mafft`'s
+edge to `mafft-bin` is the optional `cli` feature; `pymafft` depends on the
+`mafft-rs` library target unconditionally (it runs every alignment through
+`run_from_seqs`). Dev-dependencies on the C shim (`mafft-c-bindings`,
+aliased `mafft-sys`) are not drawn.
 
 ## Why split into so many crates
 
@@ -89,7 +99,7 @@ rows `run_from` would print, including `--reorder`'s order and
 `--adjustdirection`'s `_R_` name prefixes. Every failure is a `MafftError`
 carrying the CLI's exit code and message.
 
-```rust,no_run
+```rust
 use mafft_rs::{run_from_seqs, SilentProgress, Sequence, SequenceSet, SeqType};
 
 let input = SequenceSet {

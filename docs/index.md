@@ -75,8 +75,8 @@ binary is a drop-in replacement.
 
 The [Byte-identity](architecture/byte-identity.md) page documents the
 design decisions, FFT tie-break ports, FP-order constraints, and
-cross-validation infrastructure (~140 FFI tests against the C
-implementation, compiled in-tree).
+cross-validation infrastructure (99 FFI test functions against the C
+implementation, compiled in-tree on the same platform).
 
 ## Status
 
@@ -84,9 +84,14 @@ implementation, compiled in-tree).
 - **Stub-parity flags** (`--pdbidlist`, `--pdbfilelist`): match C MAFFT's
   "temporarily unavailable, 2018/Dec." exit verbatim — these were
   disabled upstream.
-- **Roadmap**: see the [architecture index](architecture/index.md) for
-  what's still out of scope (e.g. `--adjustdirectionaccurately` DP
-  path).
+- **DNA**: byte-identical on nucleotide input too (pair-phase gap scale,
+  `dndpre` offset, lowercase output, `--nuc` / `--amino`), including C's
+  distinct `--thread 1` refinement path.
+- **In-memory API**: `mafft_rs::run_from_seqs` / `Mafft::run_seqs` and
+  `pymafft.align(...)` share the CLI's flag layer, so `--auto`,
+  `--adjustdirection`, `--nuc` behave identically from Rust, Python and
+  the shell.
+- **Out of scope / residuals**: see the [architecture index](architecture/index.md).
 
 ## Quick links
 

@@ -89,7 +89,7 @@ fits your workflow — they all produce byte-identical alignments.
 git clone --recurse-submodules https://github.com/luksgrin/rust-MAFFT
 cd rust-MAFFT
 cargo build --release -p mafft-rs   # CLI
-cargo test --workspace              # full test suite (~430 tests)
+cargo test --workspace --exclude pymafft --release   # full test suite (537 tests + 7 ignored)
 ```
 
 The `mafft-upstream/` submodule pins the reference C MAFFT version
