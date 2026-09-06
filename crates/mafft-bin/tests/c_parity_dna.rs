@@ -146,6 +146,36 @@ fn fftnsi_120seq_dna_matches_c_under_thread_1() {
     );
 }
 
+/// The first 8 sequences of the same fixture, full FFT-NS-i (`--retree 2
+/// --maxiterate 1000`), no `--thread`.
+///
+/// This pins the trailing-anchor flush of `searchAnchors` (`mltaln9.c`).
+/// C's segment search runs `for( i=1; i<len-divWinSize; i++ )` and, when a
+/// high-conservation region is still open at the end, closes it with
+/// `seg->end = i` — the loop's EXIT value `len - divWinSize`, one past the
+/// last iterated column. The port used the last iterated column, which
+/// moves the final anchor one column left whenever `start + len` is even:
+/// here C splits at 1412 and we split at 1411, so refinement segments 10
+/// and 11 saw different columns and `s5` ended up with `aactca-cctgacc`
+/// instead of C's `aactcacc-tgacc`. Segments 1–9 (and every branch score
+/// in them) were already identical, and the result is the same with
+/// `--nofft`, `--thread 1`, and any `--maxiterate >= 1`. Subsets of 5–7,
+/// 9, 10 or 12 sequences do not reach the end of the alignment with an
+/// open region, which is why the 120-sequence tests above did not catch
+/// it.
+///
+/// Expected bytes: pinned `mafft-upstream` built in-tree on arm64, checked
+/// equal to the reference 7.526 arm64 binary's output.
+#[test]
+fn fftnsi_first8_dna_trailing_anchor_matches_c() {
+    let f = fixtures();
+    expect_identical(
+        &["--retree", "2", "--maxiterate", "1000"],
+        &f.join("mtb_cds_first8.fa"),
+        &f.join("mtb_cds_first8.fftnsi.expected"),
+    );
+}
+
 /// Differential test on realistic clusters under the pipeline invocation
 /// `--auto --adjustdirection --thread 1 --nuc`. Every cluster must be
 /// byte-identical to C MAFFT 7.526.

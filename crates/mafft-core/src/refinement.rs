@@ -2232,6 +2232,30 @@ mod tests {
         (upgma(&dm), nseq)
     }
 
+    /// Guard: `search_anchors_aa` closes a region that is still open when
+    /// the sliding-window loop ends with `end = len - divWinSize` — the
+    /// loop's exit value of `i` in C `searchAnchors` (`mltaln9.c`) — not
+    /// with the last iterated column.
+    ///
+    /// Fully conserved 2-row alignment, every column scores 1000, so every
+    /// window (20 * 1000) clears the 7800 threshold. Region 1 opens at
+    /// `i = 1` and is closed by `length > SEGMENTSIZE` at `i = 151`
+    /// (center `(1 + 151 + 20) / 2 = 86`); region 2 opens at 152 and is
+    /// still open when the loop stops after `i = 179`. C flushes it with
+    /// `end = 180` → center `(152 + 180 + 20) / 2 = 176`. Using `end = 179`
+    /// gives 175, which is what shifted the last refinement segment of
+    /// `mtb_cds_first8` one column left (C 1412 vs 1411).
+    #[test]
+    fn search_anchors_trailing_flush_uses_loop_exit_index() {
+        let len = 200;
+        let seqs = vec![vec![b'a'; len], vec![b'a'; len]];
+        let matrix = vec![vec![1000i32]];
+        let mut amino_map = [255u8; 256];
+        amino_map[b'a' as usize] = 0;
+        let anchors = search_anchors_aa(&seqs, &matrix, &amino_map, 20, 65);
+        assert_eq!(anchors, vec![0, 86, 176, len]);
+    }
+
     // ---------------------------------------------------------------
     // Regression guards for the iterative-refinement fixes.
     // Each test targets one specific behavior ported from C's
