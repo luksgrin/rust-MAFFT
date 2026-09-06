@@ -74,7 +74,7 @@ unsafe fn c_pointt(seq: &[u8]) -> Vec<i32> {
 /// algorithm has no chance — guard the per-pair distance first.
 #[test]
 fn distcompact_matches_c_for_every_pair() {
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load sample");
 
@@ -156,7 +156,7 @@ fn distcompact_matches_c_for_every_pair() {
 /// recomputation loop in `compacttree_memsaveselectable`.
 #[test]
 fn initial_mindist_matches_c() {
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load sample");
 
@@ -265,7 +265,7 @@ fn initial_mindist_matches_c() {
 /// our memsavetree's step-k=2 d_merged.
 #[test]
 fn cluster_mix_for_first_divergent_step() {
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load sample");
 
@@ -348,7 +348,7 @@ fn cluster_mix_for_first_divergent_step() {
 /// arrays) makes the comparison robust.
 #[test]
 fn memsavetree_topol_matches_c_step_by_step() {
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let input = read_fasta(std::path::Path::new("../../mafft-upstream/test/sample"))
         .expect("load sample");
 
@@ -507,7 +507,7 @@ fn memsavetree_topol_matches_c_step_by_step() {
 /// and C's algorithm.
 #[test]
 fn youngestlinkage_topol_matches_c_step_by_step() {
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // Use first15 — first input where our port diverges from C.
     let input = read_fasta(std::path::Path::new(
         "../../crates/mafft-core/tests/fixtures/sample.first15.fa"

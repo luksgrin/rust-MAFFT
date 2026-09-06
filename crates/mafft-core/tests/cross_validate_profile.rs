@@ -43,7 +43,7 @@ unsafe fn init_c_protein() {
 
 #[test]
 fn profile_cpmx_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -160,7 +160,7 @@ fn profile_cpmx_matches_c() {
 /// This is what compute_split_score sees before internal normalization.
 #[test]
 fn profile_with_unnormalized_weights_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -214,7 +214,7 @@ fn profile_with_unnormalized_weights_matches_c() {
 /// We replicate the key logic here since compute_split_score is private.
 #[test]
 fn intergroup_score_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -337,7 +337,7 @@ fn intergroup_score_matches_c() {
 /// Test Profile::from_aligned with UNEQUAL weights (like per-branch weights).
 #[test]
 fn profile_with_unequal_weights_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 

@@ -397,6 +397,21 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
   distinct outputs over 3 runs at both `--thread 2` and `--thread 4` — so
   byte-identity with C is impossible in principle at those thread counts.
   rust-MAFFT remains deterministic across all thread counts.
+- **FFI cross-validation tests serialised; poison-tolerant guards.** The
+  test binaries that link the C reference (`mafft_sys`) call functions that
+  read/write ~150 process-wide C globals (and `treeCnv` keeps a static scratch
+  buffer), while cargo runs `#[test]` functions on multiple threads. Six FFI
+  test files (`cross_validate_weights`, `cross_validate_counteff`,
+  `cross_validate_cpmx`, `cross_validate_bb20027_dp`,
+  `exp_residual_dump_compare`, `cross_validate_insertnewgaps`) had no
+  serialisation and could crash intermittently (`cross_validate_weights`
+  SIGABRT/SIGSEGV on macOS arm64 CI); they now take the same `C_MUTEX` as the
+  other twelve. Every guard is now `unwrap_or_else(PoisonError::into_inner)`
+  so one genuine failure no longer cascades into misleading `PoisonError`s.
+  The scoring binary's `init_c_globals()` also resets `TMorJTT = JTT`:
+  `initglobalvariables()` does not reset it, so a `*_tm_*` test running first
+  leaked the TM table into the C-default JTT probe (the intermittent "JTT
+  mismatch"). Test-only changes; no crate `src/` touched.
 
 ## [0.1.2] - 2026-06-10
 

@@ -55,7 +55,7 @@ unsafe fn build_c_dynamicmtx(scoring_matrix: &[Vec<i32>]) -> *mut *mut c_double 
 
 #[test]
 fn profile_align_matches_c_msalignmm() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -203,7 +203,7 @@ fn profile_align_matches_c_msalignmm() {
 /// Test profile_align with asymmetric groups (1 vs many) — common refinement case.
 #[test]
 fn profile_align_1_vs_many_matches_c() {
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -303,7 +303,7 @@ fn profile_align_1_vs_many_matches_c() {
 #[test]
 fn profile_align_imp_warp_matches_c_a__align() {
     use mafft_align::{profile_align_imp};
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -420,7 +420,7 @@ fn profile_align_imp_warp_matches_c_a__align() {
 #[test]
 fn profile_align_imp_nonzero_penalty_ex_matches_c_a__align() {
     use mafft_align::profile_align_imp;
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
@@ -518,7 +518,7 @@ fn profile_align_imp_nonzero_penalty_ex_matches_c_a__align() {
 #[test]
 fn profile_align_imp_warp_shifted_matrix_matches_c_a__align() {
     use mafft_align::profile_align_imp;
-    let _guard = C_MUTEX.lock().unwrap();
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 

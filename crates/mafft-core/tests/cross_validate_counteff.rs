@@ -9,6 +9,7 @@
 
 use std::os::raw::{c_double, c_int};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 fn bb20027_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16,6 +17,11 @@ fn bb20027_fixture() -> PathBuf {
 }
 
 use mafft_tree::{Topology, sequence_weights};
+
+/// Serialises every test that calls into the C reference: `mafft_sys`
+/// functions read/write process-wide C globals (and `treeCnv` keeps a
+/// static scratch buffer), so two tests racing on them can crash.
+static C_MUTEX: Mutex<()> = Mutex::new(());
 
 unsafe fn alloc_zero(size: usize) -> *mut std::ffi::c_void {
     let layout = std::alloc::Layout::from_size_align(size.max(8), 8).unwrap();
@@ -94,6 +100,7 @@ fn bb20027_pass1_widths_step_by_step() {
 
 #[test]
 fn bb20027_pass1_weights_match_c() {
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let path = bb20027_fixture();
     let input = mafft_io::read_fasta(&path).expect("read BB20027");
     let engine = mafft_core::MafftEngine::new(mafft_core::AlignmentMode::FftNs2);

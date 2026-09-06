@@ -33,6 +33,12 @@ unsafe fn init_c_globals() { unsafe {
     std::ptr::addr_of_mut!(mafft_sys::poffset).write(0); // mafft.tmpl: -h 0.000
     std::ptr::addr_of_mut!(mafft_sys::kimuraR).write(mafft_sys::NOTSPECIFIED);
     std::ptr::addr_of_mut!(mafft_sys::pamN).write(mafft_sys::NOTSPECIFIED);
+    // Mirror C's `arguments()` default `TMorJTT = JTT` (disttbfast.c:209).
+    // `initglobalvariables()` does NOT reset this global, so without it a TM
+    // test that ran earlier in the same process leaks `TMorJTT = TM` into any
+    // later test that relies on the default (constants.c:1150 selects the
+    // TM frequency table via `TMorJTT == TM`).
+    std::ptr::addr_of_mut!(mafft_sys::TMorJTT).write(201); // JTT
 }}
 
 /// Call C constants() with a dummy sequence.
@@ -170,7 +176,7 @@ fn polarity_volume_set_for_protein() {
 
 #[test]
 fn cross_validate_blosum62_n_dis_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
     let c_matrix = unsafe {
@@ -229,7 +235,7 @@ fn cross_validate_blosum62_n_dis_cell_by_cell() {
 ///      pipeline that would otherwise affect every cell uniformly.
 #[test]
 fn cross_validate_blosum80_n_dis_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Blosum(80), SeqType::Protein);
 
     let c_matrix = unsafe {
@@ -272,7 +278,7 @@ fn cross_validate_blosum80_n_dis_cell_by_cell() {
 
 #[test]
 fn cross_validate_blosum62_n_dis_fft_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
     let c_matrix = unsafe {
@@ -312,7 +318,7 @@ fn cross_validate_blosum62_n_dis_fft_cell_by_cell() {
 /// codepath; this catches drift in either raw table or the rescale pipeline.
 #[test]
 fn cross_validate_blosum45_n_dis_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Blosum(45), SeqType::Protein);
     let c_matrix = unsafe {
         init_c_globals();
@@ -343,7 +349,7 @@ fn cross_validate_blosum45_n_dis_cell_by_cell() {
 
 #[test]
 fn cross_validate_blosum50_n_dis_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Blosum(50), SeqType::Protein);
     let c_matrix = unsafe {
         init_c_globals();
@@ -375,7 +381,7 @@ fn cross_validate_blosum50_n_dis_cell_by_cell() {
 /// BLOSUM50 FFT scoring matrix vs C.
 #[test]
 fn cross_validate_blosum50_n_dis_fft_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Blosum(50), SeqType::Protein);
     let c_matrix = unsafe {
         init_c_globals();
@@ -407,7 +413,7 @@ fn cross_validate_blosum50_n_dis_fft_cell_by_cell() {
 /// JTT cell-by-cell at non-default PAM (100) — guards the PAM-iteration loop.
 #[test]
 fn cross_validate_jtt100_n_dis_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Jtt(100), SeqType::Protein);
     let c_matrix = unsafe {
         init_c_globals();
@@ -439,7 +445,7 @@ fn cross_validate_jtt100_n_dis_cell_by_cell() {
 /// Cell-by-cell TM `n_disFFT` (FFT scoring matrix) vs C with PAM = 200.
 #[test]
 fn cross_validate_tm_n_dis_fft_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Tm(200), SeqType::Protein);
     let c_matrix = unsafe {
         init_c_globals();
@@ -476,7 +482,7 @@ fn cross_validate_tm_n_dis_fft_cell_by_cell() {
 /// of the lower one. This test catches drift in either of those two pieces.
 #[test]
 fn cross_validate_tm_n_dis_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Tm(200), SeqType::Protein);
 
     let c_matrix = unsafe {
@@ -508,24 +514,22 @@ fn cross_validate_tm_n_dis_cell_by_cell() {
     }
 }
 
-/// Auto-ignored on Linux only: passes deterministically on macOS but
-/// fails on Ubuntu CI with ~400/676 cells differing (max diff ≈ 825).
-/// The root cause is that this test calls
-/// `call_c_constants(b'p', 0, 0)` with `pamN = NOTSPECIFIED` and never
-/// writes `TMorJTT`, so C's `constants()` falls back to whatever
-/// `TMorJTT`/`pamN` defaults `initglobalvariables()` leaves in place —
-/// and that fallback path resolves differently under glibc than under
-/// the macOS allocator/linker for reasons we haven't yet isolated. The
-/// `jtt100` and `tm` variants both write `TMorJTT` and `pamN` explicitly
-/// via `call_c_constants_jtt` and pass on both OSes, so the JTT pipeline
-/// itself is fine — only the "rely on C defaults" probe is platform-
-/// fragile. To run on Linux anyway:
+/// Exercises the "rely on C defaults" JTT path: `call_c_constants(b'p', 0, 0)`
+/// leaves `pamN = NOTSPECIFIED` (C falls back to `DEFAULTPAMN`, constants.c:1115)
+/// and does not write `TMorJTT`, so C picks JTT vs TM from whatever `TMorJTT`
+/// holds (constants.c:1150). That global is zero-initialised and NOT reset by
+/// `initglobalvariables()`, so before `init_c_globals()` started writing
+/// `TMorJTT = JTT` this test depended on test *ordering*: if a `*_tm_*` test
+/// ran first in the same process it saw the TM table (~400/676 cells off,
+/// max diff ~825 — the "JTT mismatch" seen on Ubuntu CI). The order-dependence
+/// is fixed in `init_c_globals()`; the Linux ignore is kept until a Linux CI
+/// run confirms it. To run on Linux anyway:
 ///     cargo test -p mafft-scoring --release --test cross_validate \
 ///         cross_validate_jtt_n_dis_cell_by_cell -- --ignored --nocapture
 #[test]
-#[cfg_attr(target_os = "linux", ignore = "C-default JTT path is platform-fragile under glibc — see fn docstring")]
+#[cfg_attr(target_os = "linux", ignore = "C-default JTT path was order-dependent (TMorJTT leak); fixed in init_c_globals, ignore retained pending Linux CI confirmation")]
 fn cross_validate_jtt_n_dis_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Jtt(200), SeqType::Protein);
 
     let c_matrix = unsafe {
@@ -563,7 +567,7 @@ fn cross_validate_jtt_n_dis_cell_by_cell() {
 
 #[test]
 fn cross_validate_dna_n_dis_cell_by_cell() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Dna, SeqType::Dna);
 
     let c_matrix = unsafe {
@@ -601,7 +605,7 @@ fn cross_validate_dna_n_dis_cell_by_cell() {
 
 #[test]
 fn cross_validate_penalty_values() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     unsafe {
         init_c_globals();
         call_c_constants(b'p', 1, 62);
@@ -626,7 +630,7 @@ fn cross_validate_penalty_values() {
 
 #[test]
 fn cross_validate_amino_mapping() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rust_ctx = build_context(ScoringModel::Blosum(62), SeqType::Protein);
 
     unsafe {
@@ -654,7 +658,7 @@ fn cross_validate_amino_mapping() {
 
 #[test]
 fn debug_jtt_pam1_vs_c() {
-    let _lock = C_MUTEX.lock().unwrap();
+    let _lock = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     
     // Build Rust PAM1 (just 1 iteration to isolate the issue)
     let rust_pam1 = mafft_scoring::jtt::build_jtt_pam_matrix(false, 1);

@@ -42,7 +42,7 @@ unsafe fn init_c_protein() {
 #[test]
 #[cfg_attr(target_os = "linux", ignore = "potential glibc teardown")]
 fn exp_residual_step10_rust_vs_c_falign() {
-    let _g = C_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dump_path = "/tmp/rs_dp.txt";
     let content = match std::fs::read_to_string(dump_path) {
         Ok(c) => c,
