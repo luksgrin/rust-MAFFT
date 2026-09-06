@@ -1774,11 +1774,13 @@ fn search_anchors_aa(
     let mut start_i: usize = 0;
     let mut length: usize = 0;
 
-    // C loops `for( i=1; i<len-divWinSize; i++ )` and leaves `i` reachable
-    // after the loop for the trailing flush; we keep `last_i` for parity.
-    let mut last_i = 1usize;
+    // C loops `for( i=1; i<len-divWinSize; i++ )` and then flushes a still-open
+    // region with `seg->end = i` (`mltaln9.c:11359`), where `i` is the loop's
+    // EXIT value `len - divWinSize` — one past the last iterated column, not
+    // the last iterated column itself. Using the last iterated `i` shifted
+    // the trailing anchor left by one whenever `start + len` is even
+    // (mtb_cds first 8 seqs, `--retree 2 --maxiterate 1000`: C 1412, we 1411).
     for i in 1..(len - div_win_size) {
-        last_i = i;
         score = score - stra[i - 1] + stra[i + div_win_size - 1];
         if score > threshold {
             if !status {
@@ -1799,7 +1801,8 @@ fn search_anchors_aa(
         }
     }
     if status {
-        let center = (start_i + last_i + div_win_size) / 2;
+        let end_i = len - div_win_size;
+        let center = (start_i + end_i + div_win_size) / 2;
         centers.push(center);
     }
 
