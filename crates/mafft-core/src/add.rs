@@ -63,8 +63,10 @@ pub fn add_sequences(
     // 2. Concatenate stripped existing + new (raw).
     let mut all_seqs: Vec<Vec<u8>> = stripped_existing;
     for s in new_sequences {
-        // Strip any gap chars from incoming new sequences (defensive).
-        let raw: Vec<u8> = s.iter().filter(|&&c| c != b'-' && c != b'.').copied().collect();
+        // C `gappick0` on every added sequence (`disttbfast.c:4315`,
+        // `tbfast.c:3192`): only `-` is a gap. `.` is a legal protein
+        // residue (`amino_n['.']` = 23) and must survive into the DP.
+        let raw: Vec<u8> = s.iter().filter(|&&c| c != b'-').copied().collect();
         all_seqs.push(raw);
     }
     let mut all_names: Vec<String> = existing.names.clone();
@@ -152,7 +154,7 @@ pub fn add_sequences_keeplength_with_map(
         let mut any_existing_residue = false;
         for s in full.sequences.iter().take(n_existing) {
             if let Some(&c) = s.get(col) {
-                if c != b'-' && c != b'.' {
+                if c != b'-' {
                     any_existing_residue = true;
                     break;
                 }
@@ -172,7 +174,7 @@ pub fn add_sequences_keeplength_with_map(
         let mut run_start: usize = 0;
         let mut run_len: usize = 0;
         for (col, &c) in aligned.iter().enumerate() {
-            if c == b'-' || c == b'.' {
+            if c == b'-' {
                 continue;
             }
             if keep[col] {
@@ -251,7 +253,7 @@ pub fn commongappick(sequences: &[Vec<u8>]) -> Vec<Vec<u8>> {
     for col in 0..width {
         for s in sequences {
             let c = s.get(col).copied().unwrap_or(b'-');
-            if c != b'-' && c != b'.' {
+            if c != b'-' {
                 keep[col] = true;
                 break;
             }
