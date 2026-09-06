@@ -19,6 +19,8 @@ const DEFAULT_LINE_WIDTH: usize = 60;
 /// - Strips non-alphabetic characters (except '-', '.') from sequences.
 /// - Converts '*' to '-'.
 /// - Auto-detects DNA vs protein via ATGC frequency.
+/// - Canonicalises residue case per the detected type — lowercase for
+///   DNA/RNA, uppercase for protein (see [`apply_case_convention`]).
 ///
 /// Uses a lenient parser that handles MAFFT's non-standard headers
 /// (e.g. `>     1== name ...` with leading spaces).
@@ -134,10 +136,9 @@ pub fn read_fasta_from_reader<R: BufRead>(reader: R) -> Result<SequenceSet, IoEr
         &sequences.iter().map(|s| s.data.clone()).collect::<Vec<_>>(),
     );
 
-    Ok(SequenceSet {
-        sequences,
-        seq_type,
-    })
+    let mut set = SequenceSet { sequences, seq_type };
+    apply_case_convention(&mut set);
+    Ok(set)
 }
 
 /// Apply C MAFFT's residue-case convention to an already-parsed set:
@@ -176,12 +177,16 @@ pub fn apply_case_convention(set: &mut SequenceSet) {
 
 /// Normalize a raw sequence: keep only alpha + gap chars, convert '*' to '-'.
 ///
-/// Mirrors the C `onlyAlpha_lower()` + `kake2hiku()` pipeline.
+/// Mirrors the character-filtering half of C's `onlyAlpha_lower()` /
+/// `onlyAlpha_upper()` plus `kake2hiku()` (`io.c:1425-1470`). Case is left
+/// alone here because C picks the case fold from `dorp`, which is only
+/// known once the sequence type has been detected (or forced by
+/// `--nuc` / `--amino`); [`apply_case_convention`] applies it afterwards.
 fn normalize_sequence(raw: &[u8]) -> Vec<u8> {
     raw.iter()
         .filter_map(|&ch| {
             if ch.is_ascii_alphabetic() {
-                Some(ch.to_ascii_uppercase())
+                Some(ch)
             } else if ch == b'-' || ch == b'.' {
                 Some(ch)
             } else if ch == b'*' {
@@ -286,6 +291,32 @@ mod tests {
     // --- C MAFFT residue-case convention (io.c:1462-1467, io.c:1755) ---
 
     #[test]
+    fn nucleotide_input_is_lowercased_whatever_the_input_case() {
+        let input = b">a\nATGGCtagcTTGGACCATTGCAGG\n>b\nATGGCTAGCTTGGACCATTGCAGG\n";
+        let seqs = read_fasta_from_reader(io::Cursor::new(&input[..])).unwrap();
+        assert_eq!(seqs.seq_type, mafft_types::SeqType::Dna);
+        assert_eq!(seqs.sequences[0].data, b"atggctagcttggaccattgcagg".to_vec());
+        assert_eq!(seqs.sequences[1].data, b"atggctagcttggaccattgcagg".to_vec());
+    }
+
+    #[test]
+    fn protein_input_is_uppercased_whatever_the_input_case() {
+        let input = b">a\nMNGTegdnFYVPFSNKTGLARSPYEY\n>b\nMNGTEGDNFYVPFSNKTGLARSPYEY\n";
+        let seqs = read_fasta_from_reader(io::Cursor::new(&input[..])).unwrap();
+        assert_eq!(seqs.seq_type, mafft_types::SeqType::Protein);
+        assert_eq!(seqs.sequences[0].data, b"MNGTEGDNFYVPFSNKTGLARSPYEY".to_vec());
+    }
+
+    #[test]
+    fn casepreserve_reader_keeps_the_input_case() {
+        // `--anysymbol` / `--preservecase` restore the originals after
+        // alignment, so this reader must not fold anything.
+        let input = b">a\nATGGCtagcTTGGACCATTGCAGG\n";
+        let seqs = read_fasta_from_reader_casepreserve(io::Cursor::new(&input[..])).unwrap();
+        assert_eq!(seqs.sequences[0].data, b"ATGGCtagcTTGGACCATTGCAGG".to_vec());
+    }
+
+    #[test]
     fn apply_case_convention_is_idempotent_and_follows_seq_type() {
         // Safe to re-apply after `--nuc` / `--amino` override the type.
         let mut set = SequenceSet {
@@ -300,5 +331,15 @@ mod tests {
         set.seq_type = mafft_types::SeqType::Protein;
         apply_case_convention(&mut set);
         assert_eq!(set.sequences[0].data, b"ATGC".to_vec());
+    }
+
+    #[test]
+    fn case_fold_does_not_disturb_type_detection() {
+        // Detection runs on the pre-fold residues and is case-insensitive,
+        // so a lowercase and an uppercase copy detect the same type.
+        let upper = read_fasta_from_reader(io::Cursor::new(&b">a\nACGTACGTACGTACGT\n"[..])).unwrap();
+        let lower = read_fasta_from_reader(io::Cursor::new(&b">a\nacgtacgtacgtacgt\n"[..])).unwrap();
+        assert_eq!(upper.seq_type, lower.seq_type);
+        assert_eq!(upper.sequences[0].data, lower.sequences[0].data);
     }
 }

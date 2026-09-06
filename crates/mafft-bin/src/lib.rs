@@ -2605,6 +2605,43 @@ TTGGCTAGCTTGGACCATTGCAGCTACCCATGGAACTTGGGCCATTAGGCTTTGACGTAG
         assert!(err.message().contains("--no-such-flag"));
     }
 
+    /// End-to-end: C MAFFT lowercases nucleotide output and uppercases
+    /// protein output, and `--nuc` / `--amino` decide which applies
+    /// (`io.c:1462-1467`, `scripts/mafft:547-550`).
+    #[test]
+    fn output_case_follows_the_c_mafft_convention() {
+        let path = write_tmp_fasta("case", DNA_FASTA);
+        let residues = |argv: &[&str]| -> String {
+            let mut argv: Vec<std::ffi::OsString> =
+                argv.iter().map(std::ffi::OsString::from).collect();
+            argv.push(path.clone().into_os_string());
+            let mut out = Vec::new();
+            run_from(argv, &mut out).expect("alignment should succeed");
+            String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('>'))
+                .collect()
+        };
+
+        // Auto-detected nucleotide -> lowercase.
+        let auto = residues(&["mafft-rs", "--quiet"]);
+        assert!(!auto.is_empty());
+        assert!(
+            !auto.chars().any(|c| c.is_ascii_uppercase()),
+            "nucleotide output must be lowercase: {auto}"
+        );
+        // Forced nucleotide -> still lowercase.
+        assert_eq!(residues(&["mafft-rs", "--quiet", "--nuc"]), auto);
+        // Forced protein -> uppercase.
+        let amino = residues(&["mafft-rs", "--quiet", "--amino"]);
+        assert!(
+            !amino.chars().any(|c| c.is_ascii_lowercase()),
+            "protein output must be uppercase: {amino}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
     /// `--preservecase` keeps the input's own case for nucleotides, so a
     /// mixed-case input survives the round trip verbatim.
     #[test]

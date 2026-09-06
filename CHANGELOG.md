@@ -41,6 +41,29 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **Nucleotide output case now matches C MAFFT.** DNA/RNA alignments were
+  emitted in uppercase; C MAFFT emits them in lowercase. C folds residue
+  case as it reads — `io.c:1462-1467` (`load1SeqWithoutName_realloc`) calls
+  `onlyAlpha_lower` when `dorp == 'd'` and `onlyAlpha_upper` otherwise, and
+  `readData_pointer` repeats the nucleotide pass with `seqLower`
+  (`io.c:1755`; its `upperCase != -1` guard is only reachable from the
+  legacy non-FASTA `FRead` header parser, so it is always true for FASTA
+  input). rust-MAFFT's reader applied `onlyAlpha_upper` unconditionally.
+  It now folds per the sequence type, and `--nuc` / `--amino` re-apply the
+  fold for the type they force, because C's `$seqtype` fixes `dorp` before
+  any sequence is read.
+
+  **This changes existing output**: a DNA/RNA alignment that previously
+  came back uppercase now comes back lowercase. That is the point — it is
+  what C MAFFT 7.526 produces, and whole-file case flips were breaking
+  byte-for-byte comparisons against a C-MAFFT reference. Protein output is
+  unchanged (uppercase, as before and as in C). `--anysymbol` /
+  `--preservecase` are unchanged too: they keep the input's own case, in
+  both C and here.
+
+  This closes the parity caveat the README recorded as
+  "byte-exact (case-insensitive)"; `--nofft samplerna` is now byte-exact
+  with `cmp`, not just with `diff -i`.
 - `--adjustdirection` / `--adjustdirectionaccurately` help text claimed the
   k-mer strand detection was "not yet implemented"; it has been implemented
   since TODO R-5 (2026-06-03).
