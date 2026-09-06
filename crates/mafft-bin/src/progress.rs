@@ -1,6 +1,6 @@
 //! Progress sink for in-process runs.
 //!
-//! The CLI reports what it is doing on stderr — `mafft-rs v0.1.2`,
+//! The CLI reports what it is doing on stderr — `mafft-rs v0.2.0`,
 //! `8 sequences (nuc), strategy: FFT-NS-2`, `Alignment: 398 columns`, and so
 //! on. That is right for a terminal and wrong for a library caller running
 //! thousands of alignments from a worker pool, where the same lines land

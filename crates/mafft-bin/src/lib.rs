@@ -846,7 +846,7 @@ where
 
 /// [`run_from`] with the progress messages redirected to `progress`.
 ///
-/// The CLI reports what it is doing on stderr (`mafft-rs v0.1.2`,
+/// The CLI reports what it is doing on stderr (`mafft-rs v0.2.0`,
 /// `8 sequences (nuc), strategy: FFT-NS-2`, `Alignment: 398 columns`, …).
 /// A caller running thousands of alignments from a worker pool wants those
 /// somewhere other than the user's terminal; pass [`SilentProgress`] to drop

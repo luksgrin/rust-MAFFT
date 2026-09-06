@@ -137,7 +137,7 @@ shape, an unreadable file, an invalid keyword value — stay plain
 
 ## Progress
 
-The CLI reports what it is doing on stderr (`mafft-rs v0.1.2`,
+The CLI reports what it is doing on stderr (`mafft-rs v0.2.0`,
 `36 sequences (aa), strategy: FFT-NS-2`, `Alignment: 717 columns`).
 pymafft is quiet by default; pass a callable to receive exactly those lines,
 one call per line without the trailing newline:

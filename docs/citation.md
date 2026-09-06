@@ -169,7 +169,7 @@ be updated. Until then, please:
 1. **Always cite Katoh & Standley 2013** — it is the algorithmic
    foundation.
 2. Optionally cite the rust-MAFFT GitHub release if you want to pin a
-   reproducible version of the port (e.g. *Goiriz, rust-MAFFT v0.1.0,
+   reproducible version of the port (e.g. *Goiriz, rust-MAFFT v0.2.0,
    https://github.com/luksgrin/rust-MAFFT, 2026*). DOI-minting via
    Zenodo is on the roadmap.
 

@@ -40,8 +40,8 @@ authors:
   - family-names: Goiriz
     given-names: Lucas
     email: lucas.goiriz@csic.es
-version: "0.1.1"
-date-released: "2026-06-10"
+version: "0.2.0"
+date-released: "2026-09-06"
 # SPDX identifier (Zenodo's cffconvert rejects expressions like
 # "MIT AND BSD-3-Clause" — keep this a single SPDX ID for compat).
 # The BSD-3-Clause covers the algorithmic constructs ported from

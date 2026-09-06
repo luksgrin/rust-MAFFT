@@ -12,12 +12,12 @@ description = "Core MAFFT alignment engine: progressive alignment and iterative 
 readme = "README.md"
 
 [dependencies]
-mafft-types = { path = "../mafft-types", version = "0.1.0" }
-mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
-mafft-align = { path = "../mafft-align", version = "0.1.0" }
-mafft-tree = { path = "../mafft-tree", version = "0.1.0" }
-mafft-fft = { path = "../mafft-fft", version = "0.1.0" }
-mafft-io = { path = "../mafft-io", version = "0.1.0" }
+mafft-types = { path = "../mafft-types", version = "0.2.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.2.0" }
+mafft-align = { path = "../mafft-align", version = "0.2.0" }
+mafft-tree = { path = "../mafft-tree", version = "0.2.0" }
+mafft-fft = { path = "../mafft-fft", version = "0.2.0" }
+mafft-io = { path = "../mafft-io", version = "0.2.0" }
 rayon = "1"
 
 # Floating-point contraction policy (see `mafft_types::fp`). Mutually

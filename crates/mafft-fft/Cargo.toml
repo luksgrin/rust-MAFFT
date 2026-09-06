@@ -12,8 +12,8 @@ description = "FFT-based homology detection for MAFFT multiple sequence alignmen
 readme = "README.md"
 
 [dependencies]
-mafft-types = { path = "../mafft-types", version = "0.1.0" }
-mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+mafft-types = { path = "../mafft-types", version = "0.2.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.2.0" }
 rustfft = "6"
 num-complex = "0.4"
 

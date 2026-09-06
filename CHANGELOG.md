@@ -10,6 +10,44 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-06
+
+**Output changes since 0.1.x.** Every item below moves rust-MAFFT *toward*
+the C MAFFT 7.526 reference, but each one changes bytes or exit codes for
+anyone comparing against 0.1.x output:
+
+- Nucleotide alignments are written in lowercase (C's read-time case fold);
+  protein stays uppercase; `--anysymbol` / `--preservecase` still keep the
+  input's own case.
+- DNA pairwise gap penalties use C's `3 *` nucleotide scale, so L-INS-i /
+  G-INS-i / E-INS-i and `--auto` on nucleotide input can align differently.
+- DNA refinement guide trees use the nucleotide `dndpre` offset (matrix
+  shift 220, not the protein 73), so FFT-NS-i and every refinement mode
+  without a pairwise phase can change on DNA.
+- Exactly-two-sequence inputs are now refined once, unweighted, under
+  `--maxiterate N > 0`, every `*-INS-i` mode and `--auto` (they were
+  returned unrefined before).
+- `--thread N` with N >= 1 follows C's `athread` refinement rules
+  (ascending branch walk, per-cycle convergence, `Converged2.` /
+  `Oscillating?`), so refined output under `--thread N >= 1` changes; no
+  `--thread` and `--thread 0` are untouched.
+- Illegal residues are rejected with `Illegal character c` and exit 1
+  (`pymafft.MafftError`, code 1) as C's `seqcheck` does: protein `U` / `O`,
+  nucleotide `.`, anything outside the alphabet, in the main input and the
+  `--add` file. A blank before `>` is rejected with C's format message and
+  exit 1. `.` is kept as a legal protein residue instead of being stripped.
+- Type detection counts `N` as nucleotide, so N-rich DNA is no longer
+  aligned as protein.
+- `searchAnchors` flushes the trailing anchor at the loop's exit index, so
+  FFT-NS-i's last refinement segment no longer starts one column early when
+  the final conserved region runs to the end of the alignment.
+- Floating-point contraction now follows the reference C build of the
+  target: fused on aarch64, not fused elsewhere. x86-64 builds therefore
+  match x86-64 C MAFFT for the first time (`--bl 50 --retree 2 --maxiterate 0`
+  on the 36-sequence sample gives width 738 on x86-64 and 712 on arm64; 0.1.x
+  gave 712 everywhere). `--features fp-contract-fma` / `fp-contract-none`
+  override the default.
+
 The `--nuc` / `--amino` flags, the `run_from` / `MafftError` / `Mafft` /
 `Progress` library API, the nucleotide case fold, the DNA pair-phase gap
 scale, two-sequence refinement, the nucleotide `dndpre` offset, the `athread`
@@ -569,7 +607,8 @@ Four parallel release channels off a single GitHub release tag:
 - Site at https://luksgrin.github.io/rust-MAFFT (Material for MkDocs)
 - Per-crate `cargo doc` published to https://docs.rs
 
-[Unreleased]: https://github.com/luksgrin/rust-MAFFT/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/luksgrin/rust-MAFFT/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.2.0
 [0.1.2]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.1.2
 [0.1.1]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.1.1
 [0.1.0]: https://github.com/luksgrin/rust-MAFFT/releases/tag/v0.1.0

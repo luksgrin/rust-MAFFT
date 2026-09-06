@@ -12,10 +12,10 @@ description = "I/O routines for MAFFT: FASTA, Clustal, PHYLIP, hat2, localhom fo
 readme = "README.md"
 
 [dependencies]
-mafft-types = { path = "../mafft-types", version = "0.1.0" }
+mafft-types = { path = "../mafft-types", version = "0.2.0" }
 # For the C `seqcheck` alphabets (`find_illegal_residue`); the alphabet
 # tables stay in `mafft-scoring` so there is exactly one copy of them.
-mafft-scoring = { path = "../mafft-scoring", version = "0.1.0" }
+mafft-scoring = { path = "../mafft-scoring", version = "0.2.0" }
 noodles-fasta = "0.46"
 thiserror = "2"
 
