@@ -155,9 +155,10 @@ cargo test --workspace --exclude pymafft --release --features fp-contract-none
 ```bash
 cd crates/pymafft
 uv venv .venv
-uv pip install maturin pytest
+uv pip install maturin pytest biopython
+cargo build --release -p mafft-rs   # the CLI the option-parity tests compare against
 maturin develop --release
-uv run pytest tests/ -v   # 72 tests (32 API + 23 parity/shape + 17 Biopython interop)
+uv run pytest tests/ -v   # 160 tests (32 API + 23 parity/shape + 82 CLI-option parity + 18 Biopython interop + 5 console script)
 ```
 
 ## Usage
@@ -234,17 +235,37 @@ mafft-rs --linewidth 80 sequences.fasta
 
 ### Python
 
+`pymafft` runs every alignment through the same flag layer as the `mafft-rs`
+command line (`mafft_rs::run_from_seqs`): each keyword is one CLI flag, so
+the alignment is byte-identical to what the CLI prints for the same flags
+on a FASTA file of the same sequences.
+
 ```python
 import pymafft
 
-# Align from list of sequences
+# Align from list of sequences (FFT-NS-2, like `mafft-rs --quiet in.fa`)
 result = pymafft.align(["ACDEFGHIK", "ACDEFHIK", "ACDHIK"])
 
 # Align from named tuples
 result = pymafft.align([("human", "ACDEFGHIK"), ("mouse", "ACDEFHIK")])
 
-# Choose strategy
+# Choose strategy (`--localpair --maxiterate 1000`)
 result = pymafft.align(seqs, strategy="linsi", maxiterate=1000)
+
+# The panaroo command line — `mafft --auto --adjustdirection --thread 1 --nuc` —
+# over an in-memory list of gene sequences, no temp files:
+genes = [("gene_1", "ATGGCTAGCTTGGACC"), ("gene_2", "GGTCCAAGCTAGCCAT")]
+result = pymafft.align(genes, strategy="auto", adjust_direction=True,
+                       threads=1, seq_type="nuc")
+
+# Protein with a specific matrix and gap penalties (`--bl 50 --op 1.0 --ep 0.2`)
+result = pymafft.align(seqs, scoring="bl50", gap_open=1.0, gap_extend=0.2)
+
+# Progress lines (what the CLI prints on stderr) to a callable
+result = pymafft.align(seqs, strategy="auto", progress=print)
+
+# Any other flag: the escape hatch takes a verbatim flag list
+result = pymafft.run(["--nofft", "--maxiterate", "2", "--quiet"], seqs)
 
 # Align from file
 result = pymafft.align_file("sequences.fasta")
@@ -253,9 +274,29 @@ result = pymafft.align_file("sequences.fasta")
 for seq in result:
     print(f"{seq.name}: {seq.sequence}")
 
-result.to_fasta()    # FASTA string
-result.to_tuples()   # list of (name, seq) tuples
+result.to_fasta()       # FASTA string
+result.to_tuples()      # list of (name, seq) tuples
+result.to_biopython()   # Bio.Align.MultipleSeqAlignment (Biopython imported lazily)
 ```
+
+| Keyword | CLI flag | Notes |
+|---------|----------|-------|
+| `strategy="fftns2"` (default) | — | `"fftnsi"` → `--maxiterate N`, `"ginsi"` → `--globalpair`, `"linsi"` → `--localpair`, `"einsi"` → `--genafpair`, `"auto"` → `--auto` |
+| `maxiterate=0` | `--maxiterate N` | `0` = strategy default (100 for `fftnsi`, 1000 for the INS-i modes) |
+| `seq_type=None` | `--nuc` / `--amino` | `None` = detect from the residues, as the CLI does |
+| `adjust_direction=False` | `--adjustdirection` / `--adjustdirectionaccurately` | `True` / `"accurately"` |
+| `threads=0` | `--thread N` | `0` = all cores |
+| `reorder=False` | `--reorder` | |
+| `retree=None` | `--retree N` | |
+| `scoring=None` | `--bl N` / `--jtt N` / `--tm N` | `"bl62"`, `"jtt200"`, `"tm100"`, … |
+| `gap_open`, `gap_extend` | `--op` / `--ep` | |
+| `quiet=True` | `--quiet` | ignored when `progress` is given |
+| `progress=None` | (stderr) | callable receiving each progress line |
+
+Failures raise `pymafft.MafftError` (a `ValueError`) whose `.code` and
+`.message` are the CLI's exit code and stderr text — e.g. `Illegal
+character U`, code 1, for a residue outside the alphabet. As with C MAFFT,
+nucleotide output is lowercase and protein output uppercase.
 
 #### Biopython interop
 
@@ -289,7 +330,7 @@ SeqIO.write(aligned_records, "opsins.aligned.fasta", "fasta")
 
 Notes on the conversion boundary:
 - pymafft uses `SeqRecord.id` as the alignment name; `description` is dropped (intentional — matches what you'd expect from `mafft input.fa` on the CLI).
-- pymafft outputs `result[i].sequence` as a plain `str`, not `Bio.Seq.Seq`. Wrap with `Seq(s.sequence)` if you need Biopython operations.
+- pymafft outputs `result[i].sequence` as a plain `str`, not `Bio.Seq.Seq`. Wrap with `Seq(s.sequence)` if you need Biopython operations, or call `result.to_biopython()` for a ready `MultipleSeqAlignment`.
 - The Biopython dependency is **optional** — pymafft has no runtime dep on Biopython. The interop happens via duck-typing.
 
 ## Migration from MAFFT (C)
