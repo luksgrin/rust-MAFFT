@@ -18,6 +18,7 @@
 //!
 //! References: `fft.c` lines 7-126 in MAFFT 7.526.
 
+use mafft_types::fp::fmadd;
 use num_complex::Complex64;
 use std::f64::consts::PI;
 
@@ -128,13 +129,14 @@ pub fn fft_inplace(x: &mut [Complex64], inverse: bool) {
                 let xi = x[i].im;
                 let xikr = x[ik].re;
                 let xiki = x[ik].im;
-                // Match C's exact multiply-add order (gcc -O3 fuses
-                // these as `fmadd`):
+                // Match C's exact multiply-add order (arm64 clang fuses
+                // these as `fmadd`; baseline x86-64 gcc does not — `fmadd`
+                // follows the `mafft_types::fp` policy):
                 //   dR = s * x[ik].I + c * x[ik].R   →  fma(s, xiki, c * xikr)
                 //   dI = c * x[ik].I - s * x[ik].R   →  fma(-s, xikr, c * xiki)
                 //                                    or  fma(c, xiki, -(s * xikr))
-                let d_r = s.mul_add(xiki, c * xikr);
-                let d_i = c.mul_add(xiki, -(s * xikr));
+                let d_r = fmadd(s, xiki, c * xikr);
+                let d_i = fmadd(c, xiki, -(s * xikr));
                 x[ik].re = xr - d_r;
                 x[i].re = xr + d_r;
                 x[ik].im = xi - d_i;

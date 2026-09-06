@@ -6,6 +6,7 @@
 /// nearest-neighbor cache for O(n²) performance, a doubly-linked list
 /// for efficient cluster removal, and configurable distance update functions.
 
+use mafft_types::fp::fmadd;
 use crate::distance::DistanceMatrix;
 use crate::topology::{JoinStep, Topology};
 
@@ -32,12 +33,15 @@ impl ClusterMethod {
                 // Apple clang at -O3 with FP_CONTRACT=on fuses the second product
                 // into the add: `fma(d1+d2, sueff05, MIN*sueff1)`. Plain Rust
                 // `a*b + c*d` does NOT auto-contract, producing 1-ULP drift in
-                // the result. The explicit `mul_add` matches clang's choice and
-                // restores bit-identical tree lengths (BB20027 §B-class fix).
+                // the result. The explicit `fmadd` matches clang's choice on
+                // arm64 and restores bit-identical tree lengths (BB20027
+                // §B-class fix); under the no-FMA policy (baseline x86-64 gcc
+                // emits no FMA) it collapses to the plain mul+add gcc emits.
+                // See `mafft_types::fp`.
                 let sueff1 = 1.0 - sueff;
                 let sueff05 = sueff * 0.5;
                 let p = (d1 + d2) * sueff05;
-                d1.min(d2).mul_add(sueff1, p)
+                fmadd(d1.min(d2), sueff1, p)
             }
         }
     }

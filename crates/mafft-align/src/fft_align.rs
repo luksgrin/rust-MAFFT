@@ -6,6 +6,7 @@
 /// two sequence groups, selects optimal anchors via DP, then applies full
 /// DP alignment within each anchored segment.
 
+use mafft_types::fp::fmadd;
 use mafft_fft::{
     alignable_segments, block_align, get_top_candidates,
     multichannel_correlate, SegmentParams,
@@ -280,9 +281,11 @@ fn profile_to_property_channels(
         for a in 0..nalpha {
             let f = prof.freqs[pos][a];
             if f != 0.0 {
-                // FMA matches gcc -O3's fusion of `a + b*c` (`Falign.c:seq_vec_2`).
-                p_val = f.mul_add(polarity[a], p_val);
-                v_val = f.mul_add(volume[a], v_val);
+                // `fmadd` mirrors the reference build's contraction of `a + b*c`
+                // (`Falign.c:seq_vec_2`): arm64 clang fuses, baseline x86-64
+                // gcc does not (see `mafft_types::fp`).
+                p_val = fmadd(f, polarity[a], p_val);
+                v_val = fmadd(f, volume[a], v_val);
             }
         }
         channels[0][pos].re = p_val;

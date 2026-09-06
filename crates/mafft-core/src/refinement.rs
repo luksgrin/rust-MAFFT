@@ -18,6 +18,7 @@
 ///   traverse backward (N-1 → 0). Within each step, k always goes 0→1.
 /// - Total branches per iteration: (nseq-1)*2 - 1.
 
+use mafft_types::fp::fmadd;
 use mafft_align::{
     profile_align, profile_align_imp,
     profile_align_imp_with_boundary, profile_align_imp_multimtx,
@@ -1562,7 +1563,7 @@ fn compute_split_score(
         for (j_local, &j) in group2.iter().enumerate() {
             let wj = w2n[j_local];
             let s_wi = pairwise_score(&sequences[i], &sequences[j], scoring) * wi;
-            total = s_wi.mul_add(wj, total);
+            total = fmadd(s_wi, wj, total);
         }
     }
     total
@@ -1895,10 +1896,11 @@ fn intergroup_score_c_order(
             // C `mltaln9.c:426`: `efficient = eff1[i] * eff2[j]`
             // (one rounding), then `mltaln9.c:466`:
             // `*value += (double)tmpscore * (double)efficient`
-            // (with FP_CONTRACT on at clang -O3 this is one fma).
+            // (one fma under arm64 clang, two roundings under baseline
+            // x86-64 gcc — `fmadd` follows the `mafft_types::fp` policy).
             let efficient = wi * wj;
             let tmpscore = pairwise_score(&sequences[i], &sequences[j], scoring);
-            total = tmpscore.mul_add(efficient, total);
+            total = fmadd(tmpscore, efficient, total);
         }
     }
     total
