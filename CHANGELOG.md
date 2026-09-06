@@ -19,6 +19,33 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
 
 ### Added
 
+- **Floating-point contraction policy** (`mafft_types::fp`). C MAFFT 7.526
+  is not bit-reproducible across CPU architectures: the arm64 macOS binaries
+  contain ~1030 `fmadd`/`fmsub` instructions each (clang contracts `a*b+c`
+  into a single-rounding FMA, `scripts/fma_census.sh` counts them), while
+  baseline x86-64 builds (bioconda, gcc `-O3`) contain none because baseline
+  x86-64 has no FMA unit. On the 36-seq protein sample with `--bl 50 --retree
+  2 --maxiterate 0` the arm64 C binary gives width 712 and the x86-64 C
+  binary gives 738. rust-MAFFT previously hard-coded `f64::mul_add` (always
+  fused, and emulated in slow software on x86-64), so it matched only the
+  arm64 build; @mahogny's fork removed every `mul_add` and matched only the
+  x86-64 build. All 74 library call sites now go through
+  `mafft_types::fp::fmadd(a, b, c)`, which is `a.mul_add(b, c)` when
+  `mafft_types::fp::CONTRACTS_FMA` is `true` and `a * b + c` otherwise, with
+  operand order and nesting preserved from the C source. The policy is
+  chosen by cargo features, forwarded by every workspace crate:
+  `fp-contract-fma` (always fuse), `fp-contract-none` (never fuse), both is
+  a compile error, neither means "mirror the reference C build of the
+  target you run on": fused on `aarch64`, not fused elsewhere. Sites that
+  arm64 clang deliberately does *not* contract (e.g. `sequence_weights`'s
+  `rootnode[s] += len * eff[s]`) stay plain on every target. Fixtures whose
+  bytes depend on the policy are committed as `<name>.fma` (arm64 C) and
+  `<name>.nofma` (x86-64 C) with the plain name removed; `fixture_path_fp`
+  in the mafft-core tests picks the variant matching `CONTRACTS_FMA`. Only
+  `sample.bl50.fftns2` needed the split (the `.nofma` copy is the x86-64
+  fixture from mahogny/rust-MAFFT). The FFI test that compares the step-24
+  BL50 profile DP against the in-tree C build skips under
+  `fp-contract-none`, since the C it compiles on an arm64 host is fused.
 - `--nuc` / `--amino`: force the input sequence type, overriding the
   ATGC-frequency auto-detection (matches C MAFFT `scripts/mafft:547-550`,
   `seqtype="-D"` / `seqtype="-P"`). Mutually exclusive; inert when absent,
