@@ -109,9 +109,8 @@ fn auto_refines_a_pair_like_c() {
 /// family across a few hundred genomes.
 ///
 /// Run without `--thread`: C takes its single-threaded `TreeDependentIteration`
-/// path there. With `--thread 1` C runs `athread` instead, whose convergence
-/// semantics differ (it records convergence but does not stop), and rust does
-/// not model that yet — so this pins the deterministic path we do model.
+/// path there. `fftnsi_120seq_dna_matches_c_under_thread_1` below pins the
+/// `athread` path, which C selects for `--thread N >= 1`.
 #[test]
 fn fftnsi_120seq_dna_matches_c() {
     let f = fixtures();
@@ -119,6 +118,35 @@ fn fftnsi_120seq_dna_matches_c() {
         &["--adjustdirection", "--nuc", "--retree", "2", "--maxiterate", "2"],
         &f.join("mtb_cds_120x1400.fa"),
         &f.join("mtb_cds_120x1400.fftnsi.expected"),
+    );
+}
+
+/// The same input under `--thread 1`, where C runs `athread`
+/// (`tditeration.c:1433`) instead of `TreeDependentIteration`.
+///
+/// C's two implementations give different output on this input (6 lines
+/// apart), so the two `.expected` files legitimately differ. `athread` with
+/// one worker is deterministic (3/3 identical C runs) but walks the tree in
+/// ascending order in EVERY cycle (`branchtable` is the identity unless
+/// `randomseed != 0`, `:522`/`:728-730`), whereas the single-threaded loop
+/// reverses odd cycles (`:1641-1648`). Reversing under `--thread 1` moved
+/// one gap column in `s97` (`gggccc-gc-` vs `gggcccg-c-`); the fixed order
+/// closes it. `athread` also converges once per cycle and stops on
+/// `Converged2.` / `Oscillating?` rather than the single-threaded
+/// per-branch rules — see `RefinementParams::per_cycle_convergence`.
+///
+/// The expected bytes come from the pinned `mafft-upstream` source built
+/// in-tree on arm64 (`make -C mafft-upstream/core`), and were checked equal
+/// to the reference 7.526 arm64 binary's output. `--maxiterate 2` is what
+/// `--auto` picks here; C's output is the same for `--maxiterate 3` and
+/// `1000` (the run converges in cycle 1).
+#[test]
+fn fftnsi_120seq_dna_matches_c_under_thread_1() {
+    let f = fixtures();
+    expect_identical(
+        &["--thread", "1", "--retree", "2", "--maxiterate", "2"],
+        &f.join("mtb_cds_120x1400.fa"),
+        &f.join("mtb_cds_120x1400.thread1.expected"),
     );
 }
 

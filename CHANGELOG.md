@@ -216,27 +216,48 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
   downstream caller using it. `GapPenalties::default()` holds unscaled
   `ppenalty`-style units unlike every other `GapPenalties` in the tree; it is
   unused, and now says so.
-- **`--thread N` (N >= 1) now uses C's `athread` convergence rule.** C picks
-  its refinement implementation on `nthread > 0` (`tditeration.c:1433`) and
-  the two do not converge alike: the single-threaded path tests
-  `converged >= locnjob * 2` after **every branch** and stops immediately,
-  mid-cycle (`:2328-2342`), while `athread`'s collector tests once per
-  **cycle** whether any branch gained (`maxgain > 0.0`, `:589`) and only
-  stops at the top of the next cycle, where the `else` arm `pthread_exit`s
-  (`:527-551`) — so the converging cycle always completes. C's own output
-  shows it: at `--maxiterate 2`, 22 of 85 segments print `Converged.` alone,
-  56 print `Converged.` *and* `Reached 2`, and 7 print `Reached 2` alone.
-  We modelled only the single-threaded rule. Now selected by
-  `MafftEngine::nthread`, matching C's `-C` mapping exactly (both no
-  `--thread` and `--thread 0` give C `-C 0`, i.e. the single-threaded rule).
+- **`--thread N` (N >= 1) now follows C's `athread` refinement rules.** C
+  picks its refinement implementation on `nthread > 0` (`tditeration.c:1433`),
+  and with one worker `athread` is deterministic but differs from the
+  single-threaded `TreeDependentIteration` in four ways, all now modelled
+  behind `RefinementParams::per_cycle_convergence` (selected by
+  `MafftEngine::nthread`, matching C's `-C` mapping: no `--thread` and
+  `--thread 0` give `-C 0`, the single-threaded rules):
+  * *Branch order.* The single-threaded loop reverses the walk on odd cycles
+    (`:1641-1648`); `athread` consumes `branchtable[0..nbranch]`, the identity
+    permutation under the default `randomseed = 0` (`:522`, `:728-730`), so
+    every cycle walks the tree in ascending order. This was the last 2-line
+    `--thread 1` residual on the 120-sequence reproducer: one gap column in
+    `s97` moved because cycle 1 was walked backwards.
+  * *Convergence.* Single-threaded tests `converged >= locnjob * 2` after
+    **every branch** and stops mid-cycle (`:2328-2342`); `athread`'s collector
+    tests once per **cycle** whether any branch gained (`maxgain > 0.0`,
+    `:590`) and only stops at the top of the next cycle (`:527-551`). C's own
+    output shows it: at `--maxiterate 2`, 22 of 85 segments print
+    `Converged.` alone, 56 print `Converged.` *and* `Reached 2`, 7 print
+    `Reached 2` alone.
+  * *Oscillation.* Single-threaded compares a branch's score with the same
+    branch 2, 4, 6 … cycles earlier and exits at once (`:2345-2372`).
+    `athread` instead raises `Converged2.` when a branch's score equals its
+    score in **any** cycle `<= iterate-2` (`:1217-1230`, `:636-637`), and
+    `Oscillating?` when the cycle's last accepted score equals an earlier
+    cycle's (`:609-619`); both stop at the end of the cycle. On the 36-seq
+    protein sample `--thread 1 --localpair --maxiterate 1000` C stops via
+    `Converged2.` in cycle 4 and rust-MAFFT now does the same.
+  * *Skipped branches* (`--skipiterate`) still record `tscore = mscore`
+    (`:1064-1067`, `:1234`) so they take part in the `Converged2.` check.
 
-  **DNA output changes for `--thread N >= 1` with refinement.** On the
-  120-sequence reproducer, distance from C `--thread 1` goes 6 lines → 2,
-  and the synthetic cluster corpus under
-  `--auto --adjustdirection --thread 1 --nuc` goes 59/60 → **60/60**. The
-  no-`--thread` path is untouched and remains byte-identical to C.
-  A 2-line residue remains on the 120-sequence input (one sequence, a
-  single-column gap shift at equal width); it is not yet explained.
+  **DNA output changes for `--thread N >= 1` with refinement.** The
+  120-sequence FFT-NS-i reproducer is byte-identical to C `--thread 1` at
+  `--maxiterate 1/2/3/1000`, with and without `--retree 2`, and to C's
+  `--thread 2` output on this input; the 36-seq protein sample is
+  byte-identical under `--thread 1` in FFT-NS-i, L-INS-i, G-INS-i and
+  E-INS-i at `--maxiterate 1000`; the synthetic cluster corpus under
+  `--auto --adjustdirection --thread 1 --nuc` is 60/60. The no-`--thread`
+  path is untouched and remains byte-identical to C. Pinned by
+  `fftnsi_120seq_dna_matches_c_under_thread_1`
+  (`mtb_cds_120x1400.thread1.expected`, captured from the in-tree arm64
+  build).
 - **DNA refinement guide trees used the protein `dndpre` offset, reordering
   UPGMA merges.** For modes with no `pairlocalalign` step (FFT-NS-i and
   friends) the refinement tree is rebuilt the way C's `dndpre` does. C's
@@ -312,10 +333,11 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
 - C MAFFT 7.526 genuinely produces different output for *no* `--thread` than
   for `--thread 1` — it selects a different refinement implementation on
   `nthread > 0` (`tditeration.c:1433`), and the two converge by different
-  rules. This was previously recorded here as "C-side sensitivity" that
-  rust-MAFFT could not match; that was wrong, and rust-MAFFT now reproduces
-  both paths (see the `--thread` entry under Fixed). Both are deterministic:
-  5/5 identical over repeat runs.
+  rules and walks the tree in a different order. This was previously recorded
+  here as "C-side sensitivity" that rust-MAFFT could not match; that was
+  wrong, and rust-MAFFT now reproduces both paths byte-for-byte (see the
+  `--thread` entry under Fixed). Both are deterministic: 5/5 identical over
+  repeat runs.
 - Still genuinely unmatchable: `--thread N` for **N >= 2**. C is
   nondeterministic there — the same binary on the same input produced 2
   distinct outputs over 3 runs at both `--thread 2` and `--thread 4` — so
