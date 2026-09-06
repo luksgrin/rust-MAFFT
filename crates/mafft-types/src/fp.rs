@@ -10,14 +10,21 @@
 //! compiler, so **C MAFFT itself is not bit-reproducible across CPU
 //! architectures**:
 //!
+//! The **reference build** is the pinned `mafft-upstream` source, built
+//! in-tree with the upstream Makefile's default flags
+//! (`make -C mafft-upstream/core`), on the platform you run on. Nothing
+//! else — in particular no downloaded binary — defines the reference. That
+//! build behaves differently per platform:
+//!
 //! - **arm64 macOS** (Apple clang, `-O3`, `FP_CONTRACT=on` by default): the
 //!   reference `disttbfast`, `dvtditr` and `tbfast` binaries each contain
-//!   roughly 1025 `fmadd`/`fmsub` instructions. clang contracts `a * b + c`
-//!   into FMA wherever the source expression allows it.
-//! - **baseline x86-64** (gcc `-O3`, as shipped by bioconda and as produced
-//!   by the pinned source with the project's own flags): zero
-//!   `vfmadd`/`vfmsub` instructions, against ~1250 `mulsd` and ~1550
-//!   `addsd`. Baseline x86-64 has no FMA unit, so gcc cannot contract.
+//!   roughly 1025 `fmadd`/`fmsub` instructions (~1140 counting the vector
+//!   `fmla`/`fmls` forms, as CI's census reports). clang contracts
+//!   `a * b + c` into FMA wherever the source expression allows it.
+//! - **baseline x86-64** (gcc `-O3`, the same pinned source and default
+//!   flags on Linux): zero `vfmadd`/`vfmsub` instructions, against ~1250
+//!   `mulsd` and ~1550 `addsd`. Baseline x86-64 has no FMA unit, so gcc
+//!   cannot contract.
 //!
 //! The visible consequence on the 36-sequence protein sample
 //! (`mafft-upstream/test/sample`) with `--bl 50 --retree 2 --maxiterate 0`:
@@ -45,13 +52,15 @@
 //!
 //! - `fp-contract-fma`: always fuse (matches the arm64 clang reference).
 //! - `fp-contract-none`: never fuse (matches the baseline x86-64 gcc
-//!   reference, e.g. bioconda).
+//!   reference).
 //! - neither: choose by target — fused on `aarch64`, not fused elsewhere.
 //! - both: compile error.
 //!
 //! Fixtures whose bytes depend on the policy are committed twice, as
-//! `<name>.fma` (arm64 C output) and `<name>.nofma` (x86-64 C output), and
-//! the test helpers pick the variant matching [`CONTRACTS_FMA`].
+//! `<name>.fma` (in-tree C build on arm64) and `<name>.nofma` (in-tree C
+//! build on x86-64), and the test helpers pick the variant matching
+//! [`CONTRACTS_FMA`]. `scripts/regen_policy_fixtures.sh` regenerates and
+//! checks them from the in-tree build; CI does so on both platforms.
 
 
 #[cfg(all(feature = "fp-contract-fma", feature = "fp-contract-none"))]

@@ -427,10 +427,12 @@ fn fftns2_bl45_byte_identical_to_c() {
 /// the floating-point contraction policy (`mafft_types::fp`): C MAFFT 7.526
 /// itself is not bit-reproducible across architectures here. The arm64 clang
 /// build fuses `a + b * c` into FMA (~1025 `fmadd` per binary) and produces
-/// width 712; the baseline x86-64 gcc build (bioconda) has no FMA and
-/// produces width 738. Closed 2026-05-08 on arm64 by matching clang's fusion
-/// in `profile_align_imp_with_boundary` (TODO §4); the x86-64 divergence was
-/// found by @mahogny when the same test failed against the conda binary.
+/// width 712; the baseline x86-64 gcc build has no FMA and produces width
+/// 738. Closed 2026-05-08 on arm64 by matching clang's fusion in
+/// `profile_align_imp_with_boundary` (TODO §4); the x86-64 divergence was
+/// found by @mahogny when the same test failed on x86-64. Both fixture
+/// variants are re-derived from the in-tree C build by CI
+/// (`scripts/regen_policy_fixtures.sh`).
 ///
 /// Reference: `tests/fixtures/sample.bl50.fftns2.fma` (arm64 C, width 712)
 /// or `tests/fixtures/sample.bl50.fftns2.nofma` (x86-64 C, width 738),

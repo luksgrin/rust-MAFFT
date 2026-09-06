@@ -7,16 +7,45 @@ C MAFFT 7.526. Upstream does not ship references for every alignment mode
 Regenerating any of these requires the C binaries to be built
 (`make -C mafft-upstream/core`).
 
+**Reference definition.** The C reference for every fixture in this
+directory is the pinned `mafft-upstream` source, built in-tree with the
+upstream Makefile's default flags, on the platform you run on. No fixture
+may be generated from a downloaded binary (bioconda, Homebrew, the upstream
+tarball's prebuilt binaries, ...): those are built with other compilers and
+flags and do not define the reference.
+
 ## Per-policy fixtures: `<name>.fma` / `<name>.nofma`
 
 C MAFFT 7.526 is not bit-reproducible across CPU architectures: the arm64
-clang build contracts `a*b+c` into fused multiply-adds (~1030 `fmadd` per
-engine binary, see `scripts/fma_census.sh`), the baseline x86-64 gcc build
-(bioconda) emits none. Where that changes the output, the fixture is
-committed twice and the plain name is removed:
+clang build contracts `a*b+c` into fused multiply-adds (~1140 fused
+instructions per engine binary in CI's in-tree build, see
+`scripts/fma_census.sh`), the x86-64 gcc build emits none. Where that
+changes the output, the fixture is committed twice and the plain name is
+removed:
 
-- `<name>.fma` — output of the arm64 C binary (fused).
-- `<name>.nofma` — output of the x86-64 C binary (not fused).
+- `<name>.fma` — output of the in-tree C build on arm64/aarch64 (fused).
+- `<name>.nofma` — output of the in-tree C build on x86-64 (not fused).
+
+Both variants are produced by `scripts/regen_policy_fixtures.sh`, driven by
+the manifest `policy_fixtures.tsv` in this directory (one line per pair:
+`fixture_basename<TAB>input_relpath<TAB>mafft_args`). The script picks the
+variant from `uname -m` (arm64/aarch64 => `.fma`, else `.nofma`;
+`MAFFT_FP_POLICY=fma|nofma` overrides), regenerates it with the in-tree C
+build and either diffs (`check`) or overwrites (`write`):
+
+```bash
+make -C mafft-upstream/core
+scripts/regen_policy_fixtures.sh mafft-upstream/scripts/mafft check   # diff
+scripts/regen_policy_fixtures.sh mafft-upstream/scripts/mafft write   # regenerate this host's variant
+```
+
+CI runs the `check` form on both an x86-64 and an arm64 runner after
+building the C in-tree, so a variant that drifts from the in-tree build
+fails the build. Adding a new policy-sensitive fixture means adding its
+manifest line; the script fails on any `.fma`/`.nofma` file the manifest
+does not describe. To refresh the other platform's variant, run `write` on
+that platform (or in its CI job); never copy it from a binary you did not
+build from the pinned source.
 
 `fixture_path_fp(name)` in `end_to_end.rs` returns the variant matching
 `mafft_types::fp::CONTRACTS_FMA` (the build's contraction policy, selected by
@@ -26,16 +55,16 @@ exists. Do not commit a plain `<name>` alongside a variant pair.
 
 ### `sample.bl50.fftns2.fma` / `sample.bl50.fftns2.nofma`
 
-C's alignment output for `mafft --bl 50 --retree 2 --maxiterate 0
-mafft-upstream/test/sample`: width 712 from the arm64 macOS binary, width
-738 from the x86-64 bioconda binary (the latter contributed by @mahogny,
-mahogny/rust-MAFFT). `fftns2_bl50_byte_identical_to_c` asserts against the
-variant matching the build's policy.
+C's alignment output for `mafft --quiet --bl 50 --retree 2 --maxiterate 0
+mafft-upstream/test/sample`: width 712 from the in-tree arm64 (clang) build,
+width 738 from the in-tree x86-64 (gcc) build. The x86-64 divergence was
+first reported by @mahogny (mahogny/rust-MAFFT); CI confirms both widths
+against its own in-tree builds on every push. `fftns2_bl50_byte_identical_to_c`
+asserts against the variant matching the build's policy. Manifest line in
+`policy_fixtures.tsv`:
 
-```bash
-mafft --quiet --bl 50 --retree 2 --maxiterate 0 mafft-upstream/test/sample \
-  > crates/mafft-core/tests/fixtures/sample.bl50.fftns2.fma    # on arm64
-  > crates/mafft-core/tests/fixtures/sample.bl50.fftns2.nofma  # on x86-64
+```text
+sample.bl50.fftns2	mafft-upstream/test/sample	--quiet --bl 50 --retree 2 --maxiterate 0
 ```
 
 ## `sample.nwns2`
