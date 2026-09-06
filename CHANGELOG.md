@@ -96,6 +96,39 @@ mahogny/rust-MAFFT for issue #1, with the original authorship preserved.
 - `run()` is now a thin wrapper around `run_from` (unchanged signature and
   observable behaviour: same stdout, stderr, exit codes and messages).
 
+### Performance
+
+- **Flattened the profile-DP and `L__align11` scratch buffers.** In
+  `profile_align_imp_multimtx` (mafft-align `profile.rs`) the sparse
+  `cpmxpd`/`cpmxpdn` views of both profiles are now one flat entry list
+  plus a `len + 1` offsets table each instead of `Vec<Vec<(usize, f64)>>`,
+  the `h`/`ijp` DP matrices are flat row-major `(n + 1) * (m + 1)` buffers
+  with stride `m + 1` (thread-local pools of `Vec<f64>`/`Vec<i32>`, grow-only
+  as before), `match_calc_row_into` walks the scoring matrix j-outer /
+  l-inner over contiguous rows and consumes the cpmx2 entries sequentially
+  through exact-length slices and iterators, and the boundary-init `bcarr`
+  buffer is pooled instead of allocated twice per call. In `local_align`
+  (`local.rs`) a thread-local `LocalScratch` pool replaces seven allocations
+  per call, `seq2` is mapped to alphabet indices once, the match score is
+  added inside the DP cell (same operands, same order) instead of in a
+  separate row-fill pass, and the j-loop body is the const-generic
+  `local_dp_row::<HAS_ROW>` kernel over `m + 1`-cell row slices. No
+  `unsafe` was added and every multiply-add still goes through
+  `mafft_types::fp::fmadd` with unchanged operand order, so output is
+  byte-identical to C MAFFT 7.526 (arm64) on the 36-sequence protein sample
+  (default, `--maxiterate 1000`, `--localpair`/`--globalpair`/`--genafpair
+  --maxiterate 1000`, `--bl 50 --retree 2 --maxiterate 0`, `--parttree`) and
+  on the DNA reproducers (`mtb_cds_120x1400.fa --retree 2 --maxiterate 2`,
+  1742 columns), and the `fp-contract-none` build still reproduces the
+  x86-64 width 738 on `--bl 50`. Wall-clock medians of 5 interleaved runs on
+  Apple Silicon (M4): `mtb_cds_120x1400 --retree 2 --maxiterate 2` 4.99 s ->
+  4.62 s (1.08x), sample `--localpair --maxiterate 1000` 0.85 s -> 0.77 s
+  (1.11x), sample `--maxiterate 1000` 0.54 s -> 0.48 s (1.14x), sample
+  default 0.066 s -> 0.055 s (1.21x). Extracted from the data-layout /
+  allocation hunks of mahogny/rust-MAFFT 0b3955d ("fixes and optimization")
+  by Johan Henriksson (@mahogny) and re-applied on top of the `fmadd`
+  migration.
+
 ### Fixed
 
 - **DNA pairwise gap penalties were a third of C MAFFT's, so L-INS-i /
