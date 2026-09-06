@@ -105,7 +105,7 @@ jobs:
           echo "  (expected: ~1000 per binary for clang/arm64, 0 for gcc/x86-64)"
           if [ -x scripts/fma_census.sh ]; then
             echo "== scripts/fma_census.sh"
-            scripts/fma_census.sh
+            scripts/fma_census.sh mafft-upstream/core
           else
             echo "== scripts/fma_census.sh not present in this checkout; inline census only"
           fi
