@@ -332,6 +332,11 @@ def cmd_run(args) -> int:
         print(f"error: corpus files missing for {sorted(missing)}; run "
               "benchmarks/scaling_corpus.py build", file=sys.stderr)
         return 2
+    if args.list:
+        for set_id, _, n, mode, t in cells:
+            print(f"{set_id}\t{n}\t{mode}\t{t}")
+        print(f"{len(cells)} cells", file=sys.stderr)
+        return 0
     print(f"{info}; load {os.getloadavg()}; {len(cells)} cells x {len(IMPLS)} impls x "
           f"{args.reps} reps", file=sys.stderr)
     sizes_by_set = defaultdict(list)
@@ -443,8 +448,8 @@ def summarize(rows: list[dict]) -> str:
         if r["status"] == "ok":
             cells[k][r["impl"]].append(float(r["wall_s"]))
             rss[k][r["impl"]].append(float(r["max_rss_mb"]))
-        elif r["impl"] == "c":
-            cells[k]["_status"].append(r["status"])
+        else:
+            cells[k]["_" + r["impl"]].append(r["status"].split(":")[0])
         if r["impl"] == "rust":
             ident[k].add(r["identical_c_rust"])
     lines = ["| Set | n | Mode | T | C s (median [IQR]) | Rust s | pymafft s | Rust/C "
@@ -458,7 +463,7 @@ def summarize(rows: list[dict]) -> str:
 
         def fmt(impl):
             if not c.get(impl):
-                return "–"
+                return c["_" + impl][0] if c.get("_" + impl) else "–"
             m, lo, hi = quartiles(c[impl])
             return f"{m:.2f} [{lo:.2f}–{hi:.2f}]"
 
@@ -467,16 +472,13 @@ def summarize(rows: list[dict]) -> str:
                 return "–"
             return f"{statistics.median(c[impl]) / statistics.median(c['c']):.2f}"
 
-        if not c.get("c") and c.get("_status"):
-            lines.append(f"| {k[0]} | {k[1]} | {MODES[k[2]][0]} | {k[3]} | "
-                         f"{c['_status'][0]} | | | | | | |")
-            continue
-        r_c = statistics.median(rss[k]["c"]) if rss[k]["c"] else float("nan")
-        r_r = statistics.median(rss[k]["rust"]) if rss[k]["rust"] else float("nan")
+        def mb(impl):
+            return f"{statistics.median(rss[k][impl]):.0f}" if rss[k][impl] else "–"
+
         idv = ident[k] - {"NA"}
         lines.append(f"| {k[0]} | {k[1]} | {MODES[k[2]][0]} | {k[3]} | {fmt('c')} | "
                      f"{fmt('rust')} | {fmt('py')} | {ratio('rust')} | {ratio('py')} | "
-                     f"{r_c:.0f} / {r_r:.0f} | "
+                     f"{mb('c')} / {mb('rust')} | "
                      f"{'yes' if idv == {'yes'} else ('no' if 'no' in idv else '–')} |")
     return "\n".join(lines)
 
@@ -548,6 +550,7 @@ def main() -> int:
     r.add_argument("--no-retry", action="store_true",
                    help="do not retry cached failures")
     r.add_argument("--quiet", action="store_true")
+    r.add_argument("--list", action="store_true", help="print the cells and exit")
     r.set_defaults(func=cmd_run)
 
     s = sub.add_parser("summarize", help="Markdown table of a results TSV")

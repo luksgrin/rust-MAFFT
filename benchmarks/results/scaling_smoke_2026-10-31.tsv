@@ -1,0 +1,67 @@
+host	uname_m	cpu	fp_policy	set	molecule	n	mode	threads	impl	rep	status	wall_s	proc_wall_s	max_rss_mb	aln_width	sha256	identical_c_rust	identical_c_py	load1_start
+darwin-arm64	arm64	Apple M4	fma	PF00069	protein	100	fftns2	1	c	0	ok	3.6889	3.6889	721.3	6719	e157d220329fb4ad43a2e7e278a3f65ed9c0824b08286813b9170676c70f2ea5	yes	yes	3.56
+darwin-arm64	arm64	Apple M4	fma	PF00069	protein	100	fftns2	1	rust	0	ok	2.7433	2.7433	297.2	6719	e157d220329fb4ad43a2e7e278a3f65ed9c0824b08286813b9170676c70f2ea5	yes	yes	3.68
+darwin-arm64	arm64	Apple M4	fma	PF00069	protein	100	fftns2	1	py	0	ok	2.7448	2.8074	322.1	6719	451d74e0a98b908729a55bef869f4724746ac37cb0b31780ed8247783b9b40e5	yes	yes	3.78
+darwin-arm64	arm64	Apple M4	fma	PF00005	protein	100	fftns2	1	c	0	ok	1.9132	1.9132	244.9	5011	aa3e53afd71ecfd8df16e49277e8b5adc32b0f2d6688aa201ebdfce322440499	yes	yes	3.82
+darwin-arm64	arm64	Apple M4	fma	PF00005	protein	100	fftns2	1	rust	0	ok	1.4894	1.4894	142.1	5011	aa3e53afd71ecfd8df16e49277e8b5adc32b0f2d6688aa201ebdfce322440499	yes	yes	3.82
+darwin-arm64	arm64	Apple M4	fma	PF00005	protein	100	fftns2	1	py	0	ok	1.4579	1.5153	166.9	5011	d832356c93833923a12c19b766dcb9dddef120ce715afe0c4aa734c9404f3460	yes	yes	3.82
+darwin-arm64	arm64	Apple M4	fma	PF00400	protein	100	fftns2	1	c	0	ok	2.9282	2.9282	415.9	5461	9d7111d0c7c2a432335ad48ea9543b88ecfb9c481c99d70fc2845f82c17c0b5d	yes	yes	3.83
+darwin-arm64	arm64	Apple M4	fma	PF00400	protein	100	fftns2	1	rust	0	ok	2.34	2.34	133.7	5461	9d7111d0c7c2a432335ad48ea9543b88ecfb9c481c99d70fc2845f82c17c0b5d	yes	yes	3.83
+darwin-arm64	arm64	Apple M4	fma	PF00400	protein	100	fftns2	1	py	0	ok	2.1744	2.2334	158.4	5461	fb0e5eca8687b6e822bcbd9606365c13aebe7d3a07ffdc0da98c643ebf781352	yes	yes	3.84
+darwin-arm64	arm64	Apple M4	fma	PF00072	protein	100	fftns2	1	c	0	ok	0.8036	0.8036	165.6	2748	d24f0a824641a4243fcf7dc049bd7e2f062aac8bcf863bb881754254591a3e4d	yes	yes	3.84
+darwin-arm64	arm64	Apple M4	fma	PF00072	protein	100	fftns2	1	rust	0	ok	0.5639	0.5639	61.8	2748	d24f0a824641a4243fcf7dc049bd7e2f062aac8bcf863bb881754254591a3e4d	yes	yes	3.84
+darwin-arm64	arm64	Apple M4	fma	PF00072	protein	100	fftns2	1	py	0	ok	0.5571	0.6161	86.6	2748	52b794afb18328e5c0094775062e70aedfee3dd26e54686de15ff51ba062ff8c	yes	yes	3.84
+darwin-arm64	arm64	Apple M4	fma	PF07690	protein	100	fftns2	1	c	0	ok	0.9363	0.9363	83.7	2144	994bc782d7d061182836c9a034f89338b88a55254895b27b150aae00326bd2d0	yes	yes	3.84
+darwin-arm64	arm64	Apple M4	fma	PF07690	protein	100	fftns2	1	rust	0	ok	0.6679	0.6679	38.4	2144	994bc782d7d061182836c9a034f89338b88a55254895b27b150aae00326bd2d0	yes	yes	3.86
+darwin-arm64	arm64	Apple M4	fma	PF07690	protein	100	fftns2	1	py	0	ok	0.6619	0.7194	63.0	2144	50244191f02736d8ea5a16a339ead8068830234babc5373e45e6f1fe0c2e0390	yes	yes	3.86
+darwin-arm64	arm64	Apple M4	fma	PF00067	protein	100	fftns2	1	c	0	ok	0.8118	0.8118	53.6	1891	08b19da613fdbe08f5e5ea7060397173d502fb28f48f8cc095cfe8822bafc386	yes	yes	3.86
+darwin-arm64	arm64	Apple M4	fma	PF00067	protein	100	fftns2	1	rust	0	ok	0.6098	0.6098	41.9	1891	08b19da613fdbe08f5e5ea7060397173d502fb28f48f8cc095cfe8822bafc386	yes	yes	3.86
+darwin-arm64	arm64	Apple M4	fma	PF00067	protein	100	fftns2	1	py	0	ok	0.6163	0.6745	65.9	1891	fa8bdb1d1829f1d62bc6960c324bc7a06cae8d9f23635418e7cfda0ab1b31739	yes	yes	3.86
+darwin-arm64	arm64	Apple M4	fma	PF00001	protein	100	fftns2	1	c	0	ok	0.7391	0.7391	72.9	2671	d974ba3a5723335fb4b93fdd19eae26b23a6f45358153a93ceadcd0fd2758c82	yes	yes	3.86
+darwin-arm64	arm64	Apple M4	fma	PF00001	protein	100	fftns2	1	rust	0	ok	0.5022	0.5022	57.8	2671	d974ba3a5723335fb4b93fdd19eae26b23a6f45358153a93ceadcd0fd2758c82	yes	yes	3.86
+darwin-arm64	arm64	Apple M4	fma	PF00001	protein	100	fftns2	1	py	0	ok	0.5192	0.5791	81.4	2671	d53781131f27333876a9781a71c902b842980748b0ccbe0f7a11bdfb87218b3a	yes	yes	3.79
+darwin-arm64	arm64	Apple M4	fma	PF00528	protein	100	fftns2	1	c	0	ok	0.5255	0.5255	49.3	1755	ec49cb8957f813528d8d7b18ef4dfd18ec1f982bf7741b39002a7b012802e1b4	yes	yes	3.79
+darwin-arm64	arm64	Apple M4	fma	PF00528	protein	100	fftns2	1	rust	0	ok	0.3309	0.3309	28.2	1755	ec49cb8957f813528d8d7b18ef4dfd18ec1f982bf7741b39002a7b012802e1b4	yes	yes	3.79
+darwin-arm64	arm64	Apple M4	fma	PF00528	protein	100	fftns2	1	py	0	ok	0.3189	0.3744	53.6	1755	077c690b324eeaa14869bc44b3828a6a6f93b0b49d77ee5ccda95ddaaaa74cf4	yes	yes	3.79
+darwin-arm64	arm64	Apple M4	fma	PF00106	protein	100	fftns2	1	c	0	ok	0.7107	0.7107	169.0	3076	554c60dad1fb819592f52fd5f9c224f38b506c4f705341e2acfb64f0d5765824	yes	yes	3.79
+darwin-arm64	arm64	Apple M4	fma	PF00106	protein	100	fftns2	1	rust	0	ok	0.4955	0.4955	58.9	3076	554c60dad1fb819592f52fd5f9c224f38b506c4f705341e2acfb64f0d5765824	yes	yes	3.79
+darwin-arm64	arm64	Apple M4	fma	PF00106	protein	100	fftns2	1	py	0	ok	0.4943	0.5532	84.1	3076	4d23329d48e3603d5a244e395e42c8efb0cd56e72a017dbf45030a9c1c562eed	yes	yes	3.79
+darwin-arm64	arm64	Apple M4	fma	PF02518	protein	100	fftns2	1	c	0	ok	2.0686	2.0686	437.2	4771	bdf2aa8afa82a41dda413d217a63b45fb1f9fd4dadc3cb9b6d25774a36249e41	yes	yes	3.79
+darwin-arm64	arm64	Apple M4	fma	PF02518	protein	100	fftns2	1	rust	0	ok	1.5307	1.5307	169.5	4771	bdf2aa8afa82a41dda413d217a63b45fb1f9fd4dadc3cb9b6d25774a36249e41	yes	yes	3.72
+darwin-arm64	arm64	Apple M4	fma	PF02518	protein	100	fftns2	1	py	0	ok	1.5381	1.5987	195.0	4771	23042f1a78e84830e8bc5de420bc67204c8fbc7193e78f1e05e0532167521cc1	yes	yes	3.72
+darwin-arm64	arm64	Apple M4	fma	16S	nucleotide	100	fftns2	1	c	0	ok	1.38	1.38	59.4	1936	6579b6612b8fcbab0025c82febca2aa646a2a272d176ed0ef1ce59236726ea88	yes	yes	3.72
+darwin-arm64	arm64	Apple M4	fma	16S	nucleotide	100	fftns2	1	rust	0	ok	1.1496	1.1496	64.7	1936	6579b6612b8fcbab0025c82febca2aa646a2a272d176ed0ef1ce59236726ea88	yes	yes	3.75
+darwin-arm64	arm64	Apple M4	fma	16S	nucleotide	100	fftns2	1	py	0	ok	1.1672	1.2256	89.3	1936	db574c0dcfd6abbeab824896bf769fb31ec2ab386580581557ec8d4b00a3704d	yes	yes	3.75
+darwin-arm64	arm64	Apple M4	fma	PF00069	protein	100	parttree	1	c	0	ok	3.713	3.713	660.7	7516	d370ab3e365417239980047ccd0c96c83c628020c4eefcccb1573bffff069e12	NA	NA	3.5
+darwin-arm64	arm64	Apple M4	fma	PF00069	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 421 but the index is 421 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0286	0.0286	9.6	NA	NA	NA	NA	3.62
+darwin-arm64	arm64	Apple M4	fma	PF00069	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF00005	protein	100	parttree	1	c	0	ok	1.8383	1.8383	131.1	4637	c7f048ff3eb75065e0fe459d98dd24a9459f2acb405afd81bc4858eedb9672fd	NA	NA	3.62
+darwin-arm64	arm64	Apple M4	fma	PF00005	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 252 but the index is 252 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0221	0.0221	5.4	NA	NA	NA	NA	3.62
+darwin-arm64	arm64	Apple M4	fma	PF00005	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF00400	protein	100	parttree	1	c	0	ok	2.6604	2.6604	366.2	6237	602e27de07b9169fd7b5d14721410e952c65f13b67511a377898d5927e799ae0	NA	NA	3.62
+darwin-arm64	arm64	Apple M4	fma	PF00400	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 212 but the index is 212 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0255	0.0255	7.8	NA	NA	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF00400	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF00072	protein	100	parttree	1	c	0	ok	1.1569	1.1569	114.4	2953	b0d8fe17dd0d34b083239dc7665b39011583ce45091497983c9844371b0e9dc8	NA	NA	3.6
+darwin-arm64	arm64	Apple M4	fma	PF00072	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 120 but the index is 120 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0227	0.0227	4.8	NA	NA	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF00072	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF07690	protein	100	parttree	1	c	0	ok	0.9367	0.9367	64.6	2333	d99dabc3624e03c97145a1a029b3d24239186f7f3b57f4ebb16aa93c4f37d708	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF07690	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 439 but the index is 439 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0245	0.0245	7.1	NA	NA	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF07690	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF00067	protein	100	parttree	1	c	0	ok	0.831	0.831	51.4	1892	ab632b0e89a6428721630d4317321a69dcc8fb895970383f8cbed3b379f2fff5	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF00067	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 265 but the index is 265 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0283	0.0283	10.0	NA	NA	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF00067	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF00001	protein	100	parttree	1	c	0	ok	0.7623	0.7623	52.6	3004	6fb7e9a77bac0bc01bf5aaacc0ef7627d9f20376af1e4238631c1a2d20470898	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF00001	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 407 but the index is 407 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0216	0.0216	6.5	NA	NA	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF00001	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF00528	protein	100	parttree	1	c	0	ok	0.4968	0.4968	29.7	2044	af6b6878d6f413324b9498c84a23fbd96f886e54fcd274ad799f93af50b3d0ce	NA	NA	3.6
+darwin-arm64	arm64	Apple M4	fma	PF00528	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 301 but the index is 301 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0206	0.0206	5.7	NA	NA	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF00528	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF00106	protein	100	parttree	1	c	0	ok	0.6168	0.6168	69.2	2906	8344473c58d8b8a06f357390e508495ca454429488615fd6bdf541399a20e533	NA	NA	3.89
+darwin-arm64	arm64	Apple M4	fma	PF00106	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 233 but the index is 233 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0214	0.0214	5.1	NA	NA	NA	NA	3.9
+darwin-arm64	arm64	Apple M4	fma	PF00106	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	PF02518	protein	100	parttree	1	c	0	ok	2.1626	2.1626	316.7	4843	284e7c3b1ffa0804bdd8350ede81106d91551fcfacdd90c7d07af75516c229d6	NA	NA	3.9
+darwin-arm64	arm64	Apple M4	fma	PF02518	protein	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 374 but the index is 374 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0298	0.0298	14.3	NA	NA	NA	NA	3.9
+darwin-arm64	arm64	Apple M4	fma	PF02518	protein	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
+darwin-arm64	arm64	Apple M4	fma	16S	nucleotide	100	parttree	1	c	0	ok	2.5708	2.5708	30.3	1926	e46258b6484a8ac5fa13024d2ca0b52f4afca6f70afcef0f1f05c8639c02ab8a	NA	NA	3.6
+darwin-arm64	arm64	Apple M4	fma	16S	nucleotide	100	parttree	1	rust	0	exit_101: index out of bounds: the len is 1320 but the index is 1320 | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace	0.0242	0.0242	31.1	NA	NA	NA	NA	3.9
+darwin-arm64	arm64	Apple M4	fma	16S	nucleotide	100	parttree	1	py	0	na	NA	NA	NA	NA	NA	NA	NA	NA
