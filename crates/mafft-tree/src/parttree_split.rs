@@ -190,7 +190,7 @@ pub fn build_parttree_topology(
 /// order for the subtree whose leaves are `leaves`, applying C's
 /// smaller-first-element normalization at each internal node (mirroring
 /// `mltaln9.c:8184-8197` in `fixed_musclesupg_double_realloc_nobk_halfmtx`).
-fn c_normalized_subtree(steps: &[crate::topology::JoinStep], leaves: &[usize]) -> Vec<usize> {
+pub(crate) fn c_normalized_subtree(steps: &[crate::topology::JoinStep], leaves: &[usize]) -> Vec<usize> {
     if leaves.len() == 1 {
         return vec![leaves[0]];
     }

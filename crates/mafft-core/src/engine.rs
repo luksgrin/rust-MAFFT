@@ -5,7 +5,6 @@ use rayon::prelude::*;
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
 use mafft_tree::{DistanceMatrix, musclesupg, ktuple_distance, scoring_matrix_distance};
-use mafft_tree::parttree_split::{build_parttree_topology};
 use mafft_tree::parttree_pivot::PtSeqKind;
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SequenceSet, LocalHomologyTable};
@@ -495,26 +494,23 @@ impl MafftEngine {
         );
 
         // Step 1: Initial guide tree
-        // For PartTree mode, route through the C-equivalent splittbfast
-        // pipeline (`crates/mafft-tree/src/parttree_split.rs`). Both
-        // `--parttree` and `--dpparttree` route through it — the C
-        // distinction (`partdist="ktuples"` vs `partdist="localalign"`,
-        // `scripts/mafft:392/395`) is a distance-metric variation
-        // inside C's `splittbfast`; our Rust pipeline currently uses
-        // k-tuple distance for both. The 36-seq sample is below
-        // PartTree's recursion threshold so both modes byte-identical
-        // C MAFFT 7.526. A true DP-based distance for `--dpparttree`
-        // larger-input runs is not yet ported (would slot into
-        // `parttree_dist.rs`).
+        // For PartTree mode, run the recursive `splittbfast::splitseq_mq`
+        // port (`crates/mafft-tree/src/parttree_splitseq.rs`). It yields
+        // the merge steps of C's first `splittbfast` call: k-tuple
+        // distances for `--parttree`, `-U` DP distances (`G__align11_noalign`)
+        // for `--dpparttree` (`scripts/mafft:1892-1894`).
         let use_parttree = self.parttree || self.dpparttree;
-        let parttree_topo = if use_parttree {
-            let kind = if scoring.seq_type.is_nucleotide() {
-                PtSeqKind::Dna
+        let parttree_call1: Option<mafft_tree::parttree_splitseq::SplitRun> = if use_parttree {
+            if self.dpparttree {
+                Some(dpparttree_run(&sequences, &scoring))
             } else {
-                PtSeqKind::Protein
-            };
-            let picksize = 50;
-            Some(build_parttree_topology(&sequences, kind, picksize))
+                let kind = if scoring.seq_type.is_nucleotide() {
+                    PtSeqKind::Dna
+                } else {
+                    PtSeqKind::Protein
+                };
+                Some(mafft_tree::parttree_splitseq::run_ktuple(&sequences, kind))
+            }
         } else {
             None
         };
@@ -781,6 +777,10 @@ impl MafftEngine {
             // name; C disttbfast forces `cycle = 1` for the pileup
             // guidetree variant at line 1991).
             1
+        } else if self.dpparttree {
+            // `--dpparttree` is "DPPartTree-1": `scripts/mafft:1892-1894`
+            // sets `cycle=1`, so `splittbfast -U` runs once.
+            1
         } else {
             self.retree.clamp(1, 3)
         };
@@ -803,6 +803,11 @@ impl MafftEngine {
         // computation. Without this we'd feed CALL 2 the FINAL alignment
         // (`pre_2`) and the scores would diverge.
         let mut first_pass_msa: Option<Vec<Vec<u8>>> = None;
+        // PartTree: the sequence order of the file each `splittbfast` call
+        // reads (`parttree_perm[k]` = input index of its k-th record). Each
+        // call writes in input order unless `--reorder` drops `-x`, in
+        // which case it writes in its `order[]`.
+        let mut parttree_perm: Vec<usize> = (0..nseq).collect();
 
         // `user_topo` was loaded above (before recompute_importance) so the
         // LH table weights and the progressive merge tree are derived from
@@ -867,7 +872,32 @@ impl MafftEngine {
                     }
                 }
             } else if pass == 0 && use_parttree {
-                parttree_topo.clone().unwrap()
+                let run = parttree_call1.as_ref().expect("parttree run must be computed");
+                if self.reorder_output {
+                    parttree_perm = run.order.clone();
+                }
+                run.topology.clone()
+            } else if use_parttree {
+                // `splittbfast -Z` (`scripts/mafft:2681`) on the previous
+                // pass's output, which C wrote in `parttree_perm` order.
+                let aligned_in_file_order: Vec<Vec<u8>> = parttree_perm
+                    .iter().map(|&i| msa.sequences[i].clone()).collect();
+                let run = mafft_tree::parttree_splitseq::run_fromaln(
+                    &aligned_in_file_order,
+                    &scoring.consweight_matrix,
+                    &scoring.amino_map,
+                    scoring.gap.open as f64,
+                );
+                let mut topo = run.topology;
+                for step in topo.steps.iter_mut() {
+                    for m in step.left.iter_mut().chain(step.right.iter_mut()) {
+                        *m = parttree_perm[*m];
+                    }
+                }
+                if self.reorder_output {
+                    parttree_perm = run.order.iter().map(|&k| parttree_perm[k]).collect();
+                }
+                topo
             } else {
                 musclesupg(&dm, self.cluster_method)
             };
@@ -1346,45 +1376,14 @@ impl MafftEngine {
         //
         // - Non-PartTree: tree-DFS over the final progressive guide tree
         //   (`tbfast.c:2928` calls `topolorderz` on the post-UPGMA topology).
-        // - PartTree (`--parttree` / `--dpparttree`): C runs `splittbfast`
-        //   TWICE (`scripts/mafft:2655` and `:2681`). CALL 1 uses raw 6-mer
-        //   distances; CALL 2 passes `-Z` (`fromaln=1`) and recomputes
-        //   distances via `naivepairscore11` on the aligned sequences. The
-        //   final output order is the COMPOSITION:
-        //     `final_order[k] = call1_order[call2_order[k]]`
-        //   We mirror both passes to reach byte-identity.
+        // - PartTree (`--parttree` / `--dpparttree`): each `splittbfast`
+        //   call (`scripts/mafft:2655`, then `:2681` per extra cycle) writes
+        //   its records in its `order[]`, and the next call reads that
+        //   file, so the final order is the composition tracked in
+        //   `parttree_perm` by the pass loop.
         if self.reorder_output {
             let order: Option<Vec<usize>> = if use_parttree {
-                let kind = if scoring.seq_type.is_nucleotide() {
-                    PtSeqKind::Dna
-                } else {
-                    PtSeqKind::Protein
-                };
-                // CALL 1: parttree pivot pipeline on raw sequences.
-                let call1_order = mafft_tree::parttree_split::compute_parttree_order(
-                    &sequences, kind, 50,
-                );
-                // Reorder the FIRST-PASS aligned MSA into CALL 1's order so
-                // CALL 2 sees `pre_1` (C's intermediate alignment), not the
-                // final `pre_2`. Without using `first_pass_msa` here, our
-                // CALL 2 distances would diverge from C's because the two
-                // passes produce subtly different alignments.
-                let source_msa: &Vec<Vec<u8>> = first_pass_msa
-                    .as_ref().unwrap_or(&msa.sequences);
-                let aligned_reordered: Vec<Vec<u8>> = call1_order
-                    .iter().map(|&i| source_msa[i].clone()).collect();
-                // CALL 2: parttree pivot pipeline with `fromaln=1` scoring
-                // on the reordered aligned MSA. Uses the progressive-phase
-                // substitution matrix and gap penalty (matches C's `penalty`
-                // global set by `constants()`).
-                let call2_order = mafft_tree::parttree_split::compute_parttree_order_fromaln(
-                    &aligned_reordered,
-                    &scoring.consweight_matrix,
-                    &scoring.amino_map,
-                    scoring.gap.open as f64,
-                );
-                // Compose: final_order[k] = call1_order[call2_order[k]].
-                Some(call2_order.iter().map(|&k| call1_order[k]).collect())
+                Some(parttree_perm.clone())
             } else {
                 final_progressive_topo.as_ref().map(|t| t.dfs_order())
             };
@@ -1524,6 +1523,60 @@ impl MafftEngine {
         let input = read_fasta(path)?;
         Ok(self.align(&input))
     }
+}
+
+/// `splittbfast -U` (`--dpparttree`): the recursive PartTree run with
+/// `scores = 1 - G__align11_noalign( n_disLN, -1200, -60, r, o ) /
+/// MIN( selfscore_r, selfscore_o )` (`splittbfast.c:1435`, `:1699`,
+/// `:2218`). `n_disLN` is the base matrix shifted by `-offsetLN` (60) on
+/// residue cells, the gap row/column left at zero (`constants.c:1431-1437`,
+/// `mltaln9.c:15197-15203`). `outgap = 1` in `splittbfast`, so both terminal
+/// gaps are penalized. The selfscore is the unshifted diagonal sum
+/// (`splittbfast.c:3000-3006`).
+pub fn dpparttree_run(
+    sequences: &[Vec<u8>],
+    scoring: &mafft_types::ScoringContext,
+) -> mafft_tree::parttree_splitseq::SplitRun {
+    use mafft_tree::parttree_splitseq::{run_splitseq, FnScorer, SplitEntry, SplitParams};
+    let base_matrix = &scoring.consweight_matrix;
+    let amino_map = &scoring.amino_map;
+    let nalpha = base_matrix.len();
+    let nscored = scoring.nscoredalphabets;
+    let offset_ln = 60.0f64;
+    let mut dist_matrix: Vec<Vec<f64>> = (0..nalpha).map(|i| (0..nalpha).map(|j| {
+        if i < nscored && j < nscored { base_matrix[i][j] - offset_ln } else { 0.0 }
+    }).collect()).collect();
+    let gap_idx = amino_map[b'-' as usize] as usize;
+    if gap_idx < nalpha {
+        for j in 0..nalpha { dist_matrix[gap_idx][j] = 0.0; }
+        for i in 0..nalpha { dist_matrix[i][gap_idx] = 0.0; }
+    }
+    let selfscore: Vec<i64> = sequences.iter().map(|s| {
+        let mut v = 0.0f64;
+        for &c in s {
+            let idx = amino_map[c as usize] as usize;
+            if idx < nalpha { v += base_matrix[idx][idx]; }
+        }
+        v as i64
+    }).collect();
+    let gap = GapModel::new(-1200.0, -60.0);
+    let scorer = FnScorer {
+        dist: |r: usize, o: usize| -> f64 {
+            let g = mafft_align::global_align(
+                &sequences[r], &sequences[o], &dist_matrix, amino_map, &gap, true, true,
+            ).score;
+            let bunbo = selfscore[r].min(selfscore[o]) as f64;
+            if bunbo > 0.0 { 1.0 - g / bunbo } else { 1.0 }
+        },
+        same: |a: usize, b: usize| sequences[a] == sequences[b],
+    };
+    let entries: Vec<SplitEntry> = (0..sequences.len()).map(|i| SplitEntry {
+        numinseq: i,
+        selfscore: selfscore[i],
+        orilen: sequences[i].len(),
+        score: 0.0,
+    }).collect();
+    run_splitseq(entries, &scorer, SplitParams::for_njob(sequences.len(), false))
 }
 
 /// Compute pairwise 6-tuple distances from raw (unaligned) sequences.

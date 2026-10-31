@@ -11,6 +11,7 @@ mod addonetip;
 pub mod parttree_dist;
 pub mod parttree_pivot;
 pub mod parttree_split;
+pub mod parttree_splitseq;
 mod topology;
 mod weighting;
 pub mod bsd_qsort;
