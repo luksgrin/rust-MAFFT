@@ -59,6 +59,27 @@ fn main() {
         .define("enablemultithread", None)
         .warnings(false);
 
+    // GCC 14 turned several long-standing warnings into errors that `-w`
+    // does not silence. With GCC 14.4 / 15.2 / 15.3 (`-std=c99`) the
+    // upstream sources hit exactly one of them:
+    //   iteration.c:148, 338: passing argument 2 of 'writePre' from
+    //   incompatible pointer type [-Wincompatible-pointer-types]
+    // (`char (*)[256]` passed as `char **`; the upstream Makefile never
+    // compiles iteration.c, so `make -C mafft-upstream/core` is unaffected).
+    // The other GCC 14 / Clang 16 promotions are downgraded too so a
+    // header or compiler change does not reopen this. Each flag is probed,
+    // so compilers that do not know it (older GCC, MSVC) never see it.
+    for flag in [
+        "-Wno-error=incompatible-pointer-types",
+        "-Wno-error=implicit-function-declaration",
+        "-Wno-error=implicit-int",
+        "-Wno-error=int-conversion",
+        "-Wno-error=return-mismatch",
+        "-Wno-error=incompatible-function-pointer-types",
+    ] {
+        build.flag_if_supported(flag);
+    }
+
     // Platform-specific flags
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "windows" {
@@ -66,6 +87,25 @@ fn main() {
     }
 
     build.compile("mafft_c");
+
+    // GCC on macOS (e.g. Homebrew gcc-15) lowers `__thread`, used under
+    // -Denablemultithread, to emulated TLS. rustc links with the system
+    // clang, which does not provide `___emutls_get_address`, so pull in
+    // GCC's own runtime for it.
+    let compiler = build.get_compiler();
+    if target_os == "macos" && compiler.is_like_gnu() && !compiler.is_like_clang() {
+        let emutls_dir = std::process::Command::new(compiler.path())
+            .arg("-print-file-name=libemutls_w.a")
+            .output()
+            .ok()
+            .map(|out| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
+            .filter(|lib| lib.is_absolute() && lib.exists())
+            .and_then(|lib| lib.parent().map(PathBuf::from));
+        if let Some(dir) = emutls_dir {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-lib=static=emutls_w");
+        }
+    }
 
     // Link system libraries
     println!("cargo:rustc-link-lib=m");

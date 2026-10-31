@@ -46,6 +46,23 @@ public surfaces stable from 0.1.0 anyway.
   to `main` cancels the run in flight (`concurrency`); release and dispatch
   runs are never cancelled.
 
+### Fixed
+
+- The in-tree C reference (`mafft-c-bindings/build.rs`) builds with GCC 14
+  and 15 (issue #17). GCC 14 made `-Wincompatible-pointer-types` an error
+  that `-w` does not silence, and `iteration.c` passes `char (*)[256]`
+  to `writePre(char **, ...)` twice, so `cargo test` failed in the build
+  script. `build.rs` now passes `-Wno-error=` for that diagnostic and for
+  the other GCC 14 / Clang 16 promotions (implicit function declaration,
+  implicit int, int conversion, return mismatch, incompatible function
+  pointer types), each only if the compiler accepts it. With Homebrew
+  GCC on macOS, `build.rs` also links GCC's `libemutls_w.a`, which the
+  shim needs for `__thread` and which rustc's clang link step does not
+  provide. `make -C mafft-upstream/core` was not affected (it pins
+  `-std=c99` and never compiles `iteration.c`). CI gains a
+  `C build: gcc 14` / `gcc 15` job that builds the shim and runs the
+  upstream Makefile in the official `gcc` images.
+
 ### Python
 
 - `pymafft` builds against PyO3 0.30 (was 0.24), which supports
