@@ -945,6 +945,11 @@ impl MafftEngine {
             //     not include `$termgapopt` in the splittbfast call.
             let penalize_term_gaps = matches!(self.mode, AlignmentMode::GInsi { .. })
                 || use_parttree;
+            // `splittbfast` only takes the `Falign` path with `-F` / `-G`
+            // (`use_fft` defaults to 0, `splittbfast.c:548`), and the
+            // script never passes either (`scripts/mafft:2655,2681`), so
+            // every PartTree merge is `A__align` / `G__align11`.
+            let progressive_fft = use_fft && !use_parttree;
             // C `splittbfast.c:6` `#define WEIGHT 0` makes `--parttree` use
             // `fastconjuction_noweight` (uniform per-cluster weights) for
             // its internal `pairalign`. We mirror that by passing a
@@ -970,7 +975,7 @@ impl MafftEngine {
             // byte-identical output across the BB20018 / BB40046 set without
             // perf impact at typical alignment sizes.
             msa = crate::progressive::progressive_align_full_c_compat_ex(
-                &input_seqs, &names, &topo, &scoring, use_fft, shift,
+                &input_seqs, &names, &topo, &scoring, progressive_fft, shift,
                 progress_constraints, penalize_term_gaps,
                 weights_override.as_deref(), self.unalign_level,
                 self.legacy_gap_cost, self.memsave_dp, self.c_compat,
