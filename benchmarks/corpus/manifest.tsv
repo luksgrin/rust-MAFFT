@@ -1,0 +1,47 @@
+set	name	molecule	source	query	release	download_date	n_available	n	min_len	median_len	max_len	total_len
+PF00069	Pkinase	protein	UniProtKB	xref:pfam-PF00069 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	9785	100	97	602	2436	74037
+PF00069	Pkinase	protein	UniProtKB	xref:pfam-PF00069 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	9785	250	97	594	2436	178740
+PF00069	Pkinase	protein	UniProtKB	xref:pfam-PF00069 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	9785	500	97	571	2949	349032
+PF00069	Pkinase	protein	UniProtKB	xref:pfam-PF00069 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	9785	1000	55	567	2949	685237
+PF00069	Pkinase	protein	UniProtKB	xref:pfam-PF00069 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	9785	5000	55	575	2994	3439818
+PF00005	ABC_tran	protein	UniProtKB	xref:pfam-PF00005 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5321	100	213	428	1662	57281
+PF00005	ABC_tran	protein	UniProtKB	xref:pfam-PF00005 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5321	250	194	369	2281	145244
+PF00005	ABC_tran	protein	UniProtKB	xref:pfam-PF00005 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5321	500	151	381	2434	313523
+PF00005	ABC_tran	protein	UniProtKB	xref:pfam-PF00005 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5321	1000	151	457	2595	627629
+PF00005	ABC_tran	protein	UniProtKB	xref:pfam-PF00005 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5321	5000	151	373	2595	2998892
+PF00400	WD40	protein	UniProtKB	xref:pfam-PF00400 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5189	100	108	519	2304	61853
+PF00400	WD40	protein	UniProtKB	xref:pfam-PF00400 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5189	250	98	569	2304	169231
+PF00400	WD40	protein	UniProtKB	xref:pfam-PF00400 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5189	500	73	562	2629	334809
+PF00400	WD40	protein	UniProtKB	xref:pfam-PF00400 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	5189	1000	62	557	2788	667075
+PF00072	Response_reg	protein	UniProtKB	xref:pfam-PF00072 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1275	100	116	257	1376	36446
+PF00072	Response_reg	protein	UniProtKB	xref:pfam-PF00072 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1275	250	116	247	1969	93055
+PF00072	Response_reg	protein	UniProtKB	xref:pfam-PF00072 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1275	500	116	251	2344	184943
+PF00072	Response_reg	protein	UniProtKB	xref:pfam-PF00072 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1275	1000	116	252	2471	383491
+PF07690	MFS_1	protein	UniProtKB	xref:pfam-PF07690 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	2227	100	167	461	768	47077
+PF07690	MFS_1	protein	UniProtKB	xref:pfam-PF07690 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	2227	250	167	459	1288	117793
+PF07690	MFS_1	protein	UniProtKB	xref:pfam-PF07690 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	2227	500	165	459	1379	234399
+PF07690	MFS_1	protein	UniProtKB	xref:pfam-PF07690 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	2227	1000	140	463	1685	470294
+PF00067	p450	protein	UniProtKB	xref:pfam-PF00067 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	3352	100	227	502	1081	49213
+PF00067	p450	protein	UniProtKB	xref:pfam-PF00067 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	3352	250	167	502	1981	125188
+PF00067	p450	protein	UniProtKB	xref:pfam-PF00067 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	3352	500	120	502	1981	247598
+PF00067	p450	protein	UniProtKB	xref:pfam-PF00067 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	3352	1000	108	502	1981	497588
+PF00001	7tm_1	protein	UniProtKB	xref:pfam-PF00001 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1973	100	140	362	1396	41258
+PF00001	7tm_1	protein	UniProtKB	xref:pfam-PF00001 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1973	250	140	365	1396	101817
+PF00001	7tm_1	protein	UniProtKB	xref:pfam-PF00001 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1973	500	140	371	1830	208218
+PF00001	7tm_1	protein	UniProtKB	xref:pfam-PF00001 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1973	1000	137	370	1830	412619
+PF00528	BPD_transp_1	protein	UniProtKB	xref:pfam-PF00528 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	541	100	216	292	721	30504
+PF00528	BPD_transp_1	protein	UniProtKB	xref:pfam-PF00528 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	541	250	213	295	722	78423
+PF00528	BPD_transp_1	protein	UniProtKB	xref:pfam-PF00528 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	541	500	119	294	733	155186
+PF00106	adh_short	protein	UniProtKB	xref:pfam-PF00106 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1820	100	51	301	1151	32012
+PF00106	adh_short	protein	UniProtKB	xref:pfam-PF00106 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1820	250	51	300	1230	79376
+PF00106	adh_short	protein	UniProtKB	xref:pfam-PF00106 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1820	500	51	300	1884	161993
+PF00106	adh_short	protein	UniProtKB	xref:pfam-PF00106 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1820	1000	50	300	1884	320342
+PF02518	HATPase_c	protein	UniProtKB	xref:pfam-PF02518 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1066	100	242	548	2388	67857
+PF02518	HATPase_c	protein	UniProtKB	xref:pfam-PF02518 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1066	250	242	589	2388	172747
+PF02518	HATPase_c	protein	UniProtKB	xref:pfam-PF02518 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1066	500	175	583	2388	340457
+PF02518	HATPase_c	protein	UniProtKB	xref:pfam-PF02518 AND fragment:false AND length:[50 TO 3000] AND (reviewed:true OR existence:1)	2026_03	2026-10-31	1066	1000	133	587	2388	680265
+16S	16S rRNA (RefSeq PRJNA33175)	nucleotide	NCBI nuccore	33175[BioProject]	NA	2026-10-31	26888	100	651	1469	1721	144720
+16S	16S rRNA (RefSeq PRJNA33175)	nucleotide	NCBI nuccore	33175[BioProject]	NA	2026-10-31	26888	250	651	1464	1721	362519
+16S	16S rRNA (RefSeq PRJNA33175)	nucleotide	NCBI nuccore	33175[BioProject]	NA	2026-10-31	26888	500	564	1465	1721	724429
+16S	16S rRNA (RefSeq PRJNA33175)	nucleotide	NCBI nuccore	33175[BioProject]	NA	2026-10-31	26888	1000	302	1462	1721	1448305
+16S	16S rRNA (RefSeq PRJNA33175)	nucleotide	NCBI nuccore	33175[BioProject]	NA	2026-10-31	26888	2000	302	1463	1721	2896293
