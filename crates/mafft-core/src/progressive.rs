@@ -1713,8 +1713,14 @@ fn merge_step_cached(
             // `penalize_term_gaps`.
             head_gap: penalize_term_gaps,
             tail_gap: penalize_term_gaps,
-            num_channels: scoring.nscoredalphabets,
+            // C's `n20or4or2` (`Falign.c:923`): a single `a` channel for
+            // nucleotides.
+            num_channels: if scoring.seq_type.is_nucleotide() { 1 } else { scoring.nscoredalphabets },
             property_channels,
+            total_eff: mafft_align::fft_total_eff(
+                &normalized_group_weights(group1, weights),
+                &normalized_group_weights(group2, weights),
+            ),
         };
         fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params)
     } else if let Some(table) = constraints {
@@ -1896,6 +1902,14 @@ fn sorted_key(group: &[usize]) -> Vec<usize> {
     k
 }
 
+/// The group's weights normalised to sum 1 (C's `fastconjuction_noname`),
+/// as `build_profile_from_seqs` uses them.
+fn normalized_group_weights(group: &[usize], weights: &[f64]) -> Vec<f64> {
+    let w: Vec<f64> = group.iter().map(|&i| weights[i]).collect();
+    let sum: f64 = w.iter().sum();
+    if sum > 0.0 { w.iter().map(|v| v / sum).collect() } else { vec![1.0; group.len()] }
+}
+
 fn build_profile_from_seqs(
     group: &[usize],
     aligned: &[Vec<u8>],
@@ -1907,7 +1921,7 @@ fn build_profile_from_seqs(
     // then tracks orieff (= raw sum) separately for createcpmxresult blending.
     let w: Vec<f64> = group.iter().map(|&i| weights[i]).collect();
     let sum: f64 = w.iter().sum();
-    let wn: Vec<f64> = if sum > 0.0 { w.iter().map(|v| v / sum).collect() } else { vec![1.0; group.len()] };
+    let wn = normalized_group_weights(group, weights);
     let prof = Profile::from_aligned(&seqs, &wn, &scoring.amino_map, scoring.nalphabets);
     (prof, sum)
 }

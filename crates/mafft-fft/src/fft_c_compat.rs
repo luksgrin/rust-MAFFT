@@ -41,10 +41,14 @@ fn make_sintbl(n: usize, sintbl: &mut [f64]) {
     let mut s = 0.0;
     sintbl[0] = 0.0;
     for i in 1..n8 {
+        // arm64 clang contracts both recurrences (`fmadd` with `t` and with
+        // `-t`); the error compounds over the n/8 steps, so an unfused
+        // table drifts from C's by several ulps at the FFT lengths of
+        // multi-kb sequences.
         c -= dc;
-        dc += t * c;
+        dc = fmadd(t, c, dc);
         s += ds;
-        ds -= t * s;
+        ds = fmadd(-t, s, ds);
         sintbl[i] = s;
         sintbl[n4 - i] = c;
     }
