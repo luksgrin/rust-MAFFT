@@ -504,7 +504,7 @@ The table above predates the flattened profile-DP / `L__align11` scratch buffers
 
 - Rust 1.80+ (edition 2024)
 - Git (for submodule checkout)
-- GCC/Clang (only needed to build the C reference for FFI cross-validation tests)
+- GCC/Clang (only needed to build the C reference for FFI cross-validation tests; checked in CI with GCC 13–15 on Linux and Apple clang on macOS)
 - Python 3 with the standard `venv` module and `pip` (only for the Python bindings)
 
 ### Build
@@ -566,7 +566,9 @@ cargo test --workspace --exclude pymafft --release
 cargo test --workspace --exclude pymafft --lib
 
 # Build C reference for FFI cross-validation (optional; cargo test --tests
-# triggers this automatically via mafft-c-bindings' build.rs)
+# triggers this automatically via mafft-c-bindings' build.rs). Works as-is
+# with GCC 14/15: the Makefile pins -std=c99 itself. A CFLAGS override
+# replaces only its -O3, so keep -O3 and do not add -std= or -ffp-contract=
 make -C mafft-upstream/core
 
 # Run the suite under the other floating-point contraction policy (fixtures

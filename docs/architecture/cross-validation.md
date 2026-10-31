@@ -107,7 +107,9 @@ need:
 - the `mafft-upstream/` submodule checked out
   (`git submodule update --init`);
 - a C compiler on `$PATH`: the first test build compiles the C sources
-  through `mafft-c-bindings/build.rs`;
+  through `mafft-c-bindings/build.rs` (GCC 13–15 and Apple clang are
+  checked in CI; leave `-std=` out of `CFLAGS`, see
+  [Contributing](../contributing/index.md#reproduce-the-cross-validation-suite));
 - a few minutes for the whole workspace (about 1.5 minutes on an Apple
   M4 with the Rust dependencies already built; longer from a cold
   build).

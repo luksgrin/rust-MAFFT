@@ -128,6 +128,45 @@ jobs:
             --test imp_matrix_correctness --test imp_zero_equiv
 
   # ------------------------------------------------------------------
+  # C toolchain compatibility: compile the in-tree C reference with
+  # current GCC releases, which ubuntu-latest does not ship as its
+  # default `cc`. GCC 14 made -Wincompatible-pointer-types (and a few
+  # others) errors that `-w` does not silence; GCC 15 also defaults to
+  # -std=gnu23. Both paths are checked: the FFI shim built by
+  # mafft-c-bindings/build.rs (and linked into one test binary), and the
+  # upstream Makefile. Build only, no tests or artifacts; recent clang
+  # is covered by the macOS `build-arm64` job. Runs in the official gcc
+  # images so the version does not depend on the runner's apt sources.
+  # ------------------------------------------------------------------
+  c-toolchains:
+    name: "C build: gcc ${{ matrix.gcc }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        gcc: ["14", "15"]
+    runs-on: ubuntu-latest
+    container: gcc:${{ matrix.gcc }}
+    env:
+      CC: gcc
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Toolchain report
+        run: gcc --version | head -1
+
+      - name: FFI shim (mafft-c-bindings/build.rs)
+        run: |
+          cargo build -p mafft-c-bindings
+          cargo test -p mafft-core --test cross_validate_fft --no-run
+
+      - name: Upstream Makefile
+        run: make -C mafft-upstream/core -j"$(nproc)"
+
+  # ------------------------------------------------------------------
   # MAFFT C alignment tests (each mode runs as a separate job)
   # ------------------------------------------------------------------
   test-fftns2:
