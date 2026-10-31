@@ -16,20 +16,25 @@ fits your workflow — they all produce byte-identical alignments.
     across workspace reorganisations. For finer control, depend on the
     sub-crates directly.
 
-    Verify:
+    Verify with this `src/main.rs` and `cargo run`:
 
     ```rust
-    use mafft::{MafftEngine, AlignmentMode, SequenceSet, Sequence};
+    use mafft::{AlignmentMode, MafftEngine, SeqType, Sequence, SequenceSet};
 
-    let input = SequenceSet {
-        sequences: vec![
-            Sequence { name: "a".into(), data: b"ACDEFGHIK".to_vec() },
-            Sequence { name: "b".into(), data: b"ACDEFHIK".to_vec() },
-        ],
-        seq_type: mafft::SeqType::Protein,
-    };
-    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
-    assert_eq!(msa.sequences.len(), 2);
+    fn main() {
+        let input = SequenceSet {
+            sequences: vec![
+                Sequence { name: "a".into(), data: b"ACDEFGHIK".to_vec() },
+                Sequence { name: "b".into(), data: b"ACDEFHIK".to_vec() },
+                Sequence { name: "c".into(), data: b"ACDHIK".to_vec() },
+            ],
+            seq_type: SeqType::Protein,
+        };
+        let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+        for (name, row) in msa.names.iter().zip(msa.sequences.iter()) {
+            println!(">{name}\n{}", std::str::from_utf8(row).unwrap());
+        }
+    }
     ```
 
 === "Python package"
@@ -47,10 +52,9 @@ fits your workflow — they all produce byte-identical alignments.
 
     Verify:
 
-    ```python
-    import pymafft
-    result = pymafft.align(["ACDEFGHIK", "ACDEFHIK", "ACDHIK"])
-    print(result.to_fasta())
+    ```sh
+    python -c "import pymafft; print(pymafft.align(['ACDEFGHIK', 'ACDEFHIK', 'ACDHIK']).to_fasta())"
+    mafft-rs --version
     ```
 
 === "CLI binary"
@@ -74,8 +78,28 @@ fits your workflow — they all produce byte-identical alignments.
 
     ```sh
     mafft-rs --version
-    mafft-rs sample.fasta > aligned.fasta
+    printf '>a\nACDEFGHIK\n>b\nACDEFHIK\n>c\nACDHIK\n' | mafft-rs --quiet
     ```
+
+## Verify your installation
+
+The checks under each tab above take seconds and need neither a C
+compiler nor the `mafft-upstream` submodule. Each prints the same
+three-row alignment:
+
+```
+>a
+ACDEFGHIK
+>b
+ACDEF-HIK
+>c
+ACD---HIK
+```
+
+(`pymafft.align` on bare strings names the rows `seq_1`, `seq_2`,
+`seq_3`.) That is all an install needs. Re-checking byte-identity
+against C MAFFT is a contributor task with its own prerequisites; see
+[Reproduce the cross-validation suite](../contributing/index.md#reproduce-the-cross-validation-suite).
 
 ## Platform support
 
@@ -91,9 +115,27 @@ fits your workflow — they all produce byte-identical alignments.
 git clone --recurse-submodules https://github.com/luksgrin/rust-MAFFT
 cd rust-MAFFT
 cargo build --release -p mafft-rs   # CLI
-cargo test --workspace --exclude pymafft --release   # full test suite (537 tests + 7 ignored)
+cargo test -p mafft-rs --lib        # quick check: unit tests, no C compiler needed
 ```
+
+The full test suite (`cargo test --workspace --exclude pymafft --release`,
+537 tests + 7 ignored) compiles the C reference and takes minutes; see
+[Reproduce the cross-validation suite](../contributing/index.md#reproduce-the-cross-validation-suite).
 
 The `mafft-upstream/` submodule pins the reference C MAFFT version
 that the FFI cross-validation harness builds against. It's only
 required for development — release builds compile zero C code.
+
+The Python bindings build into a virtual environment with the standard
+library's `venv` and `pip`:
+
+```sh
+cd crates/pymafft
+python -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install maturin
+maturin develop --release
+```
+
+See [Contributing](../contributing/index.md#python-bindings) for the test
+dependencies and the bundled-CLI step.
