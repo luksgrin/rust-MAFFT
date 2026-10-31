@@ -192,5 +192,16 @@
   "n_families": 3280,
   "n_singletons": 585,
   "n_cds": 57482
+ },
+ "protein": {
+  "source": "OrthoDB v13, level 4893 (Saccharomycetaceae)",
+  "api": "https://data.orthodb.org/v13",
+  "n_groups_at_level": 8782,
+  "n_available": 4074,
+  "gene_count_range": [
+   5,
+   60
+  ],
+  "download_date": "2026-10-31"
  }
 }
