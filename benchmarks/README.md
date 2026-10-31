@@ -13,7 +13,8 @@ quoted in the documentation (README "Performance", `PROFILING.md`,
 | `pymafft_threads.py` | `pymafft.align(..., threads=N)`: equality with the CLI, timing, GIL release | `results/pymafft_threads_<date>.tsv` |
 
 `common.py` holds the shared paths, input list and the `/usr/bin/time`
-parser. For alignment-accuracy scores against the BAliBASE references see
+parser; `summarize_memory.py` turns `memory.py` TSVs into the per-cell
+Markdown table (`results/memory_<date>_summary.md`). For alignment-accuracy scores against the BAliBASE references see
 `balibase_scores.py`.
 
 ## Reference build
@@ -67,6 +68,7 @@ total).
 ```sh
 # Peak RSS: 4 modes x --thread 1,4,8 x 3 runs, plus --memsave on the two largest inputs
 python3 benchmarks/memory.py
+python3 benchmarks/summarize_memory.py benchmarks/results/memory_<date>.tsv [later.tsv ...]
 # Check that timing the wrapper covers every engine binary it spawns
 python3 benchmarks/memory.py --verify-wrapper --inputs sample36 --modes fftnsi linsi --threads 1 4
 
@@ -105,6 +107,21 @@ python3 benchmarks/threads.py --summarize benchmarks/results/threads_<date>.tsv
   `--thread 1` and no `--thread` are different code paths (the `athread`
   refinement rules); `mafft-rs` follows the same split, so the
   `--thread 1` output is the byte-identity reference here.
+
+## Results in this directory (Apple M4, 10 cores, 32 GB, macOS 26.5)
+
+| File | What |
+|------|------|
+| `results/memory_2026-10-31.tsv` | full `memory.py` grid, 522 runs, `mafft-rs` at `8bff99f` |
+| `results/memory_parttree_rust_2026-10-31.tsv` | `mafft-rs --parttree` re-measured after the PartTree port (#44); at `8bff99f` it panicked above 50 sequences |
+| `results/memory_2026-10-31_summary.md` | per-cell medians of the two files above |
+| `results/threads_2026-10-31.tsv` | `threads.py` timing + determinism: sample36 (FFT-NS-i, L-INS-i, G-INS-i), 120 × 1.4 kb CDS (FFT-NS-i), BB30005 (all three); load 2.2–5.9 |
+| `results/threads_bb_largest_determinism_2026-10-31.tsv` | `mafft-rs` only, five largest BAliBASE sets, FFT-NS-i / L-INS-i, `--thread 1 4 8`, 2 runs (timings not meaningful: ran alongside `memory.py`) |
+| `results/threads_rv11_determinism_2026-10-31.tsv` | `mafft-rs` only, all 76 RV11 sets, FFT-NS-i / L-INS-i / G-INS-i, `--thread 1 4 8`, 3 runs (timings not meaningful) |
+| `results/pymafft_threads_2026-10-31.tsv` | `pymafft_threads.py`: sample36 and BB30005, plus the GIL demonstration |
+
+Interpretation and the headline tables: `PROFILING.md` ("Memory
+footprint", "Multi-threading") and the README "Performance" section.
 
 ## Caveats
 

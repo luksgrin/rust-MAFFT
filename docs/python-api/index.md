@@ -154,7 +154,49 @@ the command line does (file descriptor 2, not `sys.stderr`). An exception
 raised inside the callable is re-raised after the run returns.
 
 The alignment runs with the GIL released, so several Python threads can
-align concurrently; `threads` controls the Rust-side pool of each call.
+align concurrently; `threads` controls the Rust-side pool of each call
+(see [Multi-threading from Python](#multi-threading-from-python)).
+
+## Multi-threading from Python
+
+There are two independent ways to use several cores.
+
+**Inside one alignment: `threads=N`.** It is `--thread N`: each call
+builds its own rayon pool of N workers (`0`, the default, means all
+cores), so calls with different `threads` values do not interfere. The
+result is byte-identical at every thread count and equal to
+`mafft-rs --thread 1` (and C MAFFT `--thread 1`); C MAFFT's own
+`--thread N ≥ 2` output varies between runs. The parallel stages are the
+distance matrices and the all-pairs pairwise alignments of
+`linsi` / `ginsi` / `einsi`; the iterative refinement runs on one thread
+to keep the output independent of N, so the gain is modest (up to ~1.5×
+at 8 threads in the measurements below) and `fftnsi` does not speed up.
+
+```python
+result = pymafft.align(records, strategy="linsi", threads=4)
+assert result.to_tuples() == pymafft.align(records, strategy="linsi", threads=1).to_tuples()
+```
+
+**Many alignments at once: Python threads.** The GIL is released for the
+whole alignment (`Python::detach` in the binding), so a thread pool runs
+alignments truly in parallel, without the pickling and start-up cost of a
+process pool. Give each call `threads=1` so the pools do not
+oversubscribe the cores:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+with ThreadPoolExecutor(max_workers=8) as pool:
+    results = list(pool.map(
+        lambda recs: pymafft.align(recs, strategy="linsi", threads=1),
+        clusters,
+    ))
+```
+
+Measured with `benchmarks/pymafft_threads.py` (Apple M4, 10 cores,
+2026-10-31; see [`benchmarks/README.md`](https://github.com/luksgrin/rust-MAFFT/blob/main/benchmarks/README.md)):
+
+PYMAFFT_RESULTS
 
 ## Input shapes
 
