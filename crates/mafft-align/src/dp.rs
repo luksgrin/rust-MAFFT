@@ -25,6 +25,17 @@ pub struct Alignment {
 }
 
 impl Alignment {
+    /// Profile alignment when one side has no columns: every column of
+    /// the other side is placed against gaps, score 0. Mirrors C
+    /// `A__align` (`Salignmm.c:1228-1255`), which fills the empty side
+    /// with `lgth` gaps and returns 0.0. Only `operations` is filled, as
+    /// in the other profile aligners.
+    pub fn against_gaps(n: usize, m: usize) -> Self {
+        let mut operations = vec![AlignOp::Delete; n];
+        operations.extend(std::iter::repeat(AlignOp::Insert).take(m));
+        Alignment { seq1: Vec::new(), seq2: Vec::new(), score: 0.0, operations }
+    }
+
     /// Length of the alignment (including gaps).
     pub fn len(&self) -> usize {
         self.seq1.len()

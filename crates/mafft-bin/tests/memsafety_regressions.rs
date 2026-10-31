@@ -4,8 +4,11 @@
 //!
 //! The fixtures live in `fixtures/memsafety/`. They come from
 //! `benchmarks/memsafety_gen.py` (`control_protein.fa`, the `--treein`
-//! files, `empty_record_middle.fa`) and from the minimised case in
-//! `benchmarks/memsafety_cases/` (`addfragments_localpair_*`).
+//! files, `empty_record_middle.fa`), from the minimised case in
+//! `benchmarks/memsafety_cases/` (`addfragments_localpair_*`), and
+//! `homopolymer_dna.fa` (300-nt poly-A + 300 random bases, seed 27).
+//! `.expected` files are the stdout of the in-tree C build
+//! (`make -C mafft-upstream/core`, default flags, arm64 / Apple clang).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -118,14 +121,42 @@ fn addfragments_localpair_completes_and_keeps_residues() {
 }
 
 /// A record with no residues in the middle of the input. C aligns the
-/// other sequences and prints the empty one as a gap-only row; mafft-rs
-/// currently prints every sequence empty (exit 0). Found by the
-/// edge-case corpus; the `.expected` file is the in-tree C build's output.
+/// other sequences and prints the empty one as a gap-only row. mafft-rs
+/// printed every sequence empty (exit 0): the profile aligners returned no
+/// operations when one side had no columns, so the other side's residues
+/// were dropped. They now place that side against gaps, as C `A__align`
+/// does (`Salignmm.c:1228-1255`). The `.expected` file is the in-tree C
+/// build's output.
 #[test]
-#[ignore = "mafft-rs drops every residue when one input sequence is empty (docs/architecture/memory-safety.md)"]
 fn empty_record_matches_c() {
     let mut out = Vec::new();
     mafft_rs::run_from(argv(&[], &memsafety("empty_record_middle.fa")), &mut out).unwrap();
     let want = std::fs::read(memsafety("empty_record_middle.default.expected")).unwrap();
+    assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want));
+}
+
+/// Two DNA sequences behind a 300-nt poly-A run. The FFT anchors fall
+/// inside the run and leave segments with no columns on one side; the
+/// same empty-side bug as above dropped those residues (11 of 1195 here)
+/// with exit 0. Every residue must survive.
+#[test]
+fn homopolymer_dna_keeps_every_residue() {
+    let input = memsafety("homopolymer_dna.fa");
+    for flags in [&[][..], &["--retree", "1"], &["--maxiterate", "2"], &["--memsave"]] {
+        let mut out = Vec::new();
+        mafft_rs::run_from(argv(flags, &input), &mut out).unwrap();
+        assert_eq!(residues(&out), residues(&std::fs::read(&input).unwrap()), "{flags:?}");
+    }
+}
+
+/// Same input, byte-identity with the in-tree C build. mafft-rs places the
+/// gaps inside the poly-A run differently (608 vs 600 columns): the
+/// anchor choice on a homopolymer still diverges.
+#[test]
+#[ignore = "FFT anchor placement on long homopolymers differs from C (docs/architecture/memory-safety.md)"]
+fn homopolymer_dna_matches_c() {
+    let mut out = Vec::new();
+    mafft_rs::run_from(argv(&[], &memsafety("homopolymer_dna.fa")), &mut out).unwrap();
+    let want = std::fs::read(memsafety("homopolymer_dna.default.expected")).unwrap();
     assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want));
 }
