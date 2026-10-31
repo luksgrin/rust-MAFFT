@@ -1,0 +1,23 @@
+host	uname_m	cpu	molecule	n_clusters	impl	workers	rep	status	wall_s	user_s	sys_s	max_rss_mb	tree_rss_mb	n_ok	identical_c	load1_start
+darwin-arm64	arm64	Apple M4	dna	50	snake-c	1	0	ok	20.855	9.328	7.511	90.2	111.3	50	50/50	8.25
+darwin-arm64	arm64	Apple M4	dna	50	snake-c	4	0	ok	5.638	8.827	8.066	90.2	133.5	50	50/50	13.45
+darwin-arm64	arm64	Apple M4	dna	50	snake-rust	1	0	ok	7.408	4.805	1.126	90.3	127.8	50	49/50	11.3
+darwin-arm64	arm64	Apple M4	dna	50	snake-rust	4	0	ok	3.727	5.38	1.178	90.6	122.4	50	49/50	16.02
+darwin-arm64	arm64	Apple M4	dna	50	loop-c	1	0	ok	12.136	7.332	5.315	52.7	47.4	50	50/50	10.0
+darwin-arm64	arm64	Apple M4	dna	50	loop-c	4	0	ok	5.186	8.755	7.812	52.7	87.2	50	50/50	11.75
+darwin-arm64	arm64	Apple M4	dna	50	loop-rust	1	0	ok	4.022	3.631	0.243	75.5	71.7	50	49/50	15.54
+darwin-arm64	arm64	Apple M4	dna	50	loop-rust	4	0	ok	1.321	4.22	0.302	75.5	104.0	50	49/50	15.54
+darwin-arm64	arm64	Apple M4	dna	50	py-serial	1	0	ok	3.702	3.546	0.089	215.3	216.4	50	49/50	16.46
+darwin-arm64	arm64	Apple M4	dna	50	py-process	4	0	ok	1.333	4.571	0.214	162.9	301.6	50	49/50	16.46
+darwin-arm64	arm64	Apple M4	dna	50	py-thread	4	0	ok	1.233	4.223	0.114	328.0	176.3	50	49/50	16.02
+darwin-arm64	arm64	Apple M4	protein	50	snake-c	1	0	ok	30.276	17.468	10.239	90.2	125.2	50	50/50	11.45
+darwin-arm64	arm64	Apple M4	protein	50	snake-c	4	0	ok	10.665	14.705	9.172	90.4	174.6	50	50/50	10.47
+darwin-arm64	arm64	Apple M4	protein	50	snake-rust	1	0	ok	12.291	9.903	1.208	99.0	190.2	50	50/50	16.02
+darwin-arm64	arm64	Apple M4	protein	50	snake-rust	4	0	ok	5.395	11.117	1.274	98.9	208.9	50	50/50	14.71
+darwin-arm64	arm64	Apple M4	protein	50	loop-c	1	0	ok	32.307	16.461	9.66	44.9	76.2	50	50/50	10.94
+darwin-arm64	arm64	Apple M4	protein	50	loop-c	4	0	ok	7.254	13.881	9.137	44.9	104.8	50	50/50	11.24
+darwin-arm64	arm64	Apple M4	protein	50	loop-rust	1	0	ok	9.363	8.948	0.264	99.1	85.7	50	50/50	14.25
+darwin-arm64	arm64	Apple M4	protein	50	loop-rust	4	0	ok	2.682	9.434	0.288	99.0	206.5	50	50/50	13.29
+darwin-arm64	arm64	Apple M4	protein	50	py-serial	1	0	ok	7.395	7.267	0.083	201.2	201.5	50	50/50	13.03
+darwin-arm64	arm64	Apple M4	protein	50	py-process	4	0	ok	2.254	8.075	0.147	147.7	464.1	50	50/50	12.31
+darwin-arm64	arm64	Apple M4	protein	50	py-thread	4	0	ok	2.155	7.717	0.074	214.3	214.4	50	50/50	11.8

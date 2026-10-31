@@ -65,8 +65,10 @@ USAGE
     .venv/bin/python benchmarks/htworkload.py run --smoke
 
     # Full workload on a quiet machine (cached per cell under
-    # target/htworkload/<host>/; re-running fills in what is missing)
-    .venv/bin/python benchmarks/htworkload.py run --reps 3
+    # target/htworkload/<host>/; re-running fills in what is missing).
+    # One replicate of the default grid is on the order of a day.
+    caffeinate -i .venv/bin/python benchmarks/htworkload.py run --molecule dna
+    caffeinate -i .venv/bin/python benchmarks/htworkload.py run --reps 3
 
     # Subsets
     .venv/bin/python benchmarks/htworkload.py run --molecule dna \\
@@ -378,6 +380,19 @@ def run_cell(args, mol: str, impl: str, workers: int, rep: int,
     return meta
 
 
+def warm_up(args, sel: dict[str, list[dict]]) -> None:
+    """Untimed: load snakemake, pymafft and both CLIs once (page cache, .pyc)."""
+    dn = subprocess.DEVNULL
+    subprocess.run([str(args.snakemake), "--version"], stdout=dn, stderr=dn)
+    subprocess.run([str(args.python), "-c", "import pymafft"], stdout=dn, stderr=dn)
+    for mol, rows in sel.items():
+        r = min(rows, key=lambda r: int(r["n"]) * int(r["median_len"]))
+        fasta = str(corpus.fasta_path(r["cluster"], mol))
+        for impl in ("c", "rust"):
+            argv, env = cli_argv(impl, args, mol, fasta)
+            subprocess.run(argv, stdout=dn, stderr=dn, env=env)
+
+
 def cmd_run(args) -> int:
     args.explicit_workers = args.workers is not None
     if args.smoke:
@@ -413,6 +428,7 @@ def cmd_run(args) -> int:
     info = {"host": args.host, "uname_m": platform.machine(), "cpu": cpu_model()}
     print(f"{info}; load {os.getloadavg()}; {len(grid)} cells x {args.reps} reps",
           file=sys.stderr)
+    warm_up(args, sel)
     t_start = time.time()
     for rep in range(args.reps):
         # Rotate the order per replicate so drift does not favour one impl.

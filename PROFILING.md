@@ -380,4 +380,24 @@ snakemake`). On a quiet machine:
 per alignment and the speed-up against `snake-c` at the same and at one
 worker. Cells are cached under `target/htworkload/<host>/full/`, so an
 interrupted run resumes; `--molecule`, `--impl`, `--workers` and
-`--limit N` select subsets.
+`--limit N` select subsets. On macOS wrap the run in `caffeinate -i`
+(idle sleep pauses the clock and the work alike, but stretches the run).
+
+Cost: C spends about 2 s of CPU per DNA cluster and 6 s per orthogroup
+(`--auto` → L-INS-i), so one `snake-c` cell at one worker is ≈ 1.6 h
+(DNA) and ≈ 2.5 h (protein); the default grid (17 cells per molecule)
+is on the order of a day per replicate. `--molecule dna --reps 1` is
+the primary result; add protein and replicates as time allows.
+
+`benchmarks/results/htworkload_smoke_2026-10-31.tsv` is the pipeline
+check: 50 of the smaller clusters per molecule, every path at 1 and 4
+workers, one replicate, under `nice -n 19` on a machine busy with other
+jobs, so its times only show that the measurements are wired up. Every
+path produced all 100 alignments. C outputs agree across the Snakemake
+and loop paths; Rust (CLI and pymafft) matches C on 50/50 orthogroups and
+49/50 DNA clusters. The exception, `dna_01715` (three CDS of 3.6–5.0 kb,
+`g01_1465`, `g02_1487`, `g11_1500`), is a genuine divergence on the FFT
+path: it differs with `--retree 1` / `--retree 2` (with or without
+`--maxiterate`, `--thread 1` or none) and agrees with `--nofft`,
+`--localpair` and `--globalpair`. The full run reports how many more
+clusters behave like it.
