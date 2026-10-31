@@ -139,6 +139,17 @@ pub fn global_align(
     let mut prevwarpi: Vec<i32> = vec![neg_warpbase; m + 1];
     let mut prevwarpj: Vec<i32> = vec![neg_warpbase; m + 1];
 
+    // Residue -> alphabet index (`usize::MAX` if unscored, so `row.get`
+    // yields `None` -> 0.0 exactly like `score_at`'s range guard).
+    let seq2_idx: Vec<usize> = seq2.iter().map(|&c| {
+        let idx = amino_map[c as usize] as usize;
+        if idx < n_alpha { idx } else { usize::MAX }
+    }).collect();
+    let row_for = |c: u8| -> Option<&[f64]> {
+        let idx = amino_map[c as usize] as usize;
+        if idx < n_alpha { Some(matrix[idx].as_slice()) } else { None }
+    };
+
     for i in 1..last_i {
         std::mem::swap(&mut previousw, &mut currentw);
         previousw[0] = initverticalw[i - 1];
@@ -146,8 +157,19 @@ pub fn global_align(
         // Fill currentw[k] = match(seq1[i], seq2[k]) for k in 0..lgth2;
         // boundary cell (k = lgth2) stays at 0 (null terminator score).
         if i < n {
-            for k in 0..m {
-                currentw[k] = score_at(seq1[i], seq2[k]);
+            // Same values as `score_at(seq1[i], seq2[k])`, looked up through
+            // the hoisted matrix row and pre-mapped `seq2_idx`.
+            match row_for(seq1[i]) {
+                Some(row) => {
+                    for k in 0..m {
+                        currentw[k] = row.get(seq2_idx[k]).copied().unwrap_or(0.0);
+                    }
+                }
+                None => {
+                    for k in 0..m {
+                        currentw[k] = 0.0;
+                    }
+                }
             }
         } else {
             for k in 0..m {
@@ -168,6 +190,48 @@ pub fn global_align(
 
         // C uses `fpenalty_ex_i = (i < lgth1) ? fpenalty_ex : 0`.
         let fpenalty_ex_i = if i < n { f_ext } else { 0.0 };
+
+        if !try_warp {
+            // The same cell body as the general loop below with the warp
+            // branches removed and every buffer re-sliced to `last_j` cells
+            // so the indexing is bounds-check free. Comparisons, operands
+            // and their order are unchanged.
+            let ijp_row = &mut ijp[i][..last_j];
+            let prev = &previousw[..last_j];
+            let cur = &mut currentw[..last_j];
+            let m_s = &mut m_arr[..last_j];
+            let mp_s = &mut mp_arr[..last_j];
+            for j in 1..last_j {
+                let prev_diag = prev[j - 1];
+                wm = prev_diag;
+                let mut trace: i32 = 0;
+                let g = mi + f_open;
+                if g > wm {
+                    wm = g;
+                    trace = -((j as i32) - mpi);
+                }
+                if prev_diag >= mi {
+                    mi = prev_diag;
+                    mpi = (j as i32) - 1;
+                }
+                mi += fpenalty_ex_i;
+                let g = m_s[j] + f_open;
+                if g > wm {
+                    wm = g;
+                    trace = (i as i32) - mp_s[j];
+                }
+                if prev_diag >= m_s[j] {
+                    m_s[j] = prev_diag;
+                    mp_s[j] = (i as i32) - 1;
+                }
+                if j < m {
+                    m_s[j] += f_ext;
+                }
+                ijp_row[j] = trace;
+                cur[j] += wm;
+            }
+            continue;
+        }
 
         for j in 1..last_j {
             // wm = previousw[j-1] (diagonal start)
