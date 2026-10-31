@@ -8,6 +8,15 @@ Python bindings for [MAFFT-rs](https://github.com/luksgrin/rust-MAFFT), a Rust r
 pip install pymafft
 ```
 
+The wheel also bundles the native `mafft-rs` command-line binary and puts it
+on your `PATH` (`python -m pymafft` runs the same binary), so this one install
+covers both the Python API and the CLI. The binary can also be installed on
+its own with `cargo install mafft-rs`.
+
+Full documentation: <https://luksgrin.github.io/rust-MAFFT/> (the
+[Python API reference](https://luksgrin.github.io/rust-MAFFT/python-api/) and
+the [CLI reference](https://luksgrin.github.io/rust-MAFFT/cli-reference/)).
+
 ## Quick start
 
 ```python

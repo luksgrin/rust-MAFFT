@@ -13,15 +13,7 @@
     cite the original MAFFT paper.** See the
     [Citation](citation.md) page for full details and BibTeX.
 
-## What it is
-
-A complete rewrite of the MAFFT multiple sequence alignment toolchain in
-Rust — no `unsafe`, no C at runtime, no global state. Output matches C
-MAFFT 7.526 byte-for-byte across BAliBASE 3 (1930/1930 fixtures) for
-every supported mode: FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, E-INS-i,
-PartTree, `--add`, `--adjustdirection`, and more.
-
-## Three ways to use it
+## Install
 
 <div class="grid cards" markdown>
 
@@ -44,7 +36,8 @@ PartTree, `--add`, `--adjustdirection`, and more.
     pip install pymafft
     ```
 
-    Native bindings via PyO3. Drop-in Biopython interop.
+    Native bindings via PyO3. Drop-in Biopython interop. The wheel
+    also bundles the `mafft-rs` CLI.
     See the [Python API](python-api/index.md).
 
 -   :material-console: **As a CLI binary**
@@ -64,6 +57,31 @@ PartTree, `--add`, `--adjustdirection`, and more.
     See the [CLI Reference](cli-reference.md).
 
 </div>
+
+## Quick start
+
+```python
+import pymafft
+
+result = pymafft.align([("human", "ACDEFGHIK"), ("mouse", "ACDEFHIK"), ("fish", "ACDHIK")])
+print(result.to_fasta())
+```
+
+```sh
+mafft-rs sequences.fasta > aligned.fasta                                # FFT-NS-2
+mafft-rs --localpair --maxiterate 1000 sequences.fasta > aligned.fasta  # L-INS-i
+```
+
+[Getting Started](getting-started/index.md) walks through installing,
+a first alignment in each language, and choosing a strategy.
+
+## What it is
+
+A complete rewrite of the MAFFT multiple sequence alignment toolchain in
+Rust — no `unsafe`, no C at runtime, no global state. Output matches C
+MAFFT 7.526 byte-for-byte across BAliBASE 3 (1930/1930 fixtures) for
+every supported mode: FFT-NS-2, FFT-NS-i, G-INS-i, L-INS-i, E-INS-i,
+PartTree, `--add`, `--adjustdirection`, and more.
 
 ## Why byte-identity matters
 
@@ -93,6 +111,10 @@ implementation, compiled in-tree on the same platform).
   the shell.
 - **Out of scope / residuals**: see the [architecture index](architecture/index.md).
 - **Following upstream**: pinned to MAFFT commit `0a2319b` (`v7.526` + 2); see the [upstream policy](architecture/upstream-policy.md).
+
+The mode-by-mode parity matrix, the DNA and input-handling tables and the
+BAliBASE sweep are on the [Byte-identity](architecture/byte-identity.md#parity-status)
+page.
 
 ## Quick links
 

@@ -22,6 +22,99 @@ Both are non-starters for adoption. Byte-identity removes the choice:
 the Rust binary is a drop-in replacement, no warm-up trust period
 required.
 
+## Parity status
+
+### Modes covered
+
+**Production-ready.** `mafft-rs` produces **byte-identical output to C MAFFT 7.526** across:
+
+- All progressive modes: FFT-NS-2, NW-NS-2, FFT-NS-i, L-INS-1/i, G-INS-1/i, E-INS-1/i
+- All scoring matrices: BLOSUM 30/45/50/62/80, JTT 100/200, TM 100/200 (FFT + NW + `--retree 1`)
+- Tree variants: `--parttree`, `--dpparttree`, `--memsavetree`, `--youngestlinkage`, `--averagelinkage`, `--minimumlinkage`, `--mixedlinkage`, `--pileup`
+- Iteration strategies: `--bestfirst`, `--simplehillclimbing`, `--skipiterate F` (both large- and small-F branches), `--oneiteration`
+- Add-sequence modes: `--add`, `--addfragments`, `--keeplength` (including adversarial inputs with random insertions)
+- Auxiliary outputs: `--distout`, `--scoreout`, `--nodeout`, `--mapout` / `--compactmapout`, `--treeout`
+- DNA strand auto-detection: `--adjustdirection` (k-mer) and `--adjustdirectionaccurately` (DP)
+- Refinement controls: `--allowshift`, `--unalignlevel`, `--maxambiguous`, `--minimumweight`, `--nwildcard`, `--leavegappyregion` / `--legacygappenalty`
+- Memory strategy: `--memsave` / `--nomemsave` (Hirschberg DP), `--memsavetree`
+- Seed alignment: `--seed FILE`, `--seedtable FILE` (single + multi-file)
+- Fine-grained gap penalties: `--op`, `--ep`, `--exp`, `--shiftpenalty`, `--lop`, `--lep`, `--lexp`, `--gop`, `--gep`, `--gexp`
+- Symlink dispatch via `argv[0]`: `linsi`, `ginsi`, `einsi`, `fftns`, `fftnsi`, `nwns`, `nwnsi`, `qinsi`, `xinsi`
+
+Every progressive merge step matches in score and width; every refinement iteration converges to C's exact alignment.
+
+### Parity matrix (36-seq protein sample, `mafft-upstream/test/sample`)
+
+| Mode / flags                                | C width | Rust width | diff | Status |
+|---------------------------------------------|---------|------------|------|--------|
+| FFT-NS-2 (default)                          | 717     | 717        | 0    | ✓ byte-exact |
+| NW-NS-2 (`--nofft`)                         | 717     | 717        | 0    | ✓ byte-exact |
+| FFT-NS-i (`--maxiterate 100`)               | 721     | 721        | 0    | ✓ byte-exact |
+| L-INS-1 (`--localpair --maxiterate 0`)      | 719     | 719        | 0    | ✓ byte-exact |
+| L-INS-i (`linsi`)                           | 735     | 735        | 0    | ✓ byte-exact |
+| G-INS-1 (`--globalpair --maxiterate 0`)     | 746     | 746        | 0    | ✓ byte-exact |
+| G-INS-i (`ginsi`)                           | 737     | 737        | 0    | ✓ byte-exact |
+| E-INS-1 (`--genafpair --maxiterate 0`)      | 729     | 729        | 0    | ✓ byte-exact |
+| E-INS-i (`einsi`)                           | 729     | 729        | 0    | ✓ byte-exact |
+| BLOSUM 30 / 45 / 50 / 62 / 80 (FFT + NW)    | match   | match      | 0    | ✓ byte-exact |
+| JTT 100 / 200, TM 100 / 200 (FFT + NW)      | match   | match      | 0    | ✓ byte-exact |
+| `--parttree`, `--dpparttree`, `--parttree --nofft`, `--parttree --reorder` | 752 | 752 | 0 | ✓ byte-exact |
+| `--add` / `--add --nofft` / `--add --keeplength` (30+6) | match | match | 0 | ✓ byte-exact |
+| `--add` adversarial (16-existing + 3-added with random insertions) | match | match | 0 | ✓ byte-exact |
+| `--pileup`, `--youngestlinkage`, `--averagelinkage`, `--minimumlinkage` | match | match | 0 | ✓ byte-exact |
+| `--bestfirst` (FFT-NS-i / L-INS-i / G-INS-i)  | match | match      | 0    | ✓ byte-exact |
+| `--skipiterate F` (F ∈ {0.05…1.0})         | match   | match      | 0    | ✓ byte-exact |
+| `--oneiteration` (FFT-NS-2 + FFT-NS-i)      | match   | match      | 0    | ✓ byte-exact |
+| `--allowshift --globalpair --maxiterate 0`  | 1029    | 1029       | 0    | ✓ byte-exact |
+| `--allowshift --globalpair --maxiterate 1000` | 1060  | 1060       | 0    | ✓ byte-exact (all 386 BBaliBase 3) |
+| `--adjustdirection`, `--adjustdirectionaccurately` (mixed forward/RC DNA) | match | match | 0 | ✓ byte-exact |
+| `--memsavetree`, `--memsavetree --treeout`  | match   | match      | 0    | ✓ byte-exact |
+| `--auto` (small/medium/large brackets)      | match   | match      | 0    | ✓ byte-exact |
+| `--seed FILE`, `--seedtable FILE`           | match   | match      | 0    | ✓ byte-exact |
+| `--treein`, `--treeout`, `--treein --treeout` | match | match      | 0    | ✓ byte-exact |
+| RNA NW (`--nofft samplerna`)                | 360     | 360        | 0    | ✓ byte-exact |
+| Q-INS-i (`--qinsi samplerna`)               | 360     | 360        | 0‡   | ✓ byte-exact (needs `mxscarnamod`) |
+| `--nuc`, `--amino` (forced sequence type)   | match   | match      | 0    | ✓ byte-exact |
+
+‡ Q-INS-i requires the external `mxscarnamod` binary.
+
+### DNA and input-handling parity (issue #1 integration)
+
+| Input / flags | Status |
+|---------------|--------|
+| 120 × 1.4 kb CDS (`mtb_cds_120x1400.fa`), FFT-NS-i `--retree 2 --maxiterate 2` (1742 columns) | ✓ byte-exact |
+| Same input, `--thread 1 --maxiterate 1/2/3/1000` (C's `athread` refinement rules) | ✓ byte-exact |
+| First 8 sequences of the above, `--retree 2 --maxiterate 1000` (trailing `searchAnchors` region) | ✓ byte-exact |
+| panaroo gene clusters (5 × 4 seqs, ~300–2300 bp), `--auto --adjustdirection --thread 1 --nuc` | ✓ byte-exact |
+| DNA L-INS-1 / `--auto` on synthetic clusters (pair-phase gap scale ×3, `dndpre` offset 220) | ✓ 60/60 and 30/30 |
+| Two-sequence input under `--maxiterate 1000` (C refines a pair exactly once, unweighted) | ✓ byte-exact |
+| Input read path corpus (22 files × `default` / `--anysymbol` / `--localpair --maxiterate 0` / `--nuc` / `--add` modes, 71 cells incl. C's exit-1 cases) | ✓ 70/71 (see [What's still out of scope](index.md#whats-still-out-of-scope)) |
+
+`--thread 1` and no `--thread` are *different* C code paths (`tditeration.c:1433`
+selects `athread` on `nthread > 0`), with different branch order and
+convergence rules; `mafft-rs` reproduces both byte-for-byte. C's own
+`--thread N` for N ≥ 2 is nondeterministic, so byte-identity there is not
+defined; `mafft-rs` stays deterministic at every thread count.
+
+Residue case matches C MAFFT: nucleotide output is lowercased and protein
+output uppercased at read time (C `io.c:1462-1467`, `io.c:1755`), driven by
+the detected type or by `--nuc` / `--amino`; `--anysymbol` / `--preservecase`
+keep the input's own case.
+
+### BBaliBase 3 parity sweep
+
+Sweep across BBaliBase 3 (RV11–RV50, 386 protein test sets) against MAFFT 7.526:
+
+| Mode | Flags | Match | Total % |
+|------|-------|-------|---------|
+| FFT-NS-i | `--maxiterate 1000` | **386/386** | **100.0 %** |
+| L-INS-i  | `--localpair --maxiterate 1000` | **386/386** | **100.0 %** |
+| G-INS-i  | `--globalpair --maxiterate 1000` | **386/386** | **100.0 %** |
+| E-INS-i  | `--genafpair --maxiterate 1000` | **386/386** | **100.0 %** |
+| G-INS-i + allowshift | `--globalpair --maxiterate 1000 --allowshift` | **386/386** | **100.0 %** |
+
+Total: **1930/1930 alignments byte-identical** to C MAFFT 7.526 across the BBaliBase 3 protein corpus.
+
 ## Byte-identity is per platform build
 
 C MAFFT 7.526 is not bit-identical across CPU architectures. The
