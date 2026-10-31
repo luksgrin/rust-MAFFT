@@ -97,3 +97,17 @@ cargo test --workspace --exclude pymafft --release   # full test suite (537 test
 The `mafft-upstream/` submodule pins the reference C MAFFT version
 that the FFI cross-validation harness builds against. It's only
 required for development — release builds compile zero C code.
+
+The Python bindings build into a virtual environment with the standard
+library's `venv` and `pip`:
+
+```sh
+cd crates/pymafft
+python -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install maturin
+maturin develop --release
+```
+
+See [Contributing](../contributing/index.md#python-bindings) for the test
+dependencies and the bundled-CLI step.

@@ -462,6 +462,7 @@ The table above predates the flattened profile-DP / `L__align11` scratch buffers
 - Rust 1.80+ (edition 2024)
 - Git (for submodule checkout)
 - GCC/Clang (only needed to build the C reference for FFI cross-validation tests)
+- Python 3 with the standard `venv` module and `pip` (only for the Python bindings)
 
 ### Build
 
@@ -505,12 +506,19 @@ cargo test --workspace --exclude pymafft --release --features fp-contract-none
 
 ```bash
 cd crates/pymafft
-uv venv .venv
-uv pip install maturin pytest biopython
+python -m venv .venv
+source .venv/bin/activate           # Windows: .venv\Scripts\activate
+pip install maturin pytest biopython
 cargo build --release -p mafft-rs   # the CLI the option-parity tests compare against
 maturin develop --release
-uv run pytest tests/ -v   # 160 tests (32 API + 23 parity/shape + 82 CLI-option parity + 18 Biopython interop + 5 console script; 4 console-script tests skip unless the wheel bundles the binary)
+pytest tests/ -v   # 160 tests (32 API + 23 parity/shape + 82 CLI-option parity + 18 Biopython interop + 5 console script; the console-script tests skip unless the binary is bundled)
 ```
+
+`maturin develop` installs the extension module but not the bundled CLI; to
+get the `mafft-rs` console script (and run the console-script tests), copy the
+binary in first: `mkdir -p python/pymafft/_bin && cp ../../target/release/mafft-rs python/pymafft/_bin/`.
+If you use [uv](https://docs.astral.sh/uv/), `uv venv` / `uv pip install`
+work in place of the `venv` / `pip` steps.
 
 ## Upstream MAFFT
 

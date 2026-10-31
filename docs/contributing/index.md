@@ -32,6 +32,28 @@ falls behind upstream, and the bump is a normal PR that re-derives the
 C-canonical fixtures and reruns the BAliBASE sweep. Don't move the
 submodule as a side effect of another change.
 
+### Python bindings
+
+`pymafft` is built with [maturin](https://www.maturin.rs/) into a virtual
+environment. Only the standard library's `venv` and `pip` are needed:
+
+```sh
+cd crates/pymafft
+python -m venv .venv
+source .venv/bin/activate           # Windows: .venv\Scripts\activate
+pip install maturin pytest biopython
+cargo build --release -p mafft-rs   # the CLI the option-parity tests compare against
+maturin develop --release
+pytest tests/ -v
+```
+
+`maturin develop` installs the extension module but not the bundled CLI, so
+the console-script tests skip. To include it, copy the binary in before
+`maturin develop`:
+`mkdir -p python/pymafft/_bin && cp ../../target/release/mafft-rs python/pymafft/_bin/`.
+If you use [uv](https://docs.astral.sh/uv/), `uv venv` / `uv pip install`
+work in place of the `venv` / `pip` steps.
+
 ## Repository layout
 
 ```
@@ -75,6 +97,9 @@ so PyO3 deprecations fail CI as soon as they appear.
 ## Building the docs locally
 
 ```sh
+# `maturin develop` needs an active virtual environment
+python -m venv .venv
+source .venv/bin/activate           # Windows: .venv\Scripts\activate
 pip install mkdocs-material 'mkdocstrings[python]' biopython
 
 # Build the pymafft extension so mkdocstrings can introspect it

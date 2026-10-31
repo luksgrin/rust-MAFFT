@@ -235,3 +235,21 @@ python -m pymafft --help
 
 See the [CLI reference](../cli-reference.md) for the flag list. Any flag
 listed there can also be passed in-process through `pymafft.run`.
+
+## Building from source
+
+From a checkout, with only the standard library's `venv` and `pip`:
+
+```sh
+cd crates/pymafft
+python -m venv .venv
+source .venv/bin/activate           # Windows: .venv\Scripts\activate
+pip install maturin pytest biopython
+cargo build --release -p mafft-rs   # the CLI the option-parity tests compare against
+maturin develop --release
+pytest tests/ -v
+```
+
+`maturin develop` does not bundle the `mafft-rs` console script; see
+[Contributing](../contributing/index.md#python-bindings) for how to include
+it.
