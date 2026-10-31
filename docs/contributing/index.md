@@ -64,7 +64,11 @@ Prerequisites:
   `git submodule update --init` in an existing clone);
 - a C compiler on `$PATH` (`cc` is auto-detected by the `cc` crate) —
   `apt install build-essential`, `xcode-select --install`, or
-  equivalent;
+  equivalent. CI builds the C reference with GCC 13, 14 and 15 on Linux
+  and Apple clang on macOS; any `CC=gcc-NN` works the same way. Do not
+  put a `-std=` flag in `CFLAGS`: the `cc` crate appends `CFLAGS` after
+  the shim's own `-std=c99`, and the upstream sources do not compile as
+  C23 (GCC 15's default);
 - time: the workspace suite takes a few minutes (about 1.5 minutes on an
   Apple M4 with the Rust dependencies already built). The BAliBASE sweep
   runs both implementations on every test set in every mode and takes

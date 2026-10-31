@@ -125,10 +125,16 @@ which leaves the floating-point contraction policy to the compiler:
 |--|--|--|
 | arm64 (Apple Silicon, `make` in-tree) | clang | on the order of a thousand — 1025 in the census that motivated this section; 882 scalar `fmadd`-family (1139 including vector `fmla`/`fmls`) with Apple clang 21, ~1140 in CI |
 | x86-64 (`make` in-tree on Linux) | gcc | 0 |
+| arm64 (Apple Silicon, `make CC=gcc-15` in-tree) | Homebrew GCC 15.2 | 0 |
 
 clang fuses `a*b + c` into a single `fmadd` (one rounding); gcc on
 x86-64 emits a multiply followed by an add (two roundings). Both are
-valid C, and the resulting binaries disagree on some inputs. The known
+valid C, and the resulting binaries disagree on some inputs. The policy
+follows the compiler, not the architecture: GCC in an ISO mode such as
+the Makefile's `-std=c99` does not contract even on arm64, so a GCC build
+on Apple Silicon matches the `.nofma` fixtures (checked with
+`MAFFT_FP_POLICY=nofma scripts/regen_policy_fixtures.sh … check`) and is
+mirrored with `--features fp-contract-none`. The known
 sentinel case is `--bl 50 --retree 2 --maxiterate 0` on the 36-sequence
 `mafft-upstream/test/sample`:
 

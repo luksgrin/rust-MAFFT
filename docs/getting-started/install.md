@@ -119,7 +119,8 @@ cargo test -p mafft-rs --lib        # quick check: unit tests, no C compiler nee
 ```
 
 The full test suite (`cargo test --workspace --exclude pymafft --release`,
-537 tests + 7 ignored) compiles the C reference and takes minutes; see
+537 tests + 7 ignored) compiles the C reference with the host C compiler
+(GCC 13–15 and Apple clang are checked in CI) and takes minutes; see
 [Reproduce the cross-validation suite](../contributing/index.md#reproduce-the-cross-validation-suite).
 
 The `mafft-upstream/` submodule pins the reference C MAFFT version
