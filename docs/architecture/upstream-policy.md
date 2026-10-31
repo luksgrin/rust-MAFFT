@@ -156,12 +156,14 @@ and no other is known (2026-09-06):
 
 - **Two tied-trace residuals**
   ([B](https://github.com/luksgrin/rust-MAFFT#b-intentional-residuals-tied-trace)).
-  `--exp ≥ 4.30` on FFT-NS-2 without refinement (16-line content diff
-  at the same width, 517, and the same score on the 36-seq sample;
-  closes with `--nofft` or any `--maxiterate ≥ 1`), and `--add` with an
-  added sequence whose last residue is zero-scoring (C writes
-  `…KWRR-----X`, rust-MAFFT `…KWRRX-----`). Both are DP tie-breaks on
-  zero-scoring cells with the same width and sum-of-pairs score. They
+  `--exp ≥ 4.30` on FFT-NS-2 without refinement (same width, 517, on
+  the 36-seq sample, 513 of 517 columns identical, `--scoreout` 55049.75
+  for C vs 55081.77 for rust-MAFFT; closes with `--nofft` or any
+  `--maxiterate ≥ 1`), and `--add` with an added sequence whose last
+  residue is zero-scoring (C writes `…KWRR-----X`, rust-MAFFT
+  `…KWRRX-----`). Both are DP tie-breaks on zero-scoring cells at the
+  same width; the shifted residue changes the sum-of-pairs score by a
+  fraction of a percent, so they are not score-equivalent. They
   are carried because the first is below per-step FFI replay resolution
   (each `fft_profile_align` step is byte-identical to C's `Falign`; the
   shift comes from accumulated FP order the replay cannot reproduce) and

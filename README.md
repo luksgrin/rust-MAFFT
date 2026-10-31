@@ -457,11 +457,11 @@ These modes are wired correctly but require third-party binaries not shipped by 
 
 ### B. Intentional residuals (tied-trace)
 
-Two configurations are known to produce a tied-trace divergence from C MAFFT — same alignment width, same sum-of-pairs score, but a residue placed at a neighbouring column due to a DP tie-break on a zero-scoring cell. No realistic workflow hits either:
+Two configurations are known to produce a tied-trace divergence from C MAFFT — same alignment width, a residue placed at a neighbouring column due to a DP tie-break on a zero-scoring cell. The alignments are not equal in score: because the tied cell shifts a residue, the unweighted sum-of-pairs score that `--scoreout` reports differs slightly (0.06 % in the first case). No realistic workflow hits either:
 
 | Configuration | Effect |
 |---------------|--------|
-| `--exp ≥ 4.30` on FFT-NS-2 (no refinement) | 16-line content diff at same width (517) and same score on the 36-seq sample. Default `--exp` is 0; closes with `--nofft` or any `--maxiterate ≥ 1`. |
+| `--exp ≥ 4.30` on FFT-NS-2 (no refinement) | Same width (517) on the 36-seq sample, 513 of 517 columns identical (12 differing FASTA lines); `--scoreout` gives 55049.75 for C and 55081.77 for rust-MAFFT (in-tree arm64 build, 2026-10-31). Default `--exp` is 0; closes with `--nofft` or any `--maxiterate ≥ 1`. |
 | `--add --anysymbol` with an added sequence whose *last* residue is a zero-scoring unusual character (`*` → `X`) | C places it `…KWRR-----X`, rust `…KWRRX-----`. Reproduces with a literal trailing `X` and no `--anysymbol`, so it is a `--add` profile-DP tie-break, not an input-handling bug. Test `add_anysymbol_gapped_existing_with_unusual_new` is `#[ignore]`d with this reason. |
 
 Full diagnostic infrastructure is in place for the first (`RS_DP_DUMP` env var, `exp_residual_dump_compare` and `exp_residual_step10` FFI tests). The divergence is below per-step FFI replay resolution: per-step `fft_profile_align` output is byte-identical to C's `Falign` on the same inputs; the end-to-end shift comes from accumulated FP order in tied DP cells that the per-step replay can't reproduce.
