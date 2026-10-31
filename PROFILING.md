@@ -300,3 +300,104 @@ byte-identical between C, `mafft-rs` and pymafft on all 11 sets;
 `mafft_core::progressive::merge_step_cached`, from n ≈ 50 sequences up),
 which has to be fixed before the `--parttree` column of the full run
 means anything.
+
+## High-throughput workload: thousands of small alignments (issue #23)
+
+The scaling benchmark measures one alignment at a time. Pipelines that
+align *many* small clusters per run — panaroo / Roary aligning every gene
+family of a pangenome, OrthoFinder-style orthogroup alignment, a
+Snakemake / Nextflow rule per cluster — also pay a process spawn and a
+FASTA round-trip per call. `benchmarks/htworkload_corpus.py` builds such
+a workload and `benchmarks/htworkload.py` runs it end to end, several
+ways, timing the whole run. Both docstrings have the details.
+
+**Corpus.** Two sets of real clusters, member lists and per-cluster
+SHA-256 in `benchmarks/htworkload/` (`manifest.tsv`, `clusters_dna.tsv`,
+`orthogroups.txt`, `provenance.json`), FASTA regenerated into
+`target/htworkload_corpus/`:
+
+| Set | Clusters | Sequences | n min / median / mean / max | n = 2–9 / 10–49 / 50–100 | Length (median of cluster medians) |
+|---|---:|---:|---|---|---:|
+| DNA: *S. pneumoniae* gene families | 2695 | 56 658 | 2 / 29 / 21.0 / 100 | 776 / 1903 / 16 | 738 nt |
+| Protein: OrthoDB v13 Saccharomycetaceae orthogroups | 1500 | 49 168 | 5 / 30.5 / 32.8 / 60 | 418 / 472 / 610 | 380 aa |
+
+* DNA (primary): the CDS of 30 RefSeq complete genomes of
+  *Streptococcus pneumoniae* (NCBI Datasets v2, drawn with a fixed seed
+  from the 292 available), without pseudogenes, partial CDS and CDS
+  < 90 nt, translated and clustered with MMseqs2 18
+  (`easy-cluster --min-seq-id 0.7 -c 0.8 --cov-mode 0 --cluster-mode 0
+  -s 7.5`: panaroo's 70 % family threshold); the families' DNA
+  sequences, singletons dropped, five families above 100 members
+  subsampled to 100. The `.fa` files in
+  `crates/mafft-bin/tests/fixtures/panaroo_tiny_dna_clusters/` are the
+  same kind of input.
+* Protein (secondary): 1500 OrthoDB v13 groups with 5–60 genes at the
+  Saccharomycetaceae level (60 species), drawn with a fixed seed from
+  the 4074 of that size.
+
+```sh
+.venv/bin/python benchmarks/htworkload_corpus.py build    # needs no MMseqs2
+.venv/bin/python benchmarks/htworkload_corpus.py verify
+```
+
+**What is run.** Every cluster is aligned with `--auto --adjustdirection
+--thread 1 --nuc` (DNA, the panaroo command line of issue #1) or
+`--auto --thread 1` (protein; without `--thread`, C takes its
+single-threaded path but `mafft-rs` uses every core inside each
+alignment), and with the same flags as `pymafft.align()` keywords. At
+these sizes `--auto` picks L-INS-i for almost every cluster.
+
+| `--impl` | What it is | What it measures |
+|---|---|---|
+| `snake-c` | `benchmarks/htworkload/Snakefile`, one job per cluster calling the in-tree C wrapper, `snakemake --cores W` | the baseline: a workflow manager around C MAFFT |
+| `snake-rust` | the same Snakefile with `impl=rust` (`mafft-rs`) | the CLI swap alone |
+| `loop-c`, `loop-rust` | a Python loop (thread pool of W) running the CLI as a subprocess per cluster | spawn + FASTA round-trip without the Snakemake scheduler: `snake-*` minus `loop-*` is scheduler overhead |
+| `py-serial` | one Python process, `pymafft.align()` per cluster (W = 1) | no spawn, no temp files |
+| `py-process` | `pymafft.align()` in a `ProcessPoolExecutor(W)` | the native API at W workers |
+| `py-thread` | `pymafft.align()` in a `ThreadPoolExecutor(W)` | whether the released GIL lets threads match processes |
+
+Each (molecule, impl, workers) cell is one whole run, measured as a
+process tree: `/usr/bin/time -l` around the driver (around `snakemake`
+for the Snakemake paths) gives wall-clock, user + system CPU over every
+process of the run and the peak RSS of the largest single process;
+`tree_rss_mb` is the peak summed RSS of the tree, sampled with `ps`
+twice a second. Every output is then hashed and checked against the C
+outputs of the same clusters (`identical_c`: byte-identical files for
+the Rust CLI; same names and gapped sequences for pymafft, which does
+not wrap lines).
+
+**Running.** Prerequisites as for the scaling benchmark, plus
+`snakemake` in the venv (`.venv/bin/pip install maturin biopython
+snakemake`). On a quiet machine:
+
+```sh
+.venv/bin/python benchmarks/htworkload.py run --smoke          # 50 of the smaller clusters per molecule, W = 1 and 4
+.venv/bin/python benchmarks/htworkload.py run --reps 3          # full workload, W = 1, 4, 8
+.venv/bin/python benchmarks/htworkload.py summarize benchmarks/results/htworkload_darwin-arm64_<date>.tsv
+```
+
+`summarize` prints impl × workers → wall-clock, CPU, peak RSS, wall-clock
+per alignment and the speed-up against `snake-c` at the same and at one
+worker. Cells are cached under `target/htworkload/<host>/full/`, so an
+interrupted run resumes; `--molecule`, `--impl`, `--workers` and
+`--limit N` select subsets. On macOS wrap the run in `caffeinate -i`
+(idle sleep pauses the clock and the work alike, but stretches the run).
+
+Cost: C spends about 2 s of CPU per DNA cluster and 6 s per orthogroup
+(`--auto` → L-INS-i), so one `snake-c` cell at one worker is ≈ 1.6 h
+(DNA) and ≈ 2.5 h (protein); the default grid (17 cells per molecule)
+is on the order of a day per replicate. `--molecule dna --reps 1` is
+the primary result; add protein and replicates as time allows.
+
+`benchmarks/results/htworkload_smoke_2026-10-31.tsv` is the pipeline
+check: 50 of the smaller clusters per molecule, every path at 1 and 4
+workers, one replicate, under `nice -n 19` on a machine busy with other
+jobs, so its times only show that the measurements are wired up. Every
+path produced all 100 alignments. C outputs agree across the Snakemake
+and loop paths; Rust (CLI and pymafft) matches C on 50/50 orthogroups and
+49/50 DNA clusters. The exception, `dna_01715` (three CDS of 3.6–5.0 kb,
+`g01_1465`, `g02_1487`, `g11_1500`), is a genuine divergence on the FFT
+path: it differs with `--retree 1` / `--retree 2` (with or without
+`--maxiterate`, `--thread 1` or none) and agrees with `--nofft`,
+`--localpair` and `--globalpair`. The full run reports how many more
+clusters behave like it.
