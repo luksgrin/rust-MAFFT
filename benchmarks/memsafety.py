@@ -14,7 +14,10 @@ binary. Per run the harness records:
   (`Segmentation fault`, `Abort trap`, ...) and a short stderr excerpt;
 * Rust: exit status, stdout size, wall time, outcome (`ok`, `ok-empty`, `error`, `panic`,
   `signal`, `timeout`) and a short stderr excerpt;
-* `identical`: whether stdout is byte-identical when both exit 0.
+* `identical`: whether stdout is byte-identical when both exit 0, and
+  `residues`: whether the two outputs hold the same residues per record
+  (gaps and order ignored), which separates gap-placement differences
+  from lost or altered sequence data.
 
 Rows are appended to `benchmarks/results/memsafety_<date>.tsv` as runs
 finish; re-running skips every (corpus, case, flags) already present, so an
@@ -74,7 +77,7 @@ ASAN_PREFIX = REPO / "target" / "asan" / "mafft-bin"
 COLUMNS = [
     "corpus", "case", "flags", "input",
     "c_exit", "c_out", "c_secs", "c_asan", "c_ubsan", "c_signal", "c_diag", "c_stderr",
-    "rs_exit", "rs_out", "rs_secs", "rs_outcome", "rs_stderr", "identical",
+    "rs_exit", "rs_out", "rs_secs", "rs_outcome", "rs_stderr", "identical", "residues",
 ]
 DEFAULT_CORPORA = ["input_handling", "sample", "clusters", "adversarial", "sample_add", "mutants", "cases"]
 
@@ -172,6 +175,18 @@ def excerpt(text: str, n: int = 3, width: int = 240) -> str:
     return " | ".join(keep[-n:])[:width].replace("\t", " ")
 
 
+def residue_strings(fasta: bytes) -> list[bytes]:
+    """Each record's residues (gaps removed, upper case), sorted: equal for two
+    outputs that hold the same sequences whatever the gap placement or order."""
+    recs: list[bytearray] = []
+    for line in fasta.split(b"\n"):
+        if line.startswith(b">"):
+            recs.append(bytearray())
+        elif recs:
+            recs[-1] += line.strip().replace(b"-", b"").upper()
+    return sorted(bytes(r) for r in recs)
+
+
 def run(cmd: list[str], env: dict[str, str], timeout: float, cwd: Path) -> tuple[int | None, float, bytes, str]:
     t0 = time.monotonic()
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
@@ -241,9 +256,10 @@ def run_job(job, args, logdir: Path) -> dict[str, str]:
         outcome = "ok" if r_out.strip() else "ok-empty"
     else:
         outcome = "error"
-    identical = ""
+    identical = residues = ""
     if c_code == 0 and r_code == 0:
         identical = "yes" if c_out == r_out else "no"
+        residues = "same" if c_out == r_out or residue_strings(c_out) == residue_strings(r_out) else "differ"
         if c_out != r_out:
             (logs / f"{stem}.c.out").write_bytes(c_out)
             (logs / f"{stem}.rs.out").write_bytes(r_out)
@@ -256,6 +272,7 @@ def run_job(job, args, logdir: Path) -> dict[str, str]:
         "c_signal": sig.group(1) if sig else "", "c_diag": diag[:300], "c_stderr": excerpt(c_err),
         "rs_exit": "timeout" if r_code is None else str(r_code), "rs_out": str(len(r_out)), "rs_secs": f"{r_secs:.2f}",
         "rs_outcome": outcome, "rs_stderr": excerpt(r_err), "identical": identical,
+        "residues": residues,
     }
 
 
@@ -265,7 +282,7 @@ def summarise(path: Path) -> None:
     by: dict[str, dict[str, int]] = {}
     for r in rows:
         s = by.setdefault(r["corpus"], dict(runs=0, c_ok=0, c_fail=0, san=0, sig=0, rs_ok=0, rs_err=0,
-                                             rs_bad=0, same=0, diff=0, agree=0))
+                                             rs_bad=0, same=0, diff=0, res_diff=0, agree=0))
         s["runs"] += 1
         c_ok = r["c_exit"] == "0" and r["c_out"] != "0"
         s["c_ok" if c_ok else "c_fail"] += 1
@@ -274,6 +291,7 @@ def summarise(path: Path) -> None:
         s["rs_ok" if r["rs_outcome"].startswith("ok") else "rs_err" if r["rs_outcome"] == "error" else "rs_bad"] += 1
         s["same"] += int(r["identical"] == "yes")
         s["diff"] += int(r["identical"] == "no")
+        s["res_diff"] += int(r.get("residues") == "differ")
         s["agree"] += int(c_ok == r["rs_outcome"].startswith("ok"))
     cols = list(next(iter(by.values())).keys()) if by else []
     print("corpus\t" + "\t".join(cols))
