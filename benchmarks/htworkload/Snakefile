@@ -1,0 +1,54 @@
+# One MAFFT job per cluster, the way a pangenome / orthology workflow runs
+# it (issue #23). `benchmarks/htworkload.py run --impl snake-c|snake-rust`
+# times this; by hand:
+#
+#   snakemake -s benchmarks/htworkload/Snakefile --cores 4 \
+#       --config impl=rust clusters=target/htworkload/clusters.tsv outdir=/tmp/out
+
+import os
+import shlex
+
+configfile: os.path.join(workflow.basedir, "config.yaml")
+
+REPO = os.path.abspath(os.path.join(workflow.basedir, "..", ".."))
+
+
+def repo_path(p):
+    return p if os.path.isabs(p) else os.path.join(REPO, p)
+
+
+OUTDIR = repo_path(config["outdir"])
+CLUSTERS = {}
+with open(repo_path(config["clusters"])) as fh:
+    for line in fh:
+        if line.strip():
+            cid, molecule, fasta = line.rstrip("\n").split("\t")
+            CLUSTERS[cid] = (molecule, repo_path(fasta))
+
+if config["impl"] == "c":
+    MAFFT = "MAFFT_BINARIES={} {}".format(shlex.quote(repo_path(config["mafft_binaries"])),
+                                          shlex.quote(repo_path(config["mafft"])))
+elif config["impl"] == "rust":
+    MAFFT = shlex.quote(repo_path(config["mafft_rs"]))
+else:
+    raise ValueError("config impl must be 'c' or 'rust', got {!r}".format(config["impl"]))
+
+wildcard_constraints:
+    cluster="[^/]+"
+
+
+rule all:
+    input:
+        expand(os.path.join(OUTDIR, "{cluster}.fa"), cluster=sorted(CLUSTERS))
+
+
+rule align:
+    input:
+        lambda wc: CLUSTERS[wc.cluster][1]
+    output:
+        os.path.join(OUTDIR, "{cluster}.fa")
+    params:
+        cmd=lambda wc: "{} {}".format(MAFFT, config["flags"][CLUSTERS[wc.cluster][0]])
+    threads: 1
+    shell:
+        "{params.cmd} {input:q} > {output:q} 2> /dev/null"
