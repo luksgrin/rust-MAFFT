@@ -22,7 +22,9 @@ mafft-types = { path = "../mafft-types", version = "0.2.0" }
 # runs through `mafft_rs::run_from_seqs`, so flag semantics are decided in
 # exactly one place and the Python output is byte-identical to the CLI's.
 mafft-rs = { path = "../mafft-bin", version = "0.2.0" }
-pyo3 = { version = "0.30", features = ["extension-module"] }
+# `abi3-py39`: build against the stable ABI, so one wheel per target serves
+# every CPython >= 3.9 (the `requires-python` floor in pyproject.toml).
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }
 
 # Floating-point contraction policy (see `mafft_types::fp`). Mutually
 # exclusive; with neither, the build fuses `a*b+c` on aarch64 (mirroring the

@@ -561,8 +561,8 @@ git commit -m "Bump MAFFT upstream to <version>"
 | Workflow | Triggers | What |
 |----------|----------|------|
 | **CI** (`ci.yml`, via reusable `build-test.yml`) | push to main, PR to any branch | Build the in-tree C reference and the Rust workspace on ubuntu x86-64 and macOS arm64; full test suite (lib + integration + FFI) on both; FMA census of the C binaries; `--bl 50` sentinel diff vs same-platform C; `regen_policy_fixtures.sh check`; FP-policy cross-check (`fp-contract-none` fixtures on arm64); C-binary regression tests on x86-64 |
-| **Python** (`python.yml`) | push to main, PR to any branch | Smoke build: one wheel per target (Linux x86-64/aarch64, macOS x86-64/arm64, Windows) for Python 3.12 only, sdist, wheel tests on 3.12 |
-| | release, manual dispatch | Full matrix: 5 targets x Python 3.9-3.13, sdist, wheel tests on 3.9/3.12/3.13; publish to PyPI on release |
+| **Python** (`python.yml`) | push to main, PR to any branch | `cargo check -p pymafft` with `-D warnings`; one abi3 wheel per target (Linux x86-64/aarch64, macOS x86-64/arm64, Windows, `cp39-abi3`, any CPython >= 3.9), sdist, wheel tests on 3.12 |
+| | release, manual dispatch | Same 5 wheels + sdist, wheel tests on 3.9/3.12/3.14 (the same wheel on each); publish to PyPI on release |
 | **Documentation** (`docs.yml`) | push to main and PRs touching `docs/**`, `mkdocs.yml`, `crates/mafft-bin/src/**`, `crates/pymafft/**`, `scripts/gen-cli-reference.sh`; release; manual dispatch | Build the mkdocs site (regenerates the CLI reference, introspects pymafft); deploy to GitHub Pages from main/release/dispatch |
 | **Check MAFFT upstream** (`check-mafft-upstream.yml`) | weekly schedule, manual dispatch | Compare the `mafft-upstream` pin against upstream HEAD and report drift (never auto-updates) |
 | **Release** (`release.yml`) | GitHub release | Build `mafft-rs` binaries for 5 platforms, attach to release |
