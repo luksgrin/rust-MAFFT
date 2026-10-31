@@ -168,10 +168,14 @@ be updated. Until then, please:
 
 1. **Always cite Katoh & Standley 2013** — it is the algorithmic
    foundation.
-2. Optionally cite the rust-MAFFT GitHub release if you want to pin a
-   reproducible version of the port (e.g. *Goiriz, rust-MAFFT v0.2.0,
-   https://github.com/luksgrin/rust-MAFFT, 2026*). DOI-minting via
-   Zenodo is on the roadmap.
+2. Cite the Zenodo record to pin a reproducible version of the port.
+   Every GitHub release is archived automatically; the concept DOI
+   [10.5281/zenodo.20623683](https://doi.org/10.5281/zenodo.20623683)
+   always resolves to the latest release, and each release has its own
+   version DOI (v0.2.0:
+   [10.5281/zenodo.22546977](https://doi.org/10.5281/zenodo.22546977)).
+   For example: *Goiriz, L. (2026). rust-MAFFT (v0.2.0). Zenodo.
+   https://doi.org/10.5281/zenodo.22546977*.
 
 ## Why both should be cited
 

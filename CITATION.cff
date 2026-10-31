@@ -42,6 +42,16 @@ authors:
     email: lucas.goiriz@csic.es
 version: "0.2.0"
 date-released: "2026-09-06"
+# Zenodo archives every GitHub release. The concept DOI always resolves
+# to the latest version; the version DOI pins this release.
+doi: 10.5281/zenodo.22546977
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.20623683
+    description: Concept DOI (all versions)
+  - type: doi
+    value: 10.5281/zenodo.22546977
+    description: Version DOI (v0.2.0)
 # SPDX identifier (Zenodo's cffconvert rejects expressions like
 # "MIT AND BSD-3-Clause" — keep this a single SPDX ID for compat).
 # The BSD-3-Clause covers the algorithmic constructs ported from
