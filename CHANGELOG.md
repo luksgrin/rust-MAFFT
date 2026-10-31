@@ -12,6 +12,19 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Added
 
+- **High-throughput workload benchmark** (`benchmarks/htworkload_corpus.py`,
+  `benchmarks/htworkload.py`, `benchmarks/htworkload/Snakefile`, issue
+  #23). A corpus of 2695 *S. pneumoniae* gene families (30 RefSeq
+  genomes, MMseqs2 at 70 % identity, 2–100 sequences each) and 1500
+  OrthoDB Saccharomycetaceae orthogroups (5–60 sequences), with member
+  lists and checksums in `benchmarks/htworkload/`. The driver aligns
+  every cluster with `--auto --adjustdirection --thread 1 --nuc` /
+  `--auto --thread 1` through Snakemake (C wrapper or `mafft-rs`), a
+  plain subprocess loop, and `pymafft.align()` serially and in process /
+  thread pools, at 1 / 4 / 8 workers, recording wall-clock, CPU, peak
+  RSS and byte-identity with C for the whole run. Pipeline check in
+  `benchmarks/results/htworkload_smoke_2026-10-31.tsv`; how to run the
+  full workload in `PROFILING.md`.
 - **Scaling benchmark corpus and driver** (`benchmarks/scaling_corpus.py`,
   `benchmarks/scaling.py`, issue #22). Ten Pfam families (full-length
   UniProtKB sequences) and RefSeq 16S rRNA, deterministically subsampled
