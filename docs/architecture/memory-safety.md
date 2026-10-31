@@ -152,7 +152,7 @@ undefined behaviour. Three were silent wrong results.
 | R1 | an input record with no residues (empty record, gap-only, `*`-only, digits-only; a duplicated header line) | **every sequence printed empty**, exit 0 | byte-identical to C (gap-only row for the empty record) |
 | R2 | DNA with a long homopolymer, e.g. 300 × `A` + 300 nt, FFT-NS-1/2/i or `--memsave` | **residues silently dropped**, exit 0 (11 of 1195 in the fixture; 1254 of 29,476 in the low-complexity set) | every residue kept; gap placement inside the run still differs from C (608 vs 600 columns) |
 | R3 | `--add` / `--addfragments` onto rows of different lengths | panic: index out of bounds, `add.rs` `commongappick` | exit 1 with C's message, `The original N sequences must be aligned` |
-| R4 | `--add` of the last 6 sample sequences onto 30 aligned rows | **`=` characters in the output** (3 rows, 5 each), exit 0 | open |
+| R4 | `--add` of the last 6 sample sequences onto 30 aligned rows | **`=` characters in the output** (3 rows, 5 each), exit 0 | byte-identical to C (fixed in #49) |
 
 **R1 and R2** share one cause. `profile_align`, `fft_profile_align` and
 `msalignmm` returned no operations when one profile had zero columns, so
@@ -175,13 +175,21 @@ prints C's message and exits 1 on both paths. Stdout is empty, as in C.
 Only the exit status differs from the `disttbfast` path. Test:
 `add_to_unaligned_existing_is_rejected`.
 
-**R4** is not fixed here. The `=` is the new-gap marker of the
-`findnewgaps` / `insertnewgaps` port (`mafft-core/src/progressive.rs`).
-That code states it skips C's `profilealignment` step for the compression
-case, and the marker reaches the output. C's output on the same input
-keeps every residue and has no `=`. The reproducer, with plain names, is
-`benchmarks/memsafety_cases/add_sentinel_*.fa`. The `sample_add`
-`--add` runs show the same defect.
+**R4** is fixed in #49 (issue #40). When a new-gap region borders
+restored common gaps, C's `insertnewgaps` realigns it with
+`profilealignment`, which marks the existing side with `=`. C clears
+the marks after every `--add` merge (`eq2dashmatometehayaku`,
+`disttbfast.c:2988`, `tbfast.c:1705`). The port in
+`mafft-core/src/progressive.rs` skipped that step, so later merges
+aligned `=` as a residue and it was printed. It is now cleared as in C.
+`mafft-rs` also refuses to write an alignment holding `=`, `<` or `>`,
+none of which the reader admits as a residue: it exits 1 with an
+internal-error message. The reproducer is
+`benchmarks/memsafety_cases/add_sentinel_*.fa`, and its `--add`,
+`--add --keeplength` and `--add --anysymbol` output is now
+byte-identical to C. It minimises to 2 existing rows + 1 new sequence.
+Tests: `add_sentinel_matches_c` (30 + 6) and
+`add_sentinel_minimal_byte_identical_to_c` (2 + 1).
 
 ## No diagnostic
 
@@ -234,9 +242,12 @@ parity gaps, and none is undefined behaviour:
 - **Byte-identity outside the parity corpora.** Both succeed but the bytes
   differ for: the 3000 × 30 aa set (width 121 vs 129), the 120 kb sequence
   (a few gap moves), the low-complexity `--adjustdirection` set, `--treein`
-  with `nan`/`inf` branch lengths, and the `sample_add` `--add` /
-  `--addfragments` runs. `residues` is `same` for all of these except
-  R4. They contradict the statement in
+  with `nan`/`inf` branch lengths, and the `sample_add` runs other than
+  `--add` and `--add --keeplength`, which match since #49:
+  `--add --maxiterate 2`, `--add --reorder`, `--addfragments` and
+  `--addfragments --keeplength`. These also differ on the canonical
+  30 + 6 `--add` fixture. `residues` is `same` for all of them. They
+  contradict the statement in
   [upstream policy](upstream-policy.md#bug-fix-direction) that no
   other divergence is known, and need their own issues.
 
