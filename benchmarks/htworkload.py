@@ -6,11 +6,16 @@ Aligns every cluster of the workload corpus (`benchmarks/htworkload_corpus.py`:
 one alignment per cluster, with the same flags every way:
 
     dna      --auto --adjustdirection --thread 1 --nuc   (the panaroo command)
-    protein  --auto
+    protein  --auto --thread 1
 
     pymafft.align(seqs, strategy="auto", adjust_direction=True, threads=1,
                   seq_type="nuc")      # dna
-    pymafft.align(seqs, strategy="auto")   # protein
+    pymafft.align(seqs, strategy="auto", threads=1)   # protein
+
+`--thread 1` on the protein side too: without it C takes its
+single-threaded no-thread path but `mafft-rs` / pymafft (same output)
+use every core inside each alignment, so `workers` would no longer be the
+only parallelism.
 
 Implementations (`--impl`):
 
@@ -102,10 +107,10 @@ import htworkload_corpus as corpus  # noqa: E402
 
 SNAKEFILE = REPO / "benchmarks" / "htworkload" / "Snakefile"
 CLI_FLAGS = {"dna": ["--auto", "--adjustdirection", "--thread", "1", "--nuc"],
-             "protein": ["--auto"]}
+             "protein": ["--auto", "--thread", "1"]}
 PY_KW = {"dna": {"strategy": "auto", "adjust_direction": True, "threads": 1,
                  "seq_type": "nuc"},
-         "protein": {"strategy": "auto"}}
+         "protein": {"strategy": "auto", "threads": 1}}
 IMPLS = ("snake-c", "snake-rust", "loop-c", "loop-rust", "py-serial", "py-process",
          "py-thread")
 C_IMPLS = ("snake-c", "loop-c")

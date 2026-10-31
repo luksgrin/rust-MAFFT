@@ -14,7 +14,9 @@ mafft: mafft-upstream/scripts/mafft
 mafft_binaries: mafft-upstream/binaries
 mafft_rs: target/release/mafft-rs
 
-# Per-molecule flags. DNA is the panaroo command line (issue #1).
+# Per-molecule flags. DNA is the panaroo command line (issue #1); protein
+# pins --thread 1 as well, so each job uses one core (mafft-rs without
+# --thread would use all of them).
 flags:
   dna: "--auto --adjustdirection --thread 1 --nuc"
-  protein: "--auto"
+  protein: "--auto --thread 1"
