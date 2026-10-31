@@ -60,7 +60,8 @@ USAGE
     (cd crates/pymafft && ../../.venv/bin/maturin develop --release)
     .venv/bin/python benchmarks/htworkload_corpus.py build
 
-    # Pipeline check: 50 clusters per molecule, every impl, workers 1 and 4
+    # Pipeline check: 50 of the smaller clusters per molecule, every impl,
+    # workers 1 and 4
     .venv/bin/python benchmarks/htworkload.py run --smoke
 
     # Full workload on a quiet machine (cached per cell under
@@ -320,7 +321,12 @@ def cells(args) -> list[tuple[str, str, int]]:
 def select_clusters(args, mol: str) -> list[dict]:
     rows = [r for r in corpus.read_manifest() if r["molecule"] == mol]
     if args.smoke:
-        rows = sorted(random.Random(f"htworkload:smoke:{mol}").sample(rows, SMOKE_N),
+        # From the cheaper half (n x median length at most the median), so
+        # the pipeline check stays short; the full run has every cluster.
+        size = sorted(int(r["n"]) * int(r["median_len"]) for r in rows)
+        cut = size[len(size) // 2]
+        pool = [r for r in rows if int(r["n"]) * int(r["median_len"]) <= cut]
+        rows = sorted(random.Random(f"htworkload:smoke:{mol}").sample(pool, SMOKE_N),
                       key=lambda r: r["cluster"])
     elif args.limit:
         rows = rows[:args.limit]

@@ -371,7 +371,7 @@ not wrap lines).
 snakemake`). On a quiet machine:
 
 ```sh
-.venv/bin/python benchmarks/htworkload.py run --smoke          # 50 clusters per molecule, W = 1 and 4
+.venv/bin/python benchmarks/htworkload.py run --smoke          # 50 of the smaller clusters per molecule, W = 1 and 4
 .venv/bin/python benchmarks/htworkload.py run --reps 3          # full workload, W = 1, 4, 8
 .venv/bin/python benchmarks/htworkload.py summarize benchmarks/results/htworkload_darwin-arm64_<date>.tsv
 ```
