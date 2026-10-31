@@ -303,6 +303,9 @@ means anything.
 
 ## High-throughput workload: thousands of small alignments (issue #23)
 
+The full timed run is a day-long job on an idle machine; the step-by-step
+hand-over is in [`benchmarks/htworkload/RUNBOOK.md`](benchmarks/htworkload/RUNBOOK.md).
+
 The scaling benchmark measures one alignment at a time. Pipelines that
 align *many* small clusters per run — panaroo / Roary aligning every gene
 family of a pangenome, OrthoFinder-style orthogroup alignment, a
