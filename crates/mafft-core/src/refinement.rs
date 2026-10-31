@@ -262,6 +262,24 @@ pub fn iterative_refine(
     params: &RefinementParams,
     constraints: Option<&LocalHomologyTable>,
 ) -> usize {
+    let (iterations, report) =
+        iterative_refine_reported(alignment, topology, scoring, params, constraints);
+    if let Some(line) = report {
+        eprintln!("{line}");
+    }
+    iterations
+}
+
+/// `iterative_refine` returning its `MAFFT_RS_REFINE_STATS` line instead
+/// of printing it, so callers refining independent segments in parallel
+/// can print the lines in segment order.
+fn iterative_refine_reported(
+    alignment: &mut MultipleAlignment,
+    topology: &Topology,
+    scoring: &ScoringContext,
+    params: &RefinementParams,
+    constraints: Option<&LocalHomologyTable>,
+) -> (usize, Option<String>) {
     // Thin reporting wrapper so every exit path (max-iterations, convergence,
     // oscillation) is counted in one place — see `refine_stats_enabled`.
     let nseq0 = alignment.nseq();
@@ -269,13 +287,11 @@ pub fn iterative_refine(
     let mut counters = RefineCounters { exit: "maxiter", ..Default::default() };
     let iterations =
         iterative_refine_inner(alignment, topology, scoring, params, constraints, &mut counters);
-    if refine_stats_enabled() {
-        eprintln!(
-            "refine: nseq={nseq0} len={len0} cycles={iterations}/{} visited={} changed={} accepted={} exit={}",
-            params.max_iterations, counters.visited, counters.branches, counters.accepted, counters.exit,
-        );
-    }
-    iterations
+    let report = refine_stats_enabled().then(|| format!(
+        "refine: nseq={nseq0} len={len0} cycles={iterations}/{} visited={} changed={} accepted={} exit={}",
+        params.max_iterations, counters.visited, counters.branches, counters.accepted, counters.exit,
+    ));
+    (iterations, report)
 }
 
 /// Everything one refinement branch computes from the alignment it is
@@ -2327,13 +2343,15 @@ pub fn segmented_iterative_refine(
         );
     }
 
-    let mut total_iters = 0usize;
-    let mut concat: Vec<Vec<u8>> = vec![Vec::new(); nseq];
-
-    for w in anchors.windows(2) {
-        let (start, end) = (w[0], w[1]);
-        if start >= end { continue; }
-
+    // Segments are refined independently of each other (each starts from
+    // its own slice of the input alignment), so they run on the pool; the
+    // results land in per-segment slots and are concatenated in order.
+    use rayon::prelude::*;
+    let windows: Vec<(usize, usize)> = anchors.windows(2)
+        .map(|w| (w[0], w[1]))
+        .filter(|&(start, end)| start < end)
+        .collect();
+    let refine_segment = |&(start, end): &(usize, usize)| {
         let seg_seqs: Vec<Vec<u8>> = alignment.sequences.iter()
             .map(|s| s[start..end].to_vec())
             .collect();
@@ -2345,11 +2363,24 @@ pub fn segmented_iterative_refine(
             guide_tree: None,
             first_pass_sequences: None, distance_matrix: None,
         };
+        let (iters, report) =
+            iterative_refine_reported(&mut seg_msa, topology, scoring, params, constraints);
+        (seg_msa.sequences, iters, report)
+    };
+    let segments: Vec<(Vec<Vec<u8>>, usize, Option<String>)> = if speculation_width() > 1 {
+        windows.par_iter().map(refine_segment).collect()
+    } else {
+        windows.iter().map(refine_segment).collect()
+    };
 
-        let iters = iterative_refine(&mut seg_msa, topology, scoring, params, constraints);
+    let mut total_iters = 0usize;
+    let mut concat: Vec<Vec<u8>> = vec![Vec::new(); nseq];
+    for (seg_seqs, iters, report) in segments {
+        if let Some(line) = report {
+            eprintln!("{line}");
+        }
         total_iters += iters;
-
-        for (i, seq) in seg_msa.sequences.iter().enumerate() {
+        for (i, seq) in seg_seqs.iter().enumerate() {
             concat[i].extend_from_slice(seq);
         }
     }
