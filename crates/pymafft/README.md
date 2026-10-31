@@ -17,6 +17,13 @@ Full documentation: <https://luksgrin.github.io/rust-MAFFT/> (the
 [Python API reference](https://luksgrin.github.io/rust-MAFFT/python-api/) and
 the [CLI reference](https://luksgrin.github.io/rust-MAFFT/cli-reference/)).
 
+Check that the install works (takes seconds; no compiler needed):
+
+```bash
+python -c "import pymafft; print(pymafft.align(['ACDEFGHIK', 'ACDEFHIK', 'ACDHIK']).to_fasta())"
+mafft-rs --version
+```
+
 ## Quick start
 
 ```python

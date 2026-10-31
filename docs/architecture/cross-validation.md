@@ -97,9 +97,25 @@ When step 4 fails, you have a localized bug. Most of the residual
 parity bugs that took byte-identity from 95% to 100% were found this
 way.
 
-## Running the suite
+## Reproducing the suite
+
+This is a contributor task, separate from checking an install (see
+[Verify your installation](../getting-started/install.md#verify-your-installation),
+which takes seconds and needs no C compiler). Before running it you
+need:
+
+- the `mafft-upstream/` submodule checked out
+  (`git submodule update --init`);
+- a C compiler on `$PATH`: the first test build compiles the C sources
+  through `mafft-c-bindings/build.rs`;
+- a few minutes for the whole workspace (about 1.5 minutes on an Apple
+  M4 with the Rust dependencies already built; longer from a cold
+  build).
 
 ```sh
+# The whole workspace, as in the README and Contributing
+cargo test --workspace --exclude pymafft --release
+
 # All tests (workspace, release mode — the FFI shim is opt-level=3)
 cargo test --workspace --release --tests
 
@@ -117,6 +133,10 @@ cargo test -p mafft-core --release --test cross_validate_fft -- fft_port_matches
 # see "Platform-relative comparison" above)
 cargo test -p mafft-core --release --features fp-contract-none --test end_to_end
 ```
+
+The fixture regeneration check (`scripts/regen_policy_fixtures.sh`) and
+the BAliBASE sweep (`scripts/balibase_parity.py`) are covered in
+[Contributing](../contributing/index.md#reproduce-the-cross-validation-suite).
 
 ## CI integration
 

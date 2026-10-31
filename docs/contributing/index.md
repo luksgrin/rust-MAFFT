@@ -14,16 +14,14 @@ cd rust-MAFFT
 # Sanity-build the Rust workspace
 cargo build --workspace --release
 
-# Full test suite (537 tests + 7 ignored across 48 suites; builds the
-# C reference in-tree on the first run)
-cargo test --workspace --exclude pymafft --release
+# Quick check: the CLI crate's unit tests (no C compiler needed)
+cargo test -p mafft-rs --lib
 ```
 
 The `mafft-upstream/` submodule pins the reference C MAFFT version that
 the [cross-validation harness](../architecture/cross-validation.md)
-builds against. You need a C compiler on `$PATH` (`cc` is auto-detected
-by the `cc` crate) — `apt install build-essential`, `xcode-select
---install`, or equivalent.
+builds against. The full test suite needs it, plus a C compiler; see
+[Reproduce the cross-validation suite](#reproduce-the-cross-validation-suite).
 
 The pin only moves through the procedure in
 [Upstream policy](../architecture/upstream-policy.md#upgrade-procedure):
@@ -53,6 +51,73 @@ the console-script tests skip. To include it, copy the binary in before
 `mkdir -p python/pymafft/_bin && cp ../../target/release/mafft-rs python/pymafft/_bin/`.
 If you use [uv](https://docs.astral.sh/uv/), `uv venv` / `uv pip install`
 work in place of the `venv` / `pip` steps.
+
+## Reproduce the cross-validation suite
+
+This re-checks rust-MAFFT against C MAFFT 7.526. It is not needed to use
+the package; to check an install, see
+[Verify your installation](../getting-started/install.md#verify-your-installation).
+
+Prerequisites:
+
+- the `mafft-upstream/` submodule (`git clone --recurse-submodules`, or
+  `git submodule update --init` in an existing clone);
+- a C compiler on `$PATH` (`cc` is auto-detected by the `cc` crate) —
+  `apt install build-essential`, `xcode-select --install`, or
+  equivalent;
+- time: the workspace suite takes a few minutes (about 1.5 minutes on an
+  Apple M4 with the Rust dependencies already built). The BAliBASE sweep
+  runs both implementations on every test set in every mode and takes
+  much longer.
+
+Results are relative to the C build on your platform; see
+[Byte-identity is per platform build](../architecture/byte-identity.md#byte-identity-is-per-platform-build).
+
+### Workspace suite
+
+```sh
+# 537 tests + 7 ignored across 48 suites; builds the C reference in-tree
+# (mafft-c-bindings/build.rs) on the first run
+cargo test --workspace --exclude pymafft --release
+```
+
+[Cross-validation](../architecture/cross-validation.md#reproducing-the-suite)
+lists how to run a single layer, file or test.
+
+### FP-policy variants
+
+```sh
+# Fixture tests under the other floating-point contraction policy (on an
+# arm64 host; use fp-contract-fma on x86-64). The FFI tests that compare
+# against the in-tree C build skip when the policies do not match.
+cargo test --workspace --exclude pymafft --release --features fp-contract-none
+
+# Re-derive the policy-sensitive fixtures from the in-tree C build and diff
+# them against the checked-in variant for this host (`write` overwrites)
+make -C mafft-upstream/core
+scripts/regen_policy_fixtures.sh mafft-upstream/scripts/mafft check
+```
+
+### BAliBASE sweep
+
+BAliBASE itself is not in the repository; the docstring of
+`scripts/balibase_parity.py` says where to get it and the layout it
+expects. The sweep compares `target/release/mafft-rs` against the in-tree
+C build, mode by mode:
+
+```sh
+make -C mafft-upstream/core
+export MAFFT_BINARIES="$PWD/mafft-upstream/binaries"
+cargo build --release -p mafft-rs
+scripts/balibase_parity.py /path/to/BAliBASE/ --mafft mafft-upstream/scripts/mafft \
+    --modes "--maxiterate 1000" "--localpair --maxiterate 1000" \
+            "--globalpair --maxiterate 1000" "--genafpair --maxiterate 1000" \
+            "--globalpair --maxiterate 1000 --allowshift"
+```
+
+Add `--filter RV11 --limit 10` for a smoke run. Per-test results go to
+`balibase_parity_results.tsv`; the exit code is non-zero if any test
+diverges.
 
 ## Repository layout
 

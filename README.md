@@ -122,6 +122,49 @@ as symlinks. More in [Usage](#usage), the
 [migration table](#migration-from-mafft-c) and the
 [CLI reference](https://luksgrin.github.io/rust-MAFFT/cli-reference/).
 
+## Verify your installation
+
+These take seconds and need neither a C compiler nor the `mafft-upstream`
+submodule.
+
+```bash
+# pip install pymafft
+python -c "import pymafft; print(pymafft.align(['ACDEFGHIK', 'ACDEFHIK', 'ACDHIK']).to_fasta())"
+mafft-rs --version
+
+# cargo install mafft-rs (or the binary bundled with pymafft); POSIX shell
+printf '>a\nACDEFGHIK\n>b\nACDEFHIK\n>c\nACDHIK\n' | mafft-rs --quiet
+```
+
+Both alignments print three rows: `ACDEFGHIK`, `ACDEF-HIK`, `ACD---HIK`.
+
+For `cargo add mafft`, this `src/main.rs` prints the same alignment with
+`cargo run`:
+
+```rust
+use mafft::{AlignmentMode, MafftEngine, SeqType, Sequence, SequenceSet};
+
+fn main() {
+    let input = SequenceSet {
+        sequences: vec![
+            Sequence { name: "a".into(), data: b"ACDEFGHIK".to_vec() },
+            Sequence { name: "b".into(), data: b"ACDEFHIK".to_vec() },
+            Sequence { name: "c".into(), data: b"ACDHIK".to_vec() },
+        ],
+        seq_type: SeqType::Protein,
+    };
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    for (name, row) in msa.names.iter().zip(msa.sequences.iter()) {
+        println!(">{name}\n{}", std::str::from_utf8(row).unwrap());
+    }
+}
+```
+
+In a source checkout, `cargo test -p mafft-rs --lib` runs the CLI crate's
+unit tests in under a second once built, again without compiling any C.
+Reproducing the byte-identity claims against C MAFFT is a separate,
+longer job: see [Running the full test suite](#running-the-full-test-suite).
+
 ## Documentation
 
 The full documentation is at <https://luksgrin.github.io/rust-MAFFT/>:
@@ -483,25 +526,6 @@ ln -s mafft-rs einsi
 
 `mafft-rs` reads its `argv[0]` basename (stripping an optional `mafft-` prefix) and applies the same defaults as C's shell script. Explicit flags still override (e.g. `linsi --maxiterate 5 ...` honours the override).
 
-### Run tests
-
-```bash
-# Whole workspace: 48 suites, 537 tests pass, 7 ignored diagnostics
-cargo test --workspace --exclude pymafft --release
-
-# Just unit tests (faster; no FFI / no C build)
-cargo test --workspace --exclude pymafft --lib
-
-# Build C reference for FFI cross-validation (optional; cargo test --tests
-# triggers this automatically via mafft-c-bindings' build.rs)
-make -C mafft-upstream/core
-
-# Run the suite under the other floating-point contraction policy (fixtures
-# switch to their `.nofma` / `.fma` variants; the FFI tests that compare
-# against the in-tree C build skip when the policies do not match)
-cargo test --workspace --exclude pymafft --release --features fp-contract-none
-```
-
 ### Python bindings
 
 ```bash
@@ -519,6 +543,41 @@ get the `mafft-rs` console script (and run the console-script tests), copy the
 binary in first: `mkdir -p python/pymafft/_bin && cp ../../target/release/mafft-rs python/pymafft/_bin/`.
 If you use [uv](https://docs.astral.sh/uv/), `uv venv` / `uv pip install`
 work in place of the `venv` / `pip` steps.
+
+## Running the full test suite
+
+This is what reproduces the byte-identity claims; to check that an install
+works, see [Verify your installation](#verify-your-installation) instead.
+It needs:
+
+- the `mafft-upstream` submodule (`git clone --recurse-submodules`, or
+  `git submodule update --init` in an existing clone);
+- a C compiler on `PATH` (`cc` / `gcc` / `clang`): the first test build
+  compiles the in-tree C reference through `mafft-c-bindings/build.rs`;
+- a few minutes: about 1.5 minutes on an Apple M4 laptop with the Rust
+  dependencies already built, longer from a cold build.
+
+```bash
+# Whole workspace: 48 suites, 537 tests pass, 7 ignored diagnostics
+cargo test --workspace --exclude pymafft --release
+
+# Just unit tests (faster; no FFI or fixture suites, but the first build
+# still compiles the C shim, a dev-dependency of several crates)
+cargo test --workspace --exclude pymafft --lib
+
+# Build C reference for FFI cross-validation (optional; cargo test --tests
+# triggers this automatically via mafft-c-bindings' build.rs)
+make -C mafft-upstream/core
+
+# Run the suite under the other floating-point contraction policy (fixtures
+# switch to their `.nofma` / `.fma` variants; the FFI tests that compare
+# against the in-tree C build skip when the policies do not match)
+cargo test --workspace --exclude pymafft --release --features fp-contract-none
+```
+
+The BBaliBase sweep and the FP-policy fixture regeneration are described in
+[Contributing → Reproduce the cross-validation suite](https://luksgrin.github.io/rust-MAFFT/contributing/#reproduce-the-cross-validation-suite).
+The Python tests are under [Python bindings](#python-bindings).
 
 ## Upstream MAFFT
 
