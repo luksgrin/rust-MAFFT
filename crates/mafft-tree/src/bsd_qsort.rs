@@ -11,193 +11,249 @@
 //! Rust binary's output platform-dependent, which fails our parity tests
 //! on Linux CI.
 //!
-//! Algorithm reference: FreeBSD `lib/libc/stdlib/qsort.c` (in turn from
-//! Bentley & McIlroy, "Engineering a Sort Function", 1993). Faithfully
-//! preserves swap order so tied elements move identically to the BSD
-//! reference implementation.
+//! Algorithm reference: Apple Libc `stdlib/FreeBSD/qsort.c` and
+//! `heapsort.c` (in turn from Bentley & McIlroy, "Engineering a Sort
+//! Function", 1993). Faithfully preserves swap order so tied elements move
+//! identically to the macOS C library.
 
 use std::cmp::Ordering;
 
-/// Sort `slice` in place using FreeBSD's qsort algorithm. The closure
+/// Sort `slice` in place exactly as macOS libc `qsort` does. The closure
 /// `cmp` returns the standard `Ordering` (Less, Equal, Greater) used by
 /// Rust's `sort_by`.
+///
+/// Port of Apple Libc `stdlib/FreeBSD/qsort.c` (`_qsort`, `med3`, `_isort`)
+/// including its recursion-depth cap `DEPTH(n) = 2 * (flsl(n) - 1)` that
+/// falls back to `heapsort` (`stdlib/FreeBSD/heapsort.c`), the bounded
+/// insertion-sort attempt after a swap-free partition, and the
+/// smaller-partition-first recursion. Tied elements end up in the same
+/// positions as in the C library.
 pub fn bsd_qsort<T, F>(slice: &mut [T], mut cmp: F)
 where
+    T: Clone,
     F: FnMut(&T, &T) -> Ordering,
 {
     let n = slice.len();
-    qsort_impl(slice, 0, n, &mut cmp);
+    let fls = (usize::BITS - n.leading_zeros()) as i64;
+    let depth = 2 * (fls - 1);
+    qsort_impl(slice, 0, n, &mut cmp, depth);
 }
 
-/// Median of three indices `a`, `b`, `c` — returns the index whose value
-/// is the median under `cmp`. Mirrors FreeBSD's `med3` macro.
+/// `med3`: `a < b ? (b < c ? b : (a < c ? c : a)) : (b > c ? b : (a < c ? a : c))`.
 fn med3<T, F>(slice: &[T], a: usize, b: usize, c: usize, cmp: &mut F) -> usize
 where
     F: FnMut(&T, &T) -> Ordering,
 {
-    let ab = cmp(&slice[a], &slice[b]);
-    let bc = cmp(&slice[b], &slice[c]);
-    if ab == Ordering::Less {
-        if bc == Ordering::Less {
-            b // a < b < c
+    if cmp(&slice[a], &slice[b]) == Ordering::Less {
+        if cmp(&slice[b], &slice[c]) == Ordering::Less {
+            b
+        } else if cmp(&slice[a], &slice[c]) == Ordering::Less {
+            c
         } else {
-            // a < b, b >= c
-            if cmp(&slice[a], &slice[c]) == Ordering::Less {
-                c // a < c <= b
-            } else {
-                a // c <= a < b
-            }
+            a
         }
+    } else if cmp(&slice[b], &slice[c]) == Ordering::Greater {
+        b
+    } else if cmp(&slice[a], &slice[c]) == Ordering::Less {
+        a
     } else {
-        if bc == Ordering::Greater {
-            b // a >= b > c
-        } else {
-            // a >= b, b <= c
-            if cmp(&slice[a], &slice[c]) == Ordering::Greater {
-                c // b <= c < a
-            } else {
-                a // b <= a <= c
-            }
-        }
+        c
     }
 }
 
-/// In-place block swap of `n` elements starting at `a` with `n` elements
-/// starting at `b`. Mirrors FreeBSD's `vecswap`.
+/// `vecswap`: swap `n` elements at `a..` with `n` elements at `b..`, front
+/// to back.
 fn vecswap<T>(slice: &mut [T], a: usize, b: usize, n: usize) {
     for i in 0..n {
         slice.swap(a + i, b + i);
     }
 }
 
-fn insertion_sort<T, F>(slice: &mut [T], start: usize, end: usize, cmp: &mut F)
+/// `_isort`: insertion sort of `slice[start..start + n]`. With a nonzero
+/// `swap_limit` it gives up (returning `false`, the range left partially
+/// sorted) once more than `swap_limit` swaps were needed.
+fn insertion_sort<T, F>(slice: &mut [T], start: usize, n: usize, cmp: &mut F, swap_limit: usize) -> bool
 where
     F: FnMut(&T, &T) -> Ordering,
 {
-    for i in (start + 1)..end {
-        let mut j = i;
-        while j > start && cmp(&slice[j - 1], &slice[j]) == Ordering::Greater {
-            slice.swap(j - 1, j);
-            j -= 1;
+    let mut swap_cnt = 0usize;
+    for pm in (start + 1)..(start + n) {
+        let mut pl = pm;
+        while pl > start && cmp(&slice[pl - 1], &slice[pl]) == Ordering::Greater {
+            slice.swap(pl, pl - 1);
+            swap_cnt += 1;
+            if swap_limit != 0 && swap_cnt > swap_limit {
+                return false;
+            }
+            pl -= 1;
+        }
+    }
+    true
+}
+
+/// FreeBSD `heapsort` on `s` (1-based heap over `s[0..]`).
+fn heapsort<T, F>(s: &mut [T], cmp: &mut F)
+where
+    T: Clone,
+    F: FnMut(&T, &T) -> Ordering,
+{
+    let n = s.len();
+    if n <= 1 {
+        return;
+    }
+    // CREATE
+    for l in (1..=n / 2).rev() {
+        let mut par_i = l;
+        loop {
+            let mut child_i = par_i * 2;
+            if child_i > n {
+                break;
+            }
+            if child_i < n && cmp(&s[child_i - 1], &s[child_i]) == Ordering::Less {
+                child_i += 1;
+            }
+            if cmp(&s[child_i - 1], &s[par_i - 1]) != Ordering::Greater {
+                break;
+            }
+            s.swap(par_i - 1, child_i - 1);
+            par_i = child_i;
+        }
+    }
+    let mut nmemb = n;
+    while nmemb > 1 {
+        let k = s[nmemb - 1].clone();
+        s[nmemb - 1] = s[0].clone();
+        nmemb -= 1;
+        // SELECT
+        let mut par_i = 1usize;
+        loop {
+            let mut child_i = par_i * 2;
+            if child_i > nmemb {
+                break;
+            }
+            if child_i < nmemb && cmp(&s[child_i - 1], &s[child_i]) == Ordering::Less {
+                child_i += 1;
+            }
+            s[par_i - 1] = s[child_i - 1].clone();
+            par_i = child_i;
+        }
+        loop {
+            let child_i = par_i;
+            par_i = child_i / 2;
+            if child_i == 1 || cmp(&k, &s[par_i - 1]) == Ordering::Less {
+                s[child_i - 1] = k.clone();
+                break;
+            }
+            s[child_i - 1] = s[par_i - 1].clone();
         }
     }
 }
 
-fn qsort_impl<T, F>(slice: &mut [T], mut start: usize, mut len: usize, cmp: &mut F)
+fn qsort_impl<T, F>(slice: &mut [T], mut a: usize, mut n: usize, cmp: &mut F, mut depth_limit: i64)
 where
+    T: Clone,
     F: FnMut(&T, &T) -> Ordering,
 {
     loop {
-        if len < 7 {
-            insertion_sort(slice, start, start + len, cmp);
+        let mut swap_cnt = false;
+        let limit_hit = depth_limit <= 0;
+        depth_limit -= 1;
+        if limit_hit {
+            heapsort(&mut slice[a..a + n], cmp);
+            return;
+        }
+        if n <= 7 {
+            insertion_sort(slice, a, n, cmp, 0);
             return;
         }
 
-        // Pivot selection: median-of-3 (or median-of-9 for n > 40).
-        let pl0 = start;
-        let pm0 = start + len / 2;
-        let pn0 = start + len - 1;
-        let pm = if len > 7 {
-            if len > 40 {
-                let d = len / 8;
-                let pl_m = med3(slice, pl0, pl0 + d, pl0 + 2 * d, cmp);
-                let pm_m = med3(slice, pm0 - d, pm0, pm0 + d, cmp);
-                let pn_m = med3(slice, pn0 - 2 * d, pn0 - d, pn0, cmp);
-                med3(slice, pl_m, pm_m, pn_m, cmp)
-            } else {
-                med3(slice, pl0, pm0, pn0, cmp)
-            }
-        } else {
-            pm0
-        };
+        let mut pl = a;
+        let mut pm = a + n / 2;
+        let mut pn = a + n - 1;
+        if n > 40 {
+            let d = n / 8;
+            pl = med3(slice, pl, pl + d, pl + 2 * d, cmp);
+            pm = med3(slice, pm - d, pm, pm + d, cmp);
+            pn = med3(slice, pn - 2 * d, pn - d, pn, cmp);
+        }
+        pm = med3(slice, pl, pm, pn, cmp);
+        slice.swap(a, pm);
 
-        // Move pivot to slice[start].
-        slice.swap(start, pm);
-
-        // 3-way partition. pa..pb is the "equal to pivot" region growing
-        // from the left; pd..pc is the same growing from the right.
-        let mut pa = start + 1;
-        let mut pb = start + 1;
-        let mut pc = start + len - 1;
-        let mut pd = start + len - 1;
-        let mut swap_cnt = false;
-
+        // Signed cursors: `pc` may step to `a` (below `pb`).
+        let mut pa = a as isize + 1;
+        let mut pb = pa;
+        let mut pc = (a + n - 1) as isize;
+        let mut pd = pc;
         loop {
-            // Scan from left.
             while pb <= pc {
-                let c = cmp(&slice[pb], &slice[start]);
-                if c == Ordering::Greater {
+                let r = cmp(&slice[pb as usize], &slice[a]);
+                if r == Ordering::Greater {
                     break;
                 }
-                if c == Ordering::Equal {
+                if r == Ordering::Equal {
                     swap_cnt = true;
-                    slice.swap(pa, pb);
+                    slice.swap(pa as usize, pb as usize);
                     pa += 1;
                 }
                 pb += 1;
             }
-            // Scan from right.
             while pb <= pc {
-                let c = cmp(&slice[pc], &slice[start]);
-                if c == Ordering::Less {
+                let r = cmp(&slice[pc as usize], &slice[a]);
+                if r == Ordering::Less {
                     break;
                 }
-                if c == Ordering::Equal {
+                if r == Ordering::Equal {
                     swap_cnt = true;
-                    slice.swap(pc, pd);
-                    if pd == 0 {
-                        break;
-                    }
+                    slice.swap(pc as usize, pd as usize);
                     pd -= 1;
-                }
-                if pc == 0 {
-                    break;
                 }
                 pc -= 1;
             }
             if pb > pc {
                 break;
             }
-            slice.swap(pb, pc);
+            slice.swap(pb as usize, pc as usize);
             swap_cnt = true;
             pb += 1;
-            if pc == 0 {
-                break;
-            }
             pc -= 1;
         }
 
+        let pn_end = (a + n) as isize;
+        let ai = a as isize;
+        let d1 = (pa - ai).min(pb - pa);
+        vecswap(slice, a, (pb - d1) as usize, d1 as usize);
+        let d1 = (pd - pc).min(pn_end - pd - 1);
+        vecswap(slice, pb as usize, (pn_end - d1) as usize, d1 as usize);
+
         if !swap_cnt {
-            // No swaps in partition → already nearly sorted. Insertion sort.
-            insertion_sort(slice, start, start + len, cmp);
-            return;
+            let r = 1 + n / 4;
+            if insertion_sort(slice, a, n, cmp, r) {
+                return;
+            }
         }
 
-        // vecswap: move the "equal to pivot" elements from the ends into
-        // the middle so the array is laid out [< pivot | = pivot | > pivot].
-        let pn_end = start + len;
-        let r1 = (pa - start).min(pb - pa);
-        if r1 > 0 {
-            vecswap(slice, start, pb - r1, r1);
-        }
-        let r2 = (pd - pc).min(pn_end - pd - 1);
-        if r2 > 0 {
-            vecswap(slice, pb, pn_end - r2, r2);
-        }
-
-        // Recurse on the smaller partition, iterate on the larger
-        // (tail-call elimination to keep stack usage O(log n)).
-        let left_len = pb - pa;
-        let right_len = pd - pc;
-        if left_len > 1 {
-            qsort_impl(slice, start, left_len, cmp);
-        }
-        if right_len > 1 {
-            start = pn_end - right_len;
-            len = right_len;
+        let d1 = (pb - pa) as usize;
+        let d2 = (pd - pc) as usize;
+        let pn_end = pn_end as usize;
+        if d1 <= d2 {
+            if d1 > 1 {
+                qsort_impl(slice, a, d1, cmp, depth_limit);
+            }
+            if d2 > 1 {
+                a = pn_end - d2;
+                n = d2;
+                continue;
+            }
         } else {
-            return;
+            if d2 > 1 {
+                qsort_impl(slice, pn_end - d2, d2, cmp, depth_limit);
+            }
+            if d1 > 1 {
+                n = d1;
+                continue;
+            }
         }
+        return;
     }
 }
 
