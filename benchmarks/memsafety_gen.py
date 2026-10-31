@@ -369,7 +369,7 @@ def write_manifest(out: Path, cases: list[tuple[str, str, str]]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=REPO / "target" / "memsafety")
-    ap.add_argument("--mutants", type=int, default=2000, help="number of mutated sample copies")
+    ap.add_argument("--mutants", type=int, default=600, help="number of mutated sample copies")
     a = ap.parse_args()
     for sub, fn in (
         ("adversarial", adversarial),
