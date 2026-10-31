@@ -1430,6 +1430,85 @@ pub fn progressive_align_full_c_compat_ex(
         Vec::new()
     };
 
+    // Merges of disjoint subtrees are independent: each reads and writes
+    // only its own members' rows and its children's cached profiles. On a
+    // multi-thread pool, run the merges level by level (a level holds the
+    // steps whose children are all done), each into its own result slot,
+    // and apply the results in step order. `--c-compat` keeps the serial
+    // loop: its cpmx memo is per-thread state carried from merge to merge.
+    let levels = if !c_compat && mafft_align::parallel_enabled() {
+        merge_levels(topology)
+    } else {
+        None
+    };
+    if let Some(levels) = levels {
+        let mut slots: Vec<Option<StepTrace>> = vec![None; topology.steps.len()];
+        for level in &levels {
+            let tasks: Vec<(usize, BTreeMap<Vec<usize>, CachedProfile>)> = level
+                .iter()
+                .map(|&step_idx| {
+                    let step = &topology.steps[step_idx];
+                    let mut local = BTreeMap::new();
+                    for key in [sorted_key(&step.left), sorted_key(&step.right)] {
+                        if let Some(entry) = profile_cache.remove(&key) {
+                            local.insert(key, entry);
+                        }
+                    }
+                    (step_idx, local)
+                })
+                .collect();
+            let merge_one = |(step_idx, mut local): (usize, BTreeMap<Vec<usize>, CachedProfile>)| {
+                let step = &topology.steps[step_idx];
+                let step_scoring: &ScoringContext = if unalign_level > 0.0 {
+                    &dyn_scoring[step_idx]
+                } else {
+                    scoring
+                };
+                let mut rows: Vec<Vec<u8>> = vec![Vec::new(); nseq];
+                for &i in step.left.iter().chain(&step.right) {
+                    rows[i] = aligned[i].clone();
+                }
+                let score = merge_step_cached(
+                    &step.left, &step.right, &mut rows, &weights, step_scoring, &gap, use_fft,
+                    &mut local, constraints, penalize_term_gaps, memsave_dp, false,
+                    use_cache,
+                );
+                (step_idx, score, rows, local)
+            };
+            use rayon::prelude::*;
+            let results: Vec<_> = if tasks.len() > 1 {
+                tasks.into_par_iter().map(merge_one).collect()
+            } else {
+                tasks.into_iter().map(merge_one).collect()
+            };
+            for (step_idx, score, mut rows, local) in results {
+                let step = &topology.steps[step_idx];
+                for &i in step.left.iter().chain(&step.right) {
+                    aligned[i] = std::mem::take(&mut rows[i]);
+                }
+                profile_cache.extend(local);
+                let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
+                slots[step_idx] = Some(StepTrace {
+                    clus1: step.left.len(),
+                    clus2: step.right.len(),
+                    width,
+                    score,
+                });
+            }
+        }
+        let step_trace: Vec<StepTrace> = slots.into_iter().map(|t| t.expect("every step merged")).collect();
+        last_score = step_trace.last().map_or(0.0, |t| t.score);
+
+        let max_width = aligned.iter().map(|s| s.len()).max().unwrap_or(0);
+        for seq in &mut aligned {
+            seq.resize(max_width, b'-');
+        }
+        return MultipleAlignment {
+            sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
+            guide_tree: None, first_pass_sequences: None, distance_matrix: None,
+        };
+    }
+
     let mut step_trace: Vec<StepTrace> = Vec::with_capacity(topology.steps.len());
     for (step_idx, step) in topology.steps.iter().enumerate() {
         let step_scoring: &ScoringContext = if unalign_level > 0.0 {
@@ -1894,6 +1973,56 @@ fn merge_step_cached(
     }
 
     aln.score
+}
+
+/// Group the topology's steps into dependency levels: a step's level is one
+/// more than the highest level among the steps that formed its two groups.
+/// Steps of one level touch disjoint sequences. `None` if a non-singleton
+/// group is not the union of an earlier step (not a plain tree), or if
+/// every level has a single step (nothing to run in parallel).
+fn merge_levels(topology: &Topology) -> Option<Vec<Vec<usize>>> {
+    let mut formed_by: std::collections::HashMap<Vec<usize>, usize> = std::collections::HashMap::new();
+    let mut level_of: Vec<usize> = Vec::with_capacity(topology.steps.len());
+    for (step_idx, step) in topology.steps.iter().enumerate() {
+        if step.left.is_empty() || step.right.is_empty() {
+            return None;
+        }
+        let mut level = 0usize;
+        for group in [&step.left, &step.right] {
+            if group.len() > 1 {
+                let child = *formed_by.get(&sorted_key(group))?;
+                level = level.max(level_of[child] + 1);
+            }
+        }
+        level_of.push(level);
+        let mut key = sorted_key(&step.left);
+        key.extend_from_slice(&step.right);
+        key.sort_unstable();
+        formed_by.insert(key, step_idx);
+    }
+    let nlevels = level_of.iter().max().map_or(0, |&l| l + 1);
+    let mut levels: Vec<Vec<usize>> = vec![Vec::new(); nlevels];
+    for (step_idx, &l) in level_of.iter().enumerate() {
+        levels[l].push(step_idx);
+    }
+    // Members within a level must be disjoint.
+    let mut seen = vec![usize::MAX; topology.nseq.max(1 + topology.steps.iter()
+        .flat_map(|s| s.left.iter().chain(&s.right)).copied().max().unwrap_or(0))];
+    for (l, level) in levels.iter().enumerate() {
+        for &step_idx in level {
+            let step = &topology.steps[step_idx];
+            for &i in step.left.iter().chain(&step.right) {
+                if seen[i] == l {
+                    return None;
+                }
+                seen[i] = l;
+            }
+        }
+    }
+    if levels.iter().all(|l| l.len() <= 1) {
+        return None;
+    }
+    Some(levels)
 }
 
 fn sorted_key(group: &[usize]) -> Vec<usize> {

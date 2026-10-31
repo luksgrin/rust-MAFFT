@@ -490,19 +490,11 @@ fn evaluate_branch(
 
 /// How many branches of a cycle to evaluate at once against the same
 /// alignment. More than one only when the call runs on a multi-thread
-/// rayon pool and no forensic `RS_*` / `RUST_MAFFT_TRACE` trace is
-/// requested (those append to files from inside the evaluation, and a
-/// speculative evaluation that is later discarded would add lines the
-/// sequential walk never writes).
+/// rayon pool and no forensic trace is requested (those append to files
+/// from inside the evaluation, and a speculative evaluation that is later
+/// discarded would add lines the sequential walk never writes).
 fn speculation_width() -> usize {
-    let threads = rayon::current_num_threads();
-    if threads <= 1 {
-        return 1;
-    }
-    let tracing = std::env::vars_os().any(|(k, _)| {
-        k.to_str().is_some_and(|k| k.starts_with("RS_") || k == "RUST_MAFFT_TRACE")
-    });
-    if tracing { 1 } else { threads }
+    if mafft_align::parallel_enabled() { rayon::current_num_threads() } else { 1 }
 }
 
 fn iterative_refine_inner(

@@ -39,3 +39,28 @@ pub use constrained_align::{
     constrained_profile_align, partial_profile_align, ConstrainedAlignParams,
 };
 pub use msalign::msalignmm;
+
+/// Whether any forensic trace is requested through the environment
+/// (`RS_*`, `RDBG*`, `MAFFT_DEBUG*`, `MAFFT_DUMP*`, `RUST_MAFFT_TRACE`,
+/// `RUST_IMP_DUMP`). Those traces append to files from inside the DP and
+/// refinement code in call order, so the parallel paths (which only ever
+/// change *where* independent work runs, never its result) fall back to
+/// the sequential order while one is set.
+pub fn forensic_trace_active() -> bool {
+    std::env::vars_os().any(|(k, _)| {
+        k.to_str().is_some_and(|k| {
+            k.starts_with("RS_")
+                || k.starts_with("RDBG")
+                || k.starts_with("MAFFT_DEBUG")
+                || k.starts_with("MAFFT_DUMP")
+                || k == "RUST_MAFFT_TRACE"
+                || k == "RUST_IMP_DUMP"
+        })
+    })
+}
+
+/// Run independent work on the current rayon pool when it has more than
+/// one thread and no forensic trace is active.
+pub fn parallel_enabled() -> bool {
+    rayon::current_num_threads() > 1 && !forensic_trace_active()
+}
