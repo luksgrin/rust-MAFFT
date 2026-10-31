@@ -115,6 +115,159 @@ Sweep across BBaliBase 3 (RV11–RV50, 386 protein test sets) against MAFFT 7.52
 
 Total: **1930/1930 alignments byte-identical** to C MAFFT 7.526 across the BBaliBase 3 protein corpus.
 
+## Byte-identity versus alignment scores
+
+The usual way to judge a multiple aligner is to score its output against
+curated reference alignments: the sum-of-pairs score (SP, the fraction of
+reference residue pairs the test alignment also aligns) and the
+total-column score (TC, the fraction of reference columns reproduced
+exactly), usually restricted to the reference's structurally reliable
+core blocks, as in BAliBASE. Consistency measures such as T-Coffee's TCS
+play a similar role without a reference. These are the right instruments
+for comparing *alignment methods*: they tell you whether one method
+recovers structure better than another.
+
+They are the wrong instrument for verifying a *port*. A port has a single
+correct answer, the output of the program it reimplements, and the
+question is whether it reproduces that answer, not whether its answer is
+about as good. The two criteria are related in one direction only:
+
+- **Byte-identity ⇒ identical scores.** SP and TC are functions of the
+  alignment; equal bytes give equal SP, TC, TCS, or any other score.
+- **Identical (or near-identical) scores ⇏ identical alignments.** SP and
+  TC only look at core-block columns and summarise them as a mean, so two
+  alignments that place residues differently, or even have different
+  widths, can score the same.
+
+Two concrete cases from this project show the gap.
+
+**One rounding, 26 columns.** C MAFFT built in-tree on arm64 (clang fuses
+`a*b + c` into a single-rounding FMA) and on x86-64 (gcc does not) give
+different alignments of the 36-sequence `mafft-upstream/test/sample` under
+`--bl 50 --retree 2 --maxiterate 0`: 712 and 738 columns. Both are the
+same C source, and `mafft-rs` reproduces each on its own platform
+(`--features fp-contract-none` gives the x86-64 output on any host). The
+sample has no reference alignment, so the two are compared with each
+other and with MAFFT's own objective:
+
+| | arm64 C (712 cols) vs x86-64 C (738 cols) |
+|---|---|
+| `diff` lines (`<` + `>`) | 836 |
+| Columns identical in both | 636 (86–89 % of either) |
+| Aligned residue pairs shared | 196 992 of 206 884 / 204 781 (95–96 %) |
+| MAFFT `--scoreout` objective (BLOSUM50) | 68 058.4 vs 68 410.6 (0.5 %) |
+| MAFFT `score` utility (BLOSUM62) | 677.64 vs 680.78 (0.5 %) |
+
+On BAliBASE the same pair of C builds can be compared against the
+references. In FFT-NS-2, 8 of the 386 sets give different bytes under
+the two contraction policies; on all eight SP is identical to three
+decimals, and TC is identical on seven and moves by 0.01 on the eighth:
+
+| Set | Width (arm64 / x86-64) | `diff` lines (`<` + `>`) | SP (arm64 / x86-64) | TC (arm64 / x86-64) |
+|---|---|---:|---|---|
+| BBS11018 | 869 / 869 | 2 | 0.704 / 0.704 | 0.410 / 0.410 |
+| BB20002 | 2435 / 2435 | 12 | 0.441 / 0.441 | 0.000 / 0.000 |
+| BB20018 | 476 / 476 | 102 | 0.965 / 0.965 | 0.760 / 0.770 |
+| BB20039 | 663 / 663 | 2 | 0.944 / 0.944 | 0.340 / 0.340 |
+| BB30028 | 643 / 643 | 2 | 0.888 / 0.888 | 0.320 / 0.320 |
+| BB40036 | 846 / 846 | 4 | 0.968 / 0.968 | 0.690 / 0.690 |
+| BB40048 | 1995 / 1995 | 2 | 0.917 / 0.917 | 0.750 / 0.750 |
+| BB40049 | 5681 / 5681 | 8 | 0.957 / 0.957 | 0.460 / 0.460 |
+
+A score-based acceptance test would call every one of these "equivalent".
+A port that drifted like this would differ from the C it claims to
+reproduce on 2 % of BAliBASE without SP noticing at all.
+
+**Tied traces.** The two residuals in the README's
+[Known limitations](https://github.com/luksgrin/rust-MAFFT#b-intentional-residuals-tied-trace)
+are DP tie-breaks that move a residue to the neighbouring column. For
+`--exp 4.30` (FFT-NS-2) on the sample, C and `mafft-rs` give the same
+width (517) and 12 `diff` lines (six sequence lines on each side):
+513 of 517 columns are identical, 99.9 % of aligned residue pairs are
+shared, and MAFFT's `--scoreout` objective is 55 049.75 (C) vs 55 081.77
+(`mafft-rs`), a 0.06 % difference. Such a residual is invisible to SP/TC
+against a reference unless the moved residue happens to sit in a core
+block; byte comparison is what finds it, and what keeps it listed.
+
+### SP / TC of C and Rust on BAliBASE 3
+
+`benchmarks/balibase_scores.py` aligns every BAliBASE 3 set with the
+in-tree C MAFFT and with `mafft-rs`, scores both outputs against the
+set's XML reference with BAliBASE's own `bali_score` 3.01 (core blocks,
+compiled from the archive's `bali_score_src`), and records whether the
+two outputs are byte-identical. A Python re-implementation of
+`bali_score`'s definitions runs alongside it on every alignment and
+agrees with it on all of them. All 386 sets were run in all five modes
+(3860 alignments); every C/Rust pair is byte-identical, so every SP and
+TC pair is equal. Means over the sets in each subset
+(arm64 host, 2026-10-31; raw rows in
+`benchmarks/results/balibase_scores_2026-10-31.tsv`):
+
+| Subset | Mode | Sets | Byte-identical | SP C | SP Rust | TC C | TC Rust | SP/TC differ |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| RV11 | FFT-NS-2 | 76 | 76 | 0.577 | 0.577 | 0.308 | 0.308 | 0 |
+| RV12 | FFT-NS-2 | 88 | 88 | 0.908 | 0.908 | 0.780 | 0.780 | 0 |
+| RV20 | FFT-NS-2 | 82 | 82 | 0.911 | 0.911 | 0.379 | 0.379 | 0 |
+| RV30 | FFT-NS-2 | 60 | 60 | 0.852 | 0.852 | 0.500 | 0.500 | 0 |
+| RV40 | FFT-NS-2 | 49 | 49 | 0.870 | 0.870 | 0.490 | 0.490 | 0 |
+| RV50 | FFT-NS-2 | 31 | 31 | 0.862 | 0.862 | 0.507 | 0.507 | 0 |
+| RV11 | FFT-NS-i | 76 | 76 | 0.656 | 0.656 | 0.437 | 0.437 | 0 |
+| RV12 | FFT-NS-i | 88 | 88 | 0.926 | 0.926 | 0.828 | 0.828 | 0 |
+| RV20 | FFT-NS-i | 82 | 82 | 0.923 | 0.923 | 0.443 | 0.443 | 0 |
+| RV30 | FFT-NS-i | 60 | 60 | 0.867 | 0.867 | 0.565 | 0.565 | 0 |
+| RV40 | FFT-NS-i | 49 | 49 | 0.890 | 0.890 | 0.542 | 0.542 | 0 |
+| RV50 | FFT-NS-i | 31 | 31 | 0.884 | 0.884 | 0.563 | 0.563 | 0 |
+| RV11 | L-INS-i | 76 | 76 | 0.679 | 0.679 | 0.463 | 0.463 | 0 |
+| RV12 | L-INS-i | 88 | 88 | 0.939 | 0.939 | 0.844 | 0.844 | 0 |
+| RV20 | L-INS-i | 82 | 82 | 0.936 | 0.936 | 0.496 | 0.496 | 0 |
+| RV30 | L-INS-i | 60 | 60 | 0.871 | 0.871 | 0.607 | 0.607 | 0 |
+| RV40 | L-INS-i | 49 | 49 | 0.919 | 0.919 | 0.602 | 0.602 | 0 |
+| RV50 | L-INS-i | 31 | 31 | 0.905 | 0.905 | 0.593 | 0.593 | 0 |
+| RV11 | G-INS-i | 76 | 76 | 0.706 | 0.706 | 0.482 | 0.482 | 0 |
+| RV12 | G-INS-i | 88 | 88 | 0.939 | 0.939 | 0.843 | 0.843 | 0 |
+| RV20 | G-INS-i | 82 | 82 | 0.940 | 0.940 | 0.515 | 0.515 | 0 |
+| RV30 | G-INS-i | 60 | 60 | 0.879 | 0.879 | 0.619 | 0.619 | 0 |
+| RV40 | G-INS-i | 49 | 49 | 0.918 | 0.918 | 0.585 | 0.585 | 0 |
+| RV50 | G-INS-i | 31 | 31 | 0.907 | 0.907 | 0.607 | 0.607 | 0 |
+| RV11 | E-INS-i | 76 | 76 | 0.667 | 0.667 | 0.435 | 0.435 | 0 |
+| RV12 | E-INS-i | 88 | 88 | 0.934 | 0.934 | 0.839 | 0.839 | 0 |
+| RV20 | E-INS-i | 82 | 82 | 0.928 | 0.928 | 0.476 | 0.476 | 0 |
+| RV30 | E-INS-i | 60 | 60 | 0.866 | 0.866 | 0.594 | 0.594 | 0 |
+| RV40 | E-INS-i | 49 | 49 | 0.894 | 0.894 | 0.539 | 0.539 | 0 |
+| RV50 | E-INS-i | 31 | 31 | 0.893 | 0.893 | 0.567 | 0.567 | 0 |
+| **all** | **FFT-NS-2** | **386** | **386** | **0.826** | **0.826** | **0.500** | **0.500** | **0** |
+| **all** | **FFT-NS-i** | **386** | **386** | **0.855** | **0.855** | **0.571** | **0.571** | **0** |
+| **all** | **L-INS-i** | **386** | **386** | **0.871** | **0.871** | **0.607** | **0.607** | **0** |
+| **all** | **G-INS-i** | **386** | **386** | **0.879** | **0.879** | **0.616** | **0.616** | **0** |
+| **all** | **E-INS-i** | **386** | **386** | **0.861** | **0.861** | **0.584** | **0.584** | **0** |
+
+"SP/TC differ" counts sets where C and Rust get a different SP or TC; it
+is zero exactly because "Byte-identical" equals "Sets". The absolute
+numbers describe MAFFT 7.526, not the port, and are only comparable to
+published BAliBASE figures computed the same way (core blocks,
+`bali_score` 3.01).
+
+To re-run (alignments are cached under `target/balibase_scores/`, so an
+interrupted run resumes; separate invocations merge into the same TSV):
+
+```bash
+make -C mafft-upstream/core
+cargo build --release -p mafft-rs
+export BALIBASE_DIR=/path/to/bb3_release          # RV11/ … RV50/, bali_score_src/
+benchmarks/balibase_scores.py run --modes fftns2
+benchmarks/balibase_scores.py run --modes fftnsi linsi ginsi einsi --jobs 6
+benchmarks/balibase_scores.py summarize benchmarks/results/balibase_scores_<date>.tsv
+
+# the cross-policy comparisons above
+CARGO_TARGET_DIR=target/nofma cargo build --release -p mafft-rs --features fp-contract-none
+benchmarks/balibase_scores.py crossarch            # BAliBASE, FFT-NS-2
+benchmarks/balibase_scores.py counterexamples      # 712/738 and --exp 4.30 on the sample
+```
+
+TCS was not computed: T-Coffee is not part of the toolchain, and for
+byte-identical outputs it would, like SP and TC, be equal by
+construction.
+
 ## Byte-identity is per platform build
 
 C MAFFT 7.526 is not bit-identical across CPU architectures. The
