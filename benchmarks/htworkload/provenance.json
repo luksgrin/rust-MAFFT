@@ -1,0 +1,196 @@
+{
+ "dna": {
+  "source": "NCBI Datasets v2, taxon 1313 (Streptococcus pneumoniae), RefSeq complete genomes, CDS_FASTA",
+  "n_available": 292,
+  "download_date": "2026-10-31",
+  "genomes": [
+   {
+    "index": 0,
+    "accession": "GCF_022070565.1",
+    "strain": "TVO_1902282",
+    "annotation_date": "2025-12-22"
+   },
+   {
+    "index": 1,
+    "accession": "GCF_900476505.1",
+    "strain": "4041STDY6836166",
+    "annotation_date": "2026-02-20"
+   },
+   {
+    "index": 2,
+    "accession": "GCF_002947575.1",
+    "strain": "endophthalmitis",
+    "annotation_date": "2025-07-23"
+   },
+   {
+    "index": 3,
+    "accession": "GCF_022075545.1",
+    "strain": "TVO_1901936",
+    "annotation_date": "2026-02-07"
+   },
+   {
+    "index": 4,
+    "accession": "GCF_015839915.1",
+    "strain": "574",
+    "annotation_date": "2026-03-31"
+   },
+   {
+    "index": 5,
+    "accession": "GCF_048987475.1",
+    "strain": "5141",
+    "annotation_date": "2025-03-28"
+   },
+   {
+    "index": 6,
+    "accession": "GCF_024703115.1",
+    "strain": "D39Mega17545",
+    "annotation_date": "2026-09-04"
+   },
+   {
+    "index": 7,
+    "accession": "GCF_003351645.1",
+    "strain": "M16808",
+    "annotation_date": "2026-04-01"
+   },
+   {
+    "index": 8,
+    "accession": "GCF_900476475.1",
+    "strain": "4041STDY6583227",
+    "annotation_date": "2026-02-12"
+   },
+   {
+    "index": 9,
+    "accession": "GCF_052433275.1",
+    "strain": "S724",
+    "annotation_date": "2025-09-04"
+   },
+   {
+    "index": 10,
+    "accession": "GCF_900618585.1",
+    "strain": "180-15",
+    "annotation_date": "2026-02-12"
+   },
+   {
+    "index": 11,
+    "accession": "GCF_055381835.1",
+    "strain": "Sp524",
+    "annotation_date": "2026-02-24"
+   },
+   {
+    "index": 12,
+    "accession": "GCF_000007045.1",
+    "strain": "R6",
+    "annotation_date": "2024-11-20"
+   },
+   {
+    "index": 13,
+    "accession": "GCF_056501075.1",
+    "strain": "R6",
+    "annotation_date": "2026-04-02"
+   },
+   {
+    "index": 14,
+    "accession": "GCF_034422275.1",
+    "strain": "05H0020-2",
+    "annotation_date": "2025-12-19"
+   },
+   {
+    "index": 15,
+    "accession": "GCF_052432715.1",
+    "strain": "S857",
+    "annotation_date": "2025-09-04"
+   },
+   {
+    "index": 16,
+    "accession": "GCF_038431325.1",
+    "strain": "2018N21-288",
+    "annotation_date": "2025-04-23"
+   },
+   {
+    "index": 17,
+    "accession": "GCF_038431685.1",
+    "strain": "2016S11-245",
+    "annotation_date": "2024-04-24"
+   },
+   {
+    "index": 18,
+    "accession": "GCF_022069325.1",
+    "strain": "TVO_1901945",
+    "annotation_date": "2025-12-19"
+   },
+   {
+    "index": 19,
+    "accession": "GCF_022318425.1",
+    "strain": "LE4448",
+    "annotation_date": "2026-04-23"
+   },
+   {
+    "index": 20,
+    "accession": "GCF_057400845.1",
+    "strain": "15A/ST13486",
+    "annotation_date": "2026-05-12"
+   },
+   {
+    "index": 21,
+    "accession": "GCF_033096105.1",
+    "strain": "PZ900700009",
+    "annotation_date": "2025-12-12"
+   },
+   {
+    "index": 22,
+    "accession": "GCF_900693075.1",
+    "strain": "GPSC13 substr. ST473",
+    "annotation_date": "2026-02-12"
+   },
+   {
+    "index": 23,
+    "accession": "GCF_000299015.1",
+    "strain": "gamPNI0373",
+    "annotation_date": "2025-12-21"
+   },
+   {
+    "index": 24,
+    "accession": "GCF_988277105.1",
+    "strain": "NA",
+    "annotation_date": "2026-09-18"
+   },
+   {
+    "index": 25,
+    "accession": "GCF_054098445.1",
+    "strain": "GD-BC-10",
+    "annotation_date": "2025-12-20"
+   },
+   {
+    "index": 26,
+    "accession": "GCF_025643315.1",
+    "strain": "3641/15",
+    "annotation_date": "2025-12-06"
+   },
+   {
+    "index": 27,
+    "accession": "GCF_022069485.1",
+    "strain": "TVO_1901941",
+    "annotation_date": "2026-02-07"
+   },
+   {
+    "index": 28,
+    "accession": "GCF_003003495.1",
+    "strain": "D39V",
+    "annotation_date": "2026-08-23"
+   },
+   {
+    "index": 29,
+    "accession": "GCF_033144075.1",
+    "strain": "16H2092",
+    "annotation_date": "2025-12-07"
+   }
+  ],
+  "filters": "no pseudo, no partial, has protein_id, >= 90 nt",
+  "clustering": "mmseqs easy-cluster --min-seq-id 0.7 -c 0.8 --cov-mode 0 --cluster-mode 0 -s 7.5 on the translated CDS (code 11)",
+  "max_n": 100,
+  "mmseqs_version": "18-8cc5c",
+  "n_families": 3280,
+  "n_singletons": 585,
+  "n_cds": 57482
+ }
+}
