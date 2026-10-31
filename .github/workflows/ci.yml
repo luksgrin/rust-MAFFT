@@ -1,26 +1,49 @@
 name: CI
 
-# Documentation-only changes (docs/, *.md, mkdocs.yml, citation, licences)
-# cannot affect the build and are skipped via `paths-ignore`. Note that
-# `paths-ignore` makes a required status check go *missing* rather than
-# pass; keep that in mind if branch protection is ever enabled.
+# Only run for changes that can reach the build: the Rust workspace, the
+# C reference submodule pointer, the scripts build-test.yml calls, and
+# the two workflow files that define this pipeline. Everything else
+# (docs, Markdown anywhere, the other workflows, citation, licences) is
+# filtered out by the positive `paths` list below -- a `paths-ignore`
+# list has to enumerate every irrelevant file and silently lets new ones
+# through (editing check-mafft-upstream.yml used to trigger a full
+# two-platform build). Note that a path filter makes a required status
+# check go *missing* rather than pass; keep that in mind if branch
+# protection is ever enabled.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'mkdocs.yml'
-      - 'CITATION.cff'
-      - 'LICENSE*'
+    paths:
+      - 'crates/**'
+      - '!crates/**/*.md'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.gitmodules'
+      - 'mafft-upstream'
+      - 'scripts/fma_census.sh'
+      - 'scripts/regen_policy_fixtures.sh'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/build-test.yml'
   # Any base branch: stacked PRs (feature -> feature) get checks too.
+  # Keep this list identical to the `push` one above.
   pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'mkdocs.yml'
-      - 'CITATION.cff'
-      - 'LICENSE*'
+    paths:
+      - 'crates/**'
+      - '!crates/**/*.md'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.gitmodules'
+      - 'mafft-upstream'
+      - 'scripts/fma_census.sh'
+      - 'scripts/regen_policy_fixtures.sh'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/build-test.yml'
+
+# A new push to the same PR (or to main) supersedes the run in flight;
+# cancel it instead of finishing a build nobody will look at.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ------------------------------------------------------------------

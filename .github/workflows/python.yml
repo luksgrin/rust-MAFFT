@@ -9,33 +9,48 @@ name: Python Package
 #                             wheel tests on 3.9/3.12/3.13, then publish
 #                             (release only).
 #
-# Documentation-only changes (docs/, *.md, mkdocs.yml, citation, licences)
-# do not touch the wheels and are skipped via `paths-ignore`. Note that
-# `paths-ignore` makes a required status check go *missing* rather than
+# Only run for changes that can reach a wheel: the Rust workspace (the
+# wheel bundles the `mafft-rs` binary, so every crate counts), the Cargo
+# manifests/lockfile, and this workflow. Docs, Markdown anywhere, the other
+# workflows, citation and licences are filtered out by the positive
+# `paths` list -- a `paths-ignore` list has to enumerate every irrelevant
+# file and silently lets new ones through. `crates/pymafft/README.md` is
+# the one Markdown file that does land in the wheel (pyproject `readme`),
+# but it cannot break a build, so it is excluded with the rest. Note that
+# a path filter makes a required status check go *missing* rather than
 # pass; keep that in mind if branch protection is ever enabled.
 
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'mkdocs.yml'
-      - 'CITATION.cff'
-      - 'LICENSE*'
+    paths:
+      - 'crates/**'
+      - '!crates/**/*.md'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/python.yml'
   # Any base branch: stacked PRs (feature -> feature) get checks too.
+  # Keep this list identical to the `push` one above.
   pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'mkdocs.yml'
-      - 'CITATION.cff'
-      - 'LICENSE*'
+    paths:
+      - 'crates/**'
+      - '!crates/**/*.md'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/python.yml'
   # Publish on version tags
   release:
     types: [published]
   # Manual trigger for testing (runs the FULL matrix, does not publish)
   workflow_dispatch:
+
+# A new push to the same PR (or to main) supersedes the run in flight;
+# cancel it instead of finishing wheels nobody will look at. Release and
+# dispatch runs are keyed by ref/run and are never cancelled by a later
+# push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 jobs:
   # ------------------------------------------------------------------

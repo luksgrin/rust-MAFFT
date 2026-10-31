@@ -38,6 +38,13 @@ public surfaces stable from 0.1.0 anyway.
   one. The run succeeds once the issue is current. Still weekly plus
   manual dispatch, and it still never moves the submodule; the job now
   needs `issues: write`.
+- CI and Python Package workflows now trigger on a positive `paths` list
+  (workspace crates, Cargo manifests, the submodule pointer, the scripts
+  they call, their own workflow files) instead of a `paths-ignore` list, so
+  editing an unrelated workflow or any Markdown no longer starts the
+  two-platform build and the wheel matrix. A newer push to the same PR or
+  to `main` cancels the run in flight (`concurrency`); release and dispatch
+  runs are never cancelled.
 
 ## [0.2.0] - 2026-09-06
 
