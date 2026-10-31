@@ -46,6 +46,16 @@ public surfaces stable from 0.1.0 anyway.
   to `main` cancels the run in flight (`concurrency`); release and dispatch
   runs are never cancelled.
 
+### Python
+
+- `pymafft` builds against PyO3 0.30 (was 0.24), which supports
+  Python 3.14. The deprecated `Python::with_gil` / `allow_threads` calls
+  are now `Python::attach` / `detach`. The build-system floor is
+  `maturin>=1.9.4`, and Python 3.14 is in the classifiers (#18).
+- CI: `python.yml` gains a `lint` job that runs
+  `RUSTFLAGS="-D warnings" cargo check -p pymafft`, so new PyO3
+  deprecations fail CI instead of piling up. Publishing waits for it.
+
 ## [0.2.0] - 2026-09-06
 
 **Output changes since 0.1.x.** Every item below moves rust-MAFFT *toward*

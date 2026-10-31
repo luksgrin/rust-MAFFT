@@ -291,7 +291,7 @@ impl Progress for PyProgress {
         if slot.is_some() {
             return;
         }
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             if let Err(e) = self.callback.call1(py, (msg,)) {
                 *slot = Some(e);
             }
@@ -342,7 +342,7 @@ fn run_with_flags(
     let outcome = match progress {
         Some(callback) => {
             let sink = PyProgress { callback, error: Mutex::new(None) };
-            let outcome = py.allow_threads(|| run_from_seqs(argv, input, &sink));
+            let outcome = py.detach(|| run_from_seqs(argv, input, &sink));
             let callback_error = sink.error.into_inner().unwrap_or_else(|p| p.into_inner());
             if let Some(e) = callback_error {
                 return Err(e);
@@ -351,7 +351,7 @@ fn run_with_flags(
         }
         // Without a sink, messages go to stderr exactly as on the command
         // line (`--quiet` in `args` silences them there too).
-        None => py.allow_threads(|| run_from_seqs(argv, input, &StderrProgress)),
+        None => py.detach(|| run_from_seqs(argv, input, &StderrProgress)),
     };
 
     outcome.map(msa_to_result).map_err(|e| mafft_error_to_py(py, e))

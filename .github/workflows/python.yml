@@ -5,8 +5,8 @@ name: Python Package
 #   * push / pull_request  -> SMOKE: one wheel per target for a single
 #                             Python (3.12), sdist, and the wheel tests
 #                             for that Python only. Nothing is published.
-#   * release / dispatch   -> FULL: every target x Python 3.9-3.13, sdist,
-#                             wheel tests on 3.9/3.12/3.13, then publish
+#   * release / dispatch   -> FULL: every target x Python 3.9-3.14, sdist,
+#                             wheel tests on 3.9/3.12/3.14, then publish
 #                             (release only).
 #
 # Only run for changes that can reach a wheel: the Rust workspace (the
@@ -71,8 +71,8 @@ jobs:
         run: |
           if [ "$FULL" = "true" ]; then
             echo "regime: FULL (${{ github.event_name }})"
-            echo 'build-python=["3.9", "3.10", "3.11", "3.12", "3.13"]' >> "$GITHUB_OUTPUT"
-            echo 'test-python=["3.9", "3.12", "3.13"]' >> "$GITHUB_OUTPUT"
+            echo 'build-python=["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]' >> "$GITHUB_OUTPUT"
+            echo 'test-python=["3.9", "3.12", "3.14"]' >> "$GITHUB_OUTPUT"
           else
             echo "regime: SMOKE (${{ github.event_name }})"
             echo 'build-python=["3.12"]' >> "$GITHUB_OUTPUT"
@@ -103,7 +103,7 @@ jobs:
           - x86_64-apple-darwin
           - aarch64-apple-darwin
           - x86_64-pc-windows-msvc
-        # 3.9-3.13 on release/dispatch, 3.12 only on push/PR (see `matrix`).
+        # 3.9-3.14 on release/dispatch, 3.12 only on push/PR (see `matrix`).
         python: ${{ fromJSON(needs.matrix.outputs.build-python) }}
         include:
           - target: x86_64-unknown-linux-gnu
@@ -191,6 +191,32 @@ jobs:
           path: crates/pymafft/dist/*.whl
 
   # ------------------------------------------------------------------
+  # The bindings must compile without warnings, so PyO3 deprecations
+  # are dealt with when they appear instead of piling up until the next
+  # upgrade. `cargo check` rather than `cargo build`: it covers every
+  # lint without linking the cdylib, which needs maturin's linker
+  # arguments on macOS.
+  # ------------------------------------------------------------------
+  lint:
+    name: pymafft builds warning-free
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo check -p pymafft (-D warnings)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo check -p pymafft --locked
+
+  # ------------------------------------------------------------------
   # Build sdist
   # ------------------------------------------------------------------
   build-sdist:
@@ -241,7 +267,7 @@ jobs:
           # consider it sufficiently exercised by the aarch64-apple-darwin leg.
           - aarch64-apple-darwin
           - x86_64-pc-windows-msvc
-        # 3.9/3.12/3.13 on release/dispatch, 3.12 only on push/PR.
+        # 3.9/3.12/3.14 on release/dispatch, 3.12 only on push/PR.
         python: ${{ fromJSON(needs.matrix.outputs.test-python) }}
         include:
           - target: x86_64-unknown-linux-gnu
@@ -295,7 +321,7 @@ jobs:
   # ------------------------------------------------------------------
   publish:
     name: Publish to PyPI
-    needs: [build-wheels, build-sdist, test-wheels]
+    needs: [lint, build-wheels, build-sdist, test-wheels]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' && github.event.action == 'published'
     environment:
