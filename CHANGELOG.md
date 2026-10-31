@@ -12,6 +12,18 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Added
 
+- **Scaling benchmark corpus and driver** (`benchmarks/scaling_corpus.py`,
+  `benchmarks/scaling.py`, issue #22). Ten Pfam families (full-length
+  UniProtKB sequences) and RefSeq 16S rRNA, deterministically subsampled
+  to n = 100, 250, 500, 1000 (5000 for two families, 2000 for 16S), with
+  the manifest, accession lists and checksums in `benchmarks/corpus/`.
+  The driver times the in-tree C MAFFT, the `mafft-rs` CLI and native
+  `pymafft.align()` interleaved across FFT-NS-2, FFT-NS-i, L-INS-i,
+  `--parttree` and G-INS-i at `--thread 1` and 8, recording wall-clock,
+  peak RSS, width and byte-identity; per-run caching makes it resumable
+  and a projection rule skips cells C cannot finish within an hour.
+  Pipeline check in `benchmarks/results/scaling_smoke_2026-10-31.tsv`;
+  how to run the full sweep in `PROFILING.md`.
 - **BAliBASE SP / TC scores alongside byte-identity**
   (`benchmarks/balibase_scores.py`, issue #28). Aligns every BAliBASE 3
   set with the in-tree C MAFFT and with `mafft-rs` in FFT-NS-2, FFT-NS-i,

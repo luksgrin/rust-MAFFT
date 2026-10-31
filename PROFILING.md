@@ -240,3 +240,63 @@ C) and path (3) stays open. `MAFFT_RS_REFINE_STATS=1` now prints per-call
 refinement statistics (`cycles`, `visited`, `accepted`, exit reason) so
 any future C-vs-Rust timing can first confirm both sides ran the same
 refinement work.
+
+## Scaling benchmark: n = 100 to 5000 (issue #22)
+
+`benchmarks/scaling_corpus.py` builds the corpus and
+`benchmarks/scaling.py` times C MAFFT (in-tree build), the `mafft-rs`
+CLI and native `pymafft.align()` on it, interleaved, recording
+wall-clock, peak RSS, output width and C-vs-Rust byte-identity per run.
+Both scripts' docstrings have the details.
+
+**Corpus.** Ten Pfam families as full-length UniProtKB sequences (query
+`xref:pfam-<ID> AND fragment:false AND length:[50 TO 3000] AND
+(reviewed:true OR existence:1)`, UniProt 2026_03) and RefSeq 16S rRNA
+(BioProject PRJNA33175, NCBI E-utilities), each shuffled with a fixed
+seed and cut into nested subsamples n = 100, 250, 500, 1000, plus 5000
+for PF00069 / PF00005 and 2000 for 16S (PF00528 has 541 members, so it
+stops at 500). The manifest (pool size, release, download date, length
+min / median / max / total per subsample), the ordered accession lists
+and `SHA256SUMS` are in `benchmarks/corpus/`; the FASTA files are
+regenerated into `target/scaling_corpus/`:
+
+```sh
+benchmarks/scaling_corpus.py build    # fetch the committed accessions, check SHA256SUMS
+benchmarks/scaling_corpus.py verify
+```
+
+**Grid.** FFT-NS-2, FFT-NS-i (`--maxiterate 1000`), L-INS-i
+(`--localpair --maxiterate 1000`), `--parttree`, and G-INS-i
+(`--globalpair --maxiterate 1000`) for n ≤ 250; n > 1000 only for
+FFT-NS-2 and `--parttree`; `--thread 1` everywhere and `--thread 8` for
+n ≥ 500 — 290 cells (`scaling.py run --list`). Cells run in increasing
+n; a cell is skipped (with every larger n of the same set and mode) when
+C's time projected from the previous n (quadratic; n^1.2 for
+`--parttree`) exceeds `--budget` (3600 s), or C timed out there. Single
+runs time out after 7200 s. `pymafft.align()` does not expose
+`--parttree`, so those cells have no pymafft column.
+
+**Running.** Prerequisites: `make -C mafft-upstream/core`,
+`cargo build --release -p mafft-rs`, a `.venv` with
+`maturin develop --release` of `crates/pymafft`. Then, on a quiet
+machine:
+
+```sh
+benchmarks/scaling.py run --smoke        # one cell, seconds
+benchmarks/scaling.py run --reps 3          # full sweep
+benchmarks/scaling.py summarize benchmarks/results/scaling_darwin-arm64_<date>.tsv
+```
+
+Every run is cached under `target/scaling/<host>/` (host defaults to
+`<os>-<arch>`, e.g. `darwin-arm64`, `linux-x86_64`), so an interrupted
+sweep resumes where it stopped. Run it on each platform against that
+platform's own C build; `scaling.py compare a.tsv b.tsv` then lists the
+cells where the two C builds disagree with each other.
+
+`benchmarks/results/scaling_smoke_2026-10-31.tsv` is the pipeline check
+(n = 100, `--thread 1`, one replicate, every set): FFT-NS-2 is
+byte-identical between C, `mafft-rs` and pymafft on all 11 sets;
+`mafft-rs --parttree` panics on all 11 (`index out of bounds` in
+`mafft_core::progressive::merge_step_cached`, from n ≈ 50 sequences up),
+which has to be fixed before the `--parttree` column of the full run
+means anything.
