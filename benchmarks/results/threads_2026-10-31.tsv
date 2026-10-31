@@ -1,0 +1,211 @@
+input	n	median_len	mode	flags	threads	impl	run	wall_s	out_sha	load1	host	fp_policy
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 1	1	c	1	0.557	f9e85f5ecd1cc16b	2.18	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 1	1	rust	1	0.396	f9e85f5ecd1cc16b	2.18	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 1	1	rust	2	0.390	f9e85f5ecd1cc16b	2.18	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 1	1	c	2	0.556	f9e85f5ecd1cc16b	2.18	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 1	1	c	3	0.558	f9e85f5ecd1cc16b	2.18	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 1	1	rust	3	0.390	f9e85f5ecd1cc16b	2.18	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 2	2	c	1	0.376	49f937926c779e4a	2.18	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 2	2	rust	1	0.393	f9e85f5ecd1cc16b	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 2	2	rust	2	0.393	f9e85f5ecd1cc16b	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 2	2	c	2	0.381	49f937926c779e4a	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 2	2	c	3	0.375	b4b65020c48a17a4	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 2	2	rust	3	0.396	f9e85f5ecd1cc16b	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 4	4	c	1	0.288	afde4026eff5e00a	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 4	4	rust	1	0.391	f9e85f5ecd1cc16b	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 4	4	rust	2	0.389	f9e85f5ecd1cc16b	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 4	4	c	2	0.322	e1bd3c7ec31952b4	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 4	4	c	3	0.287	1805984795bf3623	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 4	4	rust	3	0.395	f9e85f5ecd1cc16b	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 8	8	c	1	0.343	7c291c7aa12d637a	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 8	8	rust	1	0.396	f9e85f5ecd1cc16b	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 8	8	rust	2	0.402	f9e85f5ecd1cc16b	2.24	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 8	8	c	2	0.269	fd53a3a48756559a	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 8	8	c	3	0.289	f35afc13d650724c	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 8	8	rust	3	0.403	f9e85f5ecd1cc16b	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 10	10	c	1	0.300	bb23eec6895d44fe	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 10	10	rust	1	0.396	f9e85f5ecd1cc16b	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 10	10	rust	2	0.431	f9e85f5ecd1cc16b	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 10	10	c	2	0.305	adaa788a5524f97b	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 10	10	c	3	0.328	27b55ae642a528e6	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	fftnsi	--maxiterate 1000 --thread 10	10	rust	3	0.397	f9e85f5ecd1cc16b	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 1	1	c	1	1.099	2743646ef2f05ab9	2.22	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 1	1	rust	1	1.084	2743646ef2f05ab9	2.44	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 1	1	rust	2	1.096	2743646ef2f05ab9	2.44	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 1	1	c	2	1.082	2743646ef2f05ab9	2.44	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 1	1	c	3	1.081	2743646ef2f05ab9	2.44	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 1	1	rust	3	1.076	2743646ef2f05ab9	2.44	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 2	2	c	1	0.792	91880f915809b8a6	2.89	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 2	2	rust	1	0.882	2743646ef2f05ab9	2.89	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 2	2	rust	2	0.916	2743646ef2f05ab9	2.89	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 2	2	c	2	0.713	f96825f1fa227125	2.89	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 2	2	c	3	0.739	294e58513071ad37	2.89	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 2	2	rust	3	0.883	2743646ef2f05ab9	2.89	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 4	4	c	1	0.502	48e0246cde74f861	2.89	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 4	4	rust	1	0.831	2743646ef2f05ab9	3.38	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 4	4	rust	2	0.816	2743646ef2f05ab9	3.38	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 4	4	c	2	0.456	6eec9bab7680250c	3.38	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 4	4	c	3	0.463	1ac745566945868c	3.38	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 4	4	rust	3	0.799	2743646ef2f05ab9	3.38	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 8	8	c	1	0.392	8f97329856acda7e	3.38	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 8	8	rust	1	0.760	2743646ef2f05ab9	3.38	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 8	8	rust	2	0.758	2743646ef2f05ab9	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 8	8	c	2	0.403	5a7efb7713d8a7ab	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 8	8	c	3	0.386	89467b2d6fe0a761	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 8	8	rust	3	0.762	2743646ef2f05ab9	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 10	10	c	1	0.379	0b4008053980007f	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 10	10	rust	1	0.755	2743646ef2f05ab9	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 10	10	rust	2	0.755	2743646ef2f05ab9	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 10	10	c	2	0.435	20a7a206a7dfacec	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 10	10	c	3	0.386	9b099ebf3fe08d62	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	linsi	--localpair --maxiterate 1000 --thread 10	10	rust	3	0.756	2743646ef2f05ab9	3.32	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 1	1	c	1	1.108	5a7f6b8659e6b3bb	3.32	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 1	1	rust	1	1.275	5a7f6b8659e6b3bb	3.32	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 1	1	rust	2	1.281	5a7f6b8659e6b3bb	3.32	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 1	1	c	2	1.090	5a7f6b8659e6b3bb	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 1	1	c	3	1.101	5a7f6b8659e6b3bb	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 1	1	rust	3	1.286	5a7f6b8659e6b3bb	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 2	2	c	1	0.647	5a7f6b8659e6b3bb	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 2	2	rust	1	1.026	5a7f6b8659e6b3bb	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 2	2	rust	2	1.017	5a7f6b8659e6b3bb	3.26	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 2	2	c	2	0.651	5a7f6b8659e6b3bb	3.26	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 2	2	c	3	0.647	5a7f6b8659e6b3bb	3.26	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 2	2	rust	3	1.020	5a7f6b8659e6b3bb	3.26	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 4	4	c	1	0.452	5985309032f8e44d	3.26	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 4	4	rust	1	0.891	5a7f6b8659e6b3bb	3.26	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 4	4	rust	2	0.891	5a7f6b8659e6b3bb	3.26	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 4	4	c	2	0.446	c8e1183251f65008	3.48	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 4	4	c	3	0.459	86ccf757b6f49a87	3.48	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 4	4	rust	3	0.899	5a7f6b8659e6b3bb	3.48	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 8	8	c	1	0.380	07f68032dd567bd5	3.48	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 8	8	rust	1	0.846	5a7f6b8659e6b3bb	3.48	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 8	8	rust	2	0.839	5a7f6b8659e6b3bb	3.48	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 8	8	c	2	0.346	11c45bac7f43aeff	3.48	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 8	8	c	3	0.369	15881047eaec4712	3.48	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 8	8	rust	3	0.841	5a7f6b8659e6b3bb	3.52	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 10	10	c	1	0.398	9ddfffee4c3b0402	3.52	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 10	10	rust	1	0.837	5a7f6b8659e6b3bb	3.52	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 10	10	rust	2	0.830	5a7f6b8659e6b3bb	3.52	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 10	10	c	2	0.375	daf05234a860b73b	3.52	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 10	10	c	3	0.358	22930f01ab80eda5	3.52	Apple_M4/Darwin-arm64/10cpu	fma
+sample36	36	377.0	ginsi	--globalpair --maxiterate 1000 --thread 10	10	rust	3	0.830	5a7f6b8659e6b3bb	3.52	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 1	1	c	1	7.958	764a89ceec14f85e	3.60	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 1	1	rust	1	5.047	764a89ceec14f85e	3.39	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 1	1	rust	2	5.024	764a89ceec14f85e	3.52	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 1	1	c	2	7.930	764a89ceec14f85e	3.40	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 1	1	c	3	7.922	764a89ceec14f85e	3.18	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 1	1	rust	3	5.042	764a89ceec14f85e	3.08	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 2	2	c	1	5.963	764a89ceec14f85e	3.00	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 2	2	rust	1	5.323	764a89ceec14f85e	2.84	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 2	2	rust	2	5.046	764a89ceec14f85e	2.93	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 2	2	c	2	5.850	764a89ceec14f85e	3.10	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 2	2	c	3	6.251	764a89ceec14f85e	3.46	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 2	2	rust	3	4.988	764a89ceec14f85e	3.42	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 4	4	c	1	5.237	764a89ceec14f85e	3.71	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 4	4	rust	1	4.985	764a89ceec14f85e	3.57	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 4	4	rust	2	4.928	764a89ceec14f85e	3.53	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 4	4	c	2	5.109	764a89ceec14f85e	3.72	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 4	4	c	3	5.026	764a89ceec14f85e	3.91	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 4	4	rust	3	4.941	764a89ceec14f85e	3.75	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 8	8	c	1	5.019	764a89ceec14f85e	4.57	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 8	8	rust	1	4.930	764a89ceec14f85e	4.45	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 8	8	rust	2	4.929	764a89ceec14f85e	4.33	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 8	8	c	2	5.000	1e7dbb68a38d53c0	4.62	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 8	8	c	3	5.014	764a89ceec14f85e	4.98	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 8	8	rust	3	4.921	764a89ceec14f85e	4.82	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 10	10	c	1	5.099	764a89ceec14f85e	5.07	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 10	10	rust	1	4.960	764a89ceec14f85e	4.91	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 10	10	rust	2	4.969	764a89ceec14f85e	4.75	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 10	10	c	2	5.096	a59e4ad2b4f6e1c9	5.17	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 10	10	c	3	5.110	1e7dbb68a38d53c0	5.48	Apple_M4/Darwin-arm64/10cpu	fma
+mtb_cds_120x1400.fa	120	1415.0	fftnsi	--maxiterate 1000 --thread 10	10	rust	3	4.924	764a89ceec14f85e	5.28	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 1	1	c	1	8.804	224bbb3a4fbbc0c0	3.32	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 1	1	rust	1	7.475	224bbb3a4fbbc0c0	3.14	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 1	1	rust	2	7.480	224bbb3a4fbbc0c0	3.04	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 1	1	c	2	8.774	224bbb3a4fbbc0c0	2.95	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 1	1	c	3	8.729	224bbb3a4fbbc0c0	2.89	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 1	1	rust	3	7.472	224bbb3a4fbbc0c0	2.73	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 2	2	c	1	6.700	b9f670c5cf0b2c46	2.62	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 2	2	rust	1	7.483	224bbb3a4fbbc0c0	2.81	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 2	2	rust	2	7.615	224bbb3a4fbbc0c0	2.77	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 2	2	c	2	8.561	3d82764150aca8b0	2.95	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 2	2	c	3	9.427	17299d45ab28c718	3.11	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 2	2	rust	3	7.421	224bbb3a4fbbc0c0	3.10	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 4	4	c	1	5.463	a1db454704db0b3f	3.25	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 4	4	rust	1	7.436	224bbb3a4fbbc0c0	3.07	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 4	4	rust	2	7.402	224bbb3a4fbbc0c0	3.42	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 4	4	c	2	3.781	a885ef755d5222a8	3.71	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 4	4	c	3	4.168	ad3a1702412668ec	3.49	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 4	4	rust	3	7.426	224bbb3a4fbbc0c0	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 8	8	c	1	3.015	7fa7f5aed14240ea	3.98	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 8	8	rust	1	7.421	224bbb3a4fbbc0c0	3.82	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 8	8	rust	2	7.399	224bbb3a4fbbc0c0	3.47	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 8	8	c	2	2.240	7ecf061860ac2349	3.47	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 8	8	c	3	3.219	9cfab7d43fda4b97	3.83	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 8	8	rust	3	7.404	224bbb3a4fbbc0c0	3.84	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 10	10	c	1	3.699	5987a12bd49946c4	4.26	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 10	10	rust	1	7.413	224bbb3a4fbbc0c0	3.99	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 10	10	rust	2	7.488	224bbb3a4fbbc0c0	3.77	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 10	10	c	2	4.964	f01101dc106d41a3	4.27	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 10	10	c	3	2.267	cb69e2d872356b46	4.27	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	fftnsi	--maxiterate 1000 --thread 10	10	rust	3	7.423	224bbb3a4fbbc0c0	4.00	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 1	1	c	1	21.285	b9cf8b3e1039506e	3.54	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 1	1	rust	1	28.049	b9cf8b3e1039506e	3.13	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 1	1	rust	2	28.023	b9cf8b3e1039506e	3.01	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 1	1	c	2	21.288	b9cf8b3e1039506e	2.80	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 1	1	c	3	21.706	b9cf8b3e1039506e	2.55	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 1	1	rust	3	28.040	b9cf8b3e1039506e	2.67	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 2	2	c	1	12.803	9e66d5a3c773aa74	2.97	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 2	2	rust	1	25.841	b9cf8b3e1039506e	2.81	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 2	2	rust	2	25.809	b9cf8b3e1039506e	2.99	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 2	2	c	2	12.785	b619de9d1147e76a	3.06	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 2	2	c	3	11.111	dbf0191e7ce2c59e	3.36	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 2	2	rust	3	25.767	b9cf8b3e1039506e	3.19	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 4	4	c	1	8.584	33d9f22237a7fd49	3.40	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 4	4	rust	1	24.390	b9cf8b3e1039506e	2.80	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 4	4	rust	2	24.398	b9cf8b3e1039506e	2.83	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 4	4	c	2	8.614	70cb93d38141325a	3.00	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 4	4	c	3	7.233	3ab5b9d141b7b6f9	3.23	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 4	4	rust	3	24.504	b9cf8b3e1039506e	3.32	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 8	8	c	1	6.200	04c6823584943061	3.77	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 8	8	rust	1	24.844	b9cf8b3e1039506e	3.35	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 8	8	rust	2	24.397	b9cf8b3e1039506e	4.23	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 8	8	c	2	6.830	964d282310622d1a	4.93	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 8	8	c	3	6.048	c1e53f4471c49c00	5.33	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 8	8	rust	3	24.023	b9cf8b3e1039506e	5.47	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 10	10	c	1	8.989	edc1025ec18b228c	5.86	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 10	10	rust	1	23.892	b9cf8b3e1039506e	4.73	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 10	10	rust	2	23.724	b9cf8b3e1039506e	4.47	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 10	10	c	2	5.470	543ff9646935a437	5.54	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 10	10	c	3	5.998	060d008a5d5e2e0f	5.73	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	linsi	--localpair --maxiterate 1000 --thread 10	10	rust	3	23.711	b9cf8b3e1039506e	4.90	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 1	1	c	1	20.899	942b59ed283b395c	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 1	1	rust	1	33.105	942b59ed283b395c	3.12	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 1	1	rust	2	33.905	942b59ed283b395c	2.75	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 1	1	c	2	20.698	942b59ed283b395c	2.76	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 1	1	c	3	20.816	942b59ed283b395c	3.08	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 1	1	rust	3	33.273	942b59ed283b395c	3.00	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 2	2	c	1	11.733	186f0555580c1349	3.22	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 2	2	rust	1	29.656	942b59ed283b395c	3.32	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 2	2	rust	2	29.364	942b59ed283b395c	3.13	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 2	2	c	2	11.637	e0cf32fb6ad37317	3.12	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 2	2	c	3	10.899	2bb4a4e8ee7ac854	3.46	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 2	2	rust	3	29.324	942b59ed283b395c	3.22	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 4	4	c	1	5.517	d39ed4192c70e644	3.50	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 4	4	rust	1	27.460	942b59ed283b395c	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 4	4	rust	2	27.080	942b59ed283b395c	3.37	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 4	4	c	2	8.738	7c340a583b90db91	3.77	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 4	4	c	3	6.609	0ef94a47a84a4674	3.95	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 4	4	rust	3	27.050	942b59ed283b395c	3.73	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 8	8	c	1	5.428	2381eed3e22e7980	4.07	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 8	8	rust	1	26.100	942b59ed283b395c	3.69	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 8	8	rust	2	26.081	942b59ed283b395c	3.39	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 8	8	c	2	6.257	c8c650abf56f05b7	4.48	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 8	8	c	3	5.426	70e9ce212702c0e0	4.85	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 8	8	rust	3	26.091	942b59ed283b395c	3.93	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 10	10	c	1	5.146	aceaf15129ba80f0	4.26	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 10	10	rust	1	27.205	942b59ed283b395c	4.10	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 10	10	rust	2	26.194	942b59ed283b395c	4.16	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 10	10	c	2	5.724	2a0570bcbba1bdf8	4.55	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 10	10	c	3	5.326	31696df2d0632773	4.99	Apple_M4/Darwin-arm64/10cpu	fma
+BB30005.tfa	113	491	ginsi	--globalpair --maxiterate 1000 --thread 10	10	rust	3	26.222	942b59ed283b395c	4.27	Apple_M4/Darwin-arm64/10cpu	fma
