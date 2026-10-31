@@ -6,12 +6,13 @@ Each run is executed twice: once with the C reference (the pinned
 its own `mafft` wrapper script) and once with the release `mafft-rs`
 binary. Per run the harness records:
 
-* C: exit status, wall time, every AddressSanitizer / UndefinedBehaviorSanitizer
+* C: exit status, stdout size (the wrapper can exit 0 with empty stdout
+  after an engine error), wall time, every AddressSanitizer / UndefinedBehaviorSanitizer
   report (counted from the sanitizer log files, so reports from engines whose
   stderr the wrapper discards are not lost), the first report line with its
   first `mafft-upstream` stack frame, signals reported by the shell
   (`Segmentation fault`, `Abort trap`, ...) and a short stderr excerpt;
-* Rust: exit status, wall time, outcome (`ok`, `ok-empty`, `error`, `panic`,
+* Rust: exit status, stdout size, wall time, outcome (`ok`, `ok-empty`, `error`, `panic`,
   `signal`, `timeout`) and a short stderr excerpt;
 * `identical`: whether stdout is byte-identical when both exit 0.
 
@@ -72,8 +73,8 @@ ASAN_PREFIX = REPO / "target" / "asan" / "mafft-bin"
 
 COLUMNS = [
     "corpus", "case", "flags", "input",
-    "c_exit", "c_secs", "c_asan", "c_ubsan", "c_signal", "c_diag", "c_stderr",
-    "rs_exit", "rs_secs", "rs_outcome", "rs_stderr", "identical",
+    "c_exit", "c_out", "c_secs", "c_asan", "c_ubsan", "c_signal", "c_diag", "c_stderr",
+    "rs_exit", "rs_out", "rs_secs", "rs_outcome", "rs_stderr", "identical",
 ]
 DEFAULT_CORPORA = ["input_handling", "sample", "clusters", "adversarial", "sample_add", "mutants", "cases"]
 
@@ -250,10 +251,10 @@ def run_job(job, args, logdir: Path) -> dict[str, str]:
 
     return {
         "corpus": corpus, "case": case, "flags": flags.replace(str(REPO) + "/", ""), "input": rel(inp),
-        "c_exit": "timeout" if c_code is None else str(c_code), "c_secs": f"{c_secs:.2f}",
+        "c_exit": "timeout" if c_code is None else str(c_code), "c_out": str(len(c_out)), "c_secs": f"{c_secs:.2f}",
         "c_asan": str(len(asan)), "c_ubsan": str(len(ubsan)),
         "c_signal": sig.group(1) if sig else "", "c_diag": diag[:300], "c_stderr": excerpt(c_err),
-        "rs_exit": "timeout" if r_code is None else str(r_code), "rs_secs": f"{r_secs:.2f}",
+        "rs_exit": "timeout" if r_code is None else str(r_code), "rs_out": str(len(r_out)), "rs_secs": f"{r_secs:.2f}",
         "rs_outcome": outcome, "rs_stderr": excerpt(r_err), "identical": identical,
     }
 
@@ -266,13 +267,14 @@ def summarise(path: Path) -> None:
         s = by.setdefault(r["corpus"], dict(runs=0, c_ok=0, c_fail=0, san=0, sig=0, rs_ok=0, rs_err=0,
                                              rs_bad=0, same=0, diff=0, agree=0))
         s["runs"] += 1
-        s["c_ok" if r["c_exit"] == "0" else "c_fail"] += 1
+        c_ok = r["c_exit"] == "0" and r["c_out"] != "0"
+        s["c_ok" if c_ok else "c_fail"] += 1
         s["san"] += int(r["c_asan"] != "0" or r["c_ubsan"] != "0")
         s["sig"] += int(bool(r["c_signal"]))
         s["rs_ok" if r["rs_outcome"].startswith("ok") else "rs_err" if r["rs_outcome"] == "error" else "rs_bad"] += 1
         s["same"] += int(r["identical"] == "yes")
         s["diff"] += int(r["identical"] == "no")
-        s["agree"] += int((r["c_exit"] == "0") == (r["rs_exit"] == "0"))
+        s["agree"] += int(c_ok == r["rs_outcome"].startswith("ok"))
     cols = list(next(iter(by.values())).keys()) if by else []
     print("corpus\t" + "\t".join(cols))
     for c, s in by.items():

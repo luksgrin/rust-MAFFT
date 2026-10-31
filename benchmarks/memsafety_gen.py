@@ -31,7 +31,7 @@ USAGE
 -----
 
     benchmarks/memsafety_gen.py                 # writes target/memsafety/
-    benchmarks/memsafety_gen.py --out DIR --mutants 400
+    benchmarks/memsafety_gen.py --out DIR --mutants 500
 """
 
 from __future__ import annotations
@@ -203,6 +203,20 @@ def adversarial(out: Path) -> list[tuple[str, str, str]]:
         fasta([("same", s) for s in dna]),
         "--adjustdirection --nuc",
     )
+    # MAFFT changelog v7.511: "--adjustdirection could abort when input
+    # sequences have long low-complexity region"
+    # (https://mafft.cbrc.jp/alignment/software/changelog.html). Fixed
+    # upstream before 7.526; kept as a regression input for both sides.
+    comp = str.maketrans("ACGT", "TGCA")
+    lowc = [("A" * 3000 + s + "CA" * 1500) for s in dna[:3]]
+    lowc += [lowc[0].translate(comp)[::-1], ("AT" * 2000) + dna[3]]
+    add(
+        "adjustdirection_lowcomplexity",
+        "adjustdirection_lowcomplexity.fa",
+        fasta([(f"lc{i}", s) for i, s in enumerate(lowc)]),
+        "--adjustdirection --nuc",
+        "--adjustdirectionaccurately --nuc",
+    )
     add("gap_only_one", "gap_only_one.fa", recs_to(("a", p[0]), ("gaps", "-" * 120), ("c", p[1])))
     add("gap_only_all", "gap_only_all.fa", recs_to(("a", "-" * 50), ("b", "-" * 50), ("c", "---")))
     add("star_only_one", "star_only_one.fa", recs_to(("a", p[0]), ("stars", "*" * 40), ("c", p[1])))
@@ -355,7 +369,7 @@ def write_manifest(out: Path, cases: list[tuple[str, str, str]]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=REPO / "target" / "memsafety")
-    ap.add_argument("--mutants", type=int, default=400, help="number of mutated sample copies")
+    ap.add_argument("--mutants", type=int, default=2000, help="number of mutated sample copies")
     a = ap.parse_args()
     for sub, fn in (
         ("adversarial", adversarial),
