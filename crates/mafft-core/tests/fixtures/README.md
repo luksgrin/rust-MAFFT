@@ -164,3 +164,22 @@ mafft-upstream/scripts/mafft --quiet --parttree $F/parttree_respreg50.fa > $F/pa
 mafft-upstream/scripts/mafft --quiet --parttree --reorder $F/parttree_respreg50.fa > $F/parttree_respreg50.parttree.reorder
 mafft-upstream/scripts/mafft --quiet --dpparttree $F/parttree_respreg50.fa > $F/parttree_respreg50.dpparttree
 ```
+
+## `add_sentinel.*`
+
+Regression input for issue #40: the `--add` reproducer
+`benchmarks/memsafety_cases/add_sentinel_*.fa` (30 aligned rows + 6 new)
+cut down to 2 existing rows (`e28`, `e30`, all-gap columns removed) and one
+added sequence (`n5`). Adding `n5` realigns a new-gap region next to a
+restored common-gap block (C `insertnewgaps` → `profilealignment`), which
+marks the existing side with C's `=` new-gap sentinel. `mafft-rs` printed
+24 of those `=`. The reference is the in-tree C build's output; an in-tree
+build with `-ffp-contract=off` produces the same bytes, so it carries no
+`.fma`/`.nofma` suffix.
+
+```bash
+make -C mafft-upstream/core
+export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
+F=crates/mafft-core/tests/fixtures
+mafft-upstream/scripts/mafft --quiet --add $F/add_sentinel.new1.fa $F/add_sentinel.existing2.fa > $F/add_sentinel.add.aln
+```

@@ -4,8 +4,8 @@
 //!
 //! The fixtures live in `fixtures/memsafety/`. They come from
 //! `benchmarks/memsafety_gen.py` (`control_protein.fa`, the `--treein`
-//! files, `empty_record_middle.fa`), from the minimised case in
-//! `benchmarks/memsafety_cases/` (`addfragments_localpair_*`), and
+//! files, `empty_record_middle.fa`), from `benchmarks/memsafety_cases/`
+//! (the minimised `addfragments_localpair_*` and `add_sentinel_*`), and
 //! `homopolymer_dna.fa` (300-nt poly-A + 300 random bases, seed 27).
 //! `.expected` files are the stdout of the in-tree C build
 //! (`make -C mafft-upstream/core`, default flags, arm64 / Apple clang).
@@ -118,6 +118,21 @@ fn addfragments_localpair_completes_and_keeps_residues() {
         };
         assert!(widths.windows(2).all(|p| p[0] == p[1]), "ragged output: {widths:?}");
     }
+}
+
+/// `--add` of 6 sequences onto 30 aligned rows (issue #40, R4). mafft-rs
+/// printed C's internal `=` new-gap sentinel in 3 rows: the port of
+/// `insertnewgaps` / `profilealignment` writes it, and C clears it with
+/// `eq2dashmatometehayaku` after every merge (`disttbfast.c:2988`), which
+/// the port did not. The `.expected` file is the in-tree C build's output.
+#[test]
+fn add_sentinel_matches_c() {
+    let new = memsafety("add_sentinel_new.fa");
+    let mut out = Vec::new();
+    mafft_rs::run_from(argv(&["--add", new.to_str().unwrap()], &memsafety("add_sentinel_existing.fa")), &mut out)
+        .unwrap_or_else(|e| panic!("mafft-rs failed: {}", e.message()));
+    let want = std::fs::read(memsafety("add_sentinel.add.expected")).unwrap();
+    assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want));
 }
 
 /// A record with no residues in the middle of the input. C aligns the
