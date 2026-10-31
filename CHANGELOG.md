@@ -112,6 +112,29 @@ public surfaces stable from 0.1.0 anyway.
 - A malformed `--treein` (index 0, negative, out of range, too few lines)
   ended the process from inside the engine with `process::exit(1)`, also
   for in-process callers; it is now a normal `MafftError`.
+- **`--parttree` panic and divergence on 50+ sequences** (issue #38).
+  The PartTree port covered only the first level of
+  `splittbfast.c::splitseq_mq`. From 50 sequences on (`picksize` no
+  longer exceeds `njob`, so `tokyoripara = 0.7`) redundant pivots are
+  dropped and each yuko group holds distinct sequences that C aligns in a
+  recursive `splitseq_mq` call before merging; the Rust side merged them
+  unaligned, and `merge_step_cached` indexed past the shorter rows. New
+  `mafft-tree::parttree_splitseq` ports the full recursion (pivot draw
+  with the macOS libc `rand()` sequence, redundancy filter, duplicate
+  handling, `treeorder` recursion, `pairalign` merge order and
+  orientation) for the k-tuple pass, the `-Z` (`fromaln`) pass and the
+  `-U` DP pass. `--parttree --reorder` / `--treeout` and `--dpparttree`
+  use it; `--dpparttree` now runs one pass with DP distances, as C's
+  `DPPartTree-1` does. PartTree merges no longer use FFT (`splittbfast`
+  is never given `-F`). `bsd_qsort` is now an exact port of the macOS
+  libc `qsort` (its `med3` tie rule, bounded insertion-sort fallback and
+  `heapsort` depth cap differed for tied elements), and the
+  `splittbfast` length factor follows the FP contraction policy.
+  Byte-identical to the in-tree C build on a 50-sequence regression
+  fixture, 82 of 84 scaling-corpus cells (10 Pfam families × n = 100 and
+  250 × `--parttree` / `--reorder` / `--nofft` / `--dpparttree`, 16S
+  `--nuc`); the two `--dpparttree` residuals at n = 250 are listed in
+  `docs/architecture/byte-identity.md`.
 
 - The in-tree C reference (`mafft-c-bindings/build.rs`) builds with GCC 14
   and 15 (issue #17). GCC 14 made `-Wincompatible-pointer-types` an error

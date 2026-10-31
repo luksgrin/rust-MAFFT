@@ -142,3 +142,25 @@ MAFFT_BINARIES=$PWD/mafft-upstream/binaries \
 
 Remember to revert the `fprintf` and rebuild C afterward, or the change will
 leak into future regenerations of `sample.nwns2`.
+
+## `parttree_respreg50.*`
+
+Regression input for issue #38: `parttree_respreg50.fa` holds 50 UniProt
+Response_reg (PF00072) proteins, each cut to its first 10 % (at least 30
+residues). Fifty is the smallest input on which `splittbfast` keeps
+`tokyoripara = 0.7` (it drops to 0 when `picksize` (50) exceeds `njob`), so
+redundant pivots are filtered and the yuko groups contain distinct
+sequences that C aligns in a recursive `splitseq_mq` call. The references
+are the in-tree C build's output; Rust produces the same bytes under both
+`fp-contract-fma` and `fp-contract-none`, so they carry no `.fma`/`.nofma`
+suffix. `--parttree --nofft` is checked against `parttree_respreg50.parttree`
+because `splittbfast` never uses FFT (no `-F`), so the two are identical.
+
+```bash
+make -C mafft-upstream/core
+export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
+F=crates/mafft-core/tests/fixtures
+mafft-upstream/scripts/mafft --quiet --parttree $F/parttree_respreg50.fa > $F/parttree_respreg50.parttree
+mafft-upstream/scripts/mafft --quiet --parttree --reorder $F/parttree_respreg50.fa > $F/parttree_respreg50.parttree.reorder
+mafft-upstream/scripts/mafft --quiet --dpparttree $F/parttree_respreg50.fa > $F/parttree_respreg50.dpparttree
+```

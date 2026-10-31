@@ -20,11 +20,10 @@
 //! 7. **Redundancy filter**: for each `i < j`, if `pickmtx[i][j-i] <
 //!    maxdist · 0.7`, mark `j` redundant. Survivors form `yukos[]`.
 //!
-//! For our `n = 36 < picksize = 50` test fixture, all 36 sequences
-//! become picks and `qsort(picks)` canonicalizes — the random-pick
-//! path is suppressed and `rand()` determinism doesn't matter. For
-//! `nin > picksize`, the libc `rand()` sequence becomes load-bearing
-//! and would need to be matched bit-for-bit (macOS BSD ≠ glibc).
+//! These helpers describe the first recursion level for `n < picksize`
+//! (all sequences become picks and no pick is filtered). The full
+//! recursive algorithm, including the libc `rand()` draws used when
+//! `n > picksize`, is in [`crate::parttree_splitseq`].
 
 use crate::parttree_dist::{
     common_sextets_p, composition_table, encode_points_dna,
@@ -207,13 +206,12 @@ pub fn dcompare_sort(scores: &mut [ScoreEntry]) {
 /// sort. For `n ≤ picksize`, all sequences become picks (since the
 /// loop terminates when `nkouho == 0`).
 ///
-/// **`rand()` warning**: when `n > picksize`, the loop falls into the
-/// random-pick path which uses libc `rand()` with C's default seed.
-/// Byte-exact parity in that regime would require linking C's `rand()`
-/// or replicating glibc's LCG state; the current implementation hasn't
-/// produced an observed divergence (`--parttree` matches C MAFFT 7.526
-/// on the 36-seq sample and across BBaliBase 3). For `n ≤ picksize`
-/// the `qsort` makes the random-pick order irrelevant.
+/// **`rand()`**: when `n > picksize`, C draws the remaining candidates
+/// with `rnd()` (libc `rand()`, unseeded). This helper substitutes the
+/// last remaining candidate, so it matches C only for `n ≤ picksize`,
+/// where every distinct sequence is picked and `qsort(picks)` makes the
+/// draw order irrelevant. [`crate::parttree_splitseq`] reproduces the
+/// macOS `rand()` sequence for the general case.
 pub fn select_pivots(scores: &[ScoreEntry], picksize: usize) -> Vec<usize> {
     let nin = scores.len();
     if nin == 0 { return Vec::new(); }

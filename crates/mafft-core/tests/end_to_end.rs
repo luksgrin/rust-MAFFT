@@ -2723,6 +2723,59 @@ fn upstream_sample_dpparttree_byte_identical() {
     assert_byte_equal_to_upstream_ref(&msa, "sample.dpparttree", "upstream DP-PartTree");
 }
 
+/// PartTree regression input (issue #38): 50 UniProt Response_reg
+/// proteins cut to 10 % of their length. With `njob >= picksize` (50)
+/// `splittbfast` keeps `tokyoripara = 0.7`, so pivots get merged into
+/// yuko groups of distinct sequences that C aligns in a recursive
+/// `splitseq_mq` call. The single-level port left those groups unaligned
+/// and panicked in `merge_step_cached`. References from the in-tree C
+/// build; the bytes do not depend on the FP contraction policy.
+fn respreg50_engine() -> MafftEngine {
+    MafftEngine::new(AlignmentMode::FftNs2)
+}
+
+fn assert_names_and_seqs_equal_to_ref(msa: &mafft_core::MultipleAlignment, c_ref_path: &str, label: &str) {
+    let c_ref = read_fasta(fixture_path(c_ref_path)).unwrap_or_else(|_| panic!("missing fixture {c_ref_path}"));
+    assert_eq!(msa.nseq(), c_ref.nseq(), "{label}: nseq mismatch");
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.names[i], c_ref.sequences[i].name, "{label}: name {i} differs from {c_ref_path}");
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data, "{label}: seq {i} differs from {c_ref_path}");
+    }
+}
+
+/// `mafft --parttree` on the 50-sequence regression input (issue #38).
+#[test]
+fn parttree_respreg50_byte_identical_to_c() {
+    let input = read_fasta(fixture_path("parttree_respreg50.fa")).unwrap();
+    let msa = respreg50_engine().with_parttree(true).align(&input);
+    assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.parttree", "--parttree");
+}
+
+/// `mafft --parttree --reorder` on the 50-sequence regression input.
+#[test]
+fn parttree_reorder_respreg50_byte_identical_to_c() {
+    let input = read_fasta(fixture_path("parttree_respreg50.fa")).unwrap();
+    let msa = respreg50_engine().with_parttree(true).with_reorder(true).align(&input);
+    assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.parttree.reorder", "--parttree --reorder");
+}
+
+/// `mafft --parttree --nofft`: `splittbfast` never takes the FFT path, so
+/// the output equals plain `--parttree`.
+#[test]
+fn parttree_nofft_respreg50_byte_identical_to_c() {
+    let input = read_fasta(fixture_path("parttree_respreg50.fa")).unwrap();
+    let msa = respreg50_engine().with_parttree(true).with_nofft(true).align(&input);
+    assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.parttree", "--parttree --nofft");
+}
+
+/// `mafft --dpparttree` on the 50-sequence regression input.
+#[test]
+fn dpparttree_respreg50_byte_identical_to_c() {
+    let input = read_fasta(fixture_path("parttree_respreg50.fa")).unwrap();
+    let msa = respreg50_engine().with_dpparttree(true).align(&input);
+    assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.dpparttree", "--dpparttree");
+}
+
 /// Sanity-read the hat2 distance-matrix fixture and verify its
 /// structural invariants. We don't yet emit hat2 ourselves
 /// (`--distout` is TODO gap #4), so this is read-only — but it
