@@ -1,7 +1,8 @@
 # Architecture
 
-Three pages on how rust-MAFFT is put together and the design decisions
-that fall out of the byte-identity constraint.
+Four pages on how rust-MAFFT is put together, the design decisions
+that fall out of the byte-identity constraint, and how it follows
+upstream MAFFT.
 
 1. [**Workspace overview**](workspace.md) — the 12 crates, who depends
    on whom, and what gets published.
@@ -11,6 +12,9 @@ that fall out of the byte-identity constraint.
 3. [**Cross-validation**](cross-validation.md) — how 99 FFI test functions
    compare each Rust function to its C counterpart at the value level,
    not just the alignment level.
+4. [**Upstream policy**](upstream-policy.md) — how the `mafft-upstream`
+   pin is recorded and bumped, which way bug fixes flow, and what the
+   port commits not to change.
 
 ## What's still out of scope
 

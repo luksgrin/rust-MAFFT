@@ -3,12 +3,18 @@ name: Check MAFFT upstream
 # Canary: did upstream MAFFT publish anything since we pinned?
 #
 # Compares the SHA pinned in our submodule (`mafft-upstream/`) against
-# the current tip of the upstream default branch. Fails loudly if
-# upstream has moved — that signals it's time to:
-#   1. Pull the submodule (`git submodule update --remote mafft-upstream`)
-#   2. Re-apply our forensic-instrumentation patches if needed
-#   3. Re-run the workspace test suite (including cross-validation)
-#   4. Commit the new submodule pointer
+# the current tip of the upstream default branch, and checks whether
+# upstream has a version tag (`v*`) the pin does not contain. If either
+# is true, it opens a GitHub issue titled
+# `upstream: mafft-upstream pin is behind …` — or updates the open one,
+# so there is never more than one — naming the pinned and upstream
+# commits/tags. That issue is the trigger for the upgrade procedure in
+# docs/architecture/upstream-policy.md, which in short is:
+#   1. Bump the submodule to the new commit/tag
+#   2. Rebuild the C reference in-tree and re-run the workspace test
+#      suite (including FFI cross-validation)
+#   3. Re-derive the C-canonical fixtures and re-run the BAliBASE sweep
+#   4. Triage any divergence, then commit the new submodule pointer
 #
 # The workflow does NOT auto-update the submodule. That's a manual
 # decision because upstream changes can introduce algorithmic drift
@@ -20,11 +26,21 @@ name: Check MAFFT upstream
 # push. We don't want this firing on every commit; it's a periodic sanity
 # check, and in both cases it only reports: it never updates the
 # submodule pointer.
+#
+# Drift is reported through the issue, not a red run: the job succeeds
+# once the issue is filed or up to date, and fails only if the check
+# itself (fetching upstream, talking to the GitHub API) breaks.
 
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 6 * * 1'
+
+# `issues: write` lets GITHUB_TOKEN open/edit/comment on the drift
+# issue; nothing else is written.
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   check:
@@ -39,6 +55,7 @@ jobs:
           fetch-depth: 1
 
       - name: Fetch upstream and compare
+        id: compare
         working-directory: mafft-upstream
         run: |
           set -euo pipefail
@@ -56,10 +73,16 @@ jobs:
           # Resolve the upstream default branch dynamically (don't
           # hardcode "main" — if upstream ever renames their default
           # branch, this should still work).
-          DEFAULT_REF=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+          DEFAULT_REF=$(LC_ALL=C git remote show origin | awk '/HEAD branch/ {print $NF}')
           echo "Upstream default branch: $DEFAULT_REF"
 
-          git fetch origin "$DEFAULT_REF" --depth=50
+          # Full history plus tags, so `git describe` and the ancestry
+          # checks below work. Upstream's history is small (~1 MiB).
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --unshallow --tags origin "+refs/heads/$DEFAULT_REF:refs/remotes/origin/$DEFAULT_REF"
+          else
+            git fetch --tags origin "+refs/heads/$DEFAULT_REF:refs/remotes/origin/$DEFAULT_REF"
+          fi
           LATEST=$(git rev-parse "origin/$DEFAULT_REF")
           LATEST_SHORT=$(git rev-parse --short "origin/$DEFAULT_REF")
           LATEST_SUBJECT=$(git log -1 --pretty=%s "origin/$DEFAULT_REF")
@@ -70,24 +93,132 @@ jobs:
           echo "  Subject: $LATEST_SUBJECT"
           echo "::endgroup::"
 
-          if [ "$PINNED" = "$LATEST" ]; then
-            echo "::notice::mafft-upstream is up to date at $PINNED_SHORT ($PINNED_SUBJECT)"
+          # Newest upstream version tag, and whether the pin contains it.
+          PINNED_DESCRIBE=$(git describe --tags "$PINNED" 2>/dev/null || echo "$PINNED_SHORT")
+          LATEST_DESCRIBE=$(git describe --tags "$LATEST" 2>/dev/null || echo "$LATEST_SHORT")
+          NEWEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          NEW_TAG=""
+          if [ -n "$NEWEST_TAG" ] && ! git merge-base --is-ancestor "$NEWEST_TAG^{commit}" "$PINNED"; then
+            NEW_TAG="$NEWEST_TAG"
+          fi
+
+          echo "::group::Tags"
+          echo "  Pinned:        $PINNED_DESCRIBE"
+          echo "  Upstream HEAD: $LATEST_DESCRIBE"
+          echo "  Newest tag:    ${NEWEST_TAG:-<none>}"
+          echo "  Not in pin:    ${NEW_TAG:-<none>}"
+          echo "::endgroup::"
+
+          {
+            echo "pinned=$PINNED"
+            echo "pinned_short=$PINNED_SHORT"
+            echo "pinned_describe=$PINNED_DESCRIBE"
+            echo "latest=$LATEST"
+            echo "latest_short=$LATEST_SHORT"
+            echo "latest_describe=$LATEST_DESCRIBE"
+            echo "default_ref=$DEFAULT_REF"
+            echo "new_tag=$NEW_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$PINNED" = "$LATEST" ] && [ -z "$NEW_TAG" ]; then
+            echo "::notice::mafft-upstream is up to date at $PINNED_DESCRIBE ($PINNED_SUBJECT)"
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "drift=true" >> "$GITHUB_OUTPUT"
+
+          # Drift detected — show what we're missing. `git log A..B`
+          # also covers the case where the pin is no longer an ancestor
+          # of upstream HEAD (upstream rewrote history).
+          MISSING=$(git log --oneline "$PINNED..origin/$DEFAULT_REF" | wc -l | tr -d ' ')
+          echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
+          echo "::group::Commits we are missing ($MISSING)"
+          git log --oneline "$PINNED..origin/$DEFAULT_REF" | tee "$RUNNER_TEMP/missing.txt"
+          echo "::endgroup::"
+
+          echo "::warning::mafft-upstream submodule is behind origin/$DEFAULT_REF."
+          echo "::warning::  pinned: $PINNED_DESCRIBE ($PINNED_SHORT) — $PINNED_SUBJECT"
+          echo "::warning::  latest: $LATEST_DESCRIBE ($LATEST_SHORT) — $LATEST_SUBJECT"
+          echo "::warning::  missing: $MISSING commit(s); new tag: ${NEW_TAG:-none}. See log group above."
+
+      - name: Open or update the drift issue
+        if: steps.compare.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED: ${{ steps.compare.outputs.pinned }}
+          PINNED_SHORT: ${{ steps.compare.outputs.pinned_short }}
+          PINNED_DESCRIBE: ${{ steps.compare.outputs.pinned_describe }}
+          LATEST: ${{ steps.compare.outputs.latest }}
+          LATEST_SHORT: ${{ steps.compare.outputs.latest_short }}
+          LATEST_DESCRIBE: ${{ steps.compare.outputs.latest_describe }}
+          DEFAULT_REF: ${{ steps.compare.outputs.default_ref }}
+          NEW_TAG: ${{ steps.compare.outputs.new_tag }}
+          MISSING: ${{ steps.compare.outputs.missing }}
+          POLICY_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/architecture/upstream-policy.md#upgrade-procedure
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Fixed title prefix: the dedup key. One open issue at a time;
+          # the suffix names what upstream is at now.
+          PREFIX="upstream: mafft-upstream pin is behind"
+          TITLE="$PREFIX ${NEW_TAG:-$LATEST_DESCRIBE}"
+          # Marker recording which upstream state the body describes, so
+          # a weekly run with nothing new stays silent.
+          MARKER="<!-- upstream-latest: $LATEST tag: ${NEW_TAG:-none} -->"
+
+          UPSTREAM_URL="https://gitlab.com/sysimm/mafft"
+          BODY_FILE="$RUNNER_TEMP/issue-body.md"
+          {
+            echo "$MARKER"
+            echo "The \`mafft-upstream\` submodule pin lags upstream MAFFT."
+            echo ""
+            echo "| | Commit | Describe |"
+            echo "|--|--|--|"
+            echo "| Pinned | [\`$PINNED_SHORT\`]($UPSTREAM_URL/-/commit/$PINNED) | \`$PINNED_DESCRIBE\` |"
+            echo "| Upstream \`$DEFAULT_REF\` | [\`$LATEST_SHORT\`]($UPSTREAM_URL/-/commit/$LATEST) | \`$LATEST_DESCRIBE\` |"
+            echo ""
+            if [ -n "$NEW_TAG" ]; then
+              echo "New upstream tag not contained in the pin: [\`$NEW_TAG\`]($UPSTREAM_URL/-/tags/$NEW_TAG)."
+              echo ""
+            fi
+            echo "Commits on upstream \`$DEFAULT_REF\` not in the pin ($MISSING):"
+            echo ""
+            echo '```'
+            if [ -s "$RUNNER_TEMP/missing.txt" ]; then
+              cat "$RUNNER_TEMP/missing.txt"
+            else
+              echo "(none)"
+            fi
+            echo '```'
+            echo ""
+            echo "Follow the [upgrade procedure]($POLICY_URL): bump the submodule, rebuild"
+            echo "the C reference in-tree, re-run the FFI cross-validation and full test"
+            echo "suite, re-derive the C-canonical fixtures (\`scripts/regen_policy_fixtures.sh\`),"
+            echo "re-run the BAliBASE sweep (\`scripts/balibase_parity.py\`) and triage any"
+            echo "divergence. This workflow never moves the submodule."
+            echo ""
+            echo "Written by [this run]($RUN_URL) of \`check-mafft-upstream.yml\`."
+          } > "$BODY_FILE"
+
+          # `--search` is fuzzy, so confirm the prefix with jq.
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$PREFIX\"" --json number,title,body --limit 20 \
+            | jq -c --arg p "$PREFIX" '[.[] | select(.title | startswith($p))] | first // empty')
+
+          if [ -z "$EXISTING" ]; then
+            URL=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file "$BODY_FILE")
+            echo "::notice::Opened $URL"
             exit 0
           fi
 
-          # Drift detected — show what we're missing.
-          MISSING=$(git log --oneline "$PINNED..origin/$DEFAULT_REF" | wc -l)
-          echo "::group::Commits we are missing ($MISSING)"
-          git log --oneline "$PINNED..origin/$DEFAULT_REF"
-          echo "::endgroup::"
+          NUMBER=$(jq -r '.number' <<< "$EXISTING")
+          if jq -r '.body' <<< "$EXISTING" | grep -qF -- "$MARKER"; then
+            echo "::notice::Issue #$NUMBER already describes upstream $LATEST_SHORT; nothing to update."
+            exit 0
+          fi
 
-          echo "::error::mafft-upstream submodule is behind origin/$DEFAULT_REF."
-          echo "::error::  pinned: $PINNED_SHORT — $PINNED_SUBJECT"
-          echo "::error::  latest: $LATEST_SHORT — $LATEST_SUBJECT"
-          echo "::error::  missing: $MISSING commit(s). See log group above."
-          echo ""
-          echo "To update locally:"
-          echo "  git submodule update --remote mafft-upstream"
-          echo "  cargo test --workspace --release --tests   # validate"
-          echo "  git add mafft-upstream && git commit -m 'Bump mafft-upstream to <SHA>'"
-          exit 1
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file "$BODY_FILE"
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "Upstream moved: now at \`$LATEST_DESCRIBE\` ($LATEST_SHORT)${NEW_TAG:+, new tag \`$NEW_TAG\`}. Description updated."
+          echo "::notice::Updated issue #$NUMBER"

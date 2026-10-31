@@ -25,6 +25,13 @@ builds against. You need a C compiler on `$PATH` (`cc` is auto-detected
 by the `cc` crate) — `apt install build-essential`, `xcode-select
 --install`, or equivalent.
 
+The pin only moves through the procedure in
+[Upstream policy](../architecture/upstream-policy.md#upgrade-procedure):
+`check-mafft-upstream.yml` opens an `upstream: …` issue when the pin
+falls behind upstream, and the bump is a normal PR that re-derives the
+C-canonical fixtures and reruns the BAliBASE sweep. Don't move the
+submodule as a side effect of another change.
+
 ## Repository layout
 
 ```
@@ -36,7 +43,7 @@ rust-MAFFT/
 ├── .github/workflows/
 │   ├── ci.yml               ← push/PR (non-docs changes): build + test on x86-64 and arm64 (via build-test.yml)
 │   ├── build-test.yml       ← reusable job: C in-tree, cargo test, FMA census, sentinel, fixture check
-│   ├── check-mafft-upstream.yml ← weekly: report drift of the submodule pin vs upstream HEAD
+│   ├── check-mafft-upstream.yml ← weekly: open/update an issue when the submodule pin lags upstream
 │   ├── docs.yml             ← push/PR touching docs inputs: build; main: deploy
 │   ├── release.yml          ← release: 5 pre-built binaries to GH releases
 │   ├── python.yml           ← push/PR: 5 wheels (py3.12); release: 25 wheels + sdist to PyPI

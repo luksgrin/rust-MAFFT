@@ -92,6 +92,7 @@ implementation, compiled in-tree on the same platform).
   `--adjustdirection`, `--nuc` behave identically from Rust, Python and
   the shell.
 - **Out of scope / residuals**: see the [architecture index](architecture/index.md).
+- **Following upstream**: pinned to MAFFT commit `0a2319b` (`v7.526` + 2); see the [upstream policy](architecture/upstream-policy.md).
 
 ## Quick links
 
