@@ -289,6 +289,21 @@ mod tests {
     }
 
     #[test]
+    fn matches_macos_qsort_on_many_ties() {
+        // 60 elements over 5 keys (n > 40: ninther pivot, several
+        // partitions of equal elements). Expected tag order recorded from
+        // macOS libc `qsort` on the same `(key, tag)` array.
+        let mut v: Vec<(usize, usize)> = (0..60).map(|i| ((i * 7) % 5, i)).collect();
+        bsd_qsort(&mut v, |a, b| a.0.cmp(&b.0));
+        let tags: Vec<usize> = v.iter().map(|e| e.1).collect();
+        assert_eq!(tags, vec![
+            30, 35, 50, 15, 5, 55, 20, 40, 0, 45, 10, 25, 18, 48, 38, 8, 43, 13, 3, 53,
+            23, 28, 33, 58, 46, 56, 26, 51, 41, 6, 11, 1, 36, 21, 31, 16, 59, 4, 9, 14,
+            19, 24, 29, 34, 39, 44, 49, 54, 47, 7, 32, 27, 52, 22, 2, 17, 12, 57, 42, 37,
+        ]);
+    }
+
+    #[test]
     fn matches_macos_qsort_on_partial_tie_pattern() {
         // Mimic the parttree CALL 1 input layout: 36 entries, almost all
         // distinct primary keys, with two entries at indices 0 and 34
