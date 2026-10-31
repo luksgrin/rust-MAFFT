@@ -404,3 +404,131 @@ path: it differs with `--retree 1` / `--retree 2` (with or without
 `--maxiterate`, `--thread 1` or none) and agrees with `--nofft`,
 `--localpair` and `--globalpair`. The full run reports how many more
 clusters behave like it.
+
+## Memory footprint (issue #26)
+
+`benchmarks/memory.py` records the peak resident set size of C MAFFT
+(in-tree build, through the `mafft` wrapper) and `mafft-rs` with
+`/usr/bin/time -l` (macOS) or `-v` (Linux): FFT-NS-2, FFT-NS-i
+(`--maxiterate 1000`), L-INS-i (`--localpair --maxiterate 1000`) and
+`--parttree`, each at `--thread 1`, `4` and `8` on both sides, plus
+`--memsave` (FFT-NS-2 and FFT-NS-i) on the two largest inputs, 3 runs per
+cell. For C the timed process is the wrapper; the kernel's maximum RSS
+covers the process and all its waited-for descendants, so the figure is
+the peak of the largest engine binary (`disttbfast`, `tbfast`, `dvtditr`),
+not a sum — `memory.py --verify-wrapper` shims every engine binary with
+its own `/usr/bin/time` and checks that the wrapper figure equals the
+per-binary maximum (it did, on the 36-sequence sample, FFT-NS-i and
+L-INS-i at `--thread 1` and `4`). Peak RSS does not depend on machine
+load. How to run: [`benchmarks/README.md`](benchmarks/README.md).
+
+Inputs: the 36-sequence protein sample (median length 377), the
+120 × 1.4 kb CDS DNA fixture, and the five largest BAliBASE 3 sets by
+total residues (BB30003 142 seqs × 402, BB30013 86 × 672, BB30001
+116 × 435, BB30005 113 × 491, BB40049 62 × 778). Apple M4 (10 cores,
+32 GB), macOS 26.5, 2026-10-31; `mafft-rs` at `8bff99f` except the
+`--parttree` cells, re-measured after the PartTree port of #44 (before
+it, `mafft-rs --parttree` panicked on every input here above 50
+sequences). Raw rows: `benchmarks/results/memory_2026-10-31.tsv` and
+`memory_parttree_rust_2026-10-31.tsv`; every cell:
+`benchmarks/results/memory_2026-10-31_summary.md`.
+
+Ratio C / `mafft-rs` of the median peak RSS (> 1: `mafft-rs` uses less),
+median over the 7 inputs and the range:
+
+| Mode | `--thread 1` | `--thread 4` | `--thread 8` |
+|------|-------------:|-------------:|-------------:|
+| FFT-NS-2 | 2.04 (0.81–2.17) | 4.16 (2.04–6.79) | 4.78 (4.55–8.63) |
+| FFT-NS-i | 1.59 (0.78–1.84) | 3.37 (2.20–5.86) | 4.74 (4.28–6.22) |
+| L-INS-i | 0.51 (0.44–0.70) | 1.25 (1.18–1.99) | 2.34 (1.95–2.80) |
+| `--parttree` | 0.57 (0.28–0.89) | 0.56 (0.28–0.89) | 0.55 (0.28–0.89) |
+| FFT-NS-2 `--memsave` (2 inputs) | 0.56, 1.68 | 1.37, 4.31 | 2.42, 6.96 |
+| FFT-NS-i `--memsave` (2 inputs) | 0.59, 1.47 | 1.35, 2.98 | 2.33, 4.64 |
+
+Selected cells (MiB, median of 3):
+
+| Input | Mode | C `--thread 1` | rs `--thread 1` | C `--thread 8` | rs `--thread 8` |
+|-------|------|---------------:|----------------:|---------------:|----------------:|
+| BB40049 (62 × 778) | FFT-NS-2 | 478 | 242 | 1,146 | 245 |
+| BB40049 | FFT-NS-i | 478 | 402 | 1,822 | 402 |
+| BB40049 | L-INS-i | 906 | 1,787 | 4,849 | 2,002 |
+| BB30003 (142 × 402) | FFT-NS-i | 36 | 23 | 148 | 27 |
+| BB30003 | L-INS-i | 50 | 86 | 185 | 95 |
+| 120 × 1.4 kb CDS | FFT-NS-i | 43 | 56 | 251 | 57 |
+| 120 × 1.4 kb CDS | L-INS-i | 112 | 160 | 736 | 263 |
+
+What this shows:
+
+- C's peak grows with `--thread N` in every mode that has a threaded
+  stage (roughly 2–3× from 1 to 4 threads and again towards 8): each
+  `athread` / distance worker allocates its own full-size DP and
+  profile scratch. `mafft-rs` grows by a few MiB from 1 to 8 threads in
+  FFT-NS-2 / FFT-NS-i (its rayon workers use pooled thread-local
+  buffers and the refinement itself runs on one thread), and by 10–65 %
+  in L-INS-i (the parallel all-pairs local alignment).
+- Single-threaded, `mafft-rs` is lower on protein FFT-NS-2 / FFT-NS-i
+  (1.2–2.2×) and higher on the DNA fixture (54–56 vs 43 MiB).
+- Single-threaded L-INS-i, `mafft-rs` uses about twice C's memory on
+  every input (BB40049: 1,787 vs 906 MiB). Not investigated yet; the
+  likely place is the all-pairs local-alignment stage
+  (`mafft-align/src/constraints.rs`), which collects every pair's result
+  before building the anchor lists.
+- `--parttree`: `mafft-rs` is higher on every input (the 120-sequence
+  DNA fixture: 80 vs 23 MiB). Neither side uses threads here.
+- `--memsave`: C's figure drops (CDS FFT-NS-2 at one thread: 43 → 30
+  MiB); `mafft-rs` accepts the flag but has no Hirschberg DP yet
+  (`--memsave` in the CLI reference), so its figure is unchanged and C
+  is lower single-threaded on the CDS fixture.
+
+## Multi-threading: determinism and speedup (issue #24)
+
+`benchmarks/threads.py` runs C and `mafft-rs` at `--thread 1, 2, 4, 8,
+10`, 3 runs each, interleaved (C, rs, rs, C, C, rs), and hashes every
+output. `mafft-rs` must give the same bytes at every thread count, equal
+to its `--thread 1` output, which is C's `--thread 1` output.
+
+**Determinism.** Every `mafft-rs` run was byte-identical to `mafft-rs
+--thread 1`, and `mafft-rs --thread 1` to C `--thread 1`, on:
+
+- the timed inputs below (FFT-NS-i, L-INS-i, G-INS-i; 15 runs per cell);
+- the five largest BAliBASE 3 sets, FFT-NS-i and L-INS-i at `--thread 1,
+  4, 8`, 2 runs each (`threads_bb_largest_determinism_2026-10-31.tsv`);
+- all 76 sets of BAliBASE 3 RV11, FFT-NS-i, L-INS-i and G-INS-i at
+  `--thread 1, 4, 8`, 3 runs each, 2052 runs
+  (`threads_rv11_determinism_2026-10-31.tsv`).
+
+C at `--thread N ≥ 2` produced outputs different from its own
+`--thread 1` in 25 of the 28 timed cells, usually 3 distinct outputs in
+3 runs (exceptions: the CDS fixture at `--thread 2` and `4`, and the
+sample with G-INS-i at `--thread 2`, where all 3 runs equalled
+`--thread 1`).
+
+**Speedup.** Median wall-clock of 3 runs (seconds), including process
+start-up and, for C, the wrapper script. Apple M4, 2026-10-31, 1-minute
+load average 2.2–5.9 (median 3.4) during the batch, which other jobs
+shared; `benchmarks/results/threads_2026-10-31.tsv`.
+
+| Input | Mode | C t1 | C t4 | C t8 | rs t1 | rs t4 | rs t8 | C speedup t8 | rs speedup t8 |
+|-------|------|-----:|-----:|-----:|------:|------:|------:|-------------:|--------------:|
+| sample (36 × 377) | FFT-NS-i | 0.56 | 0.29 | 0.29 | 0.39 | 0.39 | 0.40 | 1.93× | 0.97× |
+| sample | L-INS-i | 1.08 | 0.46 | 0.39 | 1.08 | 0.82 | 0.76 | 2.76× | 1.43× |
+| sample | G-INS-i | 1.10 | 0.45 | 0.37 | 1.28 | 0.89 | 0.84 | 2.98× | 1.52× |
+| 120 × 1.4 kb CDS | FFT-NS-i | 7.93 | 5.11 | 5.01 | 5.04 | 4.94 | 4.93 | 1.58× | 1.02× |
+| BB30005 (113 × 491) | FFT-NS-i | 8.77 | 4.17 | 3.02 | 7.47 | 7.43 | 7.40 | 2.91× | 1.01× |
+| BB30005 | L-INS-i | 21.29 | 8.58 | 6.20 | 28.04 | 24.40 | 24.40 | 3.43× | 1.15× |
+| BB30005 | G-INS-i | 20.82 | 6.61 | 5.43 | 33.27 | 27.08 | 26.09 | 3.83× | 1.28× |
+
+`--thread 2` and `10` are in the TSV (10 is no faster than 8 on either
+side). In `mafft-rs`, `--thread N` parallelises the distance matrices
+and the all-pairs pairwise alignments of L-INS-i / G-INS-i; the
+iterative refinement, which dominates FFT-NS-i and most of L-INS-i /
+G-INS-i at `--maxiterate 1000`, runs on one thread, in C's `--thread 1`
+branch order, so that its accept/reject decisions — and therefore the
+output — do not depend on the thread count. C parallelises the
+refinement too, which is where both its speedup and its run-to-run
+variation come from. Single-threaded, `mafft-rs` is faster than C on
+FFT-NS-i (1.2–1.6×) and slower on L-INS-i / G-INS-i on BB30005
+(0.76× / 0.63×); at `--thread 8` C is up to 4.8× faster than `mafft-rs` (BB30005
+G-INS-i) and level with it on the CDS fixture.
+A deterministic parallel refinement (evaluating candidate branches in
+parallel, then applying them in the `--thread 1` order) is the open item.

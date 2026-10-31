@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Print the peak-RSS summary of a `memory.py` TSV as Markdown tables.
 
-    python3 benchmarks/summarize_memory.py benchmarks/results/memory_<date>.tsv
+    python3 benchmarks/summarize_memory.py benchmarks/results/memory_<date>.tsv [more.tsv ...]
+
+Rows from later files replace earlier ones for the same
+(input, mode, threads, impl) cell, so a re-measured cell can be layered on
+top of the main run.
 """
 
 from __future__ import annotations
@@ -14,16 +18,20 @@ from collections import defaultdict
 MiB = 2**20
 
 
-def main(path: str) -> int:
+def main(paths: list[str]) -> int:
     rss = defaultdict(list)
-    wall = defaultdict(list)
     meta = {}
-    for r in csv.DictReader(open(path), delimiter="\t"):
-        k = (r["input"], r["mode"], int(r["threads"]), r["impl"])
-        rss[k].append(int(r["peak_rss_bytes"]))
-        wall[k].append(float(r["wall_s"]))
-        meta[r["input"]] = (r["n"], r["median_len"])
-        host = r["host"]
+    host = ""
+    for path in paths:
+        seen = set()
+        for r in csv.DictReader(open(path), delimiter="\t"):
+            k = (r["input"], r["mode"], int(r["threads"]), r["impl"])
+            if k not in seen:
+                rss[k] = []
+                seen.add(k)
+            rss[k].append(int(r["peak_rss_bytes"]))
+            meta[r["input"]] = (r["n"], r["median_len"])
+            host = r["host"]
 
     modes = sorted({k[1] for k in rss}, key=lambda m: ("+" in m, m))
     print(f"host: {host}\n")
@@ -52,4 +60,4 @@ def main(path: str) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv[1:]))
