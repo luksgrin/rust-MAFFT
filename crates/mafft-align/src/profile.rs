@@ -1075,12 +1075,7 @@ pub fn profile_align_imp_multimtx(
     let m = prof2.length;
 
     if n == 0 || m == 0 {
-        return Alignment {
-            seq1: Vec::new(),
-            seq2: Vec::new(),
-            score: 0.0,
-            operations: Vec::new(),
-        };
+        return Alignment::against_gaps(n, m);
     }
 
     // `--leavegappyregion` / `--legacygappenalty` (`legacygapcost = 1`,

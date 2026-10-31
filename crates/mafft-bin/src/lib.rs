@@ -1557,6 +1557,14 @@ fn align_prepared<'a>(
         if !tree_path.exists() {
             return Err(MafftError::new(1, format!("Cannot open {}", tree_path.display())));
         }
+        // Validate here so a malformed tree is a `MafftError` rather than
+        // the engine's `process::exit(1)`, which would also end an
+        // in-process caller (pymafft). Without `--add` the engine aligns
+        // exactly `input` (seeds already prepended above).
+        if args.add.is_none() && args.addfragments.is_none() {
+            mafft_tree::parse_mafft_tree(tree_path, input.nseq())
+                .map_err(|e| MafftError::new(1, format!("--treein: {e}")))?;
+        }
         engine.treein_path = Some(tree_path.clone());
     }
     if args.leavegappyregion {
@@ -1641,6 +1649,7 @@ fn align_prepared<'a>(
     let mut msa = in_pool(pool, move || -> Result<mafft_core::MultipleAlignment, MafftError> {
         let (args, engine, input, originals) = (args_ref, engine_ref, input_ref, originals_ref);
         Ok(if let Some(add_path) = add_file {
+        check_existing_aligned(input)?;
         // C concatenates the addfile onto `infile` (`scripts/mafft:1142`)
         // before `replaceu` runs on the whole (`scripts/mafft:2305-2308`),
         // so under `--anysymbol` the added sequences are read
@@ -2074,6 +2083,34 @@ fn read_error(what: &str, e: mafft_io::IoError) -> MafftError {
 /// C's banner goes through `reporterr`, which `--quiet` silences; the
 /// one-line `Illegal character` message is kept even then so a failing
 /// exit status is never mute.
+/// `--add` / `--addfragments`: the existing sequences must already be an
+/// alignment (all rows the same length). C checks this in
+/// `disttbfast.c:4147-4160` and `addsingle.c:3217-3228` with the message
+/// below. `addsingle` exits 1; `disttbfast` jumps to `chudan` and the
+/// wrapper exits 0 with empty stdout. We exit 1 on both paths so the
+/// failure is never silent.
+fn check_existing_aligned(set: &SequenceSet) -> Result<(), MafftError> {
+    let Some(first) = set.sequences.first() else { return Ok(()) };
+    let alignmentlength = first.data.len();
+    match set.sequences.iter().position(|s| s.data.len() != alignmentlength) {
+        None => Ok(()),
+        Some(i) => Err(MafftError::new(
+            1,
+            format!(
+                "#################################################################################\n\
+                 # ERROR!\n\
+                 # The original {} sequences must be aligned\n\
+                 # alignmentlength = {}, but strlen(seq[{}])={}\n\
+                 #################################################################################",
+                set.nseq(),
+                alignmentlength,
+                i,
+                set.sequences[i].data.len()
+            ),
+        )),
+    }
+}
+
 fn seqcheck(set: &SequenceSet, quiet: bool) -> Result<(), MafftError> {
     let Some(bad) = mafft_io::find_illegal_residue(set) else {
         return Ok(());

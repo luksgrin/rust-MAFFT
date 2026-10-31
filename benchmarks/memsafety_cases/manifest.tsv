@@ -1,0 +1,4 @@
+case	input	flags
+addfragments_localpair	addfragments_localpair_existing.fa	--addfragments {dir}/addfragments_localpair_frags.fa --localpair --maxiterate 0
+addfragments_localpair_it2	addfragments_localpair_existing.fa	--addfragments {dir}/addfragments_localpair_frags.fa --localpair --maxiterate 2
+add_sentinel	add_sentinel_existing.fa	--add {dir}/add_sentinel_new.fa

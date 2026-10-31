@@ -70,12 +70,7 @@ pub fn msalignmm(
     let n = prof1.length;
     let m = prof2.length;
     if n == 0 || m == 0 {
-        return Alignment {
-            seq1: Vec::new(),
-            seq2: Vec::new(),
-            score: 0.0,
-            operations: Vec::new(),
-        };
+        return Alignment::against_gaps(n, m);
     }
     let mut ops = Vec::with_capacity(n + m);
     let score = msalignmm_rec(

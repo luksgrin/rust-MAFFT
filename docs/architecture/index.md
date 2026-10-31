@@ -1,6 +1,6 @@
 # Architecture
 
-Four pages on how rust-MAFFT is put together, the design decisions
+Five pages on how rust-MAFFT is put together, the design decisions
 that fall out of the byte-identity constraint, and how it follows
 upstream MAFFT.
 
@@ -15,6 +15,10 @@ upstream MAFFT.
 4. [**Upstream policy**](upstream-policy.md) — how the `mafft-upstream`
    pin is recorded and bumped, which way bug fixes flow, and what the
    port commits not to change.
+5. [**Memory safety**](memory-safety.md) — the C reference under
+   AddressSanitizer / UndefinedBehaviorSanitizer and `mafft-rs` on the
+   same corpora and on malformed inputs: what each side reported, what
+   was fixed, what is open.
 
 ## What's still out of scope
 

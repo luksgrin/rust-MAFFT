@@ -120,6 +120,7 @@ nav:
       - Byte-identity: architecture/byte-identity.md
       - Cross-validation: architecture/cross-validation.md
       - Upstream policy: architecture/upstream-policy.md
+      - Memory safety: architecture/memory-safety.md
   - Citation: citation.md
   - Contributing: contributing/index.md
 

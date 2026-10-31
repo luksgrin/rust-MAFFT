@@ -217,12 +217,7 @@ pub fn fft_profile_align(
     params: &FftAlignParams,
 ) -> Alignment {
     if prof1.length == 0 || prof2.length == 0 {
-        return Alignment {
-            seq1: Vec::new(),
-            seq2: Vec::new(),
-            score: 0.0,
-            operations: Vec::new(),
-        };
+        return Alignment::against_gaps(prof1.length, prof2.length);
     }
 
     match find_fft_anchors(prof1, prof2, matrix, params) {
