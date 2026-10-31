@@ -44,6 +44,74 @@ pub fn build_imp_matrix(
     fastathreshold: f64,
 ) -> Vec<Vec<f64>> {
     let mut imp = vec![vec![0.0f64; lgth2]; lgth1];
+    for_each_imp_cell(
+        localhom, group1, group2, g1_seqs, g2_seqs, eff1, eff2, lgth1, lgth2, fastathreshold,
+        |k1, k2, importance, effij| {
+            // C `mltaln9.c:15665`:
+            //   impmtx[k1][k2] += tmpptr->importance * effij;
+            // arm64 clang fuses into a single `fmadd` (one
+            // rounding; baseline x86-64 gcc does not, see
+            // `mafft_types::fp`). Plain Rust `+=` is 2 roundings, and
+            // the resulting per-cell ULP drift accumulates
+            // over the diagonal sum into a multi-unit
+            // impmatch drift that flips accept/reject
+            // decisions late in iterative refinement
+            // (BB30028 L-INS-i iter=3 fingerprint).
+            imp[k1][k2] = fmadd(importance, effij, imp[k1][k2]);
+        },
+    );
+    if std::env::var_os("RS_IMPMTX_DUMP").is_some() {
+        dump_imp_matrix(&imp, localhom, group1, group2, g1_seqs, g2_seqs, eff1, eff2, lgth1, lgth2, fastathreshold);
+    }
+    imp
+}
+
+/// The diagonal `impmtx[k][k]` (`k < min(lgth1, lgth2)`) of the matrix
+/// `build_imp_matrix` would return, without materialising the other cells.
+/// Every diagonal cell receives exactly the same `fmadd` sequence, in the
+/// same `(member1, member2, region)` order, as in `build_imp_matrix`, so the
+/// values are bit-identical.
+pub fn build_imp_diagonal(
+    localhom: &LocalHomologyTable,
+    group1: &[usize],
+    group2: &[usize],
+    g1_seqs: &[&[u8]],
+    g2_seqs: &[&[u8]],
+    eff1: &[f64],
+    eff2: &[f64],
+    lgth1: usize,
+    lgth2: usize,
+    fastathreshold: f64,
+) -> Vec<f64> {
+    let mut diag = vec![0.0f64; lgth1.min(lgth2)];
+    for_each_imp_cell(
+        localhom, group1, group2, g1_seqs, g2_seqs, eff1, eff2, lgth1, lgth2, fastathreshold,
+        |k1, k2, importance, effij| {
+            if k1 == k2 {
+                diag[k1] = fmadd(importance, effij, diag[k1]);
+            }
+        },
+    );
+    diag
+}
+
+/// The `fillimp` walk shared by `build_imp_matrix` and `build_imp_diagonal`:
+/// calls `add(k1, k2, importance, effij)` for every residue-residue column
+/// of every region, in C's `(member1, member2, region, column)` order.
+#[inline(always)]
+fn for_each_imp_cell(
+    localhom: &LocalHomologyTable,
+    group1: &[usize],
+    group2: &[usize],
+    g1_seqs: &[&[u8]],
+    g2_seqs: &[&[u8]],
+    eff1: &[f64],
+    eff2: &[f64],
+    lgth1: usize,
+    lgth2: usize,
+    fastathreshold: f64,
+    mut add: impl FnMut(usize, usize, f64, f64),
+) {
     let effijx = fastathreshold;
 
     // Raw-residue -> gapped-column tables, built once per member instead of
@@ -95,17 +163,7 @@ pub fn build_imp_matrix(
                     let c2 = seq2[k2];
                     if c1 != b'-' && c2 != b'-' {
                         if k1 < lgth1 && k2 < lgth2 {
-                            // C `mltaln9.c:15665`:
-                            //   impmtx[k1][k2] += tmpptr->importance * effij;
-                            // arm64 clang fuses into a single `fmadd` (one
-                            // rounding; baseline x86-64 gcc does not, see
-                            // `mafft_types::fp`). Plain Rust `+=` is 2 roundings, and
-                            // the resulting per-cell ULP drift accumulates
-                            // over the diagonal sum into a multi-unit
-                            // impmatch drift that flips accept/reject
-                            // decisions late in iterative refinement
-                            // (BB30028 L-INS-i iter=3 fingerprint).
-                            imp[k1][k2] = fmadd(region.importance, effij, imp[k1][k2]);
+                            add(k1, k2, region.importance, effij);
                         }
                         k1 += 1;
                         k2 += 1;
@@ -122,6 +180,22 @@ pub fn build_imp_matrix(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dump_imp_matrix(
+    imp: &[Vec<f64>],
+    localhom: &LocalHomologyTable,
+    group1: &[usize],
+    group2: &[usize],
+    g1_seqs: &[&[u8]],
+    g2_seqs: &[&[u8]],
+    eff1: &[f64],
+    eff2: &[f64],
+    lgth1: usize,
+    lgth2: usize,
+    effijx: f64,
+) {
     if let Ok(f) = std::env::var("RS_IMPMTX_DUMP") {
         use std::io::Write;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -130,7 +204,7 @@ pub fn build_imp_matrix(
         if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
             let mut sum = 0.0f64;
             let mut nonzero = 0usize;
-            for row in &imp {
+            for row in imp {
                 for &v in row {
                     if v != 0.0 { sum += v; nonzero += 1; }
                 }
@@ -185,7 +259,6 @@ pub fn build_imp_matrix(
             }
         }
     }
-    imp
 }
 
 /// Extract local-homology regions from a pair of pre-aligned sequences,

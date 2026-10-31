@@ -23,7 +23,7 @@ use mafft_align::{
     profile_align, profile_align_imp,
     profile_align_imp_with_boundary, profile_align_imp_multimtx,
     BoundaryFreqs, MultiMtx,
-    build_imp_matrix, FASTATHRESHOLD_DEFAULT,
+    build_imp_diagonal, build_imp_matrix, FASTATHRESHOLD_DEFAULT,
     Profile, GapModel, AlignOp,
 };
 use mafft_fft::{alignable_segments, SegmentParams};
@@ -278,6 +278,217 @@ pub fn iterative_refine(
     iterations
 }
 
+/// Everything one refinement branch computes from the alignment it is
+/// evaluated against: the current split score (`mscore`) and, if the
+/// branch was re-aligned, the outcome. A pure function of
+/// `(alignment, branch)` — see `evaluate_branch`.
+struct BranchEval {
+    old_score: f64,
+    outcome: BranchOutcome,
+}
+
+enum BranchOutcome {
+    /// `--skipiterate` branch under the `athread` rule: scored, not aligned.
+    Skipped,
+    /// `realign_all` declined (an empty stripped profile).
+    NoRealign,
+    /// Re-aligned; both representative rows unchanged (C's identity test).
+    Unchanged,
+    /// Re-aligned and changed: the new rows and their split score `tscore`.
+    Changed { new_seqs: Vec<Vec<u8>>, tscore: f64 },
+}
+
+/// Static per-call context shared by every branch evaluation.
+struct BranchCtx<'a> {
+    topology: &'a Topology,
+    scoring: &'a ScoringContext,
+    params: &'a RefinementParams,
+    constraints: Option<&'a LocalHomologyTable>,
+    branch_weights: &'a BranchWeights,
+    global_weights: &'a [f64],
+    use_global_weights: bool,
+    gap: &'a GapModel,
+}
+
+/// Score and (unless `skipped`) re-align one branch against `sequences`.
+///
+/// Reads nothing but its arguments, so evaluating it for several branches
+/// of a cycle in parallel against the same alignment gives each branch
+/// exactly the result the sequential walk would compute — provided no
+/// earlier branch of the batch was accepted, which the caller checks.
+fn evaluate_branch(
+    ctx: &BranchCtx<'_>,
+    sequences: &[Vec<u8>],
+    iter: usize,
+    step_idx: usize,
+    side: usize,
+    group1: &[usize],
+    group2: &[usize],
+    skipped: bool,
+) -> BranchEval {
+    let BranchCtx { topology, scoring, params, constraints, branch_weights, .. } = *ctx;
+
+    if let Ok(f) = std::env::var("RS_DISTARR_DUMP") {
+        use std::io::Write;
+        let da = branch_weights.dist_from_a_branch(topology, step_idx, side);
+        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            let _ = write!(fp, "DISTARR iter={} l={} k={}:", iter, step_idx, side);
+            for v in &da { let _ = write!(fp, " {:.17e}", v); }
+            let _ = writeln!(fp);
+        }
+    }
+
+    if let Ok(f) = std::env::var("RS_PRE_BRANCH") {
+        use std::io::Write;
+        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            let _ = writeln!(fp, "R_PREBR iter={} step={} side={} clus1={} clus2={}", iter, step_idx, side, group1.len(), group2.len());
+            for (i, s) in sequences.iter().enumerate() {
+                let mut h: u64 = 5381;
+                for &c in s { h = h.wrapping_mul(33).wrapping_add(c as u64); }
+                let _ = writeln!(fp, "  R_seq[{}] len={} hash={:x}", i, s.len(), h);
+            }
+        }
+    }
+
+    let weights = if ctx.use_global_weights {
+        ctx.global_weights.to_vec()
+    } else {
+        branch_weights.weights_for_branch(topology, step_idx, side)
+    };
+
+    if let Ok(f) = std::env::var("RS_BRANCH_WEIGHTS") {
+        use std::io::Write;
+        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            let _ = writeln!(fp, "R_BW iter={} step={} side={}", iter, step_idx, side);
+            for (i, &w) in weights.iter().enumerate() {
+                let _ = writeln!(fp, "  R_bw[{}]={:.17e}", i, w);
+            }
+        }
+    }
+
+    // Group-local sum-1 normalized weights (matches C's
+    // fastconjuction_noname). Used both for `compute_impmatch_diagonal`
+    // and any future per-cluster averaging. Floor is C's
+    // `minimumweight` (`scripts/mafft:1029`, overridable via
+    // `--minimumweight`).
+    let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(params.minimum_weight)).collect();
+    let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(params.minimum_weight)).collect();
+    let s1w: f64 = w1.iter().sum();
+    let s2w: f64 = w2.iter().sum();
+    let w1n: Vec<f64> = if s1w > 0.0 { w1.iter().map(|w| w / s1w).collect() } else { vec![1.0; group1.len()] };
+    let w2n: Vec<f64> = if s2w > 0.0 { w2.iter().map(|w| w / s2w).collect() } else { vec![1.0; group2.len()] };
+
+    // C's mscore = oimpmatchdouble + tmpdouble (tditeration.c:953):
+    // intergroup substitution score + impmatch (sum of impmtx[i][i]
+    // over the current alignment's columns). We compute the same.
+    let old_sub = compute_split_score(
+        group1, group2, sequences, &weights, scoring,
+        params.minimum_weight,
+    );
+    let old_imp = if let Some(lh) = constraints {
+        compute_impmatch_diagonal(
+            group1, group2, sequences, &w1n, &w2n, lh,
+        )
+    } else { 0.0 };
+    let old_score = old_sub + old_imp;
+
+    if skipped {
+        return BranchEval { old_score, outcome: BranchOutcome::Skipped };
+    }
+
+    // `--allowshift`: per-branch distances-from-tip drive the
+    // multi-distance-class matrix selection (C `distFromABranch`
+    // + `classifypairs`). Computed here where `branch_weights`,
+    // `topology`, and the branch `(step_idx, side)` are in scope.
+    let mm_distarr: Option<Vec<f64>> = if params.unalign_level > 0.0 {
+        Some(branch_weights.dist_from_a_branch(topology, step_idx, side))
+    } else {
+        None
+    };
+    let mm_input = mm_distarr.as_ref().map(|d| MultiMtxInput {
+        distarr: d,
+        unalign_level: params.unalign_level,
+    });
+
+    let Some((new_seqs, _new_score, dp_impmatch)) = realign_all(
+        group1, group2, sequences, &weights, scoring, ctx.gap,
+        constraints, params.use_fft, mm_input.as_ref(),
+        params.minimum_weight,
+    ) else {
+        return BranchEval { old_score, outcome: BranchOutcome::NoRealign };
+    };
+
+    // C's identity check (tditeration.c:2184-2185): compare only
+    // the representative sequences s1=memlist1[0], s2=memlist2[0]
+    // (from OneClusterAndTheOther_fast in tddis.c:834-835).
+    // `group1` is memlist1, `group2` is memlist2, so s1=group1[0],
+    // s2=group2[0]. Checking ALL sequences would incorrectly treat
+    // column-rearrangements that preserve the two representatives
+    // as "changed", causing spurious accepts.
+    let s1 = group1[0];
+    let s2 = group2[0];
+    let changed = sequences[s1] != new_seqs[s1]
+        || sequences[s2] != new_seqs[s2];
+    // COMPAT: this two-row test decides whether a whole
+    // re-alignment is kept, and it is deliberately NOT a
+    // full comparison. On a 120x1.4kb FFT-NS-i run, 213
+    // re-alignments per run have both representatives
+    // unchanged while other rows DID change; every one of
+    // them is discarded here. C does exactly the same: its
+    // identity test is `!strcmp(aseq[s1],bseq[s1]) *
+    // !strcmp(aseq[s2],bseq[s2])` (tditeration.c:2184-2185),
+    // and the copy-back `strcpy( aseq[i], bseq[i] )` runs
+    // only on the accept path (tditeration.c:1769) — so C
+    // throws the same 213 away. Widening this to "any row
+    // changed" looks like an obvious fix and is a
+    // divergence: it would send those branches through the
+    // score comparison, changing accept/reject decisions
+    // and the `converged_count` sequence.
+    if !changed {
+        return BranchEval { old_score, outcome: BranchOutcome::Unchanged };
+    }
+
+    // C's tscore = impmatchdouble + tmpdouble (tditeration.c:1094):
+    // intergroup score + new alignment's impmatch.
+    let new_sub = compute_split_score(
+        group1, group2, &new_seqs, &weights, scoring,
+        params.minimum_weight,
+    );
+    let new_imp = if let Some(lh) = constraints {
+        // Prefer the impmatch accumulated DURING the
+        // segmented DP (C's `Falign_localhom` totalimpmatch:
+        // per-segment backward sum, forward across segments).
+        // This reproduces C's FP summation order exactly,
+        // unlike a global diagonal sum which merges all
+        // segments into one sweep (BB30028 fingerprint).
+        // Fall back to the global diagonal sum only on the
+        // non-FFT path (dvtditr always uses -F, so the
+        // fallback is not hit by default L-INS-i).
+        dp_impmatch.unwrap_or_else(|| compute_impmatch_diagonal(
+            group1, group2, &new_seqs, &w1n, &w2n, lh,
+        ))
+    } else { 0.0 };
+    let tscore = new_sub + new_imp;
+    BranchEval { old_score, outcome: BranchOutcome::Changed { new_seqs, tscore } }
+}
+
+/// How many branches of a cycle to evaluate at once against the same
+/// alignment. More than one only when the call runs on a multi-thread
+/// rayon pool and no forensic `RS_*` / `RUST_MAFFT_TRACE` trace is
+/// requested (those append to files from inside the evaluation, and a
+/// speculative evaluation that is later discarded would add lines the
+/// sequential walk never writes).
+fn speculation_width() -> usize {
+    let threads = rayon::current_num_threads();
+    if threads <= 1 {
+        return 1;
+    }
+    let tracing = std::env::vars_os().any(|(k, _)| {
+        k.to_str().is_some_and(|k| k.starts_with("RS_") || k == "RUST_MAFFT_TRACE")
+    });
+    if tracing { 1 } else { threads }
+}
+
 fn iterative_refine_inner(
     alignment: &mut MultipleAlignment,
     topology: &Topology,
@@ -286,6 +497,8 @@ fn iterative_refine_inner(
     constraints: Option<&LocalHomologyTable>,
     counters: &mut RefineCounters,
 ) -> usize {
+    use rayon::prelude::*;
+
     let nseq = alignment.nseq();
     // C refines two sequences too: `dvtditr.c:704-708` sets
     // `weight = 0; niter = 1` for `njob == 2` rather than skipping, and
@@ -317,6 +530,17 @@ fn iterative_refine_inner(
         gap = gap.with_shift(s);
     }
 
+    let ctx = BranchCtx {
+        topology,
+        scoring,
+        params,
+        constraints,
+        branch_weights: &branch_weights,
+        global_weights: &global_weights,
+        use_global_weights,
+        gap: &gap,
+    };
+    let width = speculation_width();
 
     let mut converged_count = 0usize;
     let convergence_target = nseq * 2;
@@ -343,151 +567,78 @@ fn iterative_refine_inner(
         // (`:520`), overwritten on every accept.
         let mut last_accepted_tscore: Option<f64> = None;
 
-        let step_order = step_order(iter, nsteps, params.per_cycle_convergence);
+        // The cycle's branches in visiting order, with their
+        // `--skipiterate` small-F flag (port of C `dvtditr.c:1059-1066`'s
+        // `skipthisbranch[]`).
+        let cycle: Vec<(usize, usize, &[usize], &[usize], bool)> =
+            step_order(iter, nsteps, params.per_cycle_convergence)
+                .into_iter()
+                .flat_map(|step_idx| {
+                    branch_map[step_idx].iter().map(move |(side, group1, group2)| {
+                        let skipped = params.skip_branches.get(step_idx)
+                            .map(|&(l, r)| if *side == 0 { l } else { r })
+                            .unwrap_or(false);
+                        (step_idx, *side, group1.as_slice(), group2.as_slice(), skipped)
+                    })
+                })
+                .collect();
 
-        for &step_idx in &step_order {
-            for (side, group1, group2) in &branch_map[step_idx] {
-                let branch_id: BranchId = (step_idx, *side);
-
-                // `--skipiterate F` small-F: per-(step, side) skip
-                // flags (port of C `dvtditr.c:1059-1066`'s
-                // `skipthisbranch[]`). Skipped branches are
-                // silently dropped — they do NOT count toward the
-                // convergence target, mirroring C `tditeration.c:2358`
-                // (`identity = 1; tscore = mscore` for skipped
-                // branches, which `tditeration.c:2255-2256` then
-                // treats as "no improvement" without bumping the
-                // converge counter).
-                let skipped = params.skip_branches.get(step_idx)
-                    .map(|&(l, r)| if *side == 0 { l } else { r })
-                    .unwrap_or(false);
-                // `athread` (`tditeration.c:1064-1067`, `:1234`) still computes the
-                // branch's `mscore` and records `tscore = mscore` for the
-                // `Converged2.` check, so in that mode fall through to the
-                // scoring and only skip the re-alignment.
+        // Branches are decided strictly in `cycle` order. Up to `width`
+        // of them are evaluated at once against the current alignment;
+        // the results are consumed in order, and everything after an
+        // accepted branch is discarded and re-evaluated against the new
+        // alignment. Each consumed evaluation therefore saw exactly the
+        // alignment the sequential walk would have given it.
+        let mut pos = 0usize;
+        while pos < cycle.len() {
+            let end = (pos + width).min(cycle.len());
+            let eval_one = |k: usize| -> Option<BranchEval> {
+                let (step_idx, side, group1, group2, skipped) = cycle[k];
+                // `athread` (`tditeration.c:1064-1067`, `:1234`) still
+                // computes a skipped branch's `mscore` and records
+                // `tscore = mscore` for the `Converged2.` check, so in
+                // that mode it is scored and only the re-alignment is
+                // skipped. The sequential rule drops it unscored.
                 if skipped && !params.per_cycle_convergence {
+                    return None;
+                }
+                Some(evaluate_branch(
+                    &ctx, &alignment.sequences, iter, step_idx, side, group1, group2, skipped,
+                ))
+            };
+            let evals: Vec<Option<BranchEval>> = if end - pos > 1 {
+                (pos..end).into_par_iter().map(eval_one).collect()
+            } else {
+                vec![eval_one(pos)]
+            };
+
+            for (k, eval) in (pos..end).zip(evals) {
+                pos = k + 1;
+                let (step_idx, side, group1, group2, _) = cycle[k];
+                let branch_id: BranchId = (step_idx, side);
+
+                // Skipped branches are silently dropped — they do NOT
+                // count toward the convergence target, mirroring C
+                // `tditeration.c:2358` (`identity = 1; tscore = mscore`
+                // for skipped branches, which `tditeration.c:2255-2256`
+                // then treats as "no improvement" without bumping the
+                // converge counter).
+                let Some(BranchEval { old_score, outcome }) = eval else {
                     iter_scores.insert(branch_id, 0.0);
                     continue;
-                }
+                };
 
-                if let Ok(f) = std::env::var("RS_DISTARR_DUMP") {
-                    use std::io::Write;
-                    let da = branch_weights.dist_from_a_branch(topology, step_idx, *side);
-                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-                        let _ = write!(fp, "DISTARR iter={} l={} k={}:", iter, step_idx, side);
-                        for v in &da { let _ = write!(fp, " {:.17e}", v); }
-                        let _ = writeln!(fp);
-                    }
-                }
-
-                if let Ok(f) = std::env::var("RS_PRE_BRANCH") {
-                    use std::io::Write;
-                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-                        let _ = writeln!(fp, "R_PREBR iter={} step={} side={} clus1={} clus2={}", iter, step_idx, side, group1.len(), group2.len());
-                        for (i, s) in alignment.sequences.iter().enumerate() {
-                            let mut h: u64 = 5381;
-                            for &c in s { h = h.wrapping_mul(33).wrapping_add(c as u64); }
-                            let _ = writeln!(fp, "  R_seq[{}] len={} hash={:x}", i, s.len(), h);
+                let mut accepted = false;
+                match outcome {
+                    BranchOutcome::Skipped | BranchOutcome::NoRealign => {
+                        if matches!(outcome, BranchOutcome::NoRealign) {
+                            counters.visited += 1;
                         }
+                        iter_scores.insert(branch_id, old_score);
+                        converged_count += 1;
                     }
-                }
-
-                let weights = if use_global_weights {
-                    global_weights.clone()
-                } else {
-                    branch_weights.weights_for_branch(topology, step_idx, *side)
-                };
-
-                if let Ok(f) = std::env::var("RS_BRANCH_WEIGHTS") {
-                    use std::io::Write;
-                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-                        let _ = writeln!(fp, "R_BW iter={} step={} side={}", iter, step_idx, side);
-                        for (i, &w) in weights.iter().enumerate() {
-                            let _ = writeln!(fp, "  R_bw[{}]={:.17e}", i, w);
-                        }
-                    }
-                }
-
-                // Group-local sum-1 normalized weights (matches C's
-                // fastconjuction_noname). Used both for `compute_impmatch_diagonal`
-                // and any future per-cluster averaging. Floor is C's
-                // `minimumweight` (`scripts/mafft:1029`, overridable via
-                // `--minimumweight`).
-                let w1: Vec<f64> = group1.iter().map(|&i| weights[i].max(params.minimum_weight)).collect();
-                let w2: Vec<f64> = group2.iter().map(|&i| weights[i].max(params.minimum_weight)).collect();
-                let s1w: f64 = w1.iter().sum();
-                let s2w: f64 = w2.iter().sum();
-                let w1n: Vec<f64> = if s1w > 0.0 { w1.iter().map(|w| w / s1w).collect() } else { vec![1.0; group1.len()] };
-                let w2n: Vec<f64> = if s2w > 0.0 { w2.iter().map(|w| w / s2w).collect() } else { vec![1.0; group2.len()] };
-
-                // C's mscore = oimpmatchdouble + tmpdouble (tditeration.c:953):
-                // intergroup substitution score + impmatch (sum of impmtx[i][i]
-                // over the current alignment's columns). We compute the same.
-                let old_sub = compute_split_score(
-                    group1, group2, &alignment.sequences, &weights, scoring,
-                    params.minimum_weight,
-                );
-                let old_imp = if let Some(lh) = constraints {
-                    compute_impmatch_diagonal(
-                        group1, group2, &alignment.sequences, &w1n, &w2n, lh,
-                    )
-                } else { 0.0 };
-                let old_score = old_sub + old_imp;
-
-                // `--allowshift`: per-branch distances-from-tip drive the
-                // multi-distance-class matrix selection (C `distFromABranch`
-                // + `classifypairs`). Computed here where `branch_weights`,
-                // `topology`, and the branch `(step_idx, side)` are in scope.
-                let mm_distarr: Option<Vec<f64>> = if params.unalign_level > 0.0 {
-                    Some(branch_weights.dist_from_a_branch(topology, step_idx, *side))
-                } else {
-                    None
-                };
-                let mm_input = mm_distarr.as_ref().map(|d| MultiMtxInput {
-                    distarr: d,
-                    unalign_level: params.unalign_level,
-                });
-
-                let new_seqs = if skipped {
-                    None
-                } else {
-                    counters.visited += 1;
-                    realign_all(
-                        group1, group2, &alignment.sequences, &weights, scoring, &gap,
-                        constraints, params.use_fft, mm_input.as_ref(),
-                        params.minimum_weight,
-                    )
-                };
-
-                if let Some((new_seqs, _new_score, dp_impmatch)) = new_seqs {
-                    // C's identity check (tditeration.c:2184-2185): compare only
-                    // the representative sequences s1=memlist1[0], s2=memlist2[0]
-                    // (from OneClusterAndTheOther_fast in tddis.c:834-835).
-                    // `group1` is memlist1, `group2` is memlist2, so s1=group1[0],
-                    // s2=group2[0]. Checking ALL sequences would incorrectly treat
-                    // column-rearrangements that preserve the two representatives
-                    // as "changed", causing spurious accepts.
-                    let s1 = group1[0];
-                    let s2 = group2[0];
-                    let changed = alignment.sequences[s1] != new_seqs[s1]
-                        || alignment.sequences[s2] != new_seqs[s2];
-                    // COMPAT: this two-row test decides whether a whole
-                    // re-alignment is kept, and it is deliberately NOT a
-                    // full comparison. On a 120x1.4kb FFT-NS-i run, 213
-                    // re-alignments per run have both representatives
-                    // unchanged while other rows DID change; every one of
-                    // them is discarded here. C does exactly the same: its
-                    // identity test is `!strcmp(aseq[s1],bseq[s1]) *
-                    // !strcmp(aseq[s2],bseq[s2])` (tditeration.c:2184-2185),
-                    // and the copy-back `strcpy( aseq[i], bseq[i] )` runs
-                    // only on the accept path (tditeration.c:1769) — so C
-                    // throws the same 213 away. Widening this to "any row
-                    // changed" looks like an obvious fix and is a
-                    // divergence: it would send those branches through the
-                    // score comparison, changing accept/reject decisions
-                    // and the `converged_count` sequence.
-
-                    if !changed {
+                    BranchOutcome::Unchanged => {
+                        counters.visited += 1;
                         // Identical — no change, count toward convergence
                         let tscore = old_score;
                         if let Ok(f) = std::env::var("RS_REFINE_TRACE") {
@@ -499,29 +650,9 @@ fn iterative_refine_inner(
                         }
                         iter_scores.insert(branch_id, tscore);
                         converged_count += 1;
-                    } else {
-                        // C's tscore = impmatchdouble + tmpdouble (tditeration.c:1094):
-                        // intergroup score + new alignment's impmatch.
-                        let new_sub = compute_split_score(
-                            group1, group2, &new_seqs, &weights, scoring,
-                            params.minimum_weight,
-                        );
-                        let new_imp = if let Some(lh) = constraints {
-                            // Prefer the impmatch accumulated DURING the
-                            // segmented DP (C's `Falign_localhom` totalimpmatch:
-                            // per-segment backward sum, forward across segments).
-                            // This reproduces C's FP summation order exactly,
-                            // unlike a global diagonal sum which merges all
-                            // segments into one sweep (BB30028 fingerprint).
-                            // Fall back to the global diagonal sum only on the
-                            // non-FFT path (dvtditr always uses -F, so the
-                            // fallback is not hit by default L-INS-i).
-                            dp_impmatch.unwrap_or_else(|| compute_impmatch_diagonal(
-                                group1, group2, &new_seqs, &w1n, &w2n, lh,
-                            ))
-                        } else { 0.0 };
-                        let tscore = new_sub + new_imp;
-
+                    }
+                    BranchOutcome::Changed { new_seqs, tscore } => {
+                        counters.visited += 1;
                         let threshold = old_score - params.cut / 100.0 * old_score;
                         counters.branches += 1;
                         if tscore > threshold { counters.accepted += 1; }
@@ -539,6 +670,7 @@ fn iterative_refine_inner(
                         }
                         if tscore > threshold {
                             alignment.sequences = new_seqs;
+                            accepted = true;
                             if let Ok(f) = std::env::var("RS_ALIGN_HASH") {
                                 use std::io::Write;
                                 if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
@@ -565,9 +697,6 @@ fn iterative_refine_inner(
                             iter_scores.insert(branch_id, old_score);
                         }
                     }
-                } else {
-                    iter_scores.insert(branch_id, old_score);
-                    converged_count += 1;
                 }
 
                 if !params.per_cycle_convergence && converged_count >= convergence_target {
@@ -611,6 +740,12 @@ fn iterative_refine_inner(
                         counters.exit = "oscillation";
                         return iteration;
                     }
+                }
+
+                // The rest of the batch was evaluated against the
+                // alignment this branch just replaced.
+                if accepted {
+                    break;
                 }
             }
         }
@@ -1595,25 +1730,36 @@ fn compute_impmatch_diagonal(
     if width == 0 { return 0.0; }
     let g1_seqs: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
     let g2_seqs: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
-    let imp = build_imp_matrix(
-        lh_table,
-        group1, group2,
-        &g1_seqs, &g2_seqs,
-        eff1, eff2,
-        width, width,
-        FASTATHRESHOLD_DEFAULT,
-    );
+    // Only the diagonal is read, so build just that (same per-cell fmadd
+    // sequence as the full matrix). `RS_IMPMTX_DUMP` traces every full
+    // `build_imp_matrix` call, so keep the full build when it is set.
+    let diag: Vec<f64> = if std::env::var_os("RS_IMPMTX_DUMP").is_some() {
+        let imp = build_imp_matrix(
+            lh_table,
+            group1, group2,
+            &g1_seqs, &g2_seqs,
+            eff1, eff2,
+            width, width,
+            FASTATHRESHOLD_DEFAULT,
+        );
+        (0..width).map(|i| imp[i][i]).collect()
+    } else {
+        build_imp_diagonal(
+            lh_table,
+            group1, group2,
+            &g1_seqs, &g2_seqs,
+            eff1, eff2,
+            width, width,
+            FASTATHRESHOLD_DEFAULT,
+        )
+    };
     // C `tditeration.c:891`: `for(i=length-1; i>=0; i--) oimpmatchdouble += imp_match_out_scD(i,i);`
     // — sums BACKWARD. Match the iteration direction; FP addition is not
     // associative, and forward summation drifts by ~1 ULP per step, which
     // cascades into a flipped accept/reject at BB20004 iter=4 l=36 k=1.
     let mut total = 0.0f64;
-    for i in (0..width).rev() {
-        if let Some(row) = imp.get(i) {
-            if let Some(&v) = row.get(i) {
-                total += v;
-            }
-        }
+    for &v in diag.iter().rev() {
+        total += v;
     }
     total
 }
