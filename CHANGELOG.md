@@ -10,6 +10,35 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+### Added
+
+- **Upstream policy** (`docs/architecture/upstream-policy.md`, issue #21).
+  Writes down how rust-MAFFT follows upstream MAFFT: the `mafft-upstream`
+  submodule gitlink is the reference (currently `0a2319b`, `v7.526` + 2
+  build-only commits) and every release names it; the upgrade procedure
+  when upstream moves (bump, rebuild the C in-tree, FFI cross-validation
+  and full suite, re-derive the C-canonical fixtures with
+  `scripts/regen_policy_fixtures.sh` and the fixture READMEs, BAliBASE
+  sweep with `scripts/balibase_parity.py`, triage); that fixes to defects
+  shared with the C code are reported upstream first; the known residuals
+  and why they are carried; and what the port will not do (new default
+  behaviour, changed flag semantics, scoring or algorithm changes outside
+  upstream). Linked from the architecture index, the home page and the
+  contributing guide.
+
+### Changed
+
+- `check-mafft-upstream.yml` now acts on drift instead of only failing the
+  run: when the submodule pin is behind upstream HEAD, or upstream has a
+  `v*` tag the pin does not contain, it opens an issue titled
+  `upstream: mafft-upstream pin is behind <tag-or-describe>` naming the
+  pinned and upstream commits/tags, the missing commits and a link to the
+  upgrade procedure. An open issue with that prefix is updated (and
+  commented on) only when upstream has moved again, so there is at most
+  one. The run succeeds once the issue is current. Still weekly plus
+  manual dispatch, and it still never moves the submodule; the job now
+  needs `issues: write`.
+
 ## [0.2.0] - 2026-09-06
 
 **Output changes since 0.1.x.** Every item below moves rust-MAFFT *toward*
