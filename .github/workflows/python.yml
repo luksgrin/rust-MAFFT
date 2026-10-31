@@ -1,12 +1,16 @@
 name: Python Package
 
-# Two regimes, selected by the `matrix` job below:
+# The extension is built against the stable ABI (PyO3 `abi3-py39`), so
+# each target gets ONE wheel, tagged `cp39-abi3`, that installs on every
+# CPython >= 3.9: 5 wheels + sdist per release. Only the wheel tests have
+# a Python axis, and every leg installs the same wheel artifact.
 #
-#   * push / pull_request  -> SMOKE: one wheel per target for a single
-#                             Python (3.12), sdist, and the wheel tests
-#                             for that Python only. Nothing is published.
-#   * release / dispatch   -> FULL: every target x Python 3.9-3.13, sdist,
-#                             wheel tests on 3.9/3.12/3.13, then publish
+# Two test regimes, selected by the `matrix` job below:
+#
+#   * push / pull_request  -> SMOKE: all 5 wheels, sdist, wheel tests on
+#                             Python 3.12. Nothing is published.
+#   * release / dispatch   -> FULL: all 5 wheels, sdist, wheel tests on
+#                             Python 3.9/3.12/3.14, then publish
 #                             (release only).
 #
 # Only run for changes that can reach a wheel: the Rust workspace (the
@@ -54,15 +58,16 @@ concurrency:
 
 jobs:
   # ------------------------------------------------------------------
-  # Select the matrix regime. Emits JSON lists that the build/test jobs
-  # feed through `fromJSON` into their `strategy.matrix`, so the job
-  # bodies below exist exactly once and only the Python axis varies.
+  # Select the matrix regime. Emits the JSON list of Python versions that
+  # `test-wheels` feeds through `fromJSON` into its `strategy.matrix`, so
+  # the job body exists exactly once and only the Python axis varies.
+  # `build-wheels` has no Python axis: abi3 makes the wheel the same for
+  # every interpreter.
   # ------------------------------------------------------------------
   matrix:
     name: Select matrix
     runs-on: ubuntu-latest
     outputs:
-      build-python: ${{ steps.select.outputs.build-python }}
       test-python: ${{ steps.select.outputs.test-python }}
     steps:
       - id: select
@@ -71,18 +76,17 @@ jobs:
         run: |
           if [ "$FULL" = "true" ]; then
             echo "regime: FULL (${{ github.event_name }})"
-            echo 'build-python=["3.9", "3.10", "3.11", "3.12", "3.13"]' >> "$GITHUB_OUTPUT"
-            echo 'test-python=["3.9", "3.12", "3.13"]' >> "$GITHUB_OUTPUT"
+            echo 'test-python=["3.9", "3.12", "3.14"]' >> "$GITHUB_OUTPUT"
           else
             echo "regime: SMOKE (${{ github.event_name }})"
-            echo 'build-python=["3.12"]' >> "$GITHUB_OUTPUT"
             echo 'test-python=["3.12"]' >> "$GITHUB_OUTPUT"
           fi
           cat "$GITHUB_OUTPUT"
 
   # ------------------------------------------------------------------
-  # Build wheels for all (target, Python version) combos of the selected
-  # regime.
+  # Build one abi3 wheel per target. maturin needs a single interpreter
+  # to drive the build (3.12 below); the resulting `cp39-abi3` wheel does
+  # not depend on which one it was.
   #
   # Each wheel embeds the compiled `mafft-rs` CLI binary under
   # `pymafft/_bin/`. `pip install pymafft` exposes `mafft-rs` on $PATH via
@@ -91,8 +95,7 @@ jobs:
   # programmatic API (`import pymafft`) AND the standalone CLI.
   # ------------------------------------------------------------------
   build-wheels:
-    name: Wheel (${{ matrix.target }}, Python ${{ matrix.python }})
-    needs: matrix
+    name: Wheel (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -103,8 +106,6 @@ jobs:
           - x86_64-apple-darwin
           - aarch64-apple-darwin
           - x86_64-pc-windows-msvc
-        # 3.9-3.13 on release/dispatch, 3.12 only on push/PR (see `matrix`).
-        python: ${{ fromJSON(needs.matrix.outputs.build-python) }}
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
@@ -129,7 +130,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
 
       # ----- Non-Linux: build the CLI binary on the host runner. -----
       - name: Install Rust + target (non-Linux)
@@ -161,7 +162,7 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
           working-directory: crates/pymafft
-          args: --release --out dist -i python${{ matrix.python }}
+          args: --release --out dist -i python3.12
           # `sccache: true` was set here previously but breaks Linux
           # builds: maturin-action exports RUSTC_WRAPPER=sccache and the
           # manylinux container doesn't ship sccache, so the cargo call
@@ -187,8 +188,34 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
-          name: wheels-${{ matrix.target }}-py${{ matrix.python }}
+          name: wheels-${{ matrix.target }}
           path: crates/pymafft/dist/*.whl
+
+  # ------------------------------------------------------------------
+  # The bindings must compile without warnings, so PyO3 deprecations
+  # are dealt with when they appear instead of piling up until the next
+  # upgrade. `cargo check` rather than `cargo build`: it covers every
+  # lint without linking the cdylib, which needs maturin's linker
+  # arguments on macOS.
+  # ------------------------------------------------------------------
+  lint:
+    name: pymafft builds warning-free
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo check -p pymafft (-D warnings)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo check -p pymafft --locked
 
   # ------------------------------------------------------------------
   # Build sdist
@@ -219,6 +246,11 @@ jobs:
   # aarch64-linux wheels are exercised via QEMU at publish time, not
   # here — installing them on x86_64 would fail by design).
   #
+  # The `python` axis installs the SAME abi3 wheel (`wheels-<target>`)
+  # on each interpreter, which is what checks the stable-ABI claim: the
+  # oldest supported (3.9), the build interpreter (3.12) and the newest
+  # (3.14).
+  #
   # `target` is a real matrix axis and `include` only decorates each
   # target with its runner. The previous layout (`include` as the sole
   # source of targets next to a `python` axis) let each later include
@@ -241,7 +273,8 @@ jobs:
           # consider it sufficiently exercised by the aarch64-apple-darwin leg.
           - aarch64-apple-darwin
           - x86_64-pc-windows-msvc
-        # 3.9/3.12/3.13 on release/dispatch, 3.12 only on push/PR.
+        # 3.9/3.12/3.14 on release/dispatch, 3.12 only on push/PR (see
+        # `matrix`).
         python: ${{ fromJSON(needs.matrix.outputs.test-python) }}
         include:
           - target: x86_64-unknown-linux-gnu
@@ -262,13 +295,15 @@ jobs:
       - name: Download wheels
         uses: actions/download-artifact@v5
         with:
-          name: wheels-${{ matrix.target }}-py${{ matrix.python }}
+          name: wheels-${{ matrix.target }}
           path: dist
 
       - name: Install wheel + test deps
         shell: bash
         run: |
           python -m pip install --upgrade pip
+          # Fails the step if the artifact is not the stable-ABI wheel.
+          ls dist/pymafft-*-cp39-abi3-*.whl
           pip install pytest biopython
           # --no-index: install ONLY the wheel we just built. Without it pip
           # also consults PyPI, and when the published version equals the
@@ -295,7 +330,7 @@ jobs:
   # ------------------------------------------------------------------
   publish:
     name: Publish to PyPI
-    needs: [build-wheels, build-sdist, test-wheels]
+    needs: [lint, build-wheels, build-sdist, test-wheels]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' && github.event.action == 'published'
     environment:

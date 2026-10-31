@@ -46,7 +46,7 @@ rust-MAFFT/
 │   ├── check-mafft-upstream.yml ← weekly: open/update an issue when the submodule pin lags upstream
 │   ├── docs.yml             ← push/PR touching docs inputs: build; main: deploy
 │   ├── release.yml          ← release: 5 pre-built binaries to GH releases
-│   ├── python.yml           ← push/PR: 5 wheels (py3.12); release: 25 wheels + sdist to PyPI
+│   ├── python.yml           ← push/PR: 5 abi3 wheels, tests on py3.12; release: same + sdist to PyPI
 │   └── cargo-publish.yml    ← release: 10 crates to crates.io
 ├── README.md
 └── TODO.md                  ← parity roadmap, working scratchpad
@@ -63,12 +63,14 @@ only when something the site is generated from changes (`docs/**`,
 `crates/pymafft/**` for mkdocstrings, `scripts/gen-cli-reference.sh`, the
 workflow itself) and always on release or manual dispatch.
 
-On push/PR `python.yml` builds one wheel per target for Python 3.12 and
-tests that wheel; the full 5 targets x Python 3.9-3.13 matrix runs on
-`release: published` and `workflow_dispatch`. The regime is chosen by
-the small `matrix` job at the top of the workflow, which emits the
-Python-version lists that `build-wheels` / `test-wheels` read through
-`fromJSON`.
+`python.yml` builds one stable-ABI (`abi3`, tagged `cp39-abi3`) wheel
+per target on every run, so there is no Python axis on the build. The
+tests install that same wheel on Python 3.12 on push/PR, and on 3.9, 3.12
+and 3.14 on `release: published` and `workflow_dispatch`. The regime is
+chosen by the small `matrix` job at the top of the workflow, which emits
+the Python-version list that `test-wheels` reads through `fromJSON`. A
+`lint` job runs `cargo check -p pymafft` with `RUSTFLAGS="-D warnings"`,
+so PyO3 deprecations fail CI as soon as they appear.
 
 ## Building the docs locally
 
@@ -130,7 +132,7 @@ for the fan-out diagram. The button-press procedure:
    ```
 4. **Create the GitHub release** from the tag. Publishing triggers:
     - `release.yml` → 5 pre-built binaries attached to the release page
-    - `python.yml` → 25 wheels + sdist published to PyPI (OIDC)
+    - `python.yml` → 5 abi3 wheels + sdist published to PyPI (OIDC)
     - `cargo-publish.yml` → 10 crates published to crates.io
     - `docs.yml` → docs site rebuilt on `main`
 5. **Watch the workflows.** If a publish fails partway through, fix it

@@ -39,7 +39,9 @@ fits your workflow — they all produce byte-identical alignments.
     ```
 
     Wheels are published for Linux (x86_64, aarch64), macOS (Intel,
-    Apple Silicon), and Windows (x86_64) across Python 3.9 – 3.13. The
+    Apple Silicon), and Windows (x86_64). Each is a stable-ABI (`abi3`)
+    wheel, so the same file installs on CPython 3.9 and every later
+    version, 3.14 included. The
     install also drops a `mafft-rs` console script on your `$PATH` —
     the same native binary, just reachable from any pip environment.
 

@@ -157,7 +157,7 @@ git tag v0.X.Y && gh release create v0.X.Y
         ┌─────────────────┼──────────────────┐
         │                 │                  │
    release.yml       python.yml       cargo-publish.yml
-   (5 binaries        (25 wheels +      (10 crates on
+   (5 binaries        (5 wheels +       (10 crates on
     on GH release      sdist on          crates.io in
     page)              PyPI)             dep order)
 ```
