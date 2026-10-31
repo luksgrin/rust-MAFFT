@@ -24,6 +24,20 @@ public surfaces stable from 0.1.0 anyway.
   and a projection rule skips cells C cannot finish within an hour.
   Pipeline check in `benchmarks/results/scaling_smoke_2026-10-31.tsv`;
   how to run the full sweep in `PROFILING.md`.
+- **Memory-safety comparison** (`benchmarks/memsafety.py`,
+  `benchmarks/memsafety_gen.py`, `docs/architecture/memory-safety.md`,
+  issue #27). Runs the test corpora, generated edge-case FASTA (long
+  headers, long and many sequences, non-ASCII and NUL bytes, empty
+  records, line endings, ragged `--add` / `--seed`, malformed `--treein`)
+  and 600 mutated copies of the sample through the C reference built with
+  `-fsanitize=address,undefined` and through `mafft-rs`; 908 runs in
+  `benchmarks/results/memsafety_2026-10-31.tsv`. The C build reports a
+  heap-buffer-overflow in `loadtree` for a `--treein` index of 0 or below
+  (segfault without sanitizers), a heap-buffer-overflow in `putlocalhom2`
+  for `--addfragments --localpair` on valid input, and a null-pointer
+  offset in `splittbfast` under `--parttree`; nothing on the other
+  inputs. The BAliBASE-wide sweep is deferred; the command is in the doc.
+
 - **BAliBASE SP / TC scores alongside byte-identity**
   (`benchmarks/balibase_scores.py`, issue #28). Aligns every BAliBASE 3
   set with the in-tree C MAFFT and with `mafft-rs` in FFT-NS-2, FFT-NS-i,
@@ -73,6 +87,18 @@ public surfaces stable from 0.1.0 anyway.
   runs are never cancelled.
 
 ### Fixed
+
+- `mafft-rs` lost residues without an error when a profile alignment had
+  one empty side: an input record with no residues printed every
+  sequence empty, and DNA with a long homopolymer (e.g. 300 × `A`) lost
+  residues under FFT-NS-1/2/i and `--memsave`. The empty side is now
+  placed against gaps, as C `A__align` does (issue #27).
+- `--add` / `--addfragments` onto rows of different lengths panicked
+  (index out of bounds); it now exits 1 with C's "The original N
+  sequences must be aligned" message.
+- A malformed `--treein` (index 0, negative, out of range, too few lines)
+  ended the process from inside the engine with `process::exit(1)`, also
+  for in-process callers; it is now a normal `MafftError`.
 
 - The in-tree C reference (`mafft-c-bindings/build.rs`) builds with GCC 14
   and 15 (issue #17). GCC 14 made `-Wincompatible-pointer-types` an error
