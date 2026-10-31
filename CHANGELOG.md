@@ -12,6 +12,20 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Added
 
+- **BAliBASE SP / TC scores alongside byte-identity**
+  (`benchmarks/balibase_scores.py`, issue #28). Aligns every BAliBASE 3
+  set with the in-tree C MAFFT and with `mafft-rs` in FFT-NS-2, FFT-NS-i,
+  L-INS-i, G-INS-i and E-INS-i, scores both against the core blocks of
+  the XML reference with BAliBASE's `bali_score` 3.01 (cross-checked on
+  every alignment by a Python re-implementation), and records whether the
+  outputs are byte-identical; alignments are cached so runs resume.
+  Results in `benchmarks/results/balibase_scores_2026-10-31.tsv`. New
+  section "Byte-identity versus alignment scores" in
+  `docs/architecture/byte-identity.md`: identical bytes imply identical
+  scores but not the converse, shown with the arm64 vs x86-64 C builds
+  (712 vs 738 columns on the sample; 8 BAliBASE sets with different bytes
+  and the same SP) and the `--exp 4.30` tied-trace residual. The
+  `crossarch` and `counterexamples` subcommands reproduce both.
 - **Upstream policy** (`docs/architecture/upstream-policy.md`, issue #21).
   Writes down how rust-MAFFT follows upstream MAFFT: the `mafft-upstream`
   submodule gitlink is the reference (currently `0a2319b`, `v7.526` + 2
