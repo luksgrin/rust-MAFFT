@@ -42,9 +42,8 @@ fn make_sintbl(n: usize, sintbl: &mut [f64]) {
     sintbl[0] = 0.0;
     for i in 1..n8 {
         // arm64 clang contracts both recurrences (`fmadd` with `t` and with
-        // `-t`); the error compounds over the n/8 steps, so an unfused
-        // table drifts from C's by several ulps at the FFT lengths of
-        // multi-kb sequences.
+        // `-t`). Fused and unfused tables happen to agree bit for bit up
+        // to n = 2^18, but not from 2^19 on (sequences over 256 kb).
         c -= dc;
         dc = fmadd(t, c, dc);
         s += ds;

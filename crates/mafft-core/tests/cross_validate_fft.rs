@@ -101,3 +101,33 @@ fn fft_port_matches_c_random_input() {
 
     unsafe { mafft_sys::fft(0, std::ptr::null_mut(), 1); }
 }
+
+/// Bit-for-bit at the FFT lengths of long sequences. `make_sintbl` builds
+/// the twiddle table by a recurrence over n/8 steps that arm64 clang
+/// contracts into fused multiply-adds; an unfused table first drifts at
+/// n = 2^19.
+#[test]
+fn fft_port_matches_c_bitwise_long() {
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for &n in &[1024usize, 8192, 16384, 1 << 19] {
+        let signal: Vec<Complex64> = (0..n).map(|i| {
+            let r = ((i * 7919) % 13) as f64 * 0.37 + (i % 3) as f64;
+            Complex64::new(r, ((i * 31) % 5) as f64 * 0.11)
+        }).collect();
+        for inverse in [false, true] {
+            let mut rust_x = signal.clone();
+            fft_inplace(&mut rust_x, inverse);
+            let mut c_x: Vec<mafft_sys::Fukusosuu> = signal.iter()
+                .map(|c| mafft_sys::Fukusosuu { R: c.re, I: c.im })
+                .collect();
+            let nn = if inverse { -(n as i32) } else { n as i32 };
+            unsafe { mafft_sys::fft(nn, c_x.as_mut_ptr(), 0); }
+            let ndiff = (0..n)
+                .filter(|&i| rust_x[i].re.to_bits() != c_x[i].R.to_bits()
+                    || rust_x[i].im.to_bits() != c_x[i].I.to_bits())
+                .count();
+            assert_eq!(ndiff, 0, "n={n} inverse={inverse}: {ndiff} bins differ from C");
+        }
+    }
+    unsafe { mafft_sys::fft(0, std::ptr::null_mut(), 1); }
+}
