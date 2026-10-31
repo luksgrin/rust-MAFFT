@@ -225,6 +225,10 @@ for the fan-out diagram. The button-press procedure:
     - `python.yml` → 5 abi3 wheels + sdist published to PyPI (OIDC)
     - `cargo-publish.yml` → 10 crates published to crates.io
     - `docs.yml` → docs site rebuilt on `main`
+    - Zenodo (GitHub integration) → the release is archived and gets a
+      version DOI under concept DOI 10.5281/zenodo.20623683; add the new
+      version DOI to `CITATION.cff` (`doi:` and `identifiers:`) in a
+      follow-up commit, together with the `version` / `date-released` bump
 5. **Watch the workflows.** If a publish fails partway through, fix it
    and re-run the workflow (cargo and PyPI both tolerate re-pushes of
    the same version only if NONE of it landed; otherwise bump the

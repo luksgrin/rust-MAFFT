@@ -1,5 +1,7 @@
 # rust-MAFFT
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20623683.svg)](https://doi.org/10.5281/zenodo.20623683)
+
 A pure-Rust port of [**MAFFT**](https://mafft.cbrc.jp/alignment/software/), the
 multiple sequence alignment software developed by Kazutaka Katoh and
 colleagues at CBRC. The scientific contribution — the FFT-anchored
@@ -633,6 +635,14 @@ MAFFT paper.** The rust-MAFFT manuscript (in preparation for
 *Bioinformatics*) should be cited additionally once published — but
 the algorithmic foundation always remains the Katoh et al. work, and
 that citation never goes away.
+
+Every GitHub release is archived on Zenodo. To pin the exact version of
+the port you used, cite its version DOI (v0.2.0:
+[10.5281/zenodo.22546977](https://doi.org/10.5281/zenodo.22546977));
+the concept DOI
+[10.5281/zenodo.20623683](https://doi.org/10.5281/zenodo.20623683)
+always resolves to the latest release. `CITATION.cff` carries both, so
+GitHub's "Cite this repository" and `cffconvert` pick them up.
 
 **Primary citation — MAFFT v7 (always required):**
 
