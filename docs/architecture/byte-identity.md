@@ -101,6 +101,33 @@ output uppercased at read time (C `io.c:1462-1467`, `io.c:1755`), driven by
 the detected type or by `--nuc` / `--amino`; `--anysymbol` / `--preservecase`
 keep the input's own case.
 
+### PartTree on 50 or more sequences (issue #38)
+
+Below 50 sequences `splittbfast` keeps every pivot (`tokyoripara = 0`
+when `picksize > njob`), so the 36-sequence sample exercises only one
+level of `splitseq_mq`. From 50 sequences on, redundant pivots are
+filtered, yuko groups hold distinct sequences, `splitseq_mq` recurses
+into them, and for `nin > 50` the pivot draw consumes libc `rand()`. The
+recursive port (`mafft-tree/src/parttree_splitseq.rs`) reproduces all of
+it, including the macOS `rand()` sequence and the macOS `qsort` order of
+tied distances. Checked against the in-tree C build on the scaling corpus
+(`benchmarks/scaling_corpus.py`):
+
+| Input | Flags | Status |
+|-------|-------|--------|
+| 50 Response_reg proteins cut to 10 % (`tests/fixtures/parttree_respreg50.fa`) | `--parttree`, `--parttree --reorder`, `--parttree --nofft`, `--dpparttree`, `--treeout` | ✓ byte-exact |
+| 10 Pfam families × n = 100 (full-length UniProt) | `--parttree`, `--parttree --reorder`, `--parttree --nofft`, `--dpparttree` | ✓ 40/40 |
+| 10 Pfam families × n = 250 | same four | ✓ 38/40 |
+| 16S rRNA, n = 100 / 250 | `--parttree --nuc` (± `--reorder`, `--nofft` at n = 100) | ✓ 4/4 |
+
+The two n = 250 residuals are `--dpparttree` on PF00069 and PF00400.
+There the merged profile grows past 10000 columns and C's `pairalign`
+switches to `MSalignmm` for the remaining merges
+(`splittbfast.c:1020-1028`; the last 3 and 13 merges respectively);
+`mafft-rs` keeps `A__align`, so those final merges differ (PF00400: same
+width, different gap placement; PF00069: 4 columns narrower). Every
+earlier merge matches in width.
+
 ### BBaliBase 3 parity sweep
 
 Sweep across BBaliBase 3 (RV11–RV50, 386 protein test sets) against MAFFT 7.526:
@@ -428,6 +455,14 @@ candidate). Several constraint-mode scanners use a different inequality
 (`if (new > best)`). Mixing them up flips one trace direction on one
 column, which propagates downstream. We mirror each C usage site
 exactly.
+
+Sorting ties follow the same rule. `splittbfast` orders sequences with
+the C library's `qsort`, whose placement of equal elements is
+implementation-defined; `mafft-tree/src/bsd_qsort.rs` is an exact port
+of the macOS libc `qsort` (Apple Libc `stdlib/FreeBSD/qsort.c`, with its
+`med3`, bounded insertion-sort fallback and `heapsort` depth cap), so the
+port matches the macOS C build on every platform. The same applies to the
+`rand()` draws in PartTree's pivot selection (macOS `rand()`, unseeded).
 
 ### Per-step weight normalization
 
