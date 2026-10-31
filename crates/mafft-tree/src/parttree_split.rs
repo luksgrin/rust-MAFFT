@@ -1,30 +1,16 @@
-//! `splitseq_mq` recursion + topology assembly for `--parttree`,
-//! mirroring `splittbfast.c::splitseq_mq` (lines 2132-2580) for the
-//! single-recursion-level case (`nin <= picksize`, all sequences become
-//! pivots). For our 36-seq fixture this is the entire algorithm; full
-//! recursion handling (multi-level, `nin > picksize`) is left for a
-//! follow-up because it requires `rand()` determinism.
+//! First-level building blocks of `splittbfast.c::splitseq_mq` for
+//! `--parttree`, and the public PartTree helpers (topology, `--reorder`
+//! order, `--treeout` string) built on the full recursive port in
+//! [`crate::parttree_splitseq`].
 //!
-//! Pipeline at this layer:
-//! 1. Build `dfromc[nyuko][nin]` — distance from each surviving yuko
-//!    to every sorted-position sequence. Mirrors
-//!    `splittbfast.c:2132-2236`.
-//! 2. Assign each sequence (including pivots themselves) to its
-//!    closest yuko via `argmin_i dfromc[i][j]`, building `outs[].numinseq`
-//!    lists (`splittbfast.c:2244-2287`).
-//! 3. UPGMA on `yukomtx` → topol (already done by Rust's `musclesupg`,
-//!    FFI-validated).
-//! 4. Assemble the final `Topology`:
-//!    - Emit an internal-alignment `JoinStep` for each multi-member
-//!      yuko, pre-aligning its assigned sequences (Rust's progressive
-//!      alignment expects each leaf to be a single sequence; C's
-//!      pairalign tolerates mixed-length raw inputs but Rust's
-//!      `Profile::from_aligned` requires same-length rows).
-//!    - For each UPGMA join step l, emit a `JoinStep` whose `left` /
-//!      `right` are the union of `outs[yuko_idx].numinseq` for all
-//!      yuko-indices in `topol[l][0]` / `topol[l][1]`, sorted by
-//!      `intcompare` (ascending original sequence index — matching C's
-//!      `qsort(mem1, ..., intcompare)` at `splittbfast.c:2477-2478`).
+//! The building blocks here (`build_dfromc`, `assign_to_yukos`,
+//! `assemble_topology`, `run_parttree_pipeline_with_scorer`) cover one
+//! recursion level: they assume every sequence's yuko group needs no
+//! further splitting. That holds only while all pivots survive the
+//! redundancy filter, i.e. for fewer than `picksize` (50) sequences
+//! (`splittbfast.c:2753-2754` sets `tokyoripara = 0` then). From 50
+//! sequences on, yuko groups hold distinct sequences that C aligns in a
+//! recursive `splitseq_mq` call before the parent merges them.
 
 use crate::distance::DistanceMatrix;
 use crate::musclesupg::{musclesupg, ClusterMethod};
@@ -125,21 +111,11 @@ fn yukomtx_to_distance_matrix(pivots: &PartTreePivots) -> DistanceMatrix {
 /// sequence index (matching C's `qsort(mem1, ..., intcompare)` at
 /// `splittbfast.c:2477-2478`).
 ///
-/// **Multi-member yukos**: for a yuko with members `[m_0, m_1, …,
-/// m_{k-1}]`, C does NOT pre-align them. The recursive
-/// `splitseq_mq` call hits LEAF (via `uniform = -1` set when
-/// `nyuko == 1` at `splittbfast.c:2115`) and just writes `order[]`
-/// without alignment. The members are then merged for the first time
-/// inside the parent's `pairalign(mem1=[m_0..m_{k-1}], …)` call
-/// which builds a profile from the raw sequences and runs DP. For
-/// our n=36 fixture the multi-member yuko's members are byte-
-/// identical (the dedupe on shimon+strcmp), so they always have the
-/// same length and Rust's `Profile::from_aligned` accepts them
-/// directly. For non-identical multi-member groups (which would
-/// require the recursive call to actually run pairalign), the
-/// current implementation has held up: `--parttree` and `--dpparttree`
-/// produce byte-identical output to C MAFFT 7.526 on the 36-seq
-/// sample (width 752) and across the BBaliBase 3 sweep.
+/// First recursion level only: a multi-member yuko is emitted as one
+/// unaligned group. C instead runs `splitseq_mq` on that group
+/// (`splittbfast.c:2377`), which aligns it unless all its members are
+/// identical (`nyuko == 1`, `:2105-2123`). Use
+/// [`crate::parttree_splitseq::run_splitseq`] for the full algorithm.
 pub fn assemble_topology(
     pivots: &PartTreePivots,
     outs: &[Vec<usize>],
@@ -173,17 +149,30 @@ pub fn assemble_topology(
     topo
 }
 
-/// One-shot helper: run pivot pipeline, build `dfromc`, assign to yukos,
-/// and assemble the final topology.
+/// `--parttree` guide topology: the merge steps of one k-tuple
+/// `splittbfast` call, from the recursive `splitseq_mq` port
+/// ([`crate::parttree_splitseq`]).
 pub fn build_parttree_topology(
     sequences: &[Vec<u8>],
     kind: PtSeqKind,
     picksize: usize,
 ) -> Topology {
-    let pivots = crate::parttree_pivot::run_pivot_pipeline(sequences, kind, picksize);
-    let dfromc = build_dfromc(&pivots, kind);
-    let outs = assign_to_yukos(&pivots, &dfromc);
-    assemble_topology(&pivots, &outs)
+    run_ktuple_with_picksize(sequences, kind, picksize).topology
+}
+
+fn run_ktuple_with_picksize(
+    sequences: &[Vec<u8>],
+    kind: PtSeqKind,
+    picksize: usize,
+) -> crate::parttree_splitseq::SplitRun {
+    use crate::parttree_splitseq::{run_splitseq, KtupleScorer, SplitParams};
+    let scorer = KtupleScorer::new(sequences, kind);
+    let mut params = SplitParams::for_njob(sequences.len(), false);
+    params.picksize = picksize;
+    if picksize > sequences.len() {
+        params.tokyoripara = 0.0;
+    }
+    run_splitseq(scorer.entries(), &scorer, params)
 }
 
 /// Recursive helper for `c_normalized_yuko_order`: produce the leaf-yuko
@@ -225,16 +214,15 @@ pub(crate) fn c_normalized_subtree(steps: &[crate::topology::JoinStep], leaves: 
     leaves.to_vec()
 }
 
-/// Build the parttree-specific `--treeout` Newick output, mirroring
-/// `splittbfast.c::splitseq_mq` (`splittbfast.c:1275-1301` leaf-tree
-/// emission, `:2532-2553` per-step merge). Single-recursion-level case
-/// only (`nin <= picksize`), same as [`compute_parttree_order`].
+/// Build the parttree-specific `--treeout` output of one k-tuple
+/// `splittbfast` call (`splittbfast.c:1275-1301` leaf emission,
+/// `:2532-2553` per-merge concatenation, `:3035` trailing newline).
 ///
 /// Output format differs from the standard musclesupg `--treeout`:
 /// - No branch lengths.
 /// - Leaves are 1-indexed sequence numbers, NOT sanitized FASTA names.
-/// - Multi-member yukos render as `(s1,s2,...)` on one line; single-
-///   member yukos render as `<n>` sandwiched by `\n`.
+/// - Multi-member leaf groups render as `(s1,s2,...)` on one line;
+///   single-member leaves render as `<n>` sandwiched by `\n`.
 /// - No trailing `;` (parttree's tree file omits it).
 pub fn compute_parttree_newick(
     sequences: &[Vec<u8>],
@@ -244,64 +232,14 @@ pub fn compute_parttree_newick(
     let nseq = sequences.len();
     if nseq == 0 { return "\n".to_string(); }
     if nseq == 1 { return "\n1\n".to_string(); }
-
-    let pivots = crate::parttree_pivot::run_pivot_pipeline(sequences, kind, picksize);
-    let dfromc = build_dfromc(&pivots, kind);
-    let outs = assign_to_yukos(&pivots, &dfromc);
-    let yuko_dm = yukomtx_to_distance_matrix(&pivots);
-    let yuko_topo = musclesupg(&yuko_dm, ClusterMethod::Mix { sueff: 0.1 });
-
-    let nyuko = outs.len();
-    // Per-yuko initial tree string. Matches `splitseq_mq` leaf case
-    // (`splittbfast.c:1275-1301`):
-    //   nin == 1 →  "\n<seq+1>\n"
-    //   nin >  1 →  "\n(<a+1>,<b+1>,...)\n"
-    // Member emission order is `outs[yi]` (the parent's j-iteration order).
-    let mut parttree: Vec<Option<String>> = (0..nyuko).map(|yi| {
-        let members = &outs[yi];
-        if members.is_empty() {
-            None
-        } else if members.len() == 1 {
-            Some(format!("\n{}\n", members[0] + 1))
-        } else {
-            let inner: Vec<String> = members.iter().map(|&m| (m + 1).to_string()).collect();
-            Some(format!("\n({})\n", inner.join(",")))
-        }
-    }).collect();
-
-    // Walk the yuko UPGMA tree in merge order. C uses `topol[l][0][0]` /
-    // `topol[l][1][0]` for the active yuko IDs (`splittbfast.c:2535-2536`).
-    // Our `JoinStep.left/right` accumulate leaves in merge order, NOT in
-    // C's smaller-first-element normalized order — recurse via
-    // `c_normalized_subtree` so the [0] we read matches what C reads.
-    let mut last_v1 = 0usize;
-    for step in &yuko_topo.steps {
-        let l_norm = c_normalized_subtree(&yuko_topo.steps, &step.left);
-        let r_norm = c_normalized_subtree(&yuko_topo.steps, &step.right);
-        let (mut v1, mut v2) = (l_norm[0], r_norm[0]);
-        if v1 > v2 { std::mem::swap(&mut v1, &mut v2); }
-        let s1 = parttree[v1].take().expect("missing parttree[v1]");
-        let s2 = parttree[v2].take().expect("missing parttree[v2]");
-        parttree[v1] = Some(format!("({},{})", s1, s2));
-        last_v1 = v1;
-    }
-    // The final surviving entry plus C's trailing newline (the file is
-    // written by `fprintf(fp, "%s\n", *tree)` — `splittbfast.c:3046`,
-    // and the tree string itself ends with `\n` from the last leaf).
-    let mut out = parttree[last_v1].take().expect("missing root parttree");
+    let mut out = run_ktuple_with_picksize(sequences, kind, picksize).tree;
     out.push('\n');
     out
 }
 
-/// Compute the C-equivalent partition-discovery order for `--reorder`,
-/// mirroring `splittbfast.c::splitseq_mq` (`splittbfast.c:2351-2378` for
-/// the yuko visit order + `:1305-1309` for the leaf emission). Currently
-/// supports the single-recursion-level case (`nin <= picksize`, all yukos
-/// bottom out without further pivoting) — matches the n=36 fixture.
-/// Multi-level recursion (when a yuko itself has too many members to
-/// trivially leaf out) would need a full port of `splitseq_mq` recursion;
-/// for that case we fall back to input order, which gives a structurally
-/// valid alignment but won't byte-match C.
+/// The `--reorder` order of one k-tuple `splittbfast` call: the leaf
+/// emission order of the recursive `splitseq_mq`
+/// (`splittbfast.c:1305-1309`).
 pub fn compute_parttree_order(
     sequences: &[Vec<u8>],
     kind: PtSeqKind,
@@ -311,35 +249,7 @@ pub fn compute_parttree_order(
     if nseq <= 1 {
         return (0..nseq).collect();
     }
-    let pivots = crate::parttree_pivot::run_pivot_pipeline(sequences, kind, picksize);
-    let dfromc = build_dfromc(&pivots, kind);
-    let outs = assign_to_yukos(&pivots, &dfromc);
-    let yuko_dm = yukomtx_to_distance_matrix(&pivots);
-    let yuko_topo = musclesupg(&yuko_dm, ClusterMethod::Mix { sueff: 0.1 });
-
-    // Mirrors `splittbfast.c:2351-2354`: treeorder = root step's
-    // `topol[nyuko-2][0] ++ topol[nyuko-2][1]`. Our `JoinStep.left/right`
-    // accumulate leaves in merge order, NOT in C's smaller-first-element
-    // normalized order (`mltaln9.c:8184-8197`). So we recursively rebuild
-    // the order with that normalization applied to recover what C's
-    // `topol[step][i]` arrays would hold.
-    let mut order = Vec::with_capacity(nseq);
-    if let Some(root) = yuko_topo.steps.last() {
-        let l_yukos = c_normalized_subtree(&yuko_topo.steps, &root.left);
-        let r_yukos = c_normalized_subtree(&yuko_topo.steps, &root.right);
-        for &yi in l_yukos.iter().chain(r_yukos.iter()) {
-            // Leaf-level emission: `splittbfast.c:1305-1309` writes
-            // `scores[j].numinseq` in `j` order — `outs[yi]` already
-            // holds them in that order (see `assign_to_yukos`).
-            order.extend_from_slice(&outs[yi]);
-        }
-    } else {
-        // nyuko == 1 → single yuko containing all sequences in
-        // `outs[0]` (matches `splittbfast.c:2105-2123`'s uniform branch).
-        order.extend_from_slice(&outs[0]);
-    }
-    debug_assert_eq!(order.len(), nseq, "parttree order missing sequences");
-    order
+    run_ktuple_with_picksize(sequences, kind, picksize).order
 }
 
 // =============================================================================
@@ -348,158 +258,30 @@ pub fn compute_parttree_order(
 // C MAFFT runs `splittbfast` twice for `--parttree` (`scripts/mafft:2655`
 // and `:2681`). The second call uses `-Z` so distances are computed via
 // `naivepairscore11` on the already-aligned sequences instead of via
-// 6-mer composition. We mirror that pipeline here so `--parttree --reorder`
-// reaches byte-identity with C.
+// 6-mer composition. The full recursion lives in `parttree_splitseq`;
+// the public helpers below delegate to it.
 // =============================================================================
 
-/// `naivepairscore11` for aligned sequences. Mirrors
-/// `mltaln9.c:13801-13851`:
-///   1. Strip columns where both rows are gaps (`commongappickpair`,
-///      `mltaln9.c:13377-13397`).
-///   2. Walk the result: for each gap RUN in either row, add `penalty`
-///      once (gap-open style, single hit per run); otherwise add
-///      `matrix[amino_map[c1]][amino_map[c2]]`.
-fn naivepairscore11_aligned(
-    aligned1: &[u8],
-    aligned2: &[u8],
-    matrix: &[Vec<f64>],
-    amino_map: &[u8; 256],
-    penalty: f64,
-) -> f64 {
-    debug_assert_eq!(aligned1.len(), aligned2.len());
-    let n = aligned1.len();
-    let nalpha = matrix.len();
-    let mut score = 0.0f64;
-    let mut k = 0usize;
-    while k < n {
-        let c1 = aligned1[k];
-        let c2 = aligned2[k];
-        if c1 == b'-' && c2 == b'-' {
-            // Common gap — strip (`commongappickpair`).
-            k += 1;
-            continue;
-        }
-        if c1 == b'-' {
-            score += penalty;
-            // Skip all consecutive '-' in row 1 (`naivepairscore11:13824-13828`).
-            while k < n && aligned1[k] == b'-' {
-                k += 1;
-            }
-            continue;
-        }
-        if c2 == b'-' {
-            score += penalty;
-            while k < n && aligned2[k] == b'-' {
-                k += 1;
-            }
-            continue;
-        }
-        let i = amino_map[c1 as usize] as usize;
-        let j = amino_map[c2 as usize] as usize;
-        if i < nalpha && j < nalpha {
-            score += matrix[i][j];
-        }
-        k += 1;
-    }
-    score
-}
-
-/// Diagonal self-score for an aligned sequence, mirroring
-/// `splittbfast.c:3011-3017`: `pscore = sum amino_dis[c][c]` over every
-/// non-gap character `c`. Gaps contribute 0 (C reads through gap chars
-/// but `amino_dis['-']['-'] == 0` in `constants.c`'s table).
-fn selfscore_aligned(
-    aligned: &[u8],
-    matrix: &[Vec<f64>],
-    amino_map: &[u8; 256],
-) -> i64 {
-    let nalpha = matrix.len();
-    let mut s = 0.0f64;
-    for &c in aligned {
-        if c == b'-' { continue; }
-        let i = amino_map[c as usize] as usize;
-        if i < nalpha {
-            s += matrix[i][i];
-        }
-    }
-    s as i64
-}
-
-/// Apply C's `pick_reference_max_selfscore` then `compute_initial_scores`
-/// for the `fromaln=1` path, mirroring `splittbfast.c:1316-1448` with
-/// `doalign && fromaln`. Returns the sorted scores entries and the
-/// index permutation we applied.
-fn compute_initial_scores_fromaln(
-    aligned_seqs: &[Vec<u8>],
-    matrix: &[Vec<f64>],
-    amino_map: &[u8; 256],
-    penalty: f64,
-) -> Vec<crate::parttree_pivot::ScoreEntry> {
-    use crate::parttree_pivot::ScoreEntry;
-    let nin = aligned_seqs.len();
-    let mut entries: Vec<ScoreEntry> = (0..nin).map(|i| {
-        ScoreEntry {
-            numinseq: i,
-            selfscore: selfscore_aligned(&aligned_seqs[i], matrix, amino_map),
-            // orilen = strlen post-gappick (i.e., non-gap residue count).
-            orilen: aligned_seqs[i].iter().filter(|&&c| c != b'-').count(),
-            score: 0.0,
-            points: Vec::new(), // unused in fromaln path
-        }
-    }).collect();
-
-    // pick_reference: scan for max selfscore (strict `>` → first wins).
-    let mut best = 0usize;
-    let mut best_score = entries[0].selfscore;
-    for i in 1..nin {
-        if entries[i].selfscore > best_score {
-            best_score = entries[i].selfscore;
-            best = i;
-        }
-    }
-    if best != 0 {
-        entries.swap(0, best);
-    }
-
-    // compute scores against entries[0] using naivepairscore11.
-    let ref_aligned = aligned_seqs[entries[0].numinseq].clone();
-    let ref_selfscore = entries[0].selfscore as f64;
-    for i in 0..nin {
-        let pair = naivepairscore11_aligned(
-            &ref_aligned, &aligned_seqs[entries[i].numinseq],
-            matrix, amino_map, penalty,
-        );
-        let bunbo = ref_selfscore.min(entries[i].selfscore as f64);
-        entries[i].score = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
-        // C clamps score < 0 to 0 in `pickmtx` (`splittbfast.c:1687`), but
-        // for the initial `scores[i].score` no clamp is applied.
-    }
-
-    // dcompare_sort via libc qsort (matches BSD `qsort` tie-break).
-    crate::parttree_pivot::dcompare_sort(&mut entries);
-    entries
-}
-
-/// Intermediate result of CALL 2 (`fromaln=1`)'s pivot pipeline: the
+/// Top-level result of a scorer-driven `splitseq_mq` pass: the
 /// post-`dcompare` sorted scores, the yuko UPGMA topology, and the
-/// per-yuko member lists (`outs[]`). Used by both
-/// [`compute_parttree_order_fromaln`] and [`compute_parttree_newick_fromaln`]
-/// so they share the exact same pipeline (and any future fixes propagate).
+/// per-yuko member lists (`outs[]`) — the first recursion level only.
 pub struct PartTreeFromalnResult {
     pub scores: Vec<crate::parttree_pivot::ScoreEntry>,
     pub outs: Vec<Vec<usize>>,
     pub yuko_topo: crate::topology::Topology,
 }
 
-/// Run the splittbfast pivot/yuko/UPGMA pipeline using caller-supplied
-/// scoring callbacks. This is the generic core shared by the
-/// `fromaln=1` (CALL 2) path and the `--dpparttree` CALL 1 path.
+/// Run the first level of the splittbfast pivot/yuko/UPGMA pipeline using
+/// caller-supplied scoring callbacks. It does not recurse into the yuko
+/// groups nor apply the redundancy filter, so it describes C's output only
+/// while every pivot survives (fewer than `picksize` sequences); use
+/// [`crate::parttree_splitseq::run_splitseq`] for the full algorithm.
 ///
 /// Callbacks operate on the original input indices (0..nseq):
 /// - `selfscore`: returns the self-vs-self score for sequence `i`.
 /// - `orilen`: returns the ungapped length of sequence `i`.
 /// - `pair_score`: returns the pairwise score for `(i, j)`. Implementations
-///   compute this however they like (e.g. `naivepairscore11_aligned` or
+///   compute this however they like (e.g. `naivepairscore11` or
 ///   `G__align11_noalign`). For `i == j`, returns the selfscore.
 /// - `seqs_equal`: returns `true` when `i` and `j` refer to byte-identical
 ///   sequences (used by the shimon-style dedupe in pivot selection).
@@ -674,154 +456,9 @@ pub fn parttree_result_to_newick(result: &PartTreeFromalnResult) -> String {
     out
 }
 
-fn run_parttree_fromaln_pipeline(
-    aligned_seqs: &[Vec<u8>],
-    matrix: &[Vec<f64>],
-    amino_map: &[u8; 256],
-    penalty: f64,
-) -> Option<PartTreeFromalnResult> {
-    let nseq = aligned_seqs.len();
-    if nseq <= 1 {
-        return None;
-    }
-
-    // 1. Build sorted scores (with selfscore, score) for all sequences.
-    let scores = compute_initial_scores_fromaln(aligned_seqs, matrix, amino_map, penalty);
-
-    // 2. Pivot selection. For `nin <= picksize` (=50), all distinct
-    //    sequences become picks, just like `compute_parttree_order`.
-    //    Uses scores order; dedupe identical sequences via the shimon-style
-    //    check (here: same selfscore + same aligned content).
-    let nin = scores.len();
-    let mut picks: Vec<usize> = vec![0]; // position 0 is always picked
-    // Helper: scores at positions a and b refer to the same sequence content?
-    let same_seq = |a: usize, b: usize| -> bool {
-        let na = scores[a].numinseq;
-        let nb = scores[b].numinseq;
-        scores[a].selfscore == scores[b].selfscore
-            && scores[a].orilen == scores[b].orilen
-            && aligned_seqs[na] == aligned_seqs[nb]
-    };
-    // C: pickkouho = [1, 2, ..., nin-1]; take the MOST distant first
-    // (`splittbfast.c:1508`: picktmp = pickkouho[nkouho-1]).
-    let mut pickkouho: Vec<usize> = (1..nin).collect();
-    let mut nkouho = pickkouho.len();
-    if nkouho > 0 {
-        let picktmp = pickkouho[nkouho - 1];
-        nkouho -= 1;
-        if !same_seq(0, picktmp) {
-            picks.push(picktmp);
-        }
-    }
-    let mut i_alt = 1;
-    while picks.len() < 50 && nkouho > 0 {
-        let rn = if i_alt == 1 {
-            i_alt = 0;
-            (nkouho as f64 * 0.5) as usize
-        } else {
-            nkouho - 1
-        };
-        let picktmp = pickkouho[rn];
-        nkouho -= 1;
-        pickkouho[rn] = pickkouho[nkouho];
-        if !picks.iter().any(|&p| same_seq(p, picktmp)) {
-            picks.push(picktmp);
-        }
-    }
-    picks.sort_unstable();
-
-    // 3. Build pickmtx via naivepairscore11.
-    let npick = picks.len();
-    let mut pickmtx: Vec<Vec<f64>> = (0..npick).map(|i| vec![0.0f64; npick - i]).collect();
-    // pickmtx[0][k] = scores[picks[k]].score (already computed against ref).
-    for k in 1..npick {
-        pickmtx[0][k] = scores[picks[k]].score;
-    }
-    for j in 1..npick {
-        let pj_self = scores[picks[j]].selfscore as f64;
-        let aligned_j = &aligned_seqs[scores[picks[j]].numinseq];
-        for i in (j + 1)..npick {
-            let pair = naivepairscore11_aligned(
-                aligned_j, &aligned_seqs[scores[picks[i]].numinseq],
-                matrix, amino_map, penalty,
-            );
-            let bunbo = pj_self.min(scores[picks[i]].selfscore as f64);
-            let dist = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
-            pickmtx[j][i - j] = if dist < 0.0 { 0.0 } else { dist };
-        }
-    }
-
-    // 4. yukos. With `picksize=50 > nin=36`, `tokyoripara = 0`
-    //    (`splittbfast.c:2760-2761`), so the redundancy filter is a no-op
-    //    and every pick becomes a yuko.
-    let nyuko = npick;
-    let yukos: Vec<usize> = picks.clone();
-
-    // 5. dfromc[i][j] = distance from yuko i's pivot to scores[j].
-    let mut dfromc: Vec<Vec<f64>> = vec![vec![0.0f64; nin]; nyuko];
-    // Row 0: from yukos[0] (= picks[0]) to all j. We already have these
-    // as `scores[j].score` (which is the distance from the reference =
-    // scores[0] = picks[0] to each j).
-    for j in 0..nin {
-        dfromc[0][j] = scores[j].score;
-    }
-    for i in 1..nyuko {
-        let yuko_aligned = &aligned_seqs[scores[yukos[i]].numinseq];
-        let yuko_self = scores[yukos[i]].selfscore as f64;
-        for j in 0..nin {
-            // C reuses pickmtx values when both i and j are picks
-            // (`splittbfast.c:2178-2230`). Equivalent path:
-            if j == yukos[i] {
-                dfromc[i][j] = 0.0;
-                continue;
-            }
-            let pair = naivepairscore11_aligned(
-                yuko_aligned, &aligned_seqs[scores[j].numinseq],
-                matrix, amino_map, penalty,
-            );
-            let bunbo = yuko_self.min(scores[j].selfscore as f64);
-            let dist = if bunbo > 0.0 { 1.0 - pair / bunbo } else { 1.0 };
-            dfromc[i][j] = if dist < 0.0 { 0.0 } else { dist };
-        }
-    }
-
-    // 6. assign each seq to its closest yuko (strict `<`, first wins).
-    let mut outs: Vec<Vec<usize>> = vec![Vec::new(); nyuko];
-    for j in 0..nin {
-        let mut belongto = 0usize;
-        let mut min_d = f64::INFINITY;
-        for yi in 0..nyuko {
-            if dfromc[yi][j] < min_d {
-                min_d = dfromc[yi][j];
-                belongto = yi;
-            }
-        }
-        outs[belongto].push(scores[j].numinseq);
-    }
-
-    // 7. yukomtx = pickmtx (since every pick survives → npick == nyuko).
-    let yukomtx = pickmtx;
-    let mut yuko_dm = DistanceMatrix::new(nyuko);
-    for i in 0..nyuko {
-        for j in (i + 1)..nyuko {
-            yuko_dm.set(i, j, yukomtx[i][j - i]);
-        }
-    }
-
-    // 8. UPGMA yields the yuko-level tree.
-    let yuko_topo = musclesupg(&yuko_dm, ClusterMethod::Mix { sueff: 0.1 });
-
-    Some(PartTreeFromalnResult { scores, outs, yuko_topo })
-}
-
-/// Compute the C-equivalent `--reorder` ordering for the SECOND
-/// `splittbfast` pass (CALL 2, `fromaln=1`). Takes the aligned MSA
-/// (with gaps) and the substitution matrix + gap penalty used during
-/// progressive alignment. Mirrors the `doalign && fromaln` branches of
-/// `splittbfast.c::splitseq_mq`.
-///
-/// Single-recursion-level only (`nin <= picksize`). For the n=36
-/// fixture this is the entire algorithm.
+/// The `--reorder` order of one `splittbfast -Z` (`fromaln=1`) call on
+/// `aligned_seqs` (`scripts/mafft:2681`): the leaf emission order of the
+/// recursive `splitseq_mq` with `naivepairscore11` distances.
 pub fn compute_parttree_order_fromaln(
     aligned_seqs: &[Vec<u8>],
     matrix: &[Vec<f64>],
@@ -829,29 +466,15 @@ pub fn compute_parttree_order_fromaln(
     penalty: f64,
 ) -> Vec<usize> {
     let nseq = aligned_seqs.len();
-    let result = match run_parttree_fromaln_pipeline(aligned_seqs, matrix, amino_map, penalty) {
-        Some(r) => r,
-        None => return (0..nseq).collect(),
-    };
-    let mut order = Vec::with_capacity(nseq);
-    if let Some(root) = result.yuko_topo.steps.last() {
-        let l_yukos = c_normalized_subtree(&result.yuko_topo.steps, &root.left);
-        let r_yukos = c_normalized_subtree(&result.yuko_topo.steps, &root.right);
-        for &yi in l_yukos.iter().chain(r_yukos.iter()) {
-            order.extend_from_slice(&result.outs[yi]);
-        }
-    } else {
-        order.extend_from_slice(&result.outs[0]);
+    if nseq <= 1 {
+        return (0..nseq).collect();
     }
-    debug_assert_eq!(order.len(), nseq, "fromaln parttree order missing sequences");
-    order
+    crate::parttree_splitseq::run_fromaln(aligned_seqs, matrix, amino_map, penalty).order
 }
 
-/// PartTree `--treeout` output using CALL 2's `fromaln=1` scoring on the
-/// already-aligned MSA. Mirrors `splittbfast.c::splitseq_mq`'s tree
-/// emission (`splittbfast.c:1275-1301` leaf format, `:2532-2553` merge).
-/// C overwrites `infile.tree` on each `splittbfast` invocation, so the
-/// FINAL tree on disk comes from CALL 2 (the `fromaln=1` pass).
+/// PartTree `--treeout` output of one `splittbfast -Z` call on the
+/// already-aligned MSA. C overwrites `infile.tree` on each `splittbfast`
+/// invocation, so the tree on disk comes from the last (`fromaln=1`) pass.
 pub fn compute_parttree_newick_fromaln(
     aligned_seqs: &[Vec<u8>],
     matrix: &[Vec<f64>],
@@ -861,35 +484,7 @@ pub fn compute_parttree_newick_fromaln(
     let nseq = aligned_seqs.len();
     if nseq == 0 { return "\n".to_string(); }
     if nseq == 1 { return "\n1\n".to_string(); }
-    let result = match run_parttree_fromaln_pipeline(aligned_seqs, matrix, amino_map, penalty) {
-        Some(r) => r,
-        None => return "\n".to_string(),
-    };
-    let nyuko = result.outs.len();
-    let mut parttree: Vec<Option<String>> = (0..nyuko).map(|yi| {
-        let members = &result.outs[yi];
-        if members.is_empty() {
-            None
-        } else if members.len() == 1 {
-            Some(format!("\n{}\n", members[0] + 1))
-        } else {
-            let inner: Vec<String> = members.iter().map(|&m| (m + 1).to_string()).collect();
-            Some(format!("\n({})\n", inner.join(",")))
-        }
-    }).collect();
-
-    let mut last_v1 = 0usize;
-    for step in &result.yuko_topo.steps {
-        let l_norm = c_normalized_subtree(&result.yuko_topo.steps, &step.left);
-        let r_norm = c_normalized_subtree(&result.yuko_topo.steps, &step.right);
-        let (mut v1, mut v2) = (l_norm[0], r_norm[0]);
-        if v1 > v2 { std::mem::swap(&mut v1, &mut v2); }
-        let s1 = parttree[v1].take().expect("missing parttree[v1]");
-        let s2 = parttree[v2].take().expect("missing parttree[v2]");
-        parttree[v1] = Some(format!("({},{})", s1, s2));
-        last_v1 = v1;
-    }
-    let mut out = parttree[last_v1].take().expect("missing root parttree");
+    let mut out = crate::parttree_splitseq::run_fromaln(aligned_seqs, matrix, amino_map, penalty).tree;
     out.push('\n');
     out
 }
