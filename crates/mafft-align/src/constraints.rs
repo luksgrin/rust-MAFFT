@@ -46,6 +46,12 @@ pub fn build_imp_matrix(
     let mut imp = vec![vec![0.0f64; lgth2]; lgth1];
     let effijx = fastathreshold;
 
+    // Raw-residue -> gapped-column tables, built once per member instead of
+    // re-walking the gapped sequence for every region endpoint (the walk
+    // dominated L-INS-i / G-INS-i refinement time on long inputs).
+    let pos1: Vec<ResiduePositions> = g1_seqs.iter().map(|s| ResiduePositions::new(s)).collect();
+    let pos2: Vec<ResiduePositions> = g2_seqs.iter().map(|s| ResiduePositions::new(s)).collect();
+
     for (gi, &s1) in group1.iter().enumerate() {
         for (gj, &s2) in group2.iter().enumerate() {
             let regions = localhom.get(s1, s2);
@@ -53,28 +59,30 @@ pub fn build_imp_matrix(
             let effij = eff1[gi] * eff2[gj] * effijx;
             let seq1 = g1_seqs[gi];
             let seq2 = g2_seqs[gj];
+            let p1 = &pos1[gi];
+            let p2 = &pos2[gj];
 
             for region in regions {
-                let start1 = match move_to_seq_pos(seq1, region.start1 as usize) {
+                let start1 = match p1.get(region.start1 as usize) {
                     Some(p) => p,
                     None => continue,
                 };
                 let end1 = if region.start1 == region.end1 {
                     start1
                 } else {
-                    match move_to_seq_pos(seq1, region.end1 as usize) {
+                    match p1.get(region.end1 as usize) {
                         Some(p) => p,
                         None => continue,
                     }
                 };
-                let start2 = match move_to_seq_pos(seq2, region.start2 as usize) {
+                let start2 = match p2.get(region.start2 as usize) {
                     Some(p) => p,
                     None => continue,
                 };
                 let end2 = if region.start2 == region.end2 {
                     start2
                 } else {
-                    match move_to_seq_pos(seq2, region.end2 as usize) {
+                    match p2.get(region.end2 as usize) {
                         Some(p) => p,
                         None => continue,
                     }
@@ -637,6 +645,33 @@ fn move_to_seq_pos(seq: &[u8], raw_pos: usize) -> Option<usize> {
     }
 }
 
+/// Precomputed `move_to_seq_pos` for one gapped sequence: the column of
+/// every residue, so each lookup is O(1) and returns exactly what
+/// `move_to_seq_pos(seq, raw_pos)` returns.
+struct ResiduePositions {
+    cols: Vec<usize>,
+}
+
+impl ResiduePositions {
+    fn new(seq: &[u8]) -> Self {
+        let cols = seq
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| c != b'-')
+            .map(|(idx, _)| idx)
+            .collect();
+        ResiduePositions { cols }
+    }
+
+    #[inline]
+    fn get(&self, raw_pos: usize) -> Option<usize> {
+        match self.cols.get(raw_pos) {
+            Some(&idx) => Some(idx),
+            None => self.cols.last().map(|&last| last + 1),
+        }
+    }
+}
+
 /// Result of one pairwise alignment for parallel collection.
 struct PairResult {
     i: usize,
@@ -1070,6 +1105,17 @@ pub fn build_homology_table_with_unalign(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn residue_positions_match_move_to_seq_pos() {
+        let seqs: [&[u8]; 6] = [b"", b"---", b"A", b"-A-C--GT-", b"ACGT", b"--AC-G-T--"];
+        for s in seqs {
+            let p = ResiduePositions::new(s);
+            for raw in 0..s.len() + 4 {
+                assert_eq!(p.get(raw), move_to_seq_pos(s, raw), "seq {:?} raw {raw}", s);
+            }
+        }
+    }
 
     fn simple_setup() -> (Vec<Vec<f64>>, [u8; 256]) {
         let mut mtx = vec![vec![-100.0f64; 5]; 5];
