@@ -1772,6 +1772,7 @@ fn align_prepared<'a>(
         engine.align(input)
     })
     })?;
+    check_output_alphabet(&msa)?;
 
     // --distout: write the engine's distance matrix to `<INPUT>.hat2`,
     // mirroring C MAFFT's `cp $TMPFILE/hat2 $infilename.hat2`
@@ -2075,6 +2076,29 @@ fn check_existing_aligned(set: &SequenceSet) -> Result<(), MafftError> {
             ),
         )),
     }
+}
+
+/// Output invariant: an aligned row holds residues and `-` only. The
+/// reader never lets `=`, `<` or `>` into a sequence (C `charfilter`,
+/// `io.c:1337`), so any of them in the engine's result is an internal
+/// marker that escaped, such as C's `=` new-gap sentinel from
+/// `addfunctions.c`. Checked before the `--anysymbol` restore, which
+/// would otherwise overwrite the marker with a shifted original residue.
+fn check_output_alphabet(msa: &MultipleAlignment) -> Result<(), MafftError> {
+    for (row, name) in msa.sequences.iter().zip(&msa.names) {
+        if let Some(col) = row.iter().position(|&c| matches!(c, b'=' | b'<' | b'>')) {
+            return Err(MafftError::new(
+                1,
+                format!(
+                    "Internal error: the alignment holds the non-residue character '{}' \
+                     (sequence {name}, column {}); refusing to write it. Please report this.",
+                    row[col] as char,
+                    col + 1
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn seqcheck(set: &SequenceSet, quiet: bool) -> Result<(), MafftError> {
@@ -2621,6 +2645,25 @@ mod tests {
             AlignmentMode::EInsi { .. } => "E-INS-i",
             AlignmentMode::QInsi { .. } => "Q-INS-i",
             AlignmentMode::XInsi { .. } => "X-INS-i",
+        }
+    }
+
+    #[test]
+    fn output_alphabet_rejects_internal_markers() {
+        let msa = |row: &[u8]| MultipleAlignment {
+            sequences: vec![b"MK-V".to_vec(), row.to_vec()],
+            names: vec!["a".into(), "b".into()],
+            score: 0.0,
+            step_trace: Vec::new(),
+            guide_tree: None,
+            first_pass_sequences: None,
+            distance_matrix: None,
+        };
+        assert!(check_output_alphabet(&msa(b"M-.X")).is_ok());
+        for bad in [&b"M=KV"[..], b"MK<V", b"MKV>"] {
+            let err = check_output_alphabet(&msa(bad)).unwrap_err();
+            assert_eq!(err.code(), 1);
+            assert!(err.message().contains("sequence b"), "{}", err.message());
         }
     }
 

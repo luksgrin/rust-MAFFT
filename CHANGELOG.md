@@ -112,6 +112,17 @@ public surfaces stable from 0.1.0 anyway.
 - A malformed `--treein` (index 0, negative, out of range, too few lines)
   ended the process from inside the engine with `process::exit(1)`, also
   for in-process callers; it is now a normal `MafftError`.
+- **`--add` printed `=` in the alignment** (issue #40). When a new-gap
+  region borders restored common gaps, C's `insertnewgaps` realigns it
+  with `profilealignment`, which marks the existing side with `=`; C
+  clears those marks after every `--add` merge (`eq2dashmatometehayaku`,
+  `disttbfast.c:2988`, `tbfast.c:1705`). The port skipped that step, so
+  later merges aligned `=` as a residue and it reached the output. It is
+  now cleared as in C; the 30 + 6 reproducer and its 2 + 1 minimisation
+  are byte-identical to C, as are `--keeplength` and `--anysymbol` on
+  the same input. `mafft-rs` also checks the final alignment and exits 1
+  with an internal-error message, instead of printing it, if a row holds
+  `=`, `<` or `>` (bytes no input residue can be).
 - **`--parttree` panic and divergence on 50+ sequences** (issue #38).
   The PartTree port covered only the first level of
   `splittbfast.c::splitseq_mq`. From 50 sequences on (`picksize` no

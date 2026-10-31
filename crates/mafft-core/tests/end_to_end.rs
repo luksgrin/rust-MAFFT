@@ -1951,6 +1951,32 @@ fn add_six_to_thirty_byte_identical_to_c() {
     assert_eq!(mismatches, 0, "--add 30+6: {mismatches} sequences differ from C");
 }
 
+/// Issue #40: `--add` printed C's `=` new-gap sentinel. Adding `n5`
+/// next to `e30` realigns a new-gap region that borders restored common
+/// gaps (C `insertnewgaps` → `profilealignment`), which writes `=` into
+/// the existing-side row. C clears it with `eq2dashmatometehayaku`
+/// (`disttbfast.c:2988`); the port did not. Minimised from
+/// `benchmarks/memsafety_cases/add_sentinel_*.fa` (2 existing + 1 new).
+#[test]
+fn add_sentinel_minimal_byte_identical_to_c() {
+    let existing = read_fasta(fixture_path("add_sentinel.existing2.fa")).unwrap();
+    let new_seqs = read_fasta(fixture_path("add_sentinel.new1.fa")).unwrap();
+    let c_ref = read_fasta(fixture_path("add_sentinel.add.aln")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).add_to_alignment(&existing, &new_seqs, false);
+    for row in &msa.sequences {
+        assert!(!row.contains(&b'='), "'=' sentinel in output: {}", String::from_utf8_lossy(row));
+    }
+    assert_eq!(msa.names, c_ref.sequences.iter().map(|s| s.name.clone()).collect::<Vec<_>>());
+    for (i, want) in c_ref.sequences.iter().enumerate() {
+        assert_eq!(
+            String::from_utf8_lossy(&msa.sequences[i]),
+            String::from_utf8_lossy(&want.data),
+            "--add 2+1 row {} differs from C",
+            want.name,
+        );
+    }
+}
+
 fn assert_linsi_byte_identical(input_fixture: &str, c_ref_fixture: &str, iterations: usize) {
     let c_ref = read_fasta(fixture_path(c_ref_fixture))
         .unwrap_or_else(|_| panic!("missing tests/fixtures/{c_ref_fixture}"));

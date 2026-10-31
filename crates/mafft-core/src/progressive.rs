@@ -504,6 +504,14 @@ pub fn progressive_align_with_mergeoralign_n(
                     }
                 }
 
+                // C clears the '=' new-gap marks right after insertnewgaps
+                // (`disttbfast.c:2988-2989`, `tbfast.c:1705-1706`). Here
+                // `rs_profilealignment` is the only writer of '=', into the
+                // existing-side rows; left in place they would be aligned
+                // as residues by later merges and printed.
+                eq2dash_matomete(&mut aligned, existing_grp);
+                eq2dash_matomete(&mut aligned, new_grp);
+
                 // Mark new-side rows as aligned (existing-side was already).
                 for &i in new_grp {
                     already_aligned[i] = true;
@@ -557,10 +565,34 @@ pub fn progressive_align_with_mergeoralign_n(
     for seq in &mut aligned {
         seq.resize(max_width, b'-');
     }
+    debug_assert!(
+        aligned.iter().all(|row| !row.contains(&b'=')),
+        "--add left the '=' new-gap marker in the alignment"
+    );
 
     MultipleAlignment {
         sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
         guide_tree: None, first_pass_sequences: None, distance_matrix: None,
+    }
+}
+
+/// Port of C `addfunctions.c::eq2dashmatometehayaku` (line 281): every
+/// column where the group's first row holds '=' becomes '-' in all rows
+/// of the group.
+fn eq2dash_matomete(aligned: &mut [Vec<u8>], rows: &[usize]) {
+    let Some(&first) = rows.first() else { return };
+    let cols: Vec<usize> = aligned[first]
+        .iter()
+        .enumerate()
+        .filter(|&(_, &c)| c == b'=')
+        .map(|(j, _)| j)
+        .collect();
+    for &i in rows {
+        for &j in &cols {
+            if let Some(c) = aligned[i].get_mut(j) {
+                *c = b'-';
+            }
+        }
     }
 }
 
@@ -783,10 +815,11 @@ pub fn findnewgaps(seq: &[u8]) -> Vec<usize> {
 /// `gaplen` is indexed by `j` (pre-merge); `gapmap` is indexed by
 /// `posin12` (post-restore).
 ///
-/// **Currently SKIPS profilealignment** — for scenarios where the
-/// new-merge-gap is NOT adjacent to a common-gap (gapshift2==0
-/// branch always taken), this matches C exactly. Profilealignment
-/// will be added for the compression cases.
+/// Where a new-merge-gap region is followed by restored common gaps
+/// (`gapshift2 > 0`), `rs_profilealignment` realigns that region and
+/// writes '=' into the existing-side rows wherever OTHER is all-gap.
+/// As in C, the caller must clear those marks afterwards
+/// (`eq2dash_matomete`, C `eq2dashmatometehayaku`).
 pub fn apply_c_insertnewgaps(
     aseq: &mut [Vec<u8>],
     existing_grp: &[usize],
