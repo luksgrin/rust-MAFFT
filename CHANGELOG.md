@@ -130,6 +130,26 @@ public surfaces stable from 0.1.0 anyway.
   not on Linux aarch64, where `char` is unsigned. They now use `c_char`. CI gains a
   compile-only leg on `ubuntu-24.04-arm` so the workspace and every test
   binary are built there on each push.
+- **FFT modes diverged from C on long nucleotide sequences** (issue #43).
+  C's `Falign` correlates nucleotides on a single channel — `n20or4or2 =
+  1` when `scoremtx == -1` (`Falign.c:923`), so only `a` enters the FFT —
+  while the port correlated all ten scored letters. That ranks the 20
+  candidate lags differently; on similar sequences the best lag carries
+  the anchors either way, but on three 3.6–5.0 kb *S. pneumoniae* CDS
+  (`dna_01715`) the second progressive merge picked different anchors
+  under FFT-NS-1/2/i and `--auto`. The FFT anchor search now also follows
+  C's arithmetic exactly: the correlation is C's `calcNaiseki` (`a ·
+  conj(b)`) read back in `Falign`'s order (`mafft_fft::soukan_c_compat`,
+  bit-identical to C on this input), the per-site anchor scores use
+  `alignableReagion`'s summation order and its division by `totaleff`,
+  the FFT length is the power of two strictly above the longer profile
+  (as `Falign` rounds), and the twiddle table recurrence is fused like
+  arm64 clang's (`make_sintbl`; identical below 2^19 points). Not
+  sensitive to the FP contraction policy (C built with
+  `-ffp-contract=off` gives the same bytes). New FFI tests
+  `cross_validate_falign_dna.rs` (correlation bit for bit, candidate
+  lags, and every merge of the cluster replayed through C's `Falign`)
+  and the `dna_01715` end-to-end fixture.
 - `mafft-rs` lost residues without an error when a profile alignment had
   one empty side: an input record with no residues printed every
   sequence empty, and DNA with a long homopolymer (e.g. 300 × `A`) lost
