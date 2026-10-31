@@ -137,8 +137,10 @@ is not dereferenced on this path and the output matches `mafft-rs` byte for
 byte.
 
 Per the [bug-fix direction](upstream-policy.md#bug-fix-direction), C1–C3
-should be reported upstream with these reproducers. That has not been done
-yet.
+were reported upstream with these reproducers on 2026-10-31:
+C1 → [sysimm/mafft#8](https://gitlab.com/sysimm/mafft/-/issues/8),
+C2 → [sysimm/mafft#6](https://gitlab.com/sysimm/mafft/-/issues/6),
+C3 → [sysimm/mafft#7](https://gitlab.com/sysimm/mafft/-/issues/7).
 
 ## Findings: `mafft-rs`
 
