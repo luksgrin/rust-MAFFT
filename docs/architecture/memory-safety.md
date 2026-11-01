@@ -98,7 +98,10 @@ The same read happens under FFT-NS-i (`--maxiterate 2`). The parser in
 called from inside the engine, which reported the error with
 `std::process::exit(1)`. That also ended in-process callers such as
 pymafft. `mafft-rs` now validates the tree before aligning and returns a
-normal error. Regression tests: `treein_zero_index_is_rejected` and
+normal error. A tree error found while aligning, including `--treein`
+with `--add`, and a failure of the RNA base-pair step are returned the
+same way; the engine does not call `std::process::exit`. Regression
+tests: `treein_zero_index_is_rejected` and
 `treein_negative_index_is_rejected` in
 `crates/mafft-bin/tests/memsafety_regressions.rs`.
 

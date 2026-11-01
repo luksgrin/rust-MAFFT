@@ -124,6 +124,13 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **A `--treein` error during alignment, including with `--add`, and a
+  failed RNA base-pair probability are returned to the caller** (part of
+  #41). Those two paths called `std::process::exit(1)` inside the engine,
+  which killed `run_from_seqs` and pymafft. They now come back as the same
+  message with exit code 1. The new `MafftEngine::try_align` and
+  `try_align_file` return that error; `align` and `align_file` keep their
+  signatures and panic with the message instead of exiting.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the

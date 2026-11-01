@@ -1555,10 +1555,10 @@ fn align_prepared<'a>(
         if !tree_path.exists() {
             return Err(MafftError::new(1, format!("Cannot open {}", tree_path.display())));
         }
-        // Validate here so a malformed tree is a `MafftError` rather than
-        // the engine's `process::exit(1)`, which would also end an
-        // in-process caller (pymafft). Without `--add` the engine aligns
-        // exactly `input` (seeds already prepended above).
+        // Without `--add` the engine aligns exactly `input` (seeds
+        // already prepended). Reject a bad tree before that work.
+        // With `--add` / `--addfragments` the count includes the added
+        // sequences, so the same check runs once they have been read.
         if args.add.is_none() && args.addfragments.is_none() {
             mafft_tree::parse_mafft_tree(tree_path, input.nseq())
                 .map_err(|e| MafftError::new(1, format!("--treein: {e}")))?;
@@ -1652,7 +1652,7 @@ fn align_prepared<'a>(
     let (args_ref, engine_ref, input_ref, originals_ref) = (args, &engine, &mut input, &mut originals);
     let mut msa = in_pool(pool, move || -> Result<mafft_core::MultipleAlignment, MafftError> {
         let (args, engine, input, originals) = (args_ref, engine_ref, input_ref, originals_ref);
-        Ok(if let Some(add_path) = add_file {
+        if let Some(add_path) = add_file {
         check_existing_aligned(input)?;
         // C concatenates the addfile onto `infile` (`scripts/mafft:1142`)
         // before `replaceu` runs on the whole (`scripts/mafft:2305-2308`),
@@ -1727,13 +1727,23 @@ fn align_prepared<'a>(
         if !args.quiet {
             progress.message(&format!("Adding {} sequences to existing alignment", new_input.nseq()));
         }
+        // C concatenates the add file before `loadtree`, so the tree is
+        // checked against the combined count. A tree that does not parse
+        // is the same error `align` returns. A tree that does parse is
+        // not applied: `--add` stays on the add algorithm, so a run that
+        // succeeds keeps that alignment.
+        if let Some(ref tree_path) = args.treein {
+            let nseq = input.nseq() + new_input.nseq();
+            mafft_tree::parse_mafft_tree(tree_path, nseq)
+                .map_err(|e| MafftError::new(1, format!("--treein: {e}")))?;
+        }
         // `--mapout` / `--compactmapout` both imply `--keeplength` in
         // C (`scripts/mafft:699-710` set `-Y` along with `-z`/`-Z`).
         // Use the with-map variant so we can write the `.map` file
         // below. The keeplength alignment itself is identical.
         let keep = args.keeplength || args.mapout || args.compactmapout;
         let fragments = args.addfragments.is_some();
-        if keep && (args.mapout || args.compactmapout) {
+        Ok(if keep && (args.mapout || args.compactmapout) {
             let (mut msa, deletelist) = if fragments {
                 engine.add_fragments_to_alignment_with_map(input, &new_input)
             } else {
@@ -1765,7 +1775,7 @@ fn align_prepared<'a>(
             engine.add_fragments_to_alignment(input, &new_input, keep)
         } else {
             engine.add_to_alignment(input, &new_input, keep)
-        }
+        })
     } else {
         if args.maxambiguous.is_some() && !args.quiet {
             // Match C's behaviour: --maxambiguous without --add is a
@@ -1784,8 +1794,8 @@ fn align_prepared<'a>(
             };
             *input = Cow::Owned(adjust_direction_mode(input, mode));
         }
-        engine.align(input)
-    })
+        engine.try_align(input).map_err(|e| MafftError::new(1, e.to_string()))
+    }
     })?;
     check_output_alphabet(&msa)?;
 

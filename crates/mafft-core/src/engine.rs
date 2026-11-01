@@ -81,6 +81,33 @@ pub fn pair_penalty_scales(is_nucleotide: bool) -> (f64, f64) {
     }
 }
 
+/// Failure from [`MafftEngine::align`] that used to abort the process.
+///
+/// The text is what the CLI prints. Exit code is 1.
+#[derive(Debug)]
+pub struct EngineError {
+    message: String,
+}
+
+impl EngineError {
+    fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into() }
+    }
+
+    /// Exact text the CLI prints for this failure, without a trailing newline.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for EngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for EngineError {}
+
 /// The main MAFFT alignment engine.
 #[derive(Debug, Clone)]
 pub struct MafftEngine {
@@ -404,7 +431,20 @@ impl MafftEngine {
     }
 
     /// Align a set of sequences.
+    ///
+    /// Panics with the [`EngineError`] message where [`Self::try_align`]
+    /// returns an error. Use `try_align` to handle a bad `--treein` file or
+    /// a failed RNA base-pair step without unwinding.
     pub fn align(&self, input: &SequenceSet) -> MultipleAlignment {
+        self.try_align(input).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Align a set of sequences, returning an error instead of panicking.
+    ///
+    /// A bad `--treein` file and a failure while computing RNA base-pair
+    /// probabilities are [`Err`]s. They used to call `std::process::exit(1)`,
+    /// which also killed an in-process caller.
+    pub fn try_align(&self, input: &SequenceSet) -> Result<MultipleAlignment, EngineError> {
         let seq_type = input.seq_type;
         let scoring_model = if seq_type.is_nucleotide() {
             ScoringModel::Dna
@@ -686,12 +726,13 @@ impl MafftEngine {
         // importance-recomputation below uses the same topology C does
         // (`tbfast.c:2967 counteff_simple_double_nostatic_memsave( njob, topol, len, dep, eff )`
         // where `topol`/`len` come from `loadtree` when `treein=1`).
-        let user_topo: Option<mafft_tree::Topology> = self.treein_path.as_ref().map(|path| {
-            mafft_tree::parse_mafft_tree(path, nseq).unwrap_or_else(|e| {
-                eprintln!("--treein: {e}");
-                std::process::exit(1);
-            })
-        });
+        let user_topo: Option<mafft_tree::Topology> = match self.treein_path.as_ref() {
+            Some(path) => Some(
+                mafft_tree::parse_mafft_tree(path, nseq)
+                    .map_err(|e| EngineError::new(format!("--treein: {e}")))?,
+            ),
+            None => None,
+        };
 
         // `--seed`: fold seed-derived `hat3.seed` entries into the
         // pairwise homology table BEFORE `recompute_importance`, so the
@@ -1064,10 +1105,7 @@ impl MafftEngine {
                     );
                     Some(table)
                 }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
+                Err(e) => return Err(EngineError::new(e)),
             }
         } else if uses_constraints {
             // Reuse the table built up-front for the initial distance matrix.
@@ -1433,7 +1471,7 @@ impl MafftEngine {
             msa.distance_matrix = Some(dm.clone());
         }
 
-        msa
+        Ok(msa)
     }
 
     /// Add new sequences to an existing alignment.
@@ -1754,10 +1792,17 @@ impl MafftEngine {
         (scoring, use_fft, existing, new_sequences, new_names)
     }
 
-    /// Convenience: read FASTA file and align.
+    /// Convenience: read FASTA file and align. Panics like [`Self::align`]
+    /// on an alignment error; see [`Self::try_align_file`].
     pub fn align_file(&self, path: &std::path::Path) -> Result<MultipleAlignment, mafft_io::IoError> {
         let input = read_fasta(path)?;
         Ok(self.align(&input))
+    }
+
+    /// Convenience: read FASTA file and align, returning every failure.
+    pub fn try_align_file(&self, path: &std::path::Path) -> Result<MultipleAlignment, EngineError> {
+        let input = read_fasta(path).map_err(|e| EngineError::new(e.to_string()))?;
+        self.try_align(&input)
     }
 }
 
@@ -2048,6 +2093,25 @@ mod tests {
         // so this transitively guards the engine's behavior.
         let params = crate::refinement::RefinementParams::default();
         assert_eq!(params.cut, 0.0);
+    }
+
+    /// A bad `--treein` used to call `std::process::exit(1)` from inside
+    /// `align`. The error comes back and a later alignment still runs.
+    #[test]
+    fn align_treein_failure_returns_error() {
+        let path = std::env::temp_dir().join(format!(
+            "mafft-engine-tree-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"0 2 0.1 0.1\n").unwrap();
+        let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+        engine.treein_path = Some(path.clone());
+        let err = engine.try_align(&make_test_input()).unwrap_err();
+        assert!(err.to_string().starts_with("--treein:"), "{err}");
+        let _ = std::fs::remove_file(&path);
+        let ok = MafftEngine::new(AlignmentMode::FftNs2)
+            .align(&make_test_input());
+        assert_eq!(ok.nseq(), 3);
     }
 
 }

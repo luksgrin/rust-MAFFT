@@ -175,3 +175,77 @@ fn homopolymer_dna_matches_c() {
     let want = std::fs::read(memsafety("homopolymer_dna.default.expected")).unwrap();
     assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want));
 }
+
+fn protein_pair() -> mafft_rs::SequenceSet {
+    mafft_rs::SequenceSet {
+        sequences: vec![
+            mafft_rs::Sequence { name: "a".into(), data: b"ACDEF".to_vec() },
+            mafft_rs::Sequence { name: "b".into(), data: b"ACD-F".to_vec() },
+        ],
+        seq_type: mafft_rs::SeqType::Protein,
+    }
+}
+
+/// `--treein` combined with `--add` skips the check that runs before
+/// `align` (the combined sequence count is not known yet). A tree that
+/// does not parse used to kill the process from inside the engine.
+/// `run_from_seqs` must return the error and stay able to align.
+#[test]
+fn treein_with_add_returns_error() {
+    let dir = std::env::temp_dir().join(format!("mafft-treein-add-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let add = dir.join("add.fa");
+    let tree = dir.join("bad.tree");
+    std::fs::write(&add, b">n\nACDE\n").unwrap();
+    std::fs::write(&tree, b"0 2 0.1 0.1\n").unwrap();
+    let existing = protein_pair();
+    let err = mafft_rs::run_from_seqs(
+        [
+            "mafft-rs",
+            "--quiet",
+            "--treein",
+            tree.to_str().unwrap(),
+            "--add",
+            add.to_str().unwrap(),
+        ],
+        &existing,
+        &mafft_rs::SilentProgress,
+    )
+    .expect_err("failing --treein --add must return Err");
+    assert_eq!(err.code(), 1, "{}", err.message());
+    assert!(err.message().contains("--treein:"), "{}", err.message());
+    let ok = mafft_rs::run_from_seqs(["mafft-rs", "--quiet"], &existing, &mafft_rs::SilentProgress)
+        .expect("a later call must still align");
+    assert_eq!(ok.nseq(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Q-INS-i computes base-pair probabilities after the progressive merge
+/// and used to `process::exit` when that step failed. Without
+/// `mxscarnamod` on `PATH` the library must return that error. Two short
+/// sequences, so the merge before the failure is small.
+#[test]
+fn qinsi_bpp_failure_returns_error() {
+    // A real `mxscarnamod` would run the success path. The failure under
+    // test is the missing tool, which is how this step errors in a normal
+    // build.
+    if std::process::Command::new("mxscarnamod").output().is_ok() {
+        eprintln!("mxscarnamod is installed; RNA failure path not exercised");
+        return;
+    }
+    let seqs = mafft_rs::SequenceSet {
+        sequences: vec![
+            mafft_rs::Sequence { name: "a".into(), data: b"acgtacgt".to_vec() },
+            mafft_rs::Sequence { name: "b".into(), data: b"acgtacga".to_vec() },
+        ],
+        seq_type: mafft_rs::SeqType::Dna,
+    };
+    let err = mafft_rs::run_from_seqs(
+        ["mafft-rs", "--quiet", "--nuc", "--qinsi", "--maxiterate", "0"],
+        &seqs,
+        &mafft_rs::SilentProgress,
+    )
+    .expect_err("RNA base-pair failure must return Err");
+    assert_eq!(err.code(), 1, "{}", err.message());
+    assert!(err.message().contains("mxscarnamod"), "{}", err.message());
+}
