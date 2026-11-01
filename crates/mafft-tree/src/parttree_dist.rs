@@ -131,6 +131,9 @@ pub fn common_sextets_p(table: &[i32], points: &[u32], tsize: usize) -> i32 {
 
 /// `splittbfast.c:1674` length-correction factor:
 /// `lenfac = 1 / (shorter/longer * d + b/(longer + c) + a)`.
+/// Same expression as `mltaln9.c:15453` (`distcompact`). Apple clang
+/// contracts `shorter/longer * d + b/(longer + c)` into one `fmadd` at both
+/// sites, so it goes through [`mafft_types::fp::fmadd`].
 ///
 /// Returns 1.0 for zero-length inputs to avoid division-by-zero
 /// (matches `compute_lenfac` behavior in `distance.rs`).
@@ -142,7 +145,7 @@ pub fn lenfac(len1: usize, len2: usize, a: f64, b: f64, c: f64, d: f64) -> f64 {
     if longer == 0.0 {
         return 1.0;
     }
-    1.0 / (shorter / longer * d + b / (longer + c) + a)
+    1.0 / (mafft_types::fp::fmadd(shorter / longer, d, b / (longer + c)) + a)
 }
 
 /// PartTree pairwise distance — the C-exact `splittbfast` formula

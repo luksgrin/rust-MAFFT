@@ -264,10 +264,12 @@ robustness or parity gaps.
   because of the buffer; reading all of it is an improvement. An empty
   file, a file with no header line, and a file of only NUL bytes match
   the wrapper: exit 0 and empty stdout.
-- **Byte-identity outside the parity corpora.** Both succeed but the bytes
-  differ for: the 3000 × 30 aa set (width 121 vs 129), the 120 kb sequence
-  (a few gap moves), and the low-complexity `--adjustdirection` set.
-  Of the `sample_add` runs, `--add` and
+- **Byte-identity outside the parity corpora.** The 3000 × 30 aa set
+  matches the in-tree C build (`--thread 1`, default FFT-NS-2 width 121,
+  and `--retree 1`) since the 6-mer length correction is fused where the
+  C compiler fuses it. Both succeed but the bytes still differ for: the
+  120 kb sequence (a few gap moves) and the low-complexity
+  `--adjustdirection` set. Of the `sample_add` runs, `--add` and
   `--add --keeplength` have matched since #49. `--add --maxiterate 2`,
   `--add --reorder` and the `--compactmapout` added-sequence names match
   since #50, on the canonical 30 + 6 fixture and on the #40 reproducer.
