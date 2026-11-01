@@ -144,6 +144,19 @@ jobs:
             echo "== scripts/fma_census.sh not present in this checkout; inline census only"
           fi
 
+      # pymafft's Cargo test binaries link libpython. Wheels do not: maturin
+      # sets PYO3_BUILD_EXTENSION_MODULE. ubuntu-24.04-arm has no libpython,
+      # and its release link keeps the Python references that x86-64's
+      # linker discards, so the test executable fails with undefined
+      # PyEval_*, PyUnicode_*, and PyErr_* symbols. python3-dev provides
+      # libpython3.*.so. PyO3 locates it from the interpreter's sysconfig,
+      # not pkg-config. macOS excludes pymafft and is unchanged.
+      - name: Install Python development files (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-dev
+
       - name: Build Rust workspace
         run: cargo build --workspace ${{ inputs.cargo-exclude }}
 
