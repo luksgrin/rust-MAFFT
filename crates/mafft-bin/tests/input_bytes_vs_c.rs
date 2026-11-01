@@ -6,6 +6,14 @@
 //! stdout. A Latin-1 byte inside a sequence is not a letter, so C drops
 //! it and aligns what remains; the alignment, not merely a successful
 //! exit, is what is compared.
+//!
+//! The C command is run with `LANG=C` and `LC_ALL=C`. The wrapper exports
+//! `LANG=C`, but a UTF-8 `LC_ALL` from the caller overrides that, and
+//! BSD `tr` then stops at the first byte that is not valid UTF-8
+//! (`tr: Illegal byte sequence`) and leaves a truncated file. Under the
+//! C locale `tr` is the byte translation the wrapper is written as: a
+//! non-UTF-8 name byte is kept, and a non-letter inside a sequence is
+//! dropped.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -32,6 +40,10 @@ fn c_mafft(input: &Path) -> Vec<u8> {
         .args(["--quiet", "--thread", "1"])
         .arg(input)
         .env("MAFFT_BINARIES", &binaries)
+        // BSD `tr` in a UTF-8 locale stops at the first illegal byte and
+        // truncates the file. `LC_ALL` overrides the wrapper's `LANG=C`.
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
         .output()
         .unwrap_or_else(|e| panic!("run {}: {e}", script.display()));
     assert!(
