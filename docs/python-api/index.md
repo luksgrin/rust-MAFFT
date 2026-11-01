@@ -296,6 +296,37 @@ python -m pymafft --help
 See the [CLI reference](../cli-reference.md) for the flag list. Any flag
 listed there can also be passed in-process through `pymafft.run`.
 
+## Floating-point contraction in published wheels
+
+!!! warning "C MAFFT is not bit-reproducible across compilers"
+
+    Upstream MAFFT 7.526 does not set `-ffp-contract`. Apple clang
+    fuses `a * b + c` into one rounding (712 columns on the
+    `--bl 50 --retree 2 --maxiterate 0` sentinel); gcc and MSVC round
+    the multiply and the add separately (738 columns), including on
+    Linux aarch64. Published wheels follow the toolchain that built
+    them (`*-apple-darwin` fused, Linux and Windows not fused). There
+    is no runtime switch. Build commands for the other toolchain are
+    under [Building from source](#building-from-source).
+
+C MAFFT 7.526 leaves `-ffp-contract` unset, so the same source produces
+two alignments: Apple clang fuses `a * b + c` into one rounding, and gcc
+in the upstream Makefile's `-std=c99` mode does not, including on Linux
+aarch64. MSVC does not contract by default either. The 36-sequence
+sample with `--bl 50 --retree 2 --maxiterate 0` is 712 columns when
+fused and 738 when not.
+
+`pip install pymafft` installs a wheel built with the platform default.
+There is no runtime switch; the rounding is chosen when the wheel is
+compiled. A wheel that should follow the other C build is rebuilt from
+source with a Cargo feature (below).
+
+| Wheel tag | Policy |
+|--|--|
+| `*-apple-darwin` | fused (Apple clang; 712-column sentinel) |
+| `*-unknown-linux-*` | not fused (gcc `-std=c99`; 738-column sentinel) |
+| `*-windows-*` | not fused (MSVC; 738-column sentinel) |
+
 ## Building from source
 
 From a checkout, with only the standard library's `venv` and `pip`:
@@ -306,8 +337,16 @@ python -m venv .venv
 source .venv/bin/activate           # Windows: .venv\Scripts\activate
 pip install maturin pytest biopython
 cargo build --release -p mafft-rs   # the CLI the option-parity tests compare against
-maturin develop --release
+maturin develop --release           # platform default, same as the published wheel
 pytest tests/ -v
+```
+
+To match the other C build, use one of these instead of
+`maturin develop --release`:
+
+```sh
+maturin develop --release --features fp-contract-none   # gcc / MSVC, any machine
+maturin develop --release --features fp-contract-fma    # Apple clang, any machine
 ```
 
 `maturin develop` does not bundle the `mafft-rs` console script; see

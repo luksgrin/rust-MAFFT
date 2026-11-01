@@ -4,24 +4,26 @@ name: Build and test (reusable)
 # the unit + integration + FFI cross-validation suites" job. It is
 # invoked from ci.yml once per reference platform:
 #
-#   * ubuntu-latest (x86-64, gcc)   -> the historical byte-identity gate
-#   * macos-latest  (arm64,  clang) -> same gate against an FMA-contracting
-#                                      C build
+#   * ubuntu-latest    (x86-64, gcc)         -> byte-identity vs a non-contracting C build
+#   * ubuntu-24.04-arm (aarch64, gcc -std=c99) -> same, and gcc emits 0 fused ops here
+#   * macos-latest     (arm64, Apple clang)  -> byte-identity vs an FMA-contracting C build
 #
-# Why two platforms: C MAFFT 7.526 is NOT bit-identical across CPU
-# architectures. clang on arm64 contracts a*b+c into fused multiply-adds
-# (on the order of a thousand fmadd-family instructions per binary);
-# gcc on x86-64 emits none. The two C builds therefore disagree on some
-# inputs (e.g. `--bl 50` on mafft-upstream/test/sample: 712 columns on
-# arm64, 738 on x86-64), and "byte-identical to C" is only meaningful
-# relative to a C build made on the same platform. The reference is
-# therefore defined as: the pinned mafft-upstream source, built in-tree
-# with the upstream Makefile's default flags, on the platform you run on
-# (never a downloaded binary). rust-MAFFT mirrors this: `mafft_types::fp::CONTRACTS_FMA`
-# defaults to the host's policy (true on aarch64, false elsewhere), and
+# Why more than one platform: C MAFFT 7.526 leaves -ffp-contract unset, so
+# the compiler, not the source, chooses the rounding. Apple clang contracts
+# a*b+c into fused multiply-adds (on the order of a thousand fmadd-family
+# instructions per binary). gcc in the Makefile's -std=c99 mode emits none,
+# including on Linux aarch64, where the CPU has FMA hardware. The builds
+# therefore disagree on some inputs (e.g. `--bl 50` on
+# mafft-upstream/test/sample: 712 columns with Apple clang, 738 with gcc),
+# and "byte-identical to C" is only meaningful relative to a C build made
+# on the same platform. The reference is the pinned mafft-upstream source,
+# built in-tree with the upstream Makefile's default flags, on the platform
+# you run on (never a downloaded binary). rust-MAFFT mirrors this:
+# `mafft_types::fp::CONTRACTS_FMA` defaults to the usual compiler for the
+# target (true on Apple, false elsewhere, including Linux aarch64), and
 # the FFI cross_validate_* tests compare against the C compiled by
-# mafft-c-bindings/build.rs on the same runner. Running this job on both
-# runners is what makes that claim checked rather than asserted.
+# mafft-c-bindings/build.rs on the same runner. Running this job on each
+# runner is what makes that claim checked rather than asserted.
 #
 # macOS toolchain notes: mafft-upstream/core/Makefile hardcodes
 # `CC = gcc` and `CFLAGS = -O3 -std=c99 -Denablemultithread`, all of
@@ -34,9 +36,25 @@ on:
   workflow_call:
     inputs:
       os:
-        description: Runner label (ubuntu-latest or macos-latest)
+        description: Runner label (ubuntu-latest, ubuntu-24.04-arm, or macos-latest)
         required: true
         type: string
+      expect-zero-fused:
+        description: >-
+          Fail the job unless scripts/fma_census.sh reports 0 fused ops in
+          every C engine binary. Set on Linux, including aarch64, where gcc
+          -std=c99 must not contract.
+        required: false
+        type: boolean
+        default: false
+      expect-sentinel-width:
+        description: >-
+          If non-empty, the --bl 50 sentinel must have this column count on
+          both the mafft-rs and the in-tree C alignments (738 for gcc,
+          712 for Apple clang).
+        required: false
+        type: string
+        default: ""
       cargo-exclude:
         description: >-
           Extra `--exclude <crate>` flags for the workspace cargo invocations
@@ -89,7 +107,7 @@ jobs:
       # Every CI log states which contraction behaviour the C reference
       # used on this runner has, so a byte-identity result can never be
       # read out of context. The inline census always runs (it only needs
-      # objdump, available on both runners: binutils on Linux,
+      # objdump, available on these runners: binutils on Linux,
       # llvm-objdump via Xcode on macOS); scripts/fma_census.sh (added
       # alongside the fp-policy code) runs in addition when present.
       - name: FMA census of the C reference
@@ -104,13 +122,40 @@ jobs:
             n=$(objdump -d "$b" | grep -cE "$PAT" || true)
             printf '  %-40s %6s FMA-family instructions\n' "$b" "$n"
           done
-          echo "  (expected: ~1000 per binary for clang/arm64, 0 for gcc/x86-64)"
+          echo "  (expected: ~1000 per binary for Apple clang, 0 for gcc including Linux aarch64)"
           if [ -x scripts/fma_census.sh ]; then
             echo "== scripts/fma_census.sh"
-            scripts/fma_census.sh mafft-upstream/core
+            scripts/fma_census.sh mafft-upstream/core | tee fma_census.txt
+            if [ '${{ inputs.expect-zero-fused }}' = 'true' ]; then
+              echo "== requiring 0 fused ops (gcc -std=c99, including Linux aarch64)"
+              awk 'NR>1 {
+                if ($3 != "0") {
+                  printf "FAIL: %s fused_ops=%s (expected 0)\n", $1, $3 > "/dev/stderr"
+                  bad=1
+                }
+              }
+              END { if (NR < 2 || bad) exit 1 }' fma_census.txt
+              echo "FMA census: 0 fused ops in disttbfast, dvtditr and tbfast"
+            fi
+          elif [ '${{ inputs.expect-zero-fused }}' = 'true' ]; then
+            echo "FAIL: scripts/fma_census.sh is not executable" >&2
+            exit 1
           else
             echo "== scripts/fma_census.sh not present in this checkout; inline census only"
           fi
+
+      # pymafft's Cargo test binaries link libpython. Wheels do not: maturin
+      # sets PYO3_BUILD_EXTENSION_MODULE. ubuntu-24.04-arm has no libpython,
+      # and its release link keeps the Python references that x86-64's
+      # linker discards, so the test executable fails with undefined
+      # PyEval_*, PyUnicode_*, and PyErr_* symbols. python3-dev provides
+      # libpython3.*.so. PyO3 locates it from the interpreter's sysconfig,
+      # not pkg-config. macOS excludes pymafft and is unchanged.
+      - name: Install Python development files (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-dev
 
       - name: Build Rust workspace
         run: cargo build --workspace ${{ inputs.cargo-exclude }}
@@ -129,7 +174,7 @@ jobs:
         # were silently uncovered by CI. The cross_validate_* binaries
         # link the C compiled by mafft-c-bindings/build.rs on THIS runner,
         # so they check Rust's default fp policy against the matching C
-        # build (FMA on arm64/clang, none on x86-64/gcc).
+        # build (FMA on Apple clang, none on gcc including Linux aarch64).
         run: cargo test --workspace ${{ inputs.cargo-exclude }} --release --tests
 
       - name: Smoke test Rust binary
@@ -138,9 +183,9 @@ jobs:
           echo "mafft-rs smoke test: PASS"
 
       # Cheap end-to-end sentinel for the FMA policy: `--bl 50` on the
-      # 36-sequence sample is the known platform-sensitive case (712
-      # columns with the arm64/clang C build, 738 with x86-64/gcc). The
-      # Rust binary built with its default policy must reproduce the C
+      # 36-sequence sample is the known compiler-sensitive case (712
+      # columns with Apple clang, 738 with gcc, including Linux aarch64).
+      # The Rust binary built with its default policy must reproduce the C
       # built on the same runner byte-for-byte. The C wrapper script is
       # driven the same way the in-tree test/ recipes do it: point
       # MAFFT_BINARIES at the freshly populated mafft-upstream/binaries/.
@@ -151,8 +196,18 @@ jobs:
           ./target/release/mafft-rs $ARGS mafft-upstream/test/sample > sentinel.rs.fa
           ./mafft-upstream/scripts/mafft $ARGS mafft-upstream/test/sample > sentinel.c.fa
           width() { awk '/^>/{if(n++) exit; next}{w+=length($0)} END{print w}' "$1"; }
-          echo "host: $(uname -m)  mafft-rs width: $(width sentinel.rs.fa)  C mafft width: $(width sentinel.c.fa)"
-          echo "(reference: arm64/clang C = 712 columns, x86-64/gcc C = 738 columns)"
+          w_rs=$(width sentinel.rs.fa)
+          w_c=$(width sentinel.c.fa)
+          echo "host: $(uname -m)  mafft-rs width: $w_rs  C mafft width: $w_c"
+          echo "(reference: Apple clang = 712 columns, gcc including Linux aarch64 = 738 columns)"
+          expect='${{ inputs.expect-sentinel-width }}'
+          if [ -n "$expect" ]; then
+            if [ "$w_rs" != "$expect" ] || [ "$w_c" != "$expect" ]; then
+              echo "FAIL: expected sentinel width $expect (mafft-rs=$w_rs C=$w_c)" >&2
+              exit 1
+            fi
+            echo "sentinel width $expect: OK"
+          fi
           diff sentinel.rs.fa sentinel.c.fa
           echo "FMA-policy sentinel: mafft-rs output IDENTICAL to same-platform C"
 
@@ -162,8 +217,9 @@ jobs:
       # with the default Makefile flags on the platform you run on -- i.e.
       # exactly the C we just built. Regenerate each from that build and
       # require it to be byte-identical to the checked-in variant for this
-      # runner's policy (`.nofma` on x86-64, `.fma` on aarch64). The script
-      # prints a unified diff and fails the job on any difference, and also
+      # runner's policy (`.fma` on macOS, `.nofma` on Linux including
+      # aarch64). The script prints a unified diff and fails the job on any
+      # difference, and also
       # fails if a variant file exists that the manifest does not describe.
       - name: Regenerate policy-sensitive fixtures from the in-tree C build and diff
         run: |

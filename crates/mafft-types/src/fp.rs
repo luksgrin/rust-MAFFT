@@ -6,77 +6,85 @@
 //! Many MAFFT inner loops accumulate `acc = a * b + acc`. Whether that is one
 //! rounding (a fused multiply-add) or two (separate multiply, then add)
 //! changes the last ulp of the result, and in tie-break-sensitive DP that
-//! last ulp changes the alignment. C MAFFT 7.526 leaves the choice to the
-//! compiler, so **C MAFFT itself is not bit-reproducible across CPU
-//! architectures**:
+//! last ulp changes the alignment. C MAFFT 7.526 leaves `-ffp-contract`
+//! unset, so the compiler, not the source, chooses the rounding. The same
+//! C source therefore produces both alignments.
 //!
 //! The **reference build** is the pinned `mafft-upstream` source, built
 //! in-tree with the upstream Makefile's default flags
 //! (`make -C mafft-upstream/core`), on the platform you run on. Nothing
 //! else — in particular no downloaded binary — defines the reference. That
-//! build behaves differently per platform:
+//! Makefile passes `-O3 -std=c99` and does not set `-ffp-contract`:
 //!
-//! - **arm64 macOS** (Apple clang, `-O3`, `FP_CONTRACT=on` by default): the
-//!   reference `disttbfast`, `dvtditr` and `tbfast` binaries each contain
-//!   roughly 1025 `fmadd`/`fmsub` instructions (~1140 counting the vector
-//!   `fmla`/`fmls` forms, as CI's census reports). clang contracts
-//!   `a * b + c` into FMA wherever the source expression allows it.
-//! - **baseline x86-64** (gcc `-O3`, the same pinned source and default
-//!   flags on Linux): zero `vfmadd`/`vfmsub` instructions, against ~1250
-//!   `mulsd` and ~1550 `addsd`. Baseline x86-64 has no FMA unit, so gcc
-//!   cannot contract.
+//! - **Apple clang** contracts `a * b + c` into one rounding (`FP_CONTRACT`
+//!   on by default). The reference `disttbfast`, `dvtditr` and `tbfast`
+//!   binaries each contain roughly 1025 `fmadd`/`fmsub` instructions (~1140
+//!   counting the vector `fmla`/`fmls` forms, as CI's census reports).
+//! - **gcc in that ISO C mode** does not contract. `-std=c99` implies
+//!   `-ffp-contract=off`, so gcc emits no fused ops even on aarch64, where
+//!   the CPU has FMA hardware. A gcc 15 build checked previously emitted 0
+//!   fused instructions and matched the x86-64 fixtures. The Linux x86-64
+//!   reference is the same: 0 `vfmadd`/`vfmsub`. **MSVC** does not contract
+//!   by default either.
 //!
 //! The visible consequence on the 36-sequence protein sample
 //! (`mafft-upstream/test/sample`) with `--bl 50 --retree 2 --maxiterate 0`:
-//! the arm64 C binary produces an alignment of width **712**, the x86-64 C
-//! binary produces width **738**. Both are "C MAFFT 7.526".
+//! the Apple-clang C binary produces an alignment of width **712**; a gcc
+//! or MSVC C binary produces width **738**. Both are "C MAFFT 7.526".
 //!
-//! Rust's [`f64::mul_add`] is *always* fused: a native `fmadd` on aarch64,
-//! but a slow software `fma()` on baseline x86-64 (no hardware FMA to lower
-//! to). Plain `a * b + c` is never contracted by rustc. So the port has to
-//! pick, per target, which arithmetic to emit — and the only sensible rule
-//! is to mirror the reference C build of the target it runs on, because that
-//! is the binary users compare against.
+//! Rust's [`f64::mul_add`] is *always* fused. Plain `a * b + c` is never
+//! contracted by rustc. The port therefore picks, per target, which
+//! arithmetic to emit, and mirrors the C toolchain usual for that platform:
+//! Apple clang on macOS, gcc on Linux (including aarch64; distro and
+//! bioconda packages are gcc builds), MSVC on Windows.
 //!
 //! # The policy
 //!
-//! Every site that C's arm64 clang build contracts is written as
+//! Every site that Apple clang contracts is written as
 //! [`fmadd(a, b, c)`](fmadd). Under [`CONTRACTS_FMA`] it lowers to
-//! `a.mul_add(b, c)`; otherwise to `a * b + c`. Sites that arm64 clang does
+//! `a.mul_add(b, c)`; otherwise to `a * b + c`. Sites that Apple clang does
 //! *not* contract (e.g. `rootnode[s] += len * eff[s]` in
 //! `mafft-tree::weighting::sequence_weights`) stay as plain `*` and `+` on
 //! every target and must not be routed through this module.
 //!
-//! [`CONTRACTS_FMA`] is selected by cargo features on `mafft-types`, which
-//! every workspace crate forwards under the same names:
+//! [`CONTRACTS_FMA`] is a compile-time constant, so the inner loop does not
+//! grow a per-cell check. There is no runtime flag. It is selected by cargo
+//! features on `mafft-types`, which every workspace crate forwards under
+//! the same names:
 //!
-//! - `fp-contract-fma`: always fuse (matches the arm64 clang reference).
-//! - `fp-contract-none`: never fuse (matches the baseline x86-64 gcc
-//!   reference).
-//! - neither: choose by target — fused on `aarch64`, not fused elsewhere.
+//! - neither: fuse on Apple targets (`cfg!(target_vendor = "apple")`), and
+//!   not on any other target. That is what `cargo build` and the published
+//!   wheels do.
+//! - `fp-contract-fma`: always fuse, on any target (match an Apple-clang C
+//!   build).
+//! - `fp-contract-none`: never fuse, on any target (match a gcc or MSVC C
+//!   build).
 //! - both: compile error.
 //!
+//! Someone who installed a wheel and wants the other policy rebuilds from
+//! source with the feature.
+//!
 //! Fixtures whose bytes depend on the policy are committed twice, as
-//! `<name>.fma` (in-tree C build on arm64) and `<name>.nofma` (in-tree C
-//! build on x86-64), and the test helpers pick the variant matching
-//! [`CONTRACTS_FMA`]. `scripts/regen_policy_fixtures.sh` regenerates and
-//! checks them from the in-tree build; CI does so on both platforms.
-
+//! `<name>.fma` (in-tree Apple-clang build) and `<name>.nofma` (in-tree gcc
+//! build, including Linux aarch64), and the test helpers pick the variant
+//! matching [`CONTRACTS_FMA`]. `scripts/regen_policy_fixtures.sh` regenerates
+//! and checks them from the in-tree build.
 
 #[cfg(all(feature = "fp-contract-fma", feature = "fp-contract-none"))]
 compile_error!(
     "features `fp-contract-fma` and `fp-contract-none` are mutually exclusive; \
-     enable at most one (default: fused on aarch64, not fused elsewhere)"
+     enable at most one (default: fused on Apple targets, not fused elsewhere)"
 );
 
 /// `true` when this build fuses `a * b + c` into a single-rounding FMA at
 /// every [`fmadd`] site, `false` when it rounds twice.
 ///
 /// Resolution order: `fp-contract-fma` => `true`; `fp-contract-none` =>
-/// `false`; neither => `cfg!(target_arch = "aarch64")`. See the
-/// [module docs](self) for why.
+/// `false`; neither => `cfg!(target_vendor = "apple")`. See the
+/// [module docs](self) for why. This is a compile-time branch: there is
+/// no runtime flag.
 pub const CONTRACTS_FMA: bool = cfg!(feature = "fp-contract-fma")
-    || (!cfg!(feature = "fp-contract-none") && cfg!(target_arch = "aarch64"));
+    || (!cfg!(feature = "fp-contract-none") && cfg!(target_vendor = "apple"));
 
 /// Policy-dependent multiply-add: `a * b + c`.
 ///
@@ -105,7 +113,11 @@ mod tests {
         // 0.1 * 0.2 + 0.3 rounds differently fused vs unfused; whichever the
         // policy is, `fmadd` must agree with the corresponding primitive.
         let (a, b, c) = (0.1f64, 0.2f64, 0.3f64);
-        let expected = if CONTRACTS_FMA { a.mul_add(b, c) } else { a * b + c };
+        let expected = if CONTRACTS_FMA {
+            a.mul_add(b, c)
+        } else {
+            a * b + c
+        };
         assert_eq!(fmadd(a, b, c).to_bits(), expected.to_bits());
     }
 

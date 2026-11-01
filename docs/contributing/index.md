@@ -91,8 +91,10 @@ lists how to run a single layer, file or test.
 ### FP-policy variants
 
 ```sh
-# Fixture tests under the other floating-point contraction policy (on an
-# arm64 host; use fp-contract-fma on x86-64). The FFI tests that compare
+# Fixture tests under the other C compiler's contraction policy.
+# On Apple the default fuses, so fp-contract-none matches gcc/MSVC.
+# On Linux (including aarch64) and Windows the default does not fuse,
+# so fp-contract-fma matches Apple clang. FFI tests that compare
 # against the in-tree C build skip when the policies do not match.
 cargo test --workspace --exclude pymafft --release --features fp-contract-none
 

@@ -15,10 +15,11 @@ readme = "README.md"
 mafft-types = { path = "../mafft-types", version = "0.2.0" }
 
 # Floating-point contraction policy (see `mafft_types::fp`). Mutually
-# exclusive; with neither, the build fuses `a*b+c` on aarch64 (mirroring the
-# arm64 clang reference C build) and not elsewhere (mirroring baseline
-# x86-64 gcc). Forwarded to every dependency that carries FP arithmetic so
-# `--features fp-contract-none` on any crate switches the whole stack.
+# exclusive; with neither, the build fuses `a*b+c` on Apple targets
+# (mirroring Apple clang) and not elsewhere (mirroring gcc `-std=c99`,
+# including Linux aarch64, and MSVC). Forwarded to every dependency that
+# carries FP arithmetic so `--features fp-contract-none` on any crate
+# switches the whole stack.
 [features]
 fp-contract-fma = [
     "mafft-types/fp-contract-fma",

@@ -50,11 +50,11 @@ jobs:
   # Build: compile the C reference in-tree, build the Rust workspace and
   # run the full test suite (lib + integration + FFI cross-validation).
   #
-  # Runs once per reference platform via the reusable build-test.yml:
-  # C MAFFT is not bit-identical across architectures (clang/arm64
-  # contracts to FMA, gcc/x86-64 does not), so byte-identity has to be
-  # checked against a same-platform C build on BOTH platforms. See the
-  # header of build-test.yml and docs/architecture/byte-identity.md.
+  # Runs once per reference platform via the reusable build-test.yml.
+  # C MAFFT leaves -ffp-contract unset: Apple clang contracts to FMA,
+  # gcc in -std=c99 does not (including on Linux aarch64). Byte-identity
+  # is checked against a same-platform C build on each. See the header
+  # of build-test.yml and docs/architecture/byte-identity.md.
   #
   # Only the x86-64 leg uploads artifacts; the "Test C:" / "Test Rust:"
   # jobs below consume them and are x86-64 only.
@@ -167,33 +167,20 @@ jobs:
         run: make -C mafft-upstream/core -j"$(nproc)"
 
   # ------------------------------------------------------------------
-  # Compile the whole workspace, tests included, on Linux aarch64. This
-  # is the one platform where `c_char` is `u8` (x86-64 Linux and Apple
-  # arm64 both have `i8`), so a test that spells the FFI argument type as
-  # `*mut i8` compiles everywhere except here. Compile only: the
-  # byte-identity sentinel is not run on this leg because the gcc C
-  # reference on aarch64 Linux does not contract FMAs while mafft-rs's
-  # default policy on aarch64 does (see docs/architecture/byte-identity.md
-  # and the open question in issue #51).
+  # Linux aarch64. This is the platform where `c_char` is `u8` (x86-64
+  # Linux and Apple arm64 both have `i8`), and where the in-tree C
+  # reference is gcc in -std=c99: 0 fused ops, 738-column sentinel.
+  # The default mafft-rs build does not fuse here, so this is the same
+  # build-test.yml leg as ubuntu x86-64, plus hard checks that the census
+  # is 0 and the sentinel is 738 columns and equal to C.
   # ------------------------------------------------------------------
   build-linux-aarch64:
-    name: "Compile (Linux aarch64)"
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: true
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Toolchain report
-        run: |
-          uname -m
-          gcc --version | head -1
-          rustc --print cfg | grep -E 'target_arch|target_os'
-
-      - name: Compile workspace and all test binaries
-        run: cargo test --workspace --exclude pymafft --release --no-run
+    name: "Build (Linux aarch64)"
+    uses: ./.github/workflows/build-test.yml
+    with:
+      os: ubuntu-24.04-arm
+      expect-zero-fused: true
+      expect-sentinel-width: "738"
 
   # ------------------------------------------------------------------
   # MAFFT C alignment tests (each mode runs as a separate job)
@@ -389,8 +376,8 @@ jobs:
   # artifacts; we should at least know that `cargo build` + lib tests
   # work there on every PR. macOS used to be in this light matrix but is
   # now covered by the full `build-arm64` job above (C build, FFI
-  # cross-validation, byte-identity); Linux `build` and `build-arm64`
-  # are the two authoritative byte-identity gates.
+  # cross-validation, byte-identity); Linux `build`, `build-linux-aarch64`
+  # and `build-arm64` are the byte-identity gates.
   #
   # Excluded:
   #   - pymafft           : its cdylib needs maturin's linker dance,

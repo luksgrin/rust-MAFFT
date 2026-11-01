@@ -24,13 +24,20 @@ mafft-types = { path = "../mafft-types", version = "0.2.0" }
 mafft-rs = { path = "../mafft-bin", version = "0.2.0" }
 # `abi3-py39`: build against the stable ABI, so one wheel per target serves
 # every CPython >= 3.9 (the `requires-python` floor in pyproject.toml).
-pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }
+# `extension-module` is not enabled here. In PyO3 0.30 that feature skips
+# linking libpython for every artifact, including `cargo test` binaries, so
+# the harness dies with undefined `Py*` symbols wherever the linker does not
+# discard them (Linux aarch64 release). Wheel builds still skip that link:
+# maturin >= 1.9.4 sets `PYO3_BUILD_EXTENSION_MODULE` and pyproject.toml
+# passes `--features pyo3/extension-module`.
+pyo3 = { version = "0.30", features = ["abi3-py39"] }
 
 # Floating-point contraction policy (see `mafft_types::fp`). Mutually
-# exclusive; with neither, the build fuses `a*b+c` on aarch64 (mirroring the
-# arm64 clang reference C build) and not elsewhere (mirroring baseline
-# x86-64 gcc). Forwarded to every dependency that carries FP arithmetic so
-# `--features fp-contract-none` on any crate switches the whole stack.
+# exclusive; with neither, the build fuses `a*b+c` on Apple targets
+# (mirroring Apple clang) and not elsewhere (mirroring gcc `-std=c99`,
+# including Linux aarch64, and MSVC). Forwarded to every dependency that
+# carries FP arithmetic so `--features fp-contract-none` on any crate
+# switches the whole stack.
 [features]
 fp-contract-fma = [
     "mafft-core/fp-contract-fma",

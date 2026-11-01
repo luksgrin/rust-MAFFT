@@ -30,7 +30,8 @@ C is run through the upstream wrapper `mafft-upstream/scripts/mafft` with
 `MAFFT_BINARIES=mafft-upstream/binaries`, as in
 `.github/workflows/build-test.yml`; the drivers set that variable
 themselves. Both builds use the host's default floating-point contraction
-policy (fused multiply-add on arm64, none on x86-64; see
+policy (fused multiply-add with Apple clang, none with gcc, including
+Linux aarch64; see
 `docs/architecture/byte-identity.md`), recorded in the `fp_policy` column.
 
 For the Python driver:

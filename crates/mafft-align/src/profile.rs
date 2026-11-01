@@ -1567,13 +1567,13 @@ pub fn profile_align_imp_multimtx(
         let cur_s: &mut [f64] = &mut currentw;
         // SAFETY (the entire inner j-loop, inside j_loop):
         //   - see j_loop's SAFETY doc-block.
-        // Use `fmadd` throughout — arm64 clang fuses `a + b * c` into a
-        // single-rounding FMA, baseline x86-64 gcc does not (no FMA unit);
-        // `fmadd` follows the per-target policy in `mafft_types::fp`.
+        // Use `fmadd` throughout. Apple clang fuses `a + b * c` into a
+        // single-rounding FMA; gcc in the Makefile's -std=c99 mode does not,
+        // even on aarch64. `fmadd` follows `mafft_types::fp` (compile-time).
         // Matching the reference build's rounding count is required for
         // bit-identity to C's A__align inner DP, which surfaces as tie-break
         // divergences for matrices with flatter score landscapes (BL50:
-        // arm64 C gives width 712 on the sample, x86-64 C gives 738).
+        // Apple clang gives width 712 on the sample, gcc gives 738).
         let mut mi = unsafe {
             fmadd(*ogcp2_s.get_unchecked(1), gf1_im1, *prev_s.get_unchecked(0))
         };
