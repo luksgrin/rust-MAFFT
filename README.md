@@ -433,7 +433,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 | `mafft-core/tests/end_to_end.rs`      | 120 (2 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
 | Rust FFI cross-validation (`cross_validate*.rs`, 15 files) | 82 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
 | `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
-| `mafft-bin/tests/` (`input_handling_vs_c`, `inmemory_parity`, `c_parity_dna`) | 58 (1 ignored) | CLI-level byte-identity: the 22-file input corpus, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`) |
+| `mafft-bin/tests/` (`input_handling_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`) | 61 (3 ignored) | CLI-level byte-identity: the 22-file input corpus, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), and the `--add` variant fixtures (two `--addfragments` tests stay ignored) |
 | `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
 | Python tests                          | 160 | API (32), parity/shape (23), **CLI-option parity against the `mafft-rs` binary** (82), Biopython interop (18), console script (5) |
 
@@ -445,7 +445,7 @@ Regression guards for C parity live in:
 
 Any regression in DP indexing, boundary handling, FFT anchor placement, refinement-tree distance, profile blending, `--add` profilealignment, the input read path or the `--thread` refinement rules fails at least one of them.
 
-7 tests are `#[ignore]`-gated: six deliberate diagnostic / bisection tools (annotated at the call site) and the one documented input-handling residual below.
+7 tests are `#[ignore]`-gated: six deliberate diagnostic / bisection tools (annotated at the call site) and the one documented input-handling residual below. Two further tests in `add_variants_vs_c.rs` stay ignored until `--addfragments` follows C's `addsingle` (section D).
 
 ## Known limitations
 
