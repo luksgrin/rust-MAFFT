@@ -675,9 +675,34 @@ pub fn align_with_anchors_outgap(
         let tail_gap = if i == count - 2 { outgap } else { true };
 
         if q1 > p1 || q2 > p2 {
-            let sub1 = prof1.sub_profile(p1, q1);
-            let sub2 = prof2.sub_profile(p2, q2);
-            Some(profile_align(&sub1, &sub2, matrix, gap, head_gap, tail_gap))
+            let mut sub1 = prof1.sub_profile(p1, q1);
+            let mut sub2 = prof2.sub_profile(p2, q2);
+            // `new_FinalGapCount` (`mltaln9.c:12758`) walks the cut copy up
+            // to its NUL terminator, so a gap in the last column always
+            // counts as closing, whatever `egap` holds: the closing count of
+            // that column is its whole gap weight, not the full profile's
+            // gap-then-residue count.
+            if q1 > p1 && q1 < prof1.length {
+                sub1.fgcp[q1 - p1 - 1] = prof1.gap_freq[q1 - 1];
+            }
+            if q2 > p2 && q2 < prof2.length {
+                sub2.fgcp[q2 - p2 - 1] = prof2.gap_freq[q2 - 1];
+            }
+            // `Falign.c:1562-1578`: `sgap` is the column before the cut and
+            // `egap` is the column at the cut (the first column of the next
+            // segment). `outgapcount` then flips those to nongap fractions.
+            // A cut at 0 or at the profile length uses the sentinel `'o'`,
+            // whose nongap fraction is 1.0.
+            let boundary = BoundaryFreqs {
+                head1: if p1 > 0 { prof1.nongap_freq[p1 - 1] } else { 1.0 },
+                head2: if p2 > 0 { prof2.nongap_freq[p2 - 1] } else { 1.0 },
+                tail1: if q1 < prof1.length { prof1.nongap_freq[q1] } else { 1.0 },
+                tail2: if q2 < prof2.length { prof2.nongap_freq[q2] } else { 1.0 },
+            };
+            Some(profile_align_imp_with_boundary(
+                &sub1, &sub2, matrix, gap, head_gap, tail_gap,
+                None, false, boundary,
+            ))
         } else {
             None
         }

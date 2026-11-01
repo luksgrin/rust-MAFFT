@@ -6,9 +6,12 @@
 //! `benchmarks/memsafety_gen.py` (`control_protein.fa`, the `--treein`
 //! files, `empty_record_middle.fa`), from `benchmarks/memsafety_cases/`
 //! (the minimised `addfragments_localpair_*` and `add_sentinel_*`), and
-//! `homopolymer_dna.fa` (300-nt poly-A + 300 random bases, seed 27).
+//! `homopolymer_dna.fa` (300-nt poly-A + 300 random bases, seed 27),
+//! `adjustdirection_lowcomplexity.fa` (`benchmarks/memsafety_gen.py`,
+//! seed 27).
 //! `.expected` files are the stdout of the in-tree C build
-//! (`make -C mafft-upstream/core`, default flags, arm64 / Apple clang).
+//! (`make -C mafft-upstream/core`, the flags of each test, arm64 / Apple
+//! clang).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -164,11 +167,8 @@ fn homopolymer_dna_keeps_every_residue() {
     }
 }
 
-/// Same input, byte-identity with the in-tree C build. mafft-rs places the
-/// gaps inside the poly-A run differently (608 vs 600 columns): the
-/// anchor choice on a homopolymer still diverges.
+/// Same input, byte-identity with the in-tree C build.
 #[test]
-#[ignore = "FFT anchor placement on long homopolymers differs from C (docs/architecture/memory-safety.md)"]
 fn homopolymer_dna_matches_c() {
     let mut out = Vec::new();
     mafft_rs::run_from(argv(&[], &memsafety("homopolymer_dna.fa")), &mut out).unwrap();
@@ -248,4 +248,22 @@ fn qinsi_bpp_failure_returns_error() {
     .expect_err("RNA base-pair failure must return Err");
     assert_eq!(err.code(), 1, "{}", err.message());
     assert!(err.message().contains("mxscarnamod"), "{}", err.message());
+}
+
+/// Five low-complexity DNA sequences (poly-A, random, CA repeats; one
+/// reverse complement). With `--adjustdirection` the FFT anchors cut the
+/// profiles inside gap runs, and the per-segment DP must see the closing
+/// gap count of each segment's last column as `new_FinalGapCount` computes
+/// it on the cut copy (`mltaln9.c:12758`), plus the nongap fractions of the
+/// columns around the cut (`Falign.c:1562-1578`). Without that, mafft-rs
+/// placed two gap blocks 2 columns away from C (or changed the width).
+#[test]
+fn adjustdirection_lowcomplexity_matches_c() {
+    let input = memsafety("adjustdirection_lowcomplexity.fa");
+    for flag in ["--adjustdirection", "--adjustdirectionaccurately"] {
+        let mut out = Vec::new();
+        mafft_rs::run_from(argv(&[flag, "--nuc"], &input), &mut out).unwrap();
+        let want = std::fs::read(memsafety(&format!("adjustdirection_lowcomplexity.{}.expected", &flag[2..]))).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want), "{flag}");
+    }
 }

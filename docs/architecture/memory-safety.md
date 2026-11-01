@@ -153,7 +153,7 @@ undefined behaviour. Three were silent wrong results.
 | # | input | before | now |
 |---|---|---|---|
 | R1 | an input record with no residues (empty record, gap-only, `*`-only, digits-only; a duplicated header line) | **every sequence printed empty**, exit 0 | byte-identical to C (gap-only row for the empty record) |
-| R2 | DNA with a long homopolymer, e.g. 300 × `A` + 300 nt, FFT-NS-1/2/i or `--memsave` | **residues silently dropped**, exit 0 (11 of 1195 in the fixture; 1254 of 29,476 in the low-complexity set) | every residue kept; gap placement inside the run still differs from C (608 vs 600 columns) |
+| R2 | DNA with a long homopolymer, e.g. 300 × `A` + 300 nt, FFT-NS-1/2/i or `--memsave` | **residues silently dropped**, exit 0 (11 of 1195 in the fixture; 1254 of 29,476 in the low-complexity set) | every residue kept; byte-identical to C under FFT-NS-1/2/i, and the low-complexity set under `--adjustdirection[accurately]`. `--memsave` still differs (C runs `Falign_udpari_long`) |
 | R3 | `--add` / `--addfragments` onto rows of different lengths | panic: index out of bounds, `add.rs` `commongappick` | exit 1 with C's message, `The original N sequences must be aligned` |
 | R4 | `--add` of the last 6 sample sequences onto 30 aligned rows | **`=` characters in the output** (3 rows, 5 each), exit 0 | byte-identical to C (fixed in #49) |
 
@@ -166,10 +166,23 @@ inside the run, which leave anchor segments with one empty side. C's
 (`Salignmm.c:1228-1255`). `Alignment::against_gaps` now does the same. On
 the 600 mutants this turned the 75 duplicated-header inputs from "all
 residues lost" into byte-identical output. Tests:
-`empty_record_matches_c` and `homopolymer_dna_keeps_every_residue`. A third
-test, `homopolymer_dna_matches_c`, is `#[ignore]`d because the remaining
-gap-placement difference is open. The full workspace suite passes with
-the fix (541 passed, 0 failed).
+`empty_record_matches_c` and `homopolymer_dna_keeps_every_residue`.
+
+The gap placement inside the runs then still differed from C. Two
+details of C's per-segment DP in `Falign` were missing. First, `Falign`
+passes the columns around each cut (`sgap`/`egap`, `Falign.c:1562-1578`),
+and `A__align` takes the nongap fractions of those columns as the
+segment's head and tail gap frequencies (`Salignmm.c:1565-1568`);
+`mafft-rs` used 1.0. Second, `new_FinalGapCount` (`mltaln9.c:12758`)
+reads the cut copy up to its NUL terminator, so the closing gap count of
+a segment's last column is that column's whole gap weight, whatever the
+next column holds; `mafft-rs` kept the full profile's count, which leaves
+out rows whose gap run continues past the cut. Both only matter when a
+cut falls next to gaps in a profile, which the poly-A and CA-repeat runs
+cause. With both, `homopolymer_dna_matches_c` passes, and
+`adjustdirection_lowcomplexity_matches_c` checks the low-complexity set
+under `--adjustdirection --nuc` (7893 columns) and
+`--adjustdirectionaccurately --nuc` (7698 columns).
 
 **R3.** C checks the row lengths (`disttbfast.c:4147-4160`,
 `addsingle.c:3217-3228`). `addsingle` exits 1. `disttbfast` jumps to
@@ -260,7 +273,7 @@ robustness or parity gaps.
   garbage-only input.
 - **Byte-identity outside the parity corpora.** Both succeed but the bytes
   differ for: the 3000 × 30 aa set (width 121 vs 129), the 120 kb sequence
-  (a few gap moves), the low-complexity `--adjustdirection` set, and `--treein`
+  (a few gap moves), the low-complexity set under `--memsave`, and `--treein`
   with `nan`/`inf` branch lengths. Of the `sample_add` runs, `--add` and
   `--add --keeplength` have matched since #49. `--add --maxiterate 2`,
   `--add --reorder` and the `--compactmapout` added-sequence names match
