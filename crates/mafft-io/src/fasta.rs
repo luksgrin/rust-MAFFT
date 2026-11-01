@@ -117,8 +117,9 @@ fn trim_ascii_space_tab(line: &[u8]) -> &[u8] {
 /// The file is not text. C's wrapper runs `tr "\r" "\n"`
 /// (`scripts/mafft:1132`) before any engine sees it, so every CR,
 /// including the one in CRLF, becomes LF and a CR-only file splits into
-/// one record per line. A NUL does not end a line. C's `fgets` would
-/// stop and drop the rest of the line; this reader keeps those bytes,
+/// one record per line. A NUL does not end a sequence. C's string
+/// handling stops at it and drops the rest of the record (`io.c:1355-1377`,
+/// `io.c:1751`); this reader keeps those bytes,
 /// which is an improvement. The residue filter then drops a NUL inside
 /// a sequence and keeps what follows (`AC\0DE` stays `ACDE`). A NUL in
 /// a name is kept, with the bytes after it.
@@ -456,8 +457,8 @@ mod tests {
 
     #[test]
     fn nul_does_not_end_the_line() {
-        // Improvement over C: fgets stops at a NUL and drops the rest of
-        // the line. This reader drops a NUL inside a sequence (it is
+        // Improvement over C: C stops at a NUL and drops the rest of the
+        // record. This reader drops a NUL inside a sequence (it is
         // not a letter) and keeps the residues after it, and it keeps a
         // NUL and the following bytes in a name.
         let seq = read_fasta_from_reader(io::Cursor::new(&b">ab\x00cd\nAC\x00DE\n"[..])).unwrap();

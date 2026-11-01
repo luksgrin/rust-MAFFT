@@ -220,13 +220,15 @@ robustness or parity gaps.
 
 !!! note "A zero byte in the file is kept"
 
-    This is an improvement, and it stays. C reads each line with
-    `fgets`, which stops at the first zero byte and silently discards
-    the rest of that line. `AC\0DE` is aligned as `AC`. `mafft-rs`
+    This is an improvement, and it stays. C reads the record into a C
+    string and filters it with `onlyAlpha_*` and `strcpy`
+    (`io.c:1355-1377`, `io.c:1751`), which stop at the first zero byte,
+    so every residue after it in that record is silently discarded,
+    including those on later lines. `AC\0DE` is aligned as `AC`. `mafft-rs`
     drops only the zero byte, because it is not a letter, and aligns
     the residues after it, so the same input is `ACDE`. A zero byte in
     a name is kept, together with the bytes that follow it; C cuts the
-    name off. A normal FASTA file contains no zero byte, so the two
+    name at that byte (`myfgets`, `io.c:1082`). A normal FASTA file contains no zero byte, so the two
     programs still match on real input. Of the mutants whose residues
     differed in the 2026-10-31 sweep, 74 of 76 were this case.
 

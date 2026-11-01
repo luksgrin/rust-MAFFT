@@ -159,8 +159,8 @@ public surfaces stable from 0.1.0 anyway.
   filter does; a sequence name keeps its original bytes (`SeqName`). Every
   `\r` becomes `\n` before records are split, matching the wrapper's
   `tr "\r" "\n"`, so a CR-only file of N sequences yields N sequences. A
-  zero byte does not end the line. C's `fgets` discards the rest of
-  that line (`AC\0DE` becomes `AC`); `mafft-rs` drops only the zero
+  zero byte does not end the sequence. C discards every residue after
+  it in that record, later lines included (`AC\0DE` becomes `AC`); `mafft-rs` drops only the zero
   byte and keeps the residues after it (`ACDE`). That is an
   improvement, and a name keeps the bytes after a zero byte as well.
 - The FFI cross-validation tests did not compile on Linux aarch64: 56
