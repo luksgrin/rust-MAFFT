@@ -174,6 +174,183 @@ fn msalign_recursive_matches_c() {
     assert_eq!(rust_s2, c_s2, "seq2 aligned output differs");
 }
 
+/// Gappy multi-sequence profiles, both longer than `DPTANNI`. This is
+/// the shape of a PartTree merge: several already-aligned rows, internal
+/// gaps, `outgap = 1`. An m-split or a `jmid == lgth2` split used to
+/// drop columns.
+#[test]
+fn msalign_gappy_groups_match_c() {
+    fn row(n: usize, salt: usize, gap_every: usize) -> Vec<u8> {
+        let aa = b"ACDEFGHIKLMNPQRSTVWY";
+        (0..n)
+            .map(|i| {
+                if (i + salt) % gap_every == 0 {
+                    b'-'
+                } else {
+                    aa[(i * salt + 3) % aa.len()]
+                }
+            })
+            .collect()
+    }
+    let g1 = [row(240, 1, 7), row(240, 2, 5)];
+    let g2 = [row(180, 3, 4), row(180, 4, 9), row(180, 6, 11)];
+    let g1_refs: Vec<&[u8]> = g1.iter().map(|s| s.as_slice()).collect();
+    let g2_refs: Vec<&[u8]> = g2.iter().map(|s| s.as_slice()).collect();
+    let (rust1, rust2, c1, c2) = align_groups_via_both(&g1_refs, &g2_refs, true, true);
+    assert_eq!(rust1.len(), c1.len());
+    assert_eq!(rust1[0].len(), c1[0].len(), "width rust={} c={}", rust1[0].len(), c1[0].len());
+    for (i, (r, c)) in rust1.iter().zip(&c1).enumerate() {
+        assert_eq!(r, c, "group1 row {i}");
+    }
+    for (i, (r, c)) in rust2.iter().zip(&c2).enumerate() {
+        assert_eq!(r, c, "group2 row {i}");
+    }
+}
+
+/// The first `--dpparttree` merge on PF00069 n = 250 whose profile
+/// exceeds 10_000 columns (230 rows × 10338, against 3 rows × 1112).
+/// `splittbfast.c:1020` switches that merge, and every later one, to
+/// `MSalignmm`. The rows are the profiles at the switch, not the
+/// finished family alignment.
+#[test]
+fn msalign_pf00069_switch_pair_matches_c() {
+    let g1 = read_fasta_rows("dpparttree_pf00069_n250_switch_g1.fa");
+    let g2 = read_fasta_rows("dpparttree_pf00069_n250_switch_g2.fa");
+    assert_eq!(g1.len(), 230);
+    assert_eq!(g2.len(), 3);
+    assert!(g1.iter().all(|s| s.len() == 10338));
+    assert!(g2.iter().all(|s| s.len() == 1112));
+    let g1_refs: Vec<&[u8]> = g1.iter().map(|s| s.as_slice()).collect();
+    let g2_refs: Vec<&[u8]> = g2.iter().map(|s| s.as_slice()).collect();
+    let (rust1, rust2, c1, c2) = align_groups_via_both(&g1_refs, &g2_refs, true, true);
+    assert!(
+        rust1[0].len() >= 10338 && rust2[0].len() >= 1112,
+        "merge narrower than its inputs: {}",
+        rust1[0].len(),
+    );
+    assert_eq!(rust1[0].len(), c1[0].len(), "width rust={} c={}", rust1[0].len(), c1[0].len());
+    for (i, (r, c)) in rust1.iter().zip(&c1).enumerate() {
+        assert_eq!(r, c, "group1 row {i}");
+    }
+    for (i, (r, c)) in rust2.iter().zip(&c2).enumerate() {
+        assert_eq!(r, c, "group2 row {i}");
+    }
+}
+
+fn read_fasta_rows(name: &str) -> Vec<Vec<u8>> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let text = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let mut rows = Vec::new();
+    let mut cur = Vec::new();
+    let mut in_seq = false;
+    for line in text.split(|&b| b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.first() == Some(&b'>') {
+            if in_seq {
+                rows.push(std::mem::take(&mut cur));
+            }
+            in_seq = true;
+        } else if in_seq {
+            cur.extend_from_slice(line);
+        }
+    }
+    if in_seq {
+        rows.push(cur);
+    }
+    rows
+}
+
+fn align_groups_via_both(
+    g1: &[&[u8]],
+    g2: &[&[u8]],
+    head_gap: bool,
+    tail_gap: bool,
+) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let scoring = build_context(ScoringModel::Blosum(62), SeqType::Protein);
+    let w1 = vec![1.0 / g1.len() as f64; g1.len()];
+    let w2 = vec![1.0 / g2.len() as f64; g2.len()];
+    let prof1 = Profile::from_aligned(g1, &w1, &scoring.amino_map, scoring.nalphabets);
+    let prof2 = Profile::from_aligned(g2, &w2, &scoring.amino_map, scoring.nalphabets);
+    let gap = GapModel::new(scoring.gap.open as f64, scoring.gap.extend as f64);
+    let rust_aln = msalignmm(&prof1, &prof2, &scoring.consweight_matrix, &gap, head_gap, tail_gap);
+    let apply = |group: &[&[u8]], side1: bool| -> Vec<Vec<u8>> {
+        let mut out = vec![Vec::new(); group.len()];
+        let mut cursors = vec![0usize; group.len()];
+        for op in &rust_aln.operations {
+            let consume = if side1 {
+                matches!(op, mafft_align::AlignOp::Match | mafft_align::AlignOp::Delete)
+            } else {
+                matches!(op, mafft_align::AlignOp::Match | mafft_align::AlignOp::Insert)
+            };
+            for (gi, seq) in group.iter().enumerate() {
+                if consume {
+                    out[gi].push(seq[cursors[gi]]);
+                    cursors[gi] += 1;
+                } else {
+                    out[gi].push(b'-');
+                }
+            }
+        }
+        out
+    };
+    let rust1 = apply(g1, true);
+    let rust2 = apply(g2, false);
+
+    let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (c1, c2) = unsafe {
+        init_c_protein_blosum62();
+        let alloclen = (g1[0].len() + g2[0].len() + 1000) as c_int;
+        let bufs_of = |group: &[&[u8]]| -> Vec<Vec<u8>> {
+            group.iter().map(|s| {
+                let mut b = s.to_vec();
+                b.resize(alloclen as usize + 1, 0);
+                b
+            }).collect()
+        };
+        let mut bufs1 = bufs_of(g1);
+        let mut bufs2 = bufs_of(g2);
+        let mut ptrs1: Vec<*mut c_char> = bufs1.iter_mut().map(|b| b.as_mut_ptr() as *mut c_char).collect();
+        let mut ptrs2: Vec<*mut c_char> = bufs2.iter_mut().map(|b| b.as_mut_ptr() as *mut c_char).collect();
+        let mut eff1 = vec![1.0 / g1.len() as f64; g1.len()];
+        let mut eff2 = vec![1.0 / g2.len() as f64; g2.len()];
+        let nalpha_c = scoring.substitution_matrix.len() as c_int;
+        let n_dyn = mafft_sys::AllocateDoubleMtx(nalpha_c, nalpha_c);
+        for i in 0..scoring.substitution_matrix.len() {
+            for j in 0..scoring.substitution_matrix[i].len() {
+                *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
+            }
+        }
+        mafft_sys::MSalignmm(
+            n_dyn,
+            ptrs1.as_mut_ptr(), ptrs2.as_mut_ptr(),
+            eff1.as_mut_ptr(), eff2.as_mut_ptr(),
+            g1.len() as c_int, g2.len() as c_int,
+            alloclen,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), 0, std::ptr::null_mut(),
+            head_gap as c_int, tail_gap as c_int,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            1.0, 1.0,
+        );
+        let width = {
+            let mut k = 0;
+            while *ptrs1[0].add(k) != 0 { k += 1; }
+            k
+        };
+        let read = |ptrs: &[*mut c_char]| -> Vec<Vec<u8>> {
+            ptrs.iter().map(|p| (0..width).map(|k| *p.add(k) as u8).collect()).collect()
+        };
+        let c1 = read(&ptrs1);
+        let c2 = read(&ptrs2);
+        mafft_sys::freeconstants();
+        (c1, c2)
+    };
+    (rust1, rust2, c1, c2)
+}
+
 /// Smaller input that hits the base case in both implementations.
 /// Should be trivially identical because both delegate to the same
 /// DP recurrence.

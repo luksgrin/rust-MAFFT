@@ -2807,6 +2807,69 @@ fn dpparttree_respreg50_byte_identical_to_c() {
     assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.dpparttree", "--dpparttree");
 }
 
+/// PF00069 and PF00400 at n = 250 grow past 10_000 columns, so the last
+/// merges go through `MSalignmm`. The pair at the switch is
+/// `msalign_pf00069_switch_pair_matches_c`. This run is the whole family.
+///
+/// ```text
+/// MAFFT_BINARIES=$PWD/mafft-upstream/binaries nice -n 19 mafft-upstream/scripts/mafft --dpparttree --thread 1 --quiet target/scaling_corpus/PF00069/n250.fa
+/// MAFFT_BINARIES=$PWD/mafft-upstream/binaries nice -n 19 mafft-upstream/scripts/mafft --dpparttree --thread 1 --quiet target/scaling_corpus/PF00400/n250.fa
+/// ```
+#[test]
+#[ignore = "PF00069 and PF00400 n=250 --dpparttree vs in-tree C (minutes). MAFFT_BINARIES=$PWD/mafft-upstream/binaries nice -n 19 mafft-upstream/scripts/mafft --dpparttree --thread 1 --quiet target/scaling_corpus/PF00069/n250.fa"]
+fn dpparttree_pfam_n250_over_10000_matches_c() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let binaries = root.join("mafft-upstream/binaries");
+    let script = root.join("mafft-upstream/scripts/mafft");
+    let corpus = std::env::var_os("MAFFT_SCALING_CORPUS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target/scaling_corpus"));
+    for family in ["PF00069", "PF00400"] {
+        let fasta = corpus.join(family).join("n250.fa");
+        let input = read_fasta(&fasta).unwrap_or_else(|e| panic!("read {}: {e}", fasta.display()));
+        let msa = MafftEngine::new(AlignmentMode::FftNs2).with_dpparttree(true).align(&input);
+        let c_out = std::process::Command::new(&script)
+            .arg("--dpparttree")
+            .arg("--thread")
+            .arg("1")
+            .arg("--quiet")
+            .arg(&fasta)
+            .env("MAFFT_BINARIES", &binaries)
+            .output()
+            .unwrap_or_else(|e| panic!("run C mafft: {e}"));
+        assert!(c_out.status.success(), "C mafft failed: {}", String::from_utf8_lossy(&c_out.stderr));
+        let c_fa = read_fasta_bytes(&c_out.stdout);
+        assert_eq!(msa.nseq(), c_fa.len(), "{family}: nseq");
+        for i in 0..msa.nseq() {
+            assert_eq!(msa.names[i].as_bytes(), c_fa[i].0.as_slice(), "{family}: name {i}");
+            assert_eq!(msa.sequences[i], c_fa[i].1, "{family}: seq {i}");
+        }
+    }
+}
+
+fn read_fasta_bytes(text: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut rows = Vec::new();
+    let mut name = Vec::new();
+    let mut seq = Vec::new();
+    let mut in_seq = false;
+    for line in text.split(|&b| b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some(rest) = line.strip_prefix(b">") {
+            if in_seq {
+                rows.push((std::mem::take(&mut name), std::mem::take(&mut seq)));
+            }
+            name = rest.to_vec();
+            in_seq = true;
+        } else if in_seq {
+            seq.extend_from_slice(line);
+        }
+    }
+    if in_seq {
+        rows.push((name, seq));
+    }
+    rows
+}
+
 /// Sanity-read the hat2 distance-matrix fixture and verify its
 /// structural invariants. We don't yet emit hat2 ourselves
 /// (`--distout` is TODO gap #4), so this is read-only — but it

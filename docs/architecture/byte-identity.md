@@ -122,16 +122,25 @@ tied distances. Checked against the in-tree C build on the scaling corpus
 |-------|-------|--------|
 | 50 Response_reg proteins cut to 10 % (`tests/fixtures/parttree_respreg50.fa`) | `--parttree`, `--parttree --reorder`, `--parttree --nofft`, `--dpparttree`, `--treeout` | ✓ byte-exact |
 | 10 Pfam families × n = 100 (full-length UniProt) | `--parttree`, `--parttree --reorder`, `--parttree --nofft`, `--dpparttree` | ✓ 40/40 |
-| 10 Pfam families × n = 250 | same four | ✓ 38/40 |
+| 10 Pfam families × n = 250 | same four | ✓ 40/40 |
 | 16S rRNA, n = 100 / 250 | `--parttree --nuc` (± `--reorder`, `--nofft` at n = 100) | ✓ 4/4 |
 
-The two n = 250 residuals are `--dpparttree` on PF00069 and PF00400.
-There the merged profile grows past 10000 columns and C's `pairalign`
-switches to `MSalignmm` for the remaining merges
-(`splittbfast.c:1020-1028`; the last 3 and 13 merges respectively);
-`mafft-rs` keeps `A__align`, so those final merges differ (PF00400: same
-width, different gap placement; PF00069: 4 columns narrower). Every
-earlier merge matches in width.
+`--parttree` and `--dpparttree` both call `splittbfast` `pairalign`.
+That function leaves `use_fft` unset, so merges are `A__align` /
+`G__align11` until a profile is longer than 10000 columns, then
+`MSalignmm` (`splittbfast.c:1020-1028`, `:1060`). The assignment sticks
+for later merges in the same process even when a later profile is
+shorter. `--dpparttree` is one pass (`cycle = 1`); plain `--parttree`
+runs `splittbfast` twice (`retree` 2), and each process starts again at
+`alg = 'A'`. `--nomemsave` suppresses the switch.
+
+On the scaling corpus the only n = 250 alignments that cross the
+threshold are `--dpparttree` on PF00069 and PF00400 (the last 3 and 13
+merges). Both now match the in-tree C build on stdout: PF00069 is 11016
+columns, PF00400 is 10562. The other n = 250 cells stay under 10000
+columns, so they never take `MSalignmm`. The profile pair at the PF00069
+switch (230 × 10338 against 3 × 1112) is
+`tests/fixtures/dpparttree_pf00069_n250_switch_g{1,2}.fa`.
 
 ### BBaliBase 3 parity sweep
 

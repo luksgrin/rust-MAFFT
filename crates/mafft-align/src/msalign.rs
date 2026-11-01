@@ -32,21 +32,13 @@
 //!   * For inputs with a unique optimal alignment, the trace is
 //!     byte-identical to the full DP.
 //!
-//! Known residual (tracked in TODO §B.3):
-//!   * For inputs with SCORE-TIED optimal alignments (multiple traces
-//!     of equal score), the trace selection in the Hirschberg
-//!     forward/backward midpoint may pick a different equally-scored
-//!     trace than C `MSalignmm`. This does not affect the alignment
-//!     score, only which residue columns the gaps land in. Matching
-//!     C MSalignmm's exact tie-break behavior requires per-step
-//!     cross-validation against the C implementation; not yet wired.
-//!
-//! Because of the tie-break residual, this module is currently a
-//! library-level entry point: `--memsave` continues to flow through
-//! the full DP path (which is byte-identical to C MSalignmm for our
-//! test inputs). Use [`msalignmm`] explicitly when you want
-//! linear-space DP — e.g. for sequences > 30000 in length where the
-//! full DP would OOM.
+//! An m-split (`jumpi = jumpbackj[jmid]` above the midpoint) continues
+//! the backward DP down to that row before reading `jumpforwi` /
+//! `jumpforwj`, and a subproblem with a non-positive length on one
+//! side emits the other side as terminal gaps (`MSalignmm_rec` when
+//! `lgth2 <= 0`, and `Atracking` when `lgth1 <= 0`). Stopping at the
+//! midpoint, or skipping that call, returns an alignment narrower
+//! than the input profiles.
 
 use mafft_types::fp::fmadd;
 use crate::dp::{Alignment, AlignOp, GapModel};
@@ -80,6 +72,16 @@ pub fn msalignmm(
         1.0, 1.0,
         &mut ops,
     );
+    debug_assert_eq!(
+        ops.iter().filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete)).count(),
+        n,
+        "msalignmm dropped columns of profile 1",
+    );
+    debug_assert_eq!(
+        ops.iter().filter(|op| matches!(op, AlignOp::Match | AlignOp::Insert)).count(),
+        m,
+        "msalignmm dropped columns of profile 2",
+    );
     Alignment {
         seq1: Vec::new(),
         seq2: Vec::new(),
@@ -109,6 +111,24 @@ fn msalignmm_rec(
     headgapfreq1_g: f64, headgapfreq2_g: f64,
     out_ops: &mut Vec<AlignOp>,
 ) -> f64 {
+    // C `MSalignmm_rec:1099`: `lgth2 <= 0` copies the remaining seq1
+    // columns and fills seq2 with gaps. A non-positive `lgth1` falls
+    // through to `MSalignmm_tanni` / `Atracking`, which emits the
+    // remaining seq2 columns as gaps in seq1 (`ijp[0][j] = -(j+1)`).
+    // Skipping either call drops those columns, so the alignment is
+    // narrower than its inputs.
+    if ist > ien || jst > jen {
+        if ist <= ien {
+            for _ in ist..=ien {
+                out_ops.push(AlignOp::Delete);
+            }
+        } else if jst <= jen {
+            for _ in jst..=jen {
+                out_ops.push(AlignOp::Insert);
+            }
+        }
+        return 0.0;
+    }
     let lgth1 = ien - ist + 1;
     let lgth2 = jen - jst + 1;
 
@@ -205,23 +225,25 @@ fn msalignmm_rec(
     // parent: C `MSalignmm_tanni` derives `headgapfreq1 = gapfreq1f[-1]`
     // from the original profile when `ist > 0` (line 709-712). We
     // mirror that here by passing the previous-column nongap_freq.
+    // Always recurse. A start past the parent's end is the `lgth <= 0`
+    // case above (C still calls `_rec`; the empty side becomes gaps).
+    // Gating on both bounds being in range dropped the other profile's
+    // remaining columns whenever `jmid == lgth2`.
     let bottom_ist = ist + imid;
     let bottom_jst = jst + jmid;
-    if bottom_ist <= ien && bottom_jst <= jen {
-        let head1_for_bot = if bottom_ist > 0 && bottom_ist - 1 < prof1.length {
-            prof1.nongap_freq[bottom_ist - 1]
-        } else { 1.0 };
-        let head2_for_bot = if bottom_jst > 0 && bottom_jst - 1 < prof2.length {
-            prof2.nongap_freq[bottom_jst - 1]
-        } else { 1.0 };
-        value += msalignmm_rec(
-            prof1, prof2, matrix, gap,
-            bottom_ist, ien, bottom_jst, jen,
-            false, tail_gap,
-            head1_for_bot, head2_for_bot,
-            out_ops,
-        );
-    }
+    let head1_for_bot = if bottom_ist > 0 && bottom_ist - 1 < prof1.length {
+        prof1.nongap_freq[bottom_ist - 1]
+    } else { 1.0 };
+    let head2_for_bot = if bottom_jst > 0 && bottom_jst - 1 < prof2.length {
+        prof2.nongap_freq[bottom_jst - 1]
+    } else { 1.0 };
+    value += msalignmm_rec(
+        prof1, prof2, matrix, gap,
+        bottom_ist, ien, bottom_jst, jen,
+        false, tail_gap,
+        head1_for_bot, head2_for_bot,
+        out_ops,
+    );
 
     value
 }
@@ -656,9 +678,19 @@ fn backward_dp(
     }
 
     // Storage for split-point detection.
+    // C initialises `jumpi = 0` (`MSalignmm.c:1263`) and only overwrites
+    // it at `i == imid - 1`. The backward loop then keeps going until
+    // `i == jumpi` (`:1714`), so an m-split (`jumpi = jumpbackj[jmid]`,
+    // which can sit well above the midpoint) records `jumpforwi` /
+    // `jumpforwj` on that later row (`:1597`) and folds those rows into
+    // `firstmp`. Stopping at the midpoint uses the wrong row's pointers
+    // and can place the bottom half past one profile, dropping the
+    // other profile's remaining columns.
     let mut jmid: usize = 0;
-    let mut jumpi: usize = imid.saturating_sub(1);
+    let mut jumpi: usize = 0;
     let mut jumpj: usize = 0;
+    let mut stop_i: i64 = 0;
+    let mut split_ready = false;
     let mut jumpforwi = vec![0i64; lgth2 + 1];
     let mut jumpforwj = vec![0i64; lgth2 + 1];
     let mut firstm: f64 = f64::NEG_INFINITY;
@@ -670,13 +702,6 @@ fn backward_dp(
     let jumpbacki = fwd.jumpbacki;
     let jumpbackj = fwd.jumpbackj;
 
-    // Backward DP rows lgth1-2 .. imid-1 (relative to ist). We break
-    // at i == imid - 1, immediately after the split decision —
-    // matching C's behaviour for w/n-splits. For m-splits C continues
-    // down to i = jumpbackj[jmid] and refreshes jumpforwi/jumpforwj
-    // (C line 1597-1603); we don't yet, so the trace for asymmetric
-    // inputs with m-split-optimal alignments may diverge from C
-    // (TODO §B.3).
     let mut di_signed: i64 = (lgth1 as i64) - 2;
     while di_signed >= 0 {
         let di = di_signed as usize;
@@ -777,9 +802,11 @@ fn backward_dp(
             }
             // `USE_PENALTY_EX = 0`: skip `m[dj] += fpenalty_ex`.
 
-            // jumpforwi/jumpforwj writes at i == imid - 1 (the only
-            // case we currently handle — see TODO §B.3 m-split note).
-            if di == imid.saturating_sub(1) {
+            // C `MSalignmm.c:1597`: record when `i == jumpi || i == imid-1`.
+            // `stop_i` is still the value from before this row (0 until
+            // the midpoint decision, then the m-split row), matching C
+            // where `jumpi` is assigned after the inner j loop.
+            if di as i64 == stop_i || (di as i64) + 1 == imid as i64 {
                 jumpforwi[dj] = ijpi;
                 jumpforwj[dj] = ijpj;
             }
@@ -814,8 +841,10 @@ fn backward_dp(
             if !midm.is_empty() { midm[0] += firstm; }
         }
 
-        // At i == imid - 1, decide jmid + (jumpi, jumpj) and break.
-        if di == imid.saturating_sub(1) {
+        // At i == imid - 1, decide jmid + (jumpi, jumpj). Do not break:
+        // C breaks only when `i == jumpi` (`MSalignmm.c:1714`), which for
+        // an m-split is a later row.
+        if !split_ready && (di as i64) + 1 == imid as i64 {
             let mut maxwm = midw.get(1).copied().unwrap_or(f64::NEG_INFINITY);
             jmid = 0;
             for j in 2..lgth2.saturating_sub(1) {
@@ -835,57 +864,67 @@ fn backward_dp(
             jumpj = jmid.saturating_sub(1);
             let mut wmsel = wmw;
             if jmid > 0 {
-                let nval = midn.get(jmid - 1).copied().unwrap_or(f64::NEG_INFINITY);
+                let nval = midn.get(jmid.saturating_sub(1)).copied().unwrap_or(f64::NEG_INFINITY);
                 if nval > wmsel {
                     jumpi = imid.saturating_sub(1);
-                    jumpj = jumpbacki[jmid] as usize;
+                    let jb = jumpbacki.get(jmid).copied().unwrap_or(0);
+                    jumpj = if jb < 0 { 0 } else { jb as usize };
                     wmsel = nval;
                 }
             }
             let mval = midm.get(jmid).copied().unwrap_or(f64::NEG_INFINITY);
             if mval > wmsel {
-                jumpi = jumpbackj[jmid] as usize;
+                let jb = jumpbackj.get(jmid).copied().unwrap_or(0);
+                jumpi = if jb < 0 { 0 } else { jb as usize };
                 jumpj = jmid.saturating_sub(1);
             }
-            break; // C line 1782: break out of the i loop
+            stop_i = jumpi as i64;
+            split_ready = true;
+        }
+
+        // C lines 1714-1770, on the row `i == jumpi`. `firstmp` above
+        // already includes this row.
+        if split_ready && di as i64 == stop_i {
+            let mut imid_eff = imid;
+            if jmid == 0 {
+                // C: `if( imid < firstmp-1 ) { jumpi = firstmp; imid = firstmp+1; }`
+                if (imid as i64) < firstmp - 1 && firstmp >= 0 {
+                    jumpi = firstmp as usize;
+                    imid_eff = firstmp as usize + 1;
+                }
+                jmid = 1;
+                jumpj = 0;
+            } else if jmid >= lgth2 {
+                jumpi = imid.saturating_sub(1);
+                jmid = lgth2;
+                jumpj = lgth2.saturating_sub(1);
+            } else {
+                // `imid = jumpforwi[jumpj]; jmid = jumpforwj[jumpj]`
+                // from the row we just finished, which is `jumpi` and
+                // not necessarily `imid - 1`.
+                let new_imid = jumpforwi.get(jumpj).copied().unwrap_or(imid as i64);
+                let new_jmid = jumpforwj.get(jumpj).copied().unwrap_or(jmid as i64);
+                if new_imid >= 0 && new_jmid >= 0 {
+                    imid_eff = new_imid as usize;
+                    jmid = new_jmid as usize;
+                }
+                if imid_eff == jumpi {
+                    jumpi = imid_eff.saturating_sub(1);
+                }
+            }
+            return BackwardState {
+                split_point: (jumpi, jumpj, jmid),
+                imid_override: Some(imid_eff),
+            };
         }
 
         di_signed -= 1;
     }
 
-    // Edge cases (C lines 1721-1770): handle jmid==0 / jmid>=lgth2.
-    if jmid == 0 {
-        if (imid as i64) < firstmp - 1 {
-            jumpi = firstmp as usize;
-        }
-        jmid = 1;
-        jumpj = 0;
-    } else if jmid >= lgth2 {
-        jumpi = imid.saturating_sub(1);
-        jmid = lgth2;
-        jumpj = lgth2 - 1;
-    } else {
-        // C line 1767: `imid = jumpforwi[jumpj]; jmid = jumpforwj[jumpj]`.
-        // With the backward DP fixed (`*prept` indexing) the values
-        // captured at `i == imid - 1` are now byte-identical to C's
-        // — verified via `rs_msalignmm_capture_top` FFI cross-validation.
-        let new_imid = jumpforwi.get(jumpj).copied().unwrap_or(imid as i64);
-        let new_jmid = jumpforwj.get(jumpj).copied().unwrap_or(jmid as i64);
-        let mut imid_eff = imid;
-        if new_imid >= 0 && new_jmid >= 0 {
-            imid_eff = new_imid as usize;
-            jmid = new_jmid as usize;
-        }
-        if imid_eff == jumpi {
-            jumpi = imid_eff.saturating_sub(1);
-        }
-        return BackwardState {
-            split_point: (jumpi, jumpj, jmid),
-            imid_override: Some(imid_eff),
-        };
+    BackwardState {
+        split_point: (jumpi, jumpj, jmid),
+        imid_override: Some(imid),
     }
-
-    BackwardState { split_point: (jumpi, jumpj, jmid), imid_override: None }
 }
 
 // Helper functions to compute the effective ogcp/fgcp scaled by
@@ -1139,5 +1178,34 @@ mod tests {
             aln_full.operations.len(), aln_ms.operations.len());
         assert_eq!(aln_full.operations, aln_ms.operations,
             "trace differs for identical 200-nt input");
+    }
+
+    /// Gappy multi-sequence profiles long enough to recurse. The
+    /// Hirschberg split must keep every input column: a `jmid == lgth2`
+    /// or m-split used to return a trace narrower than the longer
+    /// profile.
+    #[test]
+    fn gappy_recursive_profiles_keep_every_column() {
+        let (mtx, map) = simple_setup();
+        let gap = GapModel::new(-1200.0, -60.0);
+        let pattern = |n: usize, salt: usize, gap_every: usize| -> Vec<u8> {
+            (0..n).map(|i| {
+                if gap_every > 0 && (i + salt) % gap_every == 0 { b'-' } else { b"ACGT"[(i * salt + 3) % 4] }
+            }).collect()
+        };
+        for (n1, n2, g1, g2) in [(180, 220, 7, 11), (250, 140, 5, 9), (300, 300, 4, 13)] {
+            let a = pattern(n1, 1, g1);
+            let b = pattern(n1, 2, g1);
+            let c = pattern(n2, 3, g2);
+            let d = pattern(n2, 5, g2);
+            let p1 = Profile::from_aligned(&[a.as_slice(), b.as_slice()], &[0.5, 0.5], &map, 5);
+            let p2 = Profile::from_aligned(&[c.as_slice(), d.as_slice()], &[0.5, 0.5], &map, 5);
+            let aln = msalignmm(&p1, &p2, &mtx, &gap, true, true);
+            let kept1 = aln.operations.iter().filter(|op| matches!(op, AlignOp::Match | AlignOp::Delete)).count();
+            let kept2 = aln.operations.iter().filter(|op| matches!(op, AlignOp::Match | AlignOp::Insert)).count();
+            assert_eq!(kept1, p1.length, "dropped profile-1 columns at {n1}x{n2}");
+            assert_eq!(kept2, p2.length, "dropped profile-2 columns at {n1}x{n2}");
+            assert!(aln.operations.len() >= p1.length.max(p2.length));
+        }
     }
 }
