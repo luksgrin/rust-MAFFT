@@ -22,6 +22,9 @@ This project provides:
 
 ## Install
 
+> [!WARNING]
+> C MAFFT is not bit-reproducible across compilers. Upstream MAFFT 7.526 does not set `-ffp-contract`: Apple clang fuses `a * b + c` into one rounding (the `--bl 50 --retree 2 --maxiterate 0` sentinel is 712 columns) and gcc / MSVC round the multiply and the add separately (738 columns), including on Linux aarch64. A default install matches the C toolchain on that platform — fused on Apple, not fused on Linux and Windows — and the published wheels and release binaries are built the same way. There is no runtime switch. [Details, and how to build the other toolchain.](docs/architecture/byte-identity.md#byte-identity-is-per-platform-build)
+
 ```bash
 pip install pymafft        # Python API + the bundled `mafft-rs` CLI
 cargo install mafft-rs     # the `mafft-rs` CLI only

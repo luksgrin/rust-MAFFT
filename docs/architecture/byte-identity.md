@@ -302,6 +302,49 @@ construction.
 
 ## Byte-identity is per platform build
 
+!!! warning "C MAFFT is not bit-reproducible across compilers"
+
+    This is a property of the original MAFFT, which rust-MAFFT has to
+    deal with. Upstream MAFFT 7.526 does not set `-ffp-contract`. The
+    same C source therefore produces two alignments:
+
+    - Apple clang fuses `a * b + c` into one rounding. The sentinel
+      `--bl 50 --retree 2 --maxiterate 0` on
+      `mafft-upstream/test/sample` is 712 columns.
+    - gcc, in the ISO C mode the upstream Makefile uses (`-std=c99`,
+      so `-ffp-contract=off`), and MSVC, round the multiply and the add
+      separately, including on Linux aarch64 where the CPU has FMA
+      hardware. The same sentinel is 738 columns.
+
+    A single C binary does not flip between the two. Which one you get
+    is fixed by the compiler that built it.
+
+    rust-MAFFT copies that choice when the binary is built, so a default
+    install matches the C toolchain used on that platform: fused on
+    Apple, not fused on Linux and Windows. The published wheels and
+    release binaries are built that way (`*-apple-darwin` fused, Linux
+    and Windows wheels not fused). There is no runtime switch, because
+    the choice would otherwise be tested on every dynamic-programming
+    cell.
+
+    To match the other toolchain, build from source:
+
+    - `cargo build --release -p mafft-rs --features fp-contract-fma`
+      matches an Apple-clang C build on any machine
+    - `cargo build --release -p mafft-rs --features fp-contract-none`
+      matches a gcc or MSVC C build on any machine, including a Mac
+
+    For a from-source Python install, pass the same flag to maturin.
+    The steps in
+    [Install → From source](../getting-started/install.md#from-source)
+    are otherwise unchanged; replace the `maturin develop --release`
+    line with one of:
+
+    ```sh
+    maturin develop --release --features fp-contract-fma    # Apple clang
+    maturin develop --release --features fp-contract-none   # gcc or MSVC
+    ```
+
 C MAFFT 7.526 is not bit-identical across CPU architectures. The
 upstream Makefile compiles with `-O3` and no `-ffp-contract` setting,
 which leaves the floating-point contraction policy to the compiler:

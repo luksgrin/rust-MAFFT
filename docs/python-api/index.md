@@ -284,6 +284,17 @@ for the trade-offs.
 
 ## CLI from Python
 
+!!! warning "C MAFFT is not bit-reproducible across compilers"
+
+    Upstream MAFFT 7.526 does not set `-ffp-contract`. Apple clang
+    fuses `a * b + c` into one rounding (712 columns on the
+    `--bl 50 --retree 2 --maxiterate 0` sentinel); gcc and MSVC round
+    the multiply and the add separately (738 columns), including on
+    Linux aarch64. Published wheels follow the toolchain that built
+    them (`*-apple-darwin` fused, Linux and Windows not fused). There
+    is no runtime switch. Build commands for the other toolchain are
+    on the [Install](../getting-started/install.md) page.
+
 `pip install pymafft` also drops a `mafft-rs` console script on `$PATH`
 (via the wheel-bundled native binary). Two equivalent invocations
 after install:
