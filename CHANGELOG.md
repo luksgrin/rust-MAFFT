@@ -124,6 +124,13 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **`--add --keeplength` keeps the existing alignment's all-gap columns.**
+  C records them before the merge and puts them back after the
+  insertions are deleted (`recordoriginalgaps` /
+  `restoreoriginalgaps`, `disttbfast.c:3909`, `:4862`); `mafft-rs`
+  dropped them, so `sample.first36` split 33 + 3 came out 664 columns
+  wide instead of 717. This also moves the `--mapout` columns, which are
+  counted on the restored rows. `--addfragments -Y` already did this.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the
