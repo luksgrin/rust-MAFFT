@@ -17,6 +17,10 @@ pub struct AddResult {
     pub nearest: usize,
     /// Distance to nearest sequence.
     pub distance: f64,
+    /// `lastmem` of the sister group at the insertion, or `norg - 1` when
+    /// the new sequence is added at the root (`addonetip`'s return value,
+    /// stored in `follows[]` by `addsingle`).
+    pub neighbor: usize,
 }
 
 /// Add a single sequence to an existing tree topology.
@@ -31,6 +35,44 @@ pub fn addonetip(
     topology: &Topology,
     distances_to_new: &[f64],
     sueff: f64,
+) -> AddResult {
+    addonetip_inner(topology, distances_to_new, sueff, None)
+}
+
+/// `addonetip` with `addsingle`'s length gate (`mltaln9.c:14597-14611`).
+///
+/// A fragment is inserted at a node only when its ungapped length is at
+/// most that node's alignment length (`alnleninnode` for an internal
+/// node, ungapped length for a leaf). Otherwise placement walks further
+/// toward the root.
+pub fn addonetip_fragment(
+    topology: &Topology,
+    distances_to_new: &[f64],
+    sueff: f64,
+    nogaplen: &[usize],
+    fragment_len: usize,
+    alnlen_in_node: &[usize],
+) -> AddResult {
+    addonetip_inner(
+        topology,
+        distances_to_new,
+        sueff,
+        Some(LengthGate { nogaplen, fragment_len, alnlen_in_node }),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct LengthGate<'a> {
+    nogaplen: &'a [usize],
+    fragment_len: usize,
+    alnlen_in_node: &'a [usize],
+}
+
+fn addonetip_inner(
+    topology: &Topology,
+    distances_to_new: &[f64],
+    sueff: f64,
+    gate: Option<LengthGate<'_>>,
 ) -> AddResult {
     let norg = topology.nseq;
     let nstep = if norg >= 2 { norg - 1 } else { 0 };
@@ -78,8 +120,20 @@ pub fn addonetip(
         let mem1 = step.right[0];
 
         // Check insertion condition: dep[i].distfromtip * 2 > minscore
-        // AND the new seq hasn't been inserted yet
-        if repnorg.is_none() && distfromtip[i] * 2.0 > minscore {
+        // AND the new seq hasn't been inserted yet. `addsingle` also
+        // requires the fragment to be no longer than the node it would
+        // join (`seqlengthcondition`).
+        let length_ok = match gate {
+            None => true,
+            Some(g) => {
+                let reflen = match leaf2node[nearest] {
+                    Some(node) => g.alnlen_in_node.get(node).copied().unwrap_or(0),
+                    None => g.nogaplen.get(nearest).copied().unwrap_or(0),
+                };
+                g.fragment_len <= reflen
+            }
+        };
+        if repnorg.is_none() && distfromtip[i] * 2.0 > minscore && length_ok {
             let nearestnode = leaf2node[nearest];
 
             // Build the insertion step
@@ -201,12 +255,26 @@ pub fn addonetip(
     }
 
     let mut result_topo = Topology::new(norg + 1);
+    let neighbor = insertion_neighbor(&new_steps, new_idx, norg);
     result_topo.steps = new_steps;
-
     AddResult {
         topology: result_topo,
         nearest: _nearesto,
         distance: minscoreo,
+        neighbor,
+    }
+}
+
+/// C returns `lastmem` of the sister group for an in-tree insertion, and
+/// `norg - 1` when the new sequence is added at the root after the walk.
+fn insertion_neighbor(steps: &[JoinStep], new_idx: usize, norg: usize) -> usize {
+    let singleton = steps.iter().position(|s| {
+        s.right.len() == 1 && s.right[0] == new_idx && s.left.iter().all(|&x| x != new_idx)
+    });
+    match singleton {
+        Some(pos) if pos + 1 == steps.len() => norg.saturating_sub(1),
+        Some(pos) => steps[pos].left.last().copied().unwrap_or(0),
+        None => norg.saturating_sub(1),
     }
 }
 

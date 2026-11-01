@@ -10,9 +10,11 @@ flags, arm64 / Apple clang) for five `--add` variants. Two inputs:
   (`crates/mafft-bin/tests/fixtures/memsafety/add_sentinel_existing.fa`
   plus `add_sentinel_new.fa`, 30 aligned rows + 6 new).
 
-`--addfragments` is the default 6-mer `addsingle` path, not
-`--addfragments --localpair` (C reads off the end of a buffer on some
-inputs of that combination; see `docs/architecture/memory-safety.md`).
+`--addfragments` is the script's default `distance=multi` path
+(`dndpre -M 2`, `pairlocalalign -Y`, `addsingle -d -l 2.7`), not the
+large-input 6-mer fallback and not `--addfragments --localpair` (C
+reads off the end of a buffer on some inputs of that combination; see
+`docs/architecture/memory-safety.md`).
 The added file is the same six full-length sequences used for `--add`.
 
 ```bash

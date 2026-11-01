@@ -220,6 +220,29 @@ pub fn progressive_align_with_mergeoralign_n(
     use_fft: bool,
     n_existing: usize,
 ) -> MultipleAlignment {
+    progressive_align_mergeoralign(
+        sequences, names, topology, mergeoralign, scoring, use_fft, n_existing,
+        b'-', true, None,
+    )
+}
+
+/// `progressive_align_with_mergeoralign_n` with `addsingle`'s new-gap
+/// mark. `--add` writes `-` and clears it (`clear_eq`). `addsingle`'s
+/// one merge writes `=` and leaves it so `makenewgaplist` can see the
+/// columns the DP opened (`addsingle.c:1320`, `treebase` leaves
+/// `eq2dash` commented out).
+pub(crate) fn progressive_align_mergeoralign(
+    sequences: &[Vec<u8>],
+    names: &[String],
+    topology: &Topology,
+    mergeoralign: &[MergeOrAlign],
+    scoring: &ScoringContext,
+    use_fft: bool,
+    n_existing: usize,
+    new_gap_char: u8,
+    clear_eq: bool,
+    constraints: Option<&mafft_types::LocalHomologyTable>,
+) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
         return MultipleAlignment {
@@ -331,11 +354,12 @@ pub fn progressive_align_with_mergeoralign_n(
                     &gap,
                     use_fft,
                     &mut profile_cache,
-                    None,
+                    constraints,
                     false,
                     false,
                     false, // c_compat off in --add path
                     true,  // --add: pass 0 only, cache valid
+                    new_gap_char,
                 );
 
                 let post_merge_width = aligned[existing_grp[0]].len();
@@ -509,8 +533,10 @@ pub fn progressive_align_with_mergeoralign_n(
                 // `rs_profilealignment` is the only writer of '=', into the
                 // existing-side rows; left in place they would be aligned
                 // as residues by later merges and printed.
-                eq2dash_matomete(&mut aligned, existing_grp);
-                eq2dash_matomete(&mut aligned, new_grp);
+                if clear_eq {
+                    eq2dash_matomete(&mut aligned, existing_grp);
+                    eq2dash_matomete(&mut aligned, new_grp);
+                }
 
                 // Mark new-side rows as aligned (existing-side was already).
                 for &i in new_grp {
@@ -539,11 +565,12 @@ pub fn progressive_align_with_mergeoralign_n(
                     &gap,
                     use_fft,
                     &mut profile_cache,
-                    None,
+                    constraints,
                     false,
                     false,
                     false, // c_compat off in --add path
                     true,  // --add: pass 0 only, cache valid
+                    new_gap_char,
                 );
 
                 for &i in step.left.iter().chain(step.right.iter()) {
@@ -565,10 +592,12 @@ pub fn progressive_align_with_mergeoralign_n(
     for seq in &mut aligned {
         seq.resize(max_width, b'-');
     }
-    debug_assert!(
-        aligned.iter().all(|row| !row.contains(&b'=')),
-        "--add left the '=' new-gap marker in the alignment"
-    );
+    if clear_eq {
+        debug_assert!(
+            aligned.iter().all(|row| !row.contains(&b'=')),
+            "--add left the '=' new-gap marker in the alignment"
+        );
+    }
 
     MultipleAlignment {
         sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
@@ -1222,6 +1251,7 @@ pub fn progressive_align_partial(
             &mut profile_cache, None, false, false,
             false, // c_compat off in partial replay (test diagnostics)
             true,  // partial replay mirrors pass 0
+            b'-',
         );
     }
     aligned
@@ -1471,7 +1501,7 @@ pub fn progressive_align_full_c_compat_ex(
                 let score = merge_step_cached(
                     &step.left, &step.right, &mut rows, &weights, step_scoring, &gap, use_fft,
                     &mut local, constraints, penalize_term_gaps, memsave_dp, false,
-                    use_cache,
+                    use_cache, b'-',
                 );
                 (step_idx, score, rows, local)
             };
@@ -1520,6 +1550,7 @@ pub fn progressive_align_full_c_compat_ex(
             &step.left, &step.right, &mut aligned, &weights, step_scoring, &gap, use_fft,
             &mut profile_cache, constraints, penalize_term_gaps, memsave_dp, c_compat,
             use_cache,
+            b'-',
         );
 
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
@@ -1646,6 +1677,7 @@ pub fn merge_two_groups_progressive(
         false,                 // memsave_dp off
         false,                 // c_compat off — dooneiteration always rebuilds cpmx
         false,                 // use_cache off — same reason
+        b'-',
     )
 }
 
@@ -1663,6 +1695,7 @@ fn merge_step_cached(
     memsave_dp: bool,
     c_compat: bool,
     use_cache: bool,
+    new_gap_char: u8,
 ) -> f64 {
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
@@ -1929,11 +1962,11 @@ fn merge_step_cached(
                 for (gi, &idx) in group1.iter().enumerate() {
                     new_seqs_g1[gi].push(if cursor1 < width1 { aligned[idx][cursor1] } else { b'-' });
                 }
-                for gi in 0..group2.len() { new_seqs_g2[gi].push(b'-'); }
+                for gi in 0..group2.len() { new_seqs_g2[gi].push(new_gap_char); }
                 cursor1 += 1;
             }
             AlignOp::Insert => {
-                for gi in 0..group1.len() { new_seqs_g1[gi].push(b'-'); }
+                for gi in 0..group1.len() { new_seqs_g1[gi].push(new_gap_char); }
                 for (gi, &idx) in group2.iter().enumerate() {
                     new_seqs_g2[gi].push(if cursor2 < width2 { aligned[idx][cursor2] } else { b'-' });
                 }

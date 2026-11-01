@@ -246,10 +246,10 @@ parity gaps, and none is undefined behaviour:
   `--add --keeplength` have matched since #49. `--add --maxiterate 2`,
   `--add --reorder` and the `--compactmapout` added-sequence names match
   since #50, on the canonical 30 + 6 fixture and on the #40 reproducer.
-  `--addfragments` and `--addfragments --keeplength` still differ
-  (`residues` is `same`): C runs `addsingle`, and the port still uses the
-  progressive `--add` path. On the 30 + 6 fixture the widths are 871 vs
-  741, and 595 vs 595 with `--keeplength`.
+  `--addfragments` and `--addfragments --keeplength` match as well
+  (`addsingle` on the `distance=multi` branch): widths 871 and 595 on
+  the 30 + 6 fixture. `--addfragments --localpair` is still not a
+  reference (C2 above).
 
 ## Published reports
 
