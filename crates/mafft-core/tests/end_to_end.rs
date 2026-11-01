@@ -43,7 +43,7 @@ fn align_sample_fasta() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     assert_eq!(input.nseq(), 36);
 
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     // All sequences should have the same width
     let width = msa.width();
@@ -81,7 +81,7 @@ fn align_sample_with_refinement() {
 
     // First verify progressive-only works
     let engine_prog = MafftEngine::new(AlignmentMode::FftNs2);
-    let msa_prog = engine_prog.align(&input);
+    let msa_prog = engine_prog.align(&input).expect("align");
     for (i, seq) in msa_prog.sequences.iter().enumerate() {
         let residues = seq.iter().filter(|&&c| c != b'-').count();
         assert_eq!(residues, input.sequences[i].data.len(),
@@ -90,7 +90,7 @@ fn align_sample_with_refinement() {
 
     // Now test with refinement
     let engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 });
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     let width = msa.width();
     assert!(width > 0);
@@ -118,7 +118,7 @@ fn fftns2_byte_identical_to_c() {
     let c_ref = read_fasta(test_data_path("sample.fftns2")).unwrap();
     let input = read_fasta(test_data_path("sample")).unwrap();
 
-    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq(), "different number of sequences");
     assert_eq!(
@@ -157,7 +157,7 @@ fn fftnsi_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
 
     // C test driver uses `--maxiterate 100`; script caps to 16 internally.
-    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 }).align(&input).expect("align");
 
     assert_eq!(
         msa.sequences[0].len(), c_ref.sequences[0].data.len(),
@@ -199,7 +199,7 @@ fn fftnsi_segmented_boundary_byte_identical_to_c() {
     let c_ref = read_fasta(fixture_path("bali3.BB12019.fftnsi.iter5")).unwrap();
     let input = read_fasta(fixture_path("bali3.BB12019.fa")).unwrap();
 
-    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 5 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 5 }).align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq(), "nseq mismatch");
     for i in 0..msa.nseq() {
@@ -223,7 +223,7 @@ fn nofft_per_step_matches_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_nofft(true)
-        .align(&input);
+        .align(&input).expect("align");
 
     let ref_txt = std::fs::read_to_string(fixture_path("sample.nwns2.steps"))
         .expect("missing tests/fixtures/sample.nwns2.steps — see fixtures/README.md");
@@ -288,7 +288,7 @@ fn nofft_byte_identical_to_c() {
 
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_nofft(true)
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq(), "different number of sequences");
 
@@ -339,7 +339,7 @@ fn nofft_op_override_byte_identical_to_c() {
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_nofft(true)
         .with_gap_open(2.5)
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -372,7 +372,7 @@ fn nofft_bl80_byte_identical_to_c() {
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_nofft(true)
         .with_scoring_model(ScoringModel::Blosum(80))
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -404,7 +404,7 @@ fn fftns2_bl45_byte_identical_to_c() {
 
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_scoring_model(ScoringModel::Blosum(45))
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -447,7 +447,7 @@ fn fftns2_bl50_byte_identical_to_c() {
 
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_scoring_model(ScoringModel::Blosum(50))
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -475,7 +475,7 @@ fn fftns2_bl30_byte_identical_to_c() {
 
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_scoring_model(ScoringModel::Blosum(30))
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -508,7 +508,7 @@ fn fftns2_jtt200_byte_identical_to_c() {
 
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_scoring_model(ScoringModel::Jtt(200))
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -545,7 +545,7 @@ fn nofft_tm200_byte_identical_to_c() {
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_nofft(true)
         .with_scoring_model(ScoringModel::Tm(200))
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -575,7 +575,7 @@ fn nofft_tm100_byte_identical_to_c() {
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_nofft(true)
         .with_scoring_model(ScoringModel::Tm(100))
-        .align(&input);
+        .align(&input).expect("align");
 
     for i in 0..msa.nseq() {
         assert_eq!(
@@ -600,7 +600,7 @@ fn fftns2_bl80_byte_identical_to_c() {
 
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_scoring_model(ScoringModel::Blosum(80))
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -633,7 +633,7 @@ fn nofft_ep_override_byte_identical_to_c() {
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_nofft(true)
         .with_gap_offset(0.5)
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -666,7 +666,7 @@ fn rna_nofft_case_insensitive_identical_to_c() {
 
     let msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_nofft(true)
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -715,7 +715,7 @@ fn align_rna_sample() {
     let input = read_fasta(test_data_path("samplerna")).unwrap();
     assert!(input.seq_type.is_nucleotide());
 
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     let width = msa.width();
     assert!(width > 0);
     for seq in &msa.sequences {
@@ -831,9 +831,9 @@ fn diagnostic_fft_vs_nofft() {
     let c_seqs: Vec<Vec<u8>> = c_ref.sequences.iter().map(|s| s.data.clone()).collect();
 
     // FFT-NS-2
-    let msa_fft = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let msa_fft = MafftEngine::new(AlignmentMode::FftNs2).align(&input).expect("align");
     // NW-NS-2 (pure DP, no FFT)
-    let msa_nofft = MafftEngine::new(AlignmentMode::FftNs2).with_nofft(true).align(&input);
+    let msa_nofft = MafftEngine::new(AlignmentMode::FftNs2).with_nofft(true).align(&input).expect("align");
 
     let sp_fft = sum_of_pairs_identity(&msa_fft.sequences);
     let sp_nofft = sum_of_pairs_identity(&msa_nofft.sequences);
@@ -851,8 +851,8 @@ fn diagnostic_fft_vs_nofft() {
 fn diagnostic_retree_widths() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     
-    let msa1 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input);
-    let msa2 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(2).align(&input);
+    let msa1 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input).expect("align");
+    let msa2 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(2).align(&input).expect("align");
     
     eprintln!("retree=1: width={}, SP={:.4}", msa1.width(), sum_of_pairs_identity(&msa1.sequences));
     eprintln!("retree=2: width={}, SP={:.4}", msa2.width(), sum_of_pairs_identity(&msa2.sequences));
@@ -1050,7 +1050,7 @@ fn diagnostic_alignment_diff() {
     let c_ref = read_fasta(test_data_path("sample.fftns2")).unwrap();
     let input = read_fasta(test_data_path("sample")).unwrap();
     let engine = MafftEngine::new(AlignmentMode::FftNs2);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     eprintln!("Rust width: {}, C width: {}", msa.width(), c_ref.sequences[0].data.len());
     
@@ -1111,7 +1111,7 @@ fn diagnostic_gap_pattern() {
     let c_ref = read_fasta(test_data_path("sample.fftns2")).unwrap();
     let input = read_fasta(test_data_path("sample")).unwrap();
     let engine = MafftEngine::new(AlignmentMode::FftNs2);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     // For each sequence, show the gap pattern (positions of first/last residue)
     for i in 0..5.min(msa.nseq()) {
@@ -1133,8 +1133,8 @@ fn diagnostic_gap_pattern() {
     eprintln!("\n--- Retree pass 1 vs pass 2 ---");
     let engine1 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1);
     let engine2 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(2);
-    let msa1 = engine1.align(&input);
-    let msa2 = engine2.align(&input);
+    let msa1 = engine1.align(&input).expect("align");
+    let msa2 = engine2.align(&input).expect("align");
     eprintln!("retree=1: width={} SP={:.4}", msa1.width(), sum_of_pairs_identity(&msa1.sequences));
     eprintln!("retree=2: width={} SP={:.4}", msa2.width(), sum_of_pairs_identity(&msa2.sequences));
 }
@@ -1611,7 +1611,7 @@ fn linsi_maxit0_byte_identical_to_c() {
         .expect("missing tests/fixtures/sample.linsi.maxit0");
     let input = read_fasta(test_data_path("sample")).unwrap();
 
-    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 0 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 0 }).align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -1656,7 +1656,7 @@ fn ginsi_maxit0_byte_identical_to_c() {
         .expect("missing tests/fixtures/sample.ginsi.maxit0");
     let input = read_fasta(test_data_path("sample")).unwrap();
 
-    let msa = MafftEngine::new(AlignmentMode::GInsi { iterations: 0 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::GInsi { iterations: 0 }).align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -1705,7 +1705,7 @@ fn einsi_maxit0_byte_identical_to_c() {
         .expect("missing tests/fixtures/sample.einsi.maxit0");
     let input = read_fasta(test_data_path("sample")).unwrap();
 
-    let msa = MafftEngine::new(AlignmentMode::EInsi { iterations: 0 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::EInsi { iterations: 0 }).align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -1753,7 +1753,7 @@ fn linsi_first9_iter2_byte_identical_to_c() {
         .expect("missing tests/fixtures/sample.first9.linsi.iter2");
     let input = read_fasta(fixture_path("sample.first9.fa")).unwrap();
 
-    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 }).align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -1784,7 +1784,7 @@ fn linsi_first12_iter5_byte_identical_to_c() {
         .expect("missing tests/fixtures/sample.first12.linsi.iter5");
     let input = read_fasta(fixture_path("sample.first12.fa")).unwrap();
 
-    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 5 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 5 }).align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -1910,7 +1910,7 @@ fn assert_insi_byte_identical(input_fixture: &str, c_ref_fixture: &str, mode: Al
     let c_ref = read_fasta(fixture_path(c_ref_fixture))
         .unwrap_or_else(|_| panic!("missing tests/fixtures/{c_ref_fixture}"));
     let input = read_fasta(fixture_path(input_fixture)).unwrap();
-    let msa = MafftEngine::new(mode).align(&input);
+    let msa = MafftEngine::new(mode).align(&input).expect("align");
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
         msa.sequences[0].len(), c_ref.sequences[0].data.len(),
@@ -1987,7 +1987,7 @@ fn assert_linsi_byte_identical(input_fixture: &str, c_ref_fixture: &str, iterati
         .unwrap_or_else(|_| panic!("missing tests/fixtures/{c_ref_fixture}"));
     let input = read_fasta(fixture_path(input_fixture)).unwrap();
 
-    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations }).align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(
@@ -2011,10 +2011,10 @@ fn assert_linsi_byte_identical(input_fixture: &str, c_ref_fixture: &str, iterati
 #[test]
 fn reorder_fftns2_matches_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let default_msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let default_msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input).expect("align");
     let reordered_msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_reorder(true)
-        .align(&input);
+        .align(&input).expect("align");
 
     assert_eq!(default_msa.nseq(), reordered_msa.nseq());
 
@@ -2048,11 +2048,11 @@ fn reorder_parttree_matches_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let default_msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_parttree(true)
-        .align(&input);
+        .align(&input).expect("align");
     let reordered_msa = MafftEngine::new(AlignmentMode::FftNs2)
         .with_parttree(true)
         .with_reorder(true)
-        .align(&input);
+        .align(&input).expect("align");
     assert_eq!(default_msa.nseq(), reordered_msa.nseq());
 
     // C MAFFT 7.526 `mafft --parttree --reorder sample` order (0-indexed),
@@ -2125,7 +2125,7 @@ fn treein_fftns2_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.treein_path = Some(fixture_path("sample.treein.tree"));
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq());
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
@@ -2143,7 +2143,7 @@ fn treein_nwns2_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2).with_nofft(true);
     engine.treein_path = Some(fixture_path("sample.treein.tree"));
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
         "width differs for --treein --nofft");
@@ -2160,7 +2160,7 @@ fn treein_linsi_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 });
     engine.treein_path = Some(fixture_path("sample.treein.tree"));
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
         "width differs for --treein L-INS-i");
@@ -2177,7 +2177,7 @@ fn treein_ginsi_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 1000 });
     engine.treein_path = Some(fixture_path("sample.treein.tree"));
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
         "width differs for --treein G-INS-i");
@@ -2198,7 +2198,7 @@ fn leavegappyregion_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.legacy_gap_cost = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
         "width differs for --leavegappyregion: Rust={} C={}",
@@ -2222,7 +2222,7 @@ fn allowshift_ginsi_byte_identical_to_c() {
     let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 1000 });
     engine.allowshift = true;
     engine.unalign_level = 0.8;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
         "width differs for --allowshift G-INS-i: Rust={} C={}",
@@ -2243,7 +2243,7 @@ fn memsavetree_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.memsavetree = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
         "width differs for --memsavetree: Rust={} C={}",
@@ -2271,7 +2271,7 @@ fn auto_picks_linsi_for_small_sample() {
     // resulting engine config. nseq=36, nlen<3000 → L-INS-i, iter=1000.
     let engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 })
         .with_retree(1);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
         "width differs for --auto (L-INS-i 1000): Rust={} C={}",
@@ -2295,7 +2295,7 @@ fn treein_einsi_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::EInsi { iterations: 1000 });
     engine.treein_path = Some(fixture_path("sample.treein.tree"));
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
 
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
         "width differs for --treein E-INS-i");
@@ -2317,7 +2317,7 @@ fn treein_einsi_byte_identical_to_c() {
 #[test]
 fn treeout_engine_populates_guide_tree() {
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input).expect("align");
     let topo = msa.guide_tree.as_ref()
         .expect("engine should populate guide_tree after align()");
     assert_eq!(topo.nseq, input.nseq());
@@ -2394,7 +2394,7 @@ fn seed_linsi_byte_identical_to_c() {
     );
     let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 });
     engine.seed_homology = Some(seed_table);
-    let msa = engine.align(&combined);
+    let msa = engine.align(&combined).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq(), "nseq mismatch");
     assert_eq!(msa.sequences[0].len(), c_ref.sequences[0].data.len(),
@@ -2418,7 +2418,7 @@ fn seed_ginsi_byte_identical_to_c() {
     );
     let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 2 });
     engine.seed_homology = Some(seed_table);
-    let msa = engine.align(&combined);
+    let msa = engine.align(&combined).expect("align");
 
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
@@ -2438,7 +2438,7 @@ fn seed_einsi_byte_identical_to_c() {
     );
     let mut engine = MafftEngine::new(AlignmentMode::EInsi { iterations: 2 });
     engine.seed_homology = Some(seed_table);
-    let msa = engine.align(&combined);
+    let msa = engine.align(&combined).expect("align");
 
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
@@ -2459,7 +2459,7 @@ fn memsave_fftns2_byte_identical_to_c() {
     let c_ref = read_fasta(fixture_path("sample.memsave.fftns2"))
         .expect("missing fixtures/sample.memsave.fftns2");
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input).expect("align");
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
             "seq {i} differs from C's FFT-NS-2 + --memsave output");
@@ -2472,7 +2472,7 @@ fn memsave_fftnsi_byte_identical_to_c() {
     let c_ref = read_fasta(fixture_path("sample.memsave.fftnsi.iter2"))
         .expect("missing fixtures/sample.memsave.fftnsi.iter2");
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 }).align(&input).expect("align");
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
             "seq {i} differs from C's FFT-NS-i + --memsave output");
@@ -2485,7 +2485,7 @@ fn memsave_fftns2_retree1_byte_identical_to_c() {
     let c_ref = read_fasta(fixture_path("sample.memsave.fftns2.retree1"))
         .expect("missing fixtures/sample.memsave.fftns2.retree1");
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let msa = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input).expect("align");
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
             "seq {i} differs from C's FFT-NS-2 retree-1 + --memsave output");
@@ -2506,7 +2506,7 @@ fn seed_fftnsi_byte_identical_to_c() {
     );
     let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 });
     engine.seed_homology = Some(seed_table);
-    let msa = engine.align(&combined);
+    let msa = engine.align(&combined).expect("align");
 
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
@@ -2537,7 +2537,7 @@ fn seedtable_linsi_byte_identical_to_c() {
         .expect("parse hat3");
     let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 });
     engine.seed_homology = Some(seed_table);
-    let msa = engine.align(&combined);
+    let msa = engine.align(&combined).expect("align");
 
     assert_eq!(msa.nseq(), c_ref.nseq(), "nseq mismatch");
     for i in 0..msa.nseq() {
@@ -2556,7 +2556,7 @@ fn seedtable_ginsi_byte_identical_to_c() {
     let seed_table = mafft_align::parse_hat3_seed(&hat3, combined.nseq()).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 2 });
     engine.seed_homology = Some(seed_table);
-    let msa = engine.align(&combined);
+    let msa = engine.align(&combined).expect("align");
 
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
@@ -2574,7 +2574,7 @@ fn seedtable_einsi_byte_identical_to_c() {
     let seed_table = mafft_align::parse_hat3_seed(&hat3, combined.nseq()).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::EInsi { iterations: 2 });
     engine.seed_homology = Some(seed_table);
-    let msa = engine.align(&combined);
+    let msa = engine.align(&combined).expect("align");
 
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
@@ -2592,7 +2592,7 @@ fn seedtable_fftnsi_byte_identical_to_c() {
     let seed_table = mafft_align::parse_hat3_seed(&hat3, combined.nseq()).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 2 });
     engine.seed_homology = Some(seed_table);
-    let msa = engine.align(&combined);
+    let msa = engine.align(&combined).expect("align");
 
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data,
@@ -2615,7 +2615,7 @@ fn seedtable_fftnsi_byte_identical_to_c() {
 
 fn run_retree_engine(mode: AlignmentMode, retree: usize, sample: &str) -> mafft_core::MultipleAlignment {
     let input = read_fasta(test_data_path(sample)).expect("sample fixture");
-    MafftEngine::new(mode).with_retree(retree).align(&input)
+    MafftEngine::new(mode).with_retree(retree).align(&input).expect("align")
 }
 
 fn assert_byte_equal_to_ref(msa: &mafft_core::MultipleAlignment, c_ref_path: &str, label: &str) {
@@ -2716,7 +2716,7 @@ fn assert_byte_equal_to_upstream_ref(
 #[test]
 fn upstream_sample_gins1_byte_identical() {
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let msa = MafftEngine::new(AlignmentMode::GInsi { iterations: 0 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::GInsi { iterations: 0 }).align(&input).expect("align");
     assert_byte_equal_to_upstream_ref(&msa, "sample.gins1", "upstream G-INS-1");
 }
 
@@ -2726,7 +2726,7 @@ fn upstream_sample_gins1_byte_identical() {
 #[test]
 fn upstream_sample_lins1_byte_identical() {
     let input = read_fasta(test_data_path("sample")).unwrap();
-    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 0 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 0 }).align(&input).expect("align");
     assert_byte_equal_to_upstream_ref(&msa, "sample.lins1", "upstream L-INS-1");
 }
 
@@ -2738,7 +2738,7 @@ fn upstream_sample_parttree_byte_identical() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.parttree = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     assert_byte_equal_to_upstream_ref(&msa, "sample.parttree", "upstream PartTree");
 }
 
@@ -2750,7 +2750,7 @@ fn upstream_sample_dpparttree_byte_identical() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.dpparttree = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     assert_byte_equal_to_upstream_ref(&msa, "sample.dpparttree", "upstream DP-PartTree");
 }
 
@@ -2778,7 +2778,7 @@ fn assert_names_and_seqs_equal_to_ref(msa: &mafft_core::MultipleAlignment, c_ref
 #[test]
 fn parttree_respreg50_byte_identical_to_c() {
     let input = read_fasta(fixture_path("parttree_respreg50.fa")).unwrap();
-    let msa = respreg50_engine().with_parttree(true).align(&input);
+    let msa = respreg50_engine().with_parttree(true).align(&input).expect("align");
     assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.parttree", "--parttree");
 }
 
@@ -2786,7 +2786,7 @@ fn parttree_respreg50_byte_identical_to_c() {
 #[test]
 fn parttree_reorder_respreg50_byte_identical_to_c() {
     let input = read_fasta(fixture_path("parttree_respreg50.fa")).unwrap();
-    let msa = respreg50_engine().with_parttree(true).with_reorder(true).align(&input);
+    let msa = respreg50_engine().with_parttree(true).with_reorder(true).align(&input).expect("align");
     assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.parttree.reorder", "--parttree --reorder");
 }
 
@@ -2795,7 +2795,7 @@ fn parttree_reorder_respreg50_byte_identical_to_c() {
 #[test]
 fn parttree_nofft_respreg50_byte_identical_to_c() {
     let input = read_fasta(fixture_path("parttree_respreg50.fa")).unwrap();
-    let msa = respreg50_engine().with_parttree(true).with_nofft(true).align(&input);
+    let msa = respreg50_engine().with_parttree(true).with_nofft(true).align(&input).expect("align");
     assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.parttree", "--parttree --nofft");
 }
 
@@ -2803,7 +2803,7 @@ fn parttree_nofft_respreg50_byte_identical_to_c() {
 #[test]
 fn dpparttree_respreg50_byte_identical_to_c() {
     let input = read_fasta(fixture_path("parttree_respreg50.fa")).unwrap();
-    let msa = respreg50_engine().with_dpparttree(true).align(&input);
+    let msa = respreg50_engine().with_dpparttree(true).align(&input).expect("align");
     assert_names_and_seqs_equal_to_ref(&msa, "parttree_respreg50.dpparttree", "--dpparttree");
 }
 
@@ -2827,7 +2827,7 @@ fn dpparttree_pfam_n250_over_10000_matches_c() {
     for family in ["PF00069", "PF00400"] {
         let fasta = corpus.join(family).join("n250.fa");
         let input = read_fasta(&fasta).unwrap_or_else(|e| panic!("read {}: {e}", fasta.display()));
-        let msa = MafftEngine::new(AlignmentMode::FftNs2).with_dpparttree(true).align(&input);
+        let msa = MafftEngine::new(AlignmentMode::FftNs2).with_dpparttree(true).align(&input).expect("align");
         let c_out = std::process::Command::new(&script)
             .arg("--dpparttree")
             .arg("--thread")
@@ -2913,7 +2913,7 @@ fn upstream_sample_hat2_parses() {
 #[ignore = "Q-INS-i requires mxscarnamod from mafft-upstream/extensions"]
 fn upstream_samplerna_qinsi_byte_identical() {
     let input = read_fasta(test_data_path("samplerna")).unwrap();
-    let msa = MafftEngine::new(AlignmentMode::QInsi { iterations: 1000 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::QInsi { iterations: 1000 }).align(&input).expect("align");
     assert_byte_equal_to_upstream_ref(&msa, "samplerna.qinsi", "upstream Q-INS-i");
 }
 
@@ -2924,7 +2924,7 @@ fn upstream_samplerna_qinsi_byte_identical() {
 #[ignore = "X-INS-i requires CONTRAfold v2.02+ (Stanford)"]
 fn upstream_samplerna_xinsi_byte_identical() {
     let input = read_fasta(test_data_path("samplerna")).unwrap();
-    let msa = MafftEngine::new(AlignmentMode::XInsi { iterations: 1000 }).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::XInsi { iterations: 1000 }).align(&input).expect("align");
     assert_byte_equal_to_upstream_ref(&msa, "samplerna.xinsi", "upstream X-INS-i");
 }
 
@@ -2953,7 +2953,7 @@ fn fftnsi_exp_0_1_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
     engine.gap_extend = Some(0.1);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     assert_eq!(msa.nseq(), c_ref.nseq(), "FFT-NS-i --exp 0.1: nseq mismatch");
     assert_eq!(
         msa.sequences[0].len(), c_ref.sequences[0].data.len(),
@@ -2980,7 +2980,7 @@ fn skipiterate_large_skips_refinement_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
     engine.skipiterate = Some(1.0);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     // C: mafft --maxiterate 100 --skipiterate 1.0 sample produces
     // width=717 (same as --maxiterate 0).
     assert_eq!(msa.nseq(), 36, "skipiterate: nseq mismatch");
@@ -3002,7 +3002,7 @@ fn linsi_exp_0_1_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 });
     engine.gap_extend = Some(0.1);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     // L-INS-i with --exp 0.1 from C MAFFT 7.526: width 735, nseq 36.
     assert_eq!(msa.nseq(), 36, "L-INS-i --exp 0.1: nseq mismatch");
     assert_eq!(
@@ -3022,7 +3022,7 @@ fn fftns2_exp_0_1_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.gap_extend = Some(0.1);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     // C reference: mafft --exp 0.1 sample produces width=686.
     assert_eq!(msa.nseq(), 36, "FFT-NS-2 --exp 0.1: nseq mismatch");
     assert_eq!(
@@ -3044,7 +3044,7 @@ fn fftns2_exp_4_25_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.gap_extend = Some(4.25);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     // C reference: mafft --exp 4.25 sample = width 517 (byte-identical).
     assert_eq!(msa.nseq(), 36, "FFT-NS-2 --exp 4.25: nseq mismatch");
     assert_eq!(
@@ -3069,7 +3069,7 @@ fn bestfirst_fftnsi_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
     engine.bestfirst = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     assert_eq!(msa.nseq(), 36, "FFT-NS-i --bestfirst: nseq mismatch");
     assert_eq!(
         msa.sequences[0].len(), 713,
@@ -3083,7 +3083,7 @@ fn bestfirst_linsi_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 });
     engine.bestfirst = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     assert_eq!(msa.nseq(), 36, "L-INS-i --bestfirst: nseq mismatch");
     assert_eq!(
         msa.sequences[0].len(), 729,
@@ -3096,7 +3096,7 @@ fn bestfirst_ginsi_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::GInsi { iterations: 1000 });
     engine.bestfirst = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     assert_eq!(msa.nseq(), 36, "G-INS-i --bestfirst: nseq mismatch");
     assert_eq!(
         msa.sequences[0].len(), 734,
@@ -3122,7 +3122,7 @@ fn oneiteration_fftns2_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.oneiteration = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     assert_eq!(msa.nseq(), 36, "FFT-NS-2 --oneiteration: nseq mismatch");
     assert_eq!(
         msa.sequences[0].len(), 713,
@@ -3136,7 +3136,7 @@ fn oneiteration_fftnsi_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
     engine.oneiteration = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     assert_eq!(msa.nseq(), 36, "FFT-NS-i --oneiteration: nseq mismatch");
     assert_eq!(
         msa.sequences[0].len(), 717,
@@ -3152,7 +3152,7 @@ fn oneiteration_linsi_noop_byte_identical_to_c() {
     let input = read_fasta(test_data_path("sample")).unwrap();
     let mut engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 });
     engine.oneiteration = true; // should be ignored for L-INS-i
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     // L-INS-i alone (no --oneiteration) = width 735.
     assert_eq!(msa.nseq(), 36, "L-INS-i --oneiteration: nseq mismatch");
     assert_eq!(
@@ -3183,7 +3183,7 @@ fn nwildcard_dna_no_n_chars_byte_identical_to_c() {
     ).expect("missing dna_adjustdirection_input.fa fixture");
     let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
     engine.nwildcard = true;
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     // C: mafft --preservecase --nwildcard fixture → width 398 / 8 seqs.
     assert_eq!(msa.nseq(), 8, "nwildcard: nseq mismatch");
     assert_eq!(
@@ -3208,7 +3208,7 @@ fn r6_gapped_input_byte_identical_to_c() {
     let input = read_fasta(fixture_path("combined_17_r6.fa"))
         .expect("missing combined_17_r6.fa fixture");
     let engine = MafftEngine::new(AlignmentMode::FftNs2);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     // C MAFFT 7.526: `mafft combined_17_r6.fa` → width 444 / 17 seqs.
     assert_eq!(msa.nseq(), 17);
     assert_eq!(
@@ -3237,7 +3237,7 @@ fn nofft_exp_sweep_byte_identical_to_c() {
         let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
         engine.nofft = true;
         engine.gap_extend = Some(exp);
-        let msa = engine.align(&input);
+        let msa = engine.align(&input).expect("align");
         assert_eq!(
             msa.sequences[0].len(), expected,
             "--nofft --exp {exp}: rust width != C width {expected}",
@@ -3275,7 +3275,7 @@ fn skipiterate_small_f_byte_identical_to_c() {
     ] {
         let mut engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 100 });
         engine.skipiterate = Some(f);
-        let msa = engine.align(&input);
+        let msa = engine.align(&input).expect("align");
         assert_eq!(
             msa.sequences[0].len(), expected,
             "--skipiterate {f}: rust width != C width {expected}",
@@ -3303,7 +3303,7 @@ fn youngestlinkage_small_byte_identical_to_c() {
         ("sample.first15.fa", 423usize),
     ] {
         let input = read_fasta(fixture_path(fixture)).expect(fixture);
-        let msa = engine.align(&input);
+        let msa = engine.align(&input).expect("align");
         assert_eq!(
             msa.sequences[0].len(), expected_width,
             "--youngestlinkage on {fixture}: rust width != C width {expected_width}",
@@ -3470,7 +3470,7 @@ fn nodeout_density_section_byte_identical_to_c() {
     // density values and a couple of node descriptors.
     let input = read_fasta(test_data_path("sample")).unwrap();
     let engine = MafftEngine::new(AlignmentMode::FftNs2); // --maxiterate 0 default
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     let dm = msa.distance_matrix.as_ref().expect("dm should be set");
     let topo = msa.guide_tree.as_ref().expect("guide_tree should be set");
     let nseq = topo.nseq;

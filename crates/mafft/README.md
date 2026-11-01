@@ -26,7 +26,7 @@ use mafft::{MafftEngine, AlignmentMode, read_fasta};
 
 let input = read_fasta("input.fasta").unwrap();
 let engine = MafftEngine::new(AlignmentMode::FftNs2);
-let msa = engine.align(&input);
+let msa = engine.align(&input).unwrap();
 ```
 
 ## Available strategies

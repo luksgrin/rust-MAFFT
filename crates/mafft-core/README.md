@@ -41,7 +41,7 @@ let input = SequenceSet {
     ],
     seq_type: SeqType::Protein,
 };
-let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input).unwrap();
 println!("aligned {} sequences to width {}", msa.sequences.len(), msa.width());
 ```
 

@@ -84,7 +84,7 @@ fn bb20027_pass1_widths_step_by_step() {
     let path = bb20027_fixture();
     let input = mafft_io::read_fasta(&path).expect("read BB20027");
     let engine = mafft_core::MafftEngine::new(mafft_core::AlignmentMode::FftNs2);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     let nsteps_per_pass = msa.sequences.len() - 1; // 28 for BB20027
     eprintln!("step_trace.len() = {}, nsteps_per_pass = {}",
               msa.step_trace.len(), nsteps_per_pass);
@@ -104,7 +104,7 @@ fn bb20027_pass1_weights_match_c() {
     let path = bb20027_fixture();
     let input = mafft_io::read_fasta(&path).expect("read BB20027");
     let engine = mafft_core::MafftEngine::new(mafft_core::AlignmentMode::FftNs2);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     let topo = msa.guide_tree.expect("guide_tree missing");
     eprintln!("BB20027 pass-1 topology: {} seqs, {} steps", topo.nseq, topo.steps.len());
 

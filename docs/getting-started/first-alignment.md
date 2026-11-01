@@ -9,7 +9,7 @@ use mafft::{MafftEngine, AlignmentMode, read_fasta};
 
 fn main() {
     let input = read_fasta("sequences.fasta").unwrap();
-    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input).unwrap();
     for (name, row) in msa.names.iter().zip(msa.sequences.iter()) {
         println!(">{name}");
         println!("{}", std::str::from_utf8(row).unwrap());

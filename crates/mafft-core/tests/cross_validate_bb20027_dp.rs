@@ -74,7 +74,7 @@ fn bb20027_step12_rust_dp_vs_c_aalign_cell_by_cell() {
     }
     let input = mafft_io::read_fasta(path).expect("read BB20027");
     let engine = mafft_core::MafftEngine::new(mafft_core::AlignmentMode::FftNs2);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     let rebuilt_tree = msa.guide_tree.clone().expect("guide_tree missing");
     let step12 = &rebuilt_tree.steps[12];
     let group1 = &step12.left;
@@ -276,7 +276,7 @@ fn bb20027_step13_rust_dp_vs_c_aalign_cell_by_cell() {
 
     // Run engine to get the rebuilt pass-1 tree (msa.guide_tree).
     let engine = mafft_core::MafftEngine::new(mafft_core::AlignmentMode::FftNs2);
-    let msa = engine.align(&input);
+    let msa = engine.align(&input).expect("align");
     let rebuilt_tree = msa.guide_tree.clone().expect("guide_tree missing");
     assert_eq!(rebuilt_tree.steps.len(), 28, "expected 28 merge steps");
 

@@ -162,7 +162,7 @@ fn main() {
         ],
         seq_type: SeqType::Protein,
     };
-    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input).unwrap();
     for (name, row) in msa.names.iter().zip(msa.sequences.iter()) {
         println!(">{name}\n{}", std::str::from_utf8(row).unwrap());
     }
