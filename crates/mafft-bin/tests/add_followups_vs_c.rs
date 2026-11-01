@@ -65,6 +65,34 @@ fn expect(tag: &str, case: &str, flag: &str, extra: &[&str]) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// before copying the originals back (`restoreu.c:183-206`).
+#[test]
+fn add_anysymbol_keeplength_matches_c() {
+    expect("uniprot.add.anysymbol.keeplength", "uniprot", "--add", &["--anysymbol", "--keeplength"]);
+}
+
+/// Same restore on the `addsingle -Y` path.
+#[test]
+fn addfragments_anysymbol_keeplength_matches_c() {
+    expect(
+        "uniprot.addfragments.anysymbol.keeplength",
+        "uniprot",
+        "--addfragments",
+        &["--anysymbol", "--keeplength"],
+    );
+}
+
+/// whole and keeps its `#`.
+#[test]
+fn add_anysymbol_compactmapout_matches_c() {
+    expect(
+        "uniprot.add.anysymbol.compactmapout",
+        "uniprot",
+        "--add",
+        &["--anysymbol", "--compactmapout"],
+    );
+}
+
 /// back after the insertions are deleted (`disttbfast.c:4862`).
 #[test]
 fn add_keeplength_keeps_all_gap_columns() {

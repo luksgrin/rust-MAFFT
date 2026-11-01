@@ -124,13 +124,24 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **`--anysymbol` restore with `--keeplength`, `--mapout` and
+  `--compactmapout`.** C's `restoreu` first blanks the residues
+  `--keeplength` dropped from each added sequence (`_deletelist`,
+  `restoreu.c:183-206`) and only then copies the original characters
+  back; `mafft-rs` copied them in order, so after a dropped insertion
+  every residue of that row was shifted. Under `--compactmapout`,
+  `restoreu` strips the `Nins:…|` prefix only from the rows that lost
+  residues (`insname[i]`, `restoreu.c:270`); `mafft-rs` cut every title
+  at its first `|`, so a UniProt title such as `sp|P3|NAME_3` was not
+  found and its non-standard residues came out as `X`. Covers `--add`
+  and `--addfragments`.
 - **`--addfragments --compactmapout` map coordinates.** `addsingle`
   passes the aligned rows to `reconstructdeletemap_compact`
   (`addsingle.c:3819`), so each `vN` is an alignment column, while
   `disttbfast` / `tbfast` (`--add`) pass the raw sequences and `vN`
   counts kept residues. `mafft-rs` used the `--add` convention for both
-  (e.g. `18v19` where C writes `24v25`). The test now compares the
-  `.map` file as well as stdout.
+  (`18v19` where C writes `30v31` on `sample.first36` split 33 + 3). The
+  test now compares the `.map` file as well as stdout.
 - **`--add --keeplength` keeps the existing alignment's all-gap columns.**
   C records them before the merge and puts them back after the
   insertions are deleted (`recordoriginalgaps` /

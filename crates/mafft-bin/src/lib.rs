@@ -1650,7 +1650,9 @@ fn align_prepared<'a>(
     // / `input` are rebound to shared/exclusive borrows) so this stays a
     // small, reviewable diff rather than a reindent of ~90 unchanged lines.
     let (args_ref, engine_ref, input_ref, originals_ref) = (args, &engine, &mut input, &mut originals);
-    let mut msa = in_pool(pool, move || -> Result<mafft_core::MultipleAlignment, MafftError> {
+    // `row_deletelist[r]`: the residues `--keeplength` dropped from row
+    // `r` of the output (C `_deletelist`), for the `--anysymbol` restore.
+    let (mut msa, row_deletelist) = in_pool(pool, move || -> Result<(mafft_core::MultipleAlignment, Option<Vec<Vec<(usize, usize)>>>), MafftError> {
         let (args, engine, input, originals) = (args_ref, engine_ref, input_ref, originals_ref);
         Ok(if let Some(add_path) = add_file {
         check_existing_aligned(input)?;
@@ -1760,11 +1762,44 @@ fn align_prepared<'a>(
                 Ok(_) => {}
                 Err(e) => eprintln!("Warning: could not write {}: {e}", map_path.display()),
             }
-            msa
+            let mut rows = vec![Vec::new(); input.nseq()];
+            rows.extend(deletelist);
+            (msa, Some(rows))
+        } else if keep {
+            let (msa, deletelist) = if fragments {
+                engine.add_fragments_to_alignment_with_deletelist(input, &new_input, true)
+            } else {
+                engine.add_to_alignment_with_deletelist(input, &new_input, true)
+            };
+            // `--reorder` may have permuted the rows. The names are
+            // unchanged on this path, so then match the lists by name.
+            let n_existing = input.nseq();
+            let in_order = msa.names.len() == n_existing + new_input.nseq()
+                && msa.names[n_existing..]
+                    .iter()
+                    .zip(new_input.sequences.iter())
+                    .all(|(a, b)| *a == b.name);
+            let rows: Vec<Vec<(usize, usize)>> = if in_order {
+                let mut rows = vec![Vec::new(); n_existing];
+                rows.extend(deletelist);
+                rows
+            } else {
+                let by_name: std::collections::HashMap<&SeqName, &Vec<(usize, usize)>> = new_input
+                    .sequences
+                    .iter()
+                    .map(|s| &s.name)
+                    .zip(deletelist.iter())
+                    .collect();
+                msa.names
+                    .iter()
+                    .map(|name| by_name.get(name).map(|d| (*d).clone()).unwrap_or_default())
+                    .collect()
+            };
+            (msa, Some(rows))
         } else if fragments {
-            engine.add_fragments_to_alignment(input, &new_input, keep)
+            (engine.add_fragments_to_alignment(input, &new_input, false), None)
         } else {
-            engine.add_to_alignment(input, &new_input, keep)
+            (engine.add_to_alignment(input, &new_input, false), None)
         }
     } else {
         if args.maxambiguous.is_some() && !args.quiet {
@@ -1784,7 +1819,7 @@ fn align_prepared<'a>(
             };
             *input = Cow::Owned(adjust_direction_mode(input, mode));
         }
-        engine.align(input)
+        (engine.align(input), None)
     })
     })?;
     check_output_alphabet(&msa)?;
@@ -1875,11 +1910,17 @@ fn align_prepared<'a>(
     // in the alignment it can only be a protein residue.
     if let Some(orig_map) = originals {
         for i in 0..msa.sequences.len() {
-            // `--compactmapout` has already prefixed the name with
-            // `Nins:…|` (`addfunctions.c:2159`). C's `restoreu` looks up
-            // the original title after that `|` when `mapout == 2`
-            // (`restoreu.c:270-274`).
-            let lookup: &[u8] = if args.compactmapout {
+            let dropped: &[(usize, usize)] = row_deletelist
+                .as_ref()
+                .and_then(|rows| rows.get(i))
+                .map(|d| d.as_slice())
+                .unwrap_or(&[]);
+            // `--compactmapout` has prefixed `Nins:…|` (`addfunctions.c:2159`)
+            // to the rows that lost residues, and only to those. C's
+            // `restoreu` skips past the first `|` only for those rows
+            // (`insname[i]`, `restoreu.c:196,270-274`); any other title is
+            // looked up whole, `|` and all.
+            let lookup: &[u8] = if args.compactmapout && !dropped.is_empty() {
                 msa.names[i]
                     .split_once_byte(b'|')
                     .map(|(_, rest)| rest)
@@ -1888,8 +1929,19 @@ fn align_prepared<'a>(
                 msa.names[i].as_bytes()
             };
             let Some(orig) = orig_map.get(lookup) else { continue };
-            let orig_no_gaps: Vec<u8> = orig.iter().copied()
+            let mut orig_no_gaps: Vec<u8> = orig.iter().copied()
                 .filter(|c| *c != b'-').collect();
+            // `--keeplength`: blank the residues that were dropped as
+            // insertions, then strip again (`restoreu.c:183-206`), so the
+            // remaining originals line up with the kept positions.
+            if !dropped.is_empty() {
+                for &(pos, len) in dropped {
+                    for c in orig_no_gaps.iter_mut().skip(pos).take(len) {
+                        *c = b'-';
+                    }
+                }
+                orig_no_gaps.retain(|c| *c != b'-');
+            }
             let mut k = 0;
             for c in msa.sequences[i].iter_mut() {
                 if *c != b'-' && k < orig_no_gaps.len() {

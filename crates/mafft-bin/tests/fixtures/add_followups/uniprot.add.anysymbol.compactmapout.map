@@ -1,0 +1,13 @@
+# Insertion in added sequence > Position in reference
+>tr|Q1|NEW_1
+1X - 5T > 0v1
+291Q - 326S > 285v286
+352R - 355K > 310v311
+>tr|Q2|NEW_2
+1X - 5T > 0v1
+291Q - 326S > 285v286
+352R - 355K > 310v311
+>tr|Q3|NEW_3
+1X - 4A > 0v1
+288A - 292V > 283v284
+338A - 339V > 328v329
