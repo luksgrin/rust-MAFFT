@@ -12,6 +12,29 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Added
 
+- **Peak-memory and `--thread` benchmarks** (`benchmarks/memory.py`,
+  `benchmarks/threads.py`, `benchmarks/pymafft_threads.py`,
+  `benchmarks/README.md`; issues #24, #26). `memory.py` records the peak
+  RSS of the in-tree C build (the whole `mafft` wrapper pipeline; checked
+  against per-engine shims with `--verify-wrapper`) and `mafft-rs` under
+  FFT-NS-2, FFT-NS-i, L-INS-i and `--parttree` at `--thread 1/4/8`, plus
+  `--memsave`. `threads.py` checks that `mafft-rs` output is byte-identical
+  at every thread count and times both sides at `--thread 1/2/4/8/10`;
+  `pymafft_threads.py` does the same for `pymafft.align(threads=N)` and
+  shows two concurrent calls overlapping (GIL released). Results for an
+  Apple M4 on 2026-10-31 / 2026-11-01 in `benchmarks/results/` and in
+  `PROFILING.md` ("Memory footprint", "Multi-threading"), the README
+  "Performance" section and the Python API page ("Multi-threading from
+  Python"). In short: at `--thread 8` `mafft-rs` peaks 2.3–4.8× lower
+  than C on FFT-NS-2, FFT-NS-i and L-INS-i (median over 7 inputs per
+  mode), but single-threaded it uses about twice C's memory on L-INS-i
+  and more on `--parttree`; its output was identical across thread
+  counts in every run (incl. all 76 BAliBASE RV11 sets), while its
+  `--thread 8` speedup is at most 1.5× (C: 1.6–3.8×) because the
+  iterative refinement runs on one thread (#48). `pymafft.align(threads=N)`
+  behaves the same (1.05–1.53× at 8 threads, all 90 results equal to the
+  CLI at `--thread 1`), and two concurrent calls in two Python threads
+  take as long as one (7.53 vs 7.37 s), confirming the GIL is released.
 - **High-throughput workload benchmark** (`benchmarks/htworkload_corpus.py`,
   `benchmarks/htworkload.py`, `benchmarks/htworkload/Snakefile`, issue
   #23). A corpus of 2695 *S. pneumoniae* gene families (30 RefSeq
