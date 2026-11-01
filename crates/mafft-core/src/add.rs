@@ -392,16 +392,20 @@ fn fragment_homology(all: &LocalHomologyTable, norg: usize, iadd: usize) -> Loca
     table
 }
 
-/// `--addfragments`: C `addsingle` (`scripts/mafft` default branch,
-/// `addsingle -Q 100 -W 6 -O -K -I nadd -g -0.01 -F -f -1.53 -h 0.0 -X 0.1`,
-/// plus `-Y` when `--keeplength`).
+/// `--addfragments`: C `addsingle -d` on the script's default
+/// `distance=multi` branch (`scripts/mafft:2623`, after `dndpre -M 2` and
+/// `pairlocalalign -Y`), plus `-Y` when `--keeplength`.
 ///
-/// Each fragment is placed on its own. A 6-mer distance picks a node in
-/// the existing UPGMA tree (`addonetip`, with the ungapped-length gate),
-/// one profile DP aligns the fragment to that sister clade (`treebase`,
-/// new gaps marked `=`), and the independent gap lists are merged
-/// (`makegaplistcompact` / `gaplist2alnx` /
-/// `insertgapsbyotherfragments_compact`). Blocks where more than one
+/// Existing-existing distances are `dndpre -M 2` on the aligned rows;
+/// existing-to-fragment distances and the homology table come from
+/// `pairlocalalign -Y` (`L__align11`) on the gap-stripped sequences. The
+/// existing rows get a UPGMA tree (`$treealg` linkage, `-X 0.1` by
+/// default), and each fragment is placed on it by `addonetip` (with the
+/// ungapped-length gate) using the same linkage. One `A__align` with the
+/// homology table (`-l 2.7`, `constraint = 2`) aligns the fragment to its
+/// sister clade, new gaps marked `=`. The independent gap lists are then
+/// merged (`makegaplistcompact` / `gaplist2alnx` /
+/// `insertgapsbyotherfragments_compact`), and blocks where more than one
 /// fragment opened a column are realigned (`dorealignment_tree`).
 ///
 /// `scoring.gap.extend` must already be the scaled `-g -0.01` value.

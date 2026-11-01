@@ -32,7 +32,7 @@ required.
 - All scoring matrices: BLOSUM 30/45/50/62/80, JTT 100/200, TM 100/200 (FFT + NW + `--retree 1`)
 - Tree variants: `--parttree`, `--dpparttree`, `--memsavetree`, `--youngestlinkage`, `--averagelinkage`, `--minimumlinkage`, `--mixedlinkage`, `--pileup`
 - Iteration strategies: `--bestfirst`, `--simplehillclimbing`, `--skipiterate F` (both large- and small-F branches), `--oneiteration`
-- Add-sequence modes: `--add`, `--add --reorder`, `--add --maxiterate`, `--keeplength`, `--mapout` / `--compactmapout` (the map and the added-sequence names), `--addfragments` and `--addfragments --keeplength` (`addsingle` on the script's `distance=multi` branch)
+- Add-sequence modes: `--add`, `--add --reorder`, `--add --maxiterate`, `--keeplength`, `--mapout` / `--compactmapout` (the map and the added-sequence names), `--addfragments` and `--addfragments --keeplength` (`addsingle` on the script's `distance=multi` branch); `--addfragments` with `--reorder`, `--averagelinkage` / `--minimumlinkage` and `--compactmapout`; `--anysymbol` with `--keeplength`, `--mapout` and `--compactmapout` (`crates/mafft-bin/tests/add_followups_vs_c.rs`)
 - Auxiliary outputs: `--distout`, `--scoreout`, `--nodeout`, `--mapout` / `--compactmapout`, `--treeout`
 - DNA strand auto-detection: `--adjustdirection` (k-mer) and `--adjustdirectionaccurately` (DP)
 - Refinement controls: `--allowshift`, `--unalignlevel`, `--maxambiguous`, `--minimumweight`, `--nwildcard`, `--leavegappyregion` / `--legacygappenalty`
