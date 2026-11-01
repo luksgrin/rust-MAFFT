@@ -251,13 +251,19 @@ robustness or parity gaps.
 - **Header length.** C keeps about the first 250 bytes of a name.
   `mafft-rs` keeps all of it, so long names give different bytes but the
   same alignment.
-- **Validation C does not do, and the reverse.** C accepts a `--treein`
-  that merges the same node twice (exit 0, no diagnostic), which
-  `mafft-rs` rejects. `mafft-rs` accepts a `--seed` with ragged rows or a
-  single sequence, and a `--treein` line longer than C's 999-byte
-  `fgets` buffer, all of which C rejects. C's wrapper also exits 0 with
-  empty stdout for an empty file, a file without a header line and NUL- or
-  garbage-only input.
+- **Validation C does not do, and the reverse.** A `--seed` with ragged
+  rows and a `--seed` with a single sequence are rejected (exit 1), as
+  `multi2hat3s` rejects them: `Not aligned,  =name - =name` when two rows
+  differ in length, and `At least 2 sequences should be input!` /
+  `Only N sequence found.` when the file has fewer than two sequences.
+  A `--treein` that merges the same node twice (`tree_reused_node`) is
+  still rejected. C exits 0 with no diagnostic on that file; keeping the
+  rejection is safer, in the same spirit as keeping residues after a NUL.
+  A `--treein` line longer than C's 999-byte `fgets` buffer
+  (`tree_overlong_line`) is kept whole. C rejects or truncates that line
+  because of the buffer; reading all of it is an improvement. An empty
+  file, a file with no header line, and a file of only NUL bytes match
+  the wrapper: exit 0 and empty stdout.
 - **Byte-identity outside the parity corpora.** Both succeed but the bytes
   differ for: the 3000 × 30 aa set (width 121 vs 129), the 120 kb sequence
   (a few gap moves), and the low-complexity `--adjustdirection` set.

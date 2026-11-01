@@ -142,6 +142,17 @@ public surfaces stable from 0.1.0 anyway.
   index of 0, a negative index, and an out-of-range index are still
   errors. A length of exactly `-1` is C's "branch length is not given"
   sentinel and exits 1, as in C.
+- **`--seed` rejects a ragged alignment and a one-sequence file** (part of
+  #41). `multi2hat3s` exits 1 for both, and `mafft-rs` now does too:
+  `Not aligned,  =name - =name` when two rows differ in length, and
+  `At least 2 sequences should be input!` / `Only 1 sequence found.`
+  when the file has one sequence. A `--treein` that merges the same node
+  twice is still rejected, and a `--treein` line longer than C's 999-byte
+  `fgets` buffer is still read in full. An empty input, a file with no
+  header line, and a file of only NUL bytes exit 0 with empty stdout, as
+  the wrapper does. `run_from_seqs` returns an empty alignment
+  for an empty input instead of an error (pymafft still raises
+  `ValueError` before calling it).
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the

@@ -367,10 +367,23 @@ fn errors_match_run_from() {
 
 #[test]
 fn an_empty_set_is_reported_like_an_empty_file() {
+    // The wrapper exits 0 and writes nothing (`disttbfast.c:3352-3365`).
     let empty = SequenceSet { sequences: Vec::new(), seq_type: SeqType::Dna };
-    let err = run_from_seqs(argv(&[]), &empty, &SilentProgress).unwrap_err();
-    assert_eq!(err.code(), 1);
-    assert_eq!(err.message(), "Error: no sequences found in input");
+    let msa = run_from_seqs(argv(&[]), &empty, &SilentProgress).expect("empty set");
+    assert!(msa.sequences.is_empty());
+    assert!(msa.names.is_empty());
+
+    let dir = std::env::temp_dir().join(format!("mafft-rs-empty-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("empty.fa");
+    std::fs::write(&path, b"").unwrap();
+    let mut args = argv(&[]);
+    args.push(path.as_os_str().to_os_string());
+    let mut out = Vec::new();
+    run_from_with_progress(args, &mut out, &SilentProgress).expect("empty file");
+    assert!(out.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // --- the input-handling corpus: both paths, success and failure alike --

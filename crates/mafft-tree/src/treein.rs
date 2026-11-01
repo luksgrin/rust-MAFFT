@@ -206,6 +206,35 @@ mod tests {
     }
 
     #[test]
+    fn overlong_line_parses_the_full_branch_length() {
+        // `benchmarks/memsafety_gen.py` `tree_overlong_line`: 5000 zeros
+        // between `1 2 ` and `.1`. C's `fgets(gett, 999, fp)` never sees
+        // the `.1`. The whole token is 0.1, the same length as the short form.
+        let short = "\
+1 2 0.1 0.1
+3 4 0.1 0.1
+1 3 0.2 0.2
+5 6 0.1 0.1
+1 5 0.3 0.3
+";
+        let long = format!(
+            "1 2 {}.1 0.1\n3 4 0.1 0.1\n1 3 0.2 0.2\n5 6 0.1 0.1\n1 5 0.3 0.3\n",
+            "0".repeat(5000)
+        );
+        assert!(long.lines().next().unwrap().len() > 999);
+        let topo_short = parse_mafft_tree_str(short, 6).unwrap();
+        let topo_long = parse_mafft_tree_str(&long, 6).unwrap();
+        assert_eq!(topo_long.num_steps(), topo_short.num_steps());
+        for (got, want) in topo_long.steps.iter().zip(&topo_short.steps) {
+            assert_eq!(got.left, want.left);
+            assert_eq!(got.right, want.right);
+            assert!((got.left_length - want.left_length).abs() < 1e-12);
+            assert!((got.right_length - want.right_length).abs() < 1e-12);
+        }
+        assert!((topo_long.steps[0].left_length - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
     fn rejects_already_merged() {
         // Step 1: merge 1+2 (cluster keeps rep 1).
         // Step 2: try to merge 2 again — error.
