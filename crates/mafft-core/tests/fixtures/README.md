@@ -184,3 +184,22 @@ export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
 F=crates/mafft-core/tests/fixtures
 mafft-upstream/scripts/mafft --quiet --add $F/add_sentinel.new1.fa $F/add_sentinel.existing2.fa > $F/add_sentinel.add.aln
 ```
+
+## `many_short_297.*`
+
+Regression input for the 6-mer length correction (`lenfac`,
+`disttbfast.c:3856`): 297 of the 3000 protein sequences of
+`target/memsafety/adversarial/many_short_3000.fa` (`benchmarks/memsafety_gen.py`,
+seed 27), reduced by delta debugging while the old Rust output still
+differed from C. Apple clang fuses `shorter/longer * d + b/(longer + c)`;
+the unfused Rust sum was 1 ULP low for some unequal lengths, which changed
+the guide tree. The reference is the in-tree C build's default FFT-NS-2
+output; an in-tree build with `-ffp-contract=off` produces the same bytes,
+so it carries no `.fma`/`.nofma` suffix.
+
+```bash
+make -C mafft-upstream/core
+export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
+F=crates/mafft-core/tests/fixtures
+LC_ALL=C mafft-upstream/scripts/mafft --quiet $F/many_short_297.fa > $F/many_short_297.fftns2
+```
