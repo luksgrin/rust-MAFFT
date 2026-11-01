@@ -6,7 +6,7 @@
 # decision visible for a given install: it prints, for each of the three
 # alignment engines (`disttbfast`, `dvtditr`, `tbfast`), the number of fused
 # instructions in the disassembly. A non-zero count means the build fuses
-# (mirror it with rust-MAFFT's default on Apple targets, or
+# (mirror it with rust-MAFFT's default on Apple Silicon, or
 # `--features fp-contract-fma`); zero means it does not (mirror it with
 # `--features fp-contract-none`, the default on Linux, including aarch64, and
 # on Windows). See `crates/mafft-types/src/fp.rs`.
@@ -17,7 +17,8 @@
 #        scripts/fma_census.sh mafft-upstream/binaries          # in-tree build
 #
 # macOS: uses `otool -tv` and counts AArch64 `fmadd/fmsub/fnmadd/fnmsub`
-#        (scalar) and `fmla/fmls` (vector) mnemonics.
+#        (scalar) and `fmla/fmls` (vector) mnemonics on arm64, and the
+#        x86-64 `vfmadd*` family on Intel.
 # Linux: uses `objdump -d` and counts x86-64 `vfmadd*/vfmsub*/vfnmadd*/
 #        vfnmsub*` (FMA3, only present with -mfma / -march=native) and, on
 #        aarch64 Linux, the same AArch64 mnemonics as macOS.
@@ -32,8 +33,11 @@ dir=$1
 case "$(uname -s)" in
     Darwin)
         disasm() { otool -tv "$1"; }
-        # Vector forms carry an arrangement suffix (`fmla.2d`, `fmla.d`).
-        pattern='^[[:space:]]*[0-9a-fx]+[[:space:]]+(fmadd|fmsub|fnmadd|fnmsub|fmla|fmls)(\.[0-9a-z]+)?[[:space:]]'
+        case "$(uname -m)" in
+            # Vector forms carry an arrangement suffix (`fmla.2d`, `fmla.d`).
+            arm64|aarch64) pattern='^[[:space:]]*[0-9a-fx]+[[:space:]]+(fmadd|fmsub|fnmadd|fnmsub|fmla|fmls)(\.[0-9a-z]+)?[[:space:]]' ;;
+            *)             pattern='[[:space:]](vfmadd|vfmsub|vfnmadd|vfnmsub)[0-9]*[a-z]*[[:space:]]' ;;
+        esac
         ;;
     Linux)
         disasm() { objdump -d "$1"; }

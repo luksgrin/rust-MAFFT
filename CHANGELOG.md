@@ -153,6 +153,14 @@ public surfaces stable from 0.1.0 anyway.
   the wrapper does. `run_from_seqs` returns an empty alignment
   for an empty input instead of an error (pymafft still raises
   `ValueError` before calling it).
+- **Intel macOS no longer fuses `a*b+c` by default.** The default
+  fused policy was keyed on `target_vendor = "apple"`, so an
+  x86_64-apple-darwin build (and its wheel) called `fma` at every
+  `fmadd` site. Apple clang on Intel does not contract at `-O3 -std=c99`,
+  because the baseline x86-64 target has no FMA instruction, so that
+  build did not match the C build on the same machine. The default is now
+  fused only on aarch64-apple-darwin. `scripts/regen_policy_fixtures.sh`
+  and `scripts/fma_census.sh` check `uname -m` on macOS as well.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the

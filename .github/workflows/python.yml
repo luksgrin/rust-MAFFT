@@ -268,9 +268,9 @@ jobs:
           - x86_64-unknown-linux-gnu
           # x86_64-apple-darwin is built (cross-compiled from arm64 above)
           # but NOT tested here — installing an x86_64 wheel on an arm64
-          # macos-latest runner would need Rosetta + pip --platform overrides;
-          # the wheel itself is the same code as the arm64 build, so we
-          # consider it sufficiently exercised by the aarch64-apple-darwin leg.
+          # macos-latest runner would need Rosetta + pip --platform overrides.
+          # It is not the same arithmetic as the arm64 build: it uses the
+          # unfused policy, like the Linux and Windows wheels tested here.
           - aarch64-apple-darwin
           - x86_64-pc-windows-msvc
         # 3.9/3.12/3.14 on release/dispatch, 3.12 only on push/PR (see

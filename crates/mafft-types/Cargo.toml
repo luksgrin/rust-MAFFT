@@ -15,7 +15,7 @@ readme = "README.md"
 num-complex = "0.4"
 
 # Floating-point contraction policy (see `src/fp.rs`). Mutually exclusive;
-# with neither, `CONTRACTS_FMA` is `cfg!(target_vendor = "apple")`.
+# with neither, `CONTRACTS_FMA` is true only on aarch64-apple-darwin.
 [features]
 fp-contract-fma = []
 fp-contract-none = []

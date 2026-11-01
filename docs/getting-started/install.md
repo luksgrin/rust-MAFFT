@@ -6,12 +6,13 @@ fits your workflow — they all produce byte-identical alignments.
 !!! warning "C MAFFT is not bit-reproducible across compilers"
 
     Upstream MAFFT 7.526 does not set `-ffp-contract`. Apple clang
-    fuses `a * b + c` into one rounding (712 columns on the
+    on Apple Silicon fuses `a * b + c` into one rounding (712 columns on the
     `--bl 50 --retree 2 --maxiterate 0` sentinel). gcc, in the
     Makefile's `-std=c99` mode, and MSVC round the multiply and the
-    add separately (738 columns), including on Linux aarch64. A
-    default install matches that platform's C toolchain: fused on
-    Apple, not fused on Linux and Windows. There is no runtime
+    add separately (738 columns), including on Linux aarch64, and so
+    does Apple clang on Intel macOS. A default install matches that
+    platform's C toolchain: fused on Apple Silicon, not fused on Intel
+    macOS, Linux and Windows. There is no runtime
     switch. The commands to build the other toolchain are under
     [From source](#from-source).
 
@@ -145,8 +146,8 @@ source.
 
 ```sh
 # Platform default, same as `pip install pymafft` and
-# `cargo build --release -p mafft-rs`: fused on Apple, not fused on
-# Linux (x86-64 and aarch64) or Windows.
+# `cargo build --release -p mafft-rs`: fused on Apple Silicon, not fused
+# on Intel macOS, Linux (x86-64 and aarch64) or Windows.
 cargo build --release -p mafft-rs
 pip install pymafft
 
@@ -184,7 +185,7 @@ runtime):
 
 ```sh
 maturin develop --release --features fp-contract-none  # gcc / MSVC, any machine
-maturin develop --release --features fp-contract-fma   # Apple clang, any machine
+maturin develop --release --features fp-contract-fma   # Apple Silicon clang, any machine
 ```
 
 See [Contributing](../contributing/index.md#python-bindings) for the test

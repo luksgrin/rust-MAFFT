@@ -30,7 +30,7 @@ clap = { version = "4", features = ["derive"] }
 rayon = "1"
 
 # Floating-point contraction policy (see `mafft_types::fp`). Mutually
-# exclusive; with neither, the build fuses `a*b+c` on Apple targets
+# exclusive; with neither, the build fuses `a*b+c` on Apple Silicon
 # (mirroring Apple clang) and not elsewhere (mirroring gcc `-std=c99`,
 # including Linux aarch64, and MSVC). Forwarded to every dependency that
 # carries FP arithmetic so `--features fp-contract-none` on any crate
