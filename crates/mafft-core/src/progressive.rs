@@ -1501,7 +1501,7 @@ pub fn progressive_align_full_c_compat_ex(
                 let score = merge_step_cached(
                     &step.left, &step.right, &mut rows, &weights, step_scoring, &gap, use_fft,
                     &mut local, constraints, penalize_term_gaps, memsave_dp, false,
-                    use_cache,
+                    use_cache, b'-',
                 );
                 (step_idx, score, rows, local)
             };
