@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Count fused multiply-add instructions in a C MAFFT build.
 #
-# C MAFFT 7.526 is not bit-reproducible across CPU architectures because the
-# compiler decides whether `a * b + c` is contracted into a single-rounding
-# FMA. This script makes the decision visible for a given install: it prints,
-# for each of the three alignment engines (`disttbfast`, `dvtditr`, `tbfast`),
-# the number of fused instructions in the disassembly. A non-zero count means
-# the build fuses (mirror it with rust-MAFFT's default on aarch64, or
+# C MAFFT 7.526 leaves `-ffp-contract` unset, so the compiler decides whether
+# `a * b + c` is contracted into a single-rounding FMA. This script makes that
+# decision visible for a given install: it prints, for each of the three
+# alignment engines (`disttbfast`, `dvtditr`, `tbfast`), the number of fused
+# instructions in the disassembly. A non-zero count means the build fuses
+# (mirror it with rust-MAFFT's default on Apple targets, or
 # `--features fp-contract-fma`); zero means it does not (mirror it with
-# `--features fp-contract-none`, the default on non-aarch64 targets). See
-# `crates/mafft-types/src/fp.rs`.
+# `--features fp-contract-none`, the default on Linux, including aarch64, and
+# on Windows). See `crates/mafft-types/src/fp.rs`.
 #
 # Usage: scripts/fma_census.sh <dir-with-C-binaries>
 #   e.g. scripts/fma_census.sh ~/.local/libexec/mafft          # manual install

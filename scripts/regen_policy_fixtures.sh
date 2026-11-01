@@ -2,19 +2,19 @@
 # Regenerate or check the policy-sensitive test fixtures against the in-tree
 # C MAFFT build.
 #
-# C MAFFT 7.526 is not bit-reproducible across CPU architectures: the
-# compiler decides whether `a * b + c` is contracted into a single-rounding
-# fused multiply-add (clang on arm64 does, gcc on baseline x86-64 does not),
-# and on some inputs that changes the alignment. Fixtures whose bytes depend
-# on it are committed twice, as `<name>.fma` and `<name>.nofma`
+# C MAFFT 7.526 leaves `-ffp-contract` unset, so the compiler decides whether
+# `a * b + c` is contracted into a single-rounding fused multiply-add.
+# Apple clang does; gcc in the Makefile's `-std=c99` mode does not, including
+# on Linux aarch64. On some inputs that changes the alignment. Fixtures whose
+# bytes depend on it are committed twice, as `<name>.fma` and `<name>.nofma`
 # (see crates/mafft-core/tests/fixtures/README.md).
 #
 # The reference for BOTH variants is the same thing: the pinned
 # `mafft-upstream` source, built in-tree with the upstream Makefile's default
 # flags (`make -C mafft-upstream/core`), on the platform you run on. Which
-# variant that build corresponds to is decided by the host architecture
-# (arm64/aarch64 => .fma, anything else => .nofma). No fixture may be
-# generated from a downloaded binary.
+# variant that build corresponds to follows the default compiler: Darwin
+# (Apple clang) => .fma, anything else (gcc, including Linux aarch64) =>
+# .nofma. No fixture may be generated from a downloaded binary.
 #
 # Usage:
 #   scripts/regen_policy_fixtures.sh <path/to/mafft-upstream/scripts/mafft> check
@@ -27,7 +27,7 @@
 #          generated output (the other variant is left untouched).
 #
 # Environment:
-#   MAFFT_FP_POLICY=fma|nofma  override the policy detected from `uname -m`.
+#   MAFFT_FP_POLICY=fma|nofma  override the policy detected from `uname -s`.
 #   MAFFT_BINARIES             where the wrapper finds its engines; defaults
 #                              to `<wrapper dir>/../binaries` (populated by
 #                              `make -C mafft-upstream/core`).
@@ -76,17 +76,20 @@ if [ -z "${MAFFT_BINARIES:-}" ]; then
     fi
 fi
 
-# Policy: explicit override, else host architecture.
+# Policy: explicit override, else the default in-tree compiler.
+# Apple clang (Darwin) contracts; gcc -std=c99 does not, including on
+# Linux aarch64. `uname -m` stays in the diff labels below.
 arch=$(uname -m)
+os=$(uname -s)
 if [ -n "${MAFFT_FP_POLICY:-}" ]; then
     policy=$MAFFT_FP_POLICY
     policy_source="MAFFT_FP_POLICY"
 else
-    case "$arch" in
-        arm64|aarch64) policy=fma ;;
-        *)             policy=nofma ;;
+    case "$os" in
+        Darwin) policy=fma ;;
+        *)      policy=nofma ;;
     esac
-    policy_source="uname -m = $arch"
+    policy_source="uname -s = $os"
 fi
 case "$policy" in
     fma|nofma) ;;
