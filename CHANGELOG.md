@@ -166,9 +166,10 @@ public surfaces stable from 0.1.0 anyway.
   filter does; a sequence name keeps its original bytes (`SeqName`). Every
   `\r` becomes `\n` before records are split, matching the wrapper's
   `tr "\r" "\n"`, so a CR-only file of N sequences yields N sequences. A
-  NUL still does not end the line: C keeps only the bytes before it, and
-  `mafft-rs` drops the NUL and keeps the rest. That difference is
-  intentional.
+  zero byte does not end the sequence. C discards every residue after
+  it in that record, later lines included (`AC\0DE` becomes `AC`); `mafft-rs` drops only the zero
+  byte and keeps the residues after it (`ACDE`). That is an
+  improvement, and a name keeps the bytes after a zero byte as well.
 - The FFI cross-validation tests did not compile on Linux aarch64: 56
   sites in 15 test files spelled the C `char**` argument (and the `alg`
   global) as `i8`, which is `c_char` on x86-64 Linux and Apple arm64 but
