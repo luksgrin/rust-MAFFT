@@ -245,6 +245,9 @@ pub struct MafftEngine {
     /// For inputs that fit in memory the alignment is the same as
     /// `profile_align`; only memory usage differs.
     pub memsave_dp: bool,
+    /// `--nomemsave` (`splittbfast -N`, `nevermemsave = 1`). Suppresses
+    /// the PartTree switch to `MSalignmm` at 10_000 columns.
+    pub never_memsave: bool,
     /// `--c-compat` opt-in: replicate C MAFFT's `Salignmm.c::A__align`
     /// static-TLS memoization (`reuseprofiles` / `cpmx_calc_add`) so
     /// tied-DP-cell choices match C bit-for-bit at the cost of
@@ -295,6 +298,7 @@ impl Default for MafftEngine {
             legacy_gap_cost: false,
             seed_homology: None,
             memsave_dp: false,
+            never_memsave: false,
             c_compat: false,
         }
     }
@@ -314,7 +318,7 @@ impl MafftEngine {
             kimura_r: None, parttree: false, dpparttree: false,
             groupsize: None, reorder_output: false, treein_path: None,
             memsavetree: false, youngestlinkage: false, legacy_gap_cost: false,
-            seed_homology: None, memsave_dp: false, c_compat: false }
+            seed_homology: None, memsave_dp: false, never_memsave: false, c_compat: false }
     }
 
     /// Enable `--c-compat`: replicate C MAFFT's static-TLS cpmx
@@ -947,9 +951,22 @@ impl MafftEngine {
                 || use_parttree;
             // `splittbfast` only takes the `Falign` path with `-F` / `-G`
             // (`use_fft` defaults to 0, `splittbfast.c:548`), and the
-            // script never passes either (`scripts/mafft:2655,2681`), so
-            // every PartTree merge is `A__align` / `G__align11`.
+            // script never passes either (`mafft.tmpl` parttree call has
+            // no `$param_fft`). So the DP branch is `A__align` /
+            // `G__align11` until a profile exceeds 10_000 columns, and
+            // `MSalignmm` after that (`splittbfast.c:1020`, `:1060`).
+            // The FFT alternative after the switch would be
+            // `Falign_udpari_long` (`:1040`); it is not taken here.
+            // `--parttree` and `--dpparttree` share this `pairalign`.
             let progressive_fft = use_fft && !use_parttree;
+            // `--nomemsave` sets `nevermemsave` (`splittbfast.c:724`),
+            // which suppresses the switch. Each `splittbfast` process
+            // starts at `alg='A'` again, so the flag resets per pass.
+            let memsave_len_limit = if use_parttree && !self.never_memsave {
+                Some(10_000)
+            } else {
+                None
+            };
             // C `splittbfast.c:6` `#define WEIGHT 0` makes `--parttree` use
             // `fastconjuction_noweight` (uniform per-cluster weights) for
             // its internal `pairalign`. We mirror that by passing a
@@ -979,7 +996,7 @@ impl MafftEngine {
                 progress_constraints, penalize_term_gaps,
                 weights_override.as_deref(), self.unalign_level,
                 self.legacy_gap_cost, self.memsave_dp, self.c_compat,
-                false,
+                false, memsave_len_limit,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
             final_progressive_topo = Some(topo.clone());

@@ -361,6 +361,7 @@ pub(crate) fn progressive_align_mergeoralign(
                     false, // c_compat off in --add path
                     true,  // --add: pass 0 only, cache valid
                     new_gap_char,
+                    false,
                 );
 
                 let post_merge_width = aligned[existing_grp[0]].len();
@@ -572,6 +573,7 @@ pub(crate) fn progressive_align_mergeoralign(
                     false, // c_compat off in --add path
                     true,  // --add: pass 0 only, cache valid
                     new_gap_char,
+                    false,
                 );
 
                 for &i in step.left.iter().chain(step.right.iter()) {
@@ -1253,6 +1255,7 @@ pub fn progressive_align_partial(
             false, // c_compat off in partial replay (test diagnostics)
             true,  // partial replay mirrors pass 0
             b'-',
+            false,
         );
     }
     aligned
@@ -1353,7 +1356,7 @@ pub fn progressive_align_full_c_compat(
     progressive_align_full_c_compat_ex(
         sequences, names, topology, scoring, use_fft, shift_penalty,
         constraints, penalize_term_gaps, weights_override, unalign_level,
-        legacy_gap_cost, memsave_dp, c_compat, true,
+        legacy_gap_cost, memsave_dp, c_compat, true, None,
     )
 }
 
@@ -1383,6 +1386,11 @@ pub fn progressive_align_full_c_compat_ex(
     memsave_dp: bool,
     c_compat: bool,
     use_cache: bool,
+    // `splittbfast.c:1020`: once either profile is longer than this,
+    // `alg` sticks at `'M'` for the rest of the call. `None` leaves
+    // the aligner alone (tbfast's own switch is 30_000 and is not
+    // this path). PartTree passes `Some(10_000)`.
+    memsave_len_limit: Option<usize>,
 ) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
@@ -1467,7 +1475,10 @@ pub fn progressive_align_full_c_compat_ex(
     // steps whose children are all done), each into its own result slot,
     // and apply the results in step order. `--c-compat` keeps the serial
     // loop: its cpmx memo is per-thread state carried from merge to merge.
-    let levels = if !c_compat && mafft_align::parallel_enabled() {
+    // The PartTree `alg='M'` switch is also serial: C sets the global
+    // inside `pairalign` and the next merge in `topol` order sees it,
+    // including a shorter sibling that follows a profile past the limit.
+    let levels = if !c_compat && mafft_align::parallel_enabled() && memsave_len_limit.is_none() {
         merge_levels(topology)
     } else {
         None
@@ -1502,7 +1513,7 @@ pub fn progressive_align_full_c_compat_ex(
                 let score = merge_step_cached(
                     &step.left, &step.right, &mut rows, &weights, step_scoring, &gap, use_fft,
                     &mut local, constraints, penalize_term_gaps, memsave_dp, false,
-                    use_cache, b'-',
+                    use_cache, b'-', false,
                 );
                 (step_idx, score, rows, local)
             };
@@ -1541,17 +1552,42 @@ pub fn progressive_align_full_c_compat_ex(
     }
 
     let mut step_trace: Vec<StepTrace> = Vec::with_capacity(topology.steps.len());
+    // `--memsave` starts `splittbfast` with `alg='M'` (`-M`). Otherwise
+    // `alg` stays `'A'` until a profile exceeds `memsave_len_limit`.
+    let mut alg_m = memsave_len_limit.is_some() && memsave_dp;
     for (step_idx, step) in topology.steps.iter().enumerate() {
         let step_scoring: &ScoringContext = if unalign_level > 0.0 {
             &dyn_scoring[step_idx]
         } else {
             scoring
         };
+        if let Some(limit) = memsave_len_limit {
+            let len1 = aligned[step.left[0]].len();
+            let len2 = aligned[step.right[0]].len();
+            // `splittbfast.c:1020`. The assignment sticks for later
+            // merges even when both profiles are shorter again.
+            if !alg_m && (len1 > limit || len2 > limit) {
+                alg_m = true;
+            }
+        }
+        // After the switch, `use_fft` selects the aligner
+        // (`splittbfast.c:1033-1060`): FFT would call
+        // `Falign_udpari_long`, and the DP branch calls `MSalignmm`
+        // even for a 1-vs-1 merge (not `G__align11`). PartTree's
+        // `splittbfast` is not passed `-F`/`-G`, so `use_fft` is false
+        // and every switched merge is `MSalignmm`.
+        debug_assert!(
+            !(alg_m && use_fft),
+            "alg=M with FFT is Falign_udpari_long; PartTree leaves use_fft unset",
+        );
+        let msalign_even_pairs = alg_m && !use_fft;
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, step_scoring, &gap, use_fft,
-            &mut profile_cache, constraints, penalize_term_gaps, memsave_dp, c_compat,
+            &mut profile_cache, constraints, penalize_term_gaps,
+            memsave_dp || msalign_even_pairs, c_compat,
             use_cache,
             b'-',
+            msalign_even_pairs,
         );
 
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
@@ -1679,6 +1715,7 @@ pub fn merge_two_groups_progressive(
         false,                 // c_compat off — dooneiteration always rebuilds cpmx
         false,                 // use_cache off — same reason
         b'-',
+        false,                 // not the splittbfast alg='M' switch
     )
 }
 
@@ -1697,6 +1734,9 @@ fn merge_step_cached(
     c_compat: bool,
     use_cache: bool,
     new_gap_char: u8,
+    // `splittbfast` after `alg='M'`: `MSalignmm` replaces both
+    // `A__align` and the 1-vs-1 `G__align11` branch.
+    msalign_even_pairs: bool,
 ) -> f64 {
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
@@ -1764,7 +1804,14 @@ fn merge_step_cached(
     // C's disttbfast passes `outgap, outgap` for headgp/tailgp in G__align11
     // and A__align. With the -O flag (always set by mafft script), outgap=0,
     // which means no penalty is applied to terminal gaps (TERMGAPFAC=0).
-    let aln = if !use_fft && group1.len() == 1 && group2.len() == 1
+    let aln = if msalign_even_pairs {
+        // Non-FFT arm of `splittbfast.c:1057-1060`. `outgap` is
+        // `penalize_term_gaps` (1 for PartTree; the script omits `-O`).
+        mafft_align::msalignmm(
+            &prof1, &prof2, &scoring.consweight_matrix, gap,
+            penalize_term_gaps, penalize_term_gaps,
+        )
+    } else if !use_fft && group1.len() == 1 && group2.len() == 1
         && constraints.is_none()
     {
         // G__align11 path: flat gap penalty, character-level scoring.

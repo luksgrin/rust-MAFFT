@@ -124,6 +124,20 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **`--dpparttree` matches C after a profile passes 10,000 columns**
+  (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
+  either profile is longer than 10000 columns, and stays there for the
+  rest of that process (`splittbfast.c:1020`). `--parttree` and
+  `--dpparttree` share that call (the script does not pass `-F`/`-G`,
+  so the post-switch aligner is `MSalignmm`, not
+  `Falign_udpari_long`). The Hirschberg port dropped columns when an
+  m-split read the midpoint row instead of continuing to `jumpi`, and
+  when a split with `jmid` at the end of the second profile skipped the
+  half that emits the remaining columns as terminal gaps. A merge is
+  now at least as wide as its inputs. PF00069 n = 250 `--dpparttree`
+  is 11016 columns and byte-identical to the in-tree C build; PF00400
+  n = 250 is 10562 columns and byte-identical as well. `--nomemsave`
+  keeps `A__align` past the threshold.
 - **The default floating-point contraction followed the ISA, not the C compiler**
   (issue #51). C MAFFT 7.526 leaves `-ffp-contract` unset, so the same
   source produces both alignments: Apple clang fuses `a * b + c` into one

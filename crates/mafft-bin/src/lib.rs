@@ -521,11 +521,9 @@ struct Args {
     memsave: bool,
 
     /// Disable the auto-switch to memory-saving DP for long sequences
-    /// (matches C MAFFT `--nomemsave` → `tbfast -N`,
-    /// `scripts/mafft:545-546`). In C this sets `nevermemsave = 1` so
-    /// long-sequence inputs use the full-memory DP. We always use the
-    /// full DP, so the flag is accepted for CLI parity and has no
-    /// runtime effect.
+    /// (matches C MAFFT `--nomemsave` → `splittbfast -N` /
+    /// `tbfast -N`, `scripts/mafft:545-546`). Sets `nevermemsave`, so
+    /// PartTree keeps `A__align` after a profile passes 10_000 columns.
     #[arg(long)]
     nomemsave: bool,
 
@@ -1577,6 +1575,12 @@ fn align_prepared<'a>(
     // — `midw[j] += wm`, not `j+1`).
     if args.memsave {
         engine.memsave_dp = true;
+    }
+    // `--nomemsave` sets `nevermemsave` so PartTree does not switch to
+    // `MSalignmm` once a profile exceeds 10_000 columns
+    // (`splittbfast.c:724`, `:1020`).
+    if args.nomemsave {
+        engine.never_memsave = true;
     }
     if args.c_compat {
         engine.c_compat = true;
