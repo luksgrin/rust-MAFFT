@@ -2,11 +2,14 @@
 //!
 //! Each test compares `mafft-rs` stdout with the C reference in
 //! `fixtures/add_variants/` on two inputs: the canonical 30 + 6 sample
-//! and the issue #40 reproducer (30 aligned rows + 6 new). Tests that
-//! do not match C yet are `#[ignore]`d so the gap stays visible.
+//! and the issue #40 reproducer (30 aligned rows + 6 new). Every
+//! variant here matches the in-tree C build, including default
+//! `--addfragments`.
 //!
-//! `--addfragments` uses the default 6-mer `addsingle` path. The
-//! `--localpair` combination is not pinned: C reads off the end of a
+//! `--addfragments` is the script's `distance=multi` branch
+//! (`dndpre -M 2`, `pairlocalalign -Y`, `addsingle -d -l 2.7`), not the
+//! large-input 6-mer fallback and not `--addfragments --localpair`.
+//! The `--localpair` combination is not pinned: C reads off the end of a
 //! buffer on some of those inputs (`docs/architecture/memory-safety.md`).
 
 use std::ffi::OsString;
@@ -86,9 +89,9 @@ fn add_reorder_matches_c() {
     expect_both("--add", &["--reorder"], "sample.add6.reorder.aln", "sentinel.reorder.aln");
 }
 
-/// C `addsingle` (`scripts/mafft:2671`), not the progressive `--add` path.
+/// C `addsingle -d` after `dndpre -M 2` and `pairlocalalign -Y`
+/// (`scripts/mafft:2628`).
 #[test]
-#[ignore = "--addfragments still follows the progressive --add path; C runs addsingle (addsingle.c, scripts/mafft:2671). #50"]
 fn addfragments_matches_c() {
     expect_both(
         "--addfragments",
@@ -100,7 +103,6 @@ fn addfragments_matches_c() {
 
 /// Same `addsingle` path plus `-Y` (`--keeplength`).
 #[test]
-#[ignore = "--addfragments --keeplength still follows the progressive --add path; C runs addsingle -Y (addsingle.c, scripts/mafft:2671). #50"]
 fn addfragments_keeplength_matches_c() {
     expect_both(
         "--addfragments",
