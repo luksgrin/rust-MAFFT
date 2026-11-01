@@ -76,3 +76,14 @@ fn add_keeplength_keeps_all_gap_columns() {
 fn add_mapout_matches_c() {
     expect("sample33.add.mapout", "sample33", "--add", &["--mapout"]);
 }
+
+/// (`addsingle.c:3819`), so `vN` is an alignment column there.
+#[test]
+fn addfragments_compactmapout_matches_c() {
+    expect(
+        "sample33.addfragments.compactmapout",
+        "sample33",
+        "--addfragments",
+        &["--compactmapout"],
+    );
+}

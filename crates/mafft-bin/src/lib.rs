@@ -1750,7 +1750,7 @@ fn align_prepared<'a>(
                 // C rewrites the added sequences' names in the same pass
                 // (`addfunctions.c:2156-2161`, `MODIFYNAME`).
                 apply_compact_map_names(&mut msa, &deletelist, &new_input, input.nseq());
-                build_compact_map(&deletelist, &new_input, &msa, input.nseq())
+                build_compact_map(&deletelist, &new_input, &msa, input.nseq(), fragments)
             } else {
                 build_full_map(&deletelist, &new_input, &msa, input.nseq())
             };
@@ -2647,11 +2647,18 @@ fn apply_compact_map_names(
 /// `<start_pos><residue> - <end_pos><residue> > <prev>v<next>`.
 /// Sequences with NO insertions are skipped entirely. Port of
 /// `addfunctions.c::reconstructdeletemap_compact` (lines 2047-2167).
+///
+/// `realn_aligned` picks the `realn` C passes. `disttbfast` and `tbfast`
+/// (`--add`) pass the raw added sequences (`disttbfast.c:4871`,
+/// `tbfast.c:3475`), so `p` counts kept residues. `addsingle`
+/// (`--addfragments`) passes the aligned, post-keeplength rows
+/// (`addsingle.c:3819`), so `p` is an alignment column there.
 fn build_compact_map(
     deletelist: &[Vec<(usize, usize)>],
     new_input: &mafft_types::SequenceSet,
-    _msa: &mafft_core::MultipleAlignment,
-    _n_existing: usize,
+    msa: &mafft_core::MultipleAlignment,
+    n_existing: usize,
+    realn_aligned: bool,
 ) -> Vec<u8> {
     use std::fmt::Write as _;
     let mut out = MapText(Vec::new());
@@ -2667,15 +2674,22 @@ fn build_compact_map(
             }
         }
         out.name_line(&new_input.sequences[i].name);
-        // C `addfunctions.c:2074` calls this with `realn = seq+njob-nadd`
-        // — the RAW (gap-free) added sequences, NOT the aligned ones.
-        // The `while (realn[i][p] == '-')` skip is therefore a no-op,
-        // and `p` is effectively a count of kept residues so far.
-        // C compact's `vN` numbers are "between kept residue N and
-        // N+1 of the post-keeplength addbk[i]" — NOT alignment columns.
+        // For `--add`, `realn` is the raw (gap-free) added sequence, so
+        // the `while (realn[i][p] == '-')` skip is a no-op and `vN` is
+        // "between kept residue N and N+1". For `--addfragments` it is
+        // the aligned row and `vN` is an alignment column.
+        let realn: &[u8] = if realn_aligned {
+            &msa.sequences[n_existing + i]
+        } else {
+            &[]
+        };
         let mut p: usize = 0;
         let mut status: i32 = -1; // -1 = none, 0 = kept, 1 = in-run
         for j in 0..len {
+            // C `while( realn[i][p] == '-' ) p++;` (`addfunctions.c:2115`).
+            while p < realn.len() && realn[p] == b'-' {
+                p += 1;
+            }
             let ch = addbk[j];
             if dropped[j] {
                 if status != 1 {
