@@ -432,15 +432,15 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 ### Test suite
 
-**537 Rust tests pass + 7 ignored across 48 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, 2026-09-06):
+**582 Rust tests pass + 9 ignored across 53 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, macOS arm64, 2026-11-01):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust lib tests (`--lib`, all crates)  | 248 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
-| `mafft-core/tests/end_to_end.rs`      | 120 (2 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
-| Rust FFI cross-validation (`cross_validate*.rs`, 15 files) | 82 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
+| Rust lib tests (`--lib`, all crates)  | 261 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
+| `mafft-core/tests/end_to_end.rs`      | 126 (3 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
+| Rust FFI cross-validation (`cross_validate*.rs`, 16 files) | 87 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
 | `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
-| `mafft-bin/tests/` (`input_handling_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`) | 64 (1 ignored) | CLI-level byte-identity: the 22-file input corpus, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), and the `--add` / `--addfragments` variant fixtures. The remaining ignore is the trailing-X `--add` tie |
+| `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`, `memsafety_regressions`, `thread_determinism`) | 81 (2 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
 | `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
 | Python tests                          | 160 | API (32), parity/shape (23), **CLI-option parity against the `mafft-rs` binary** (82), Biopython interop (18), console script (5) |
 
@@ -452,7 +452,7 @@ Regression guards for C parity live in:
 
 Any regression in DP indexing, boundary handling, FFT anchor placement, refinement-tree distance, profile blending, `--add` profilealignment, the input read path or the `--thread` refinement rules fails at least one of them.
 
-7 tests are `#[ignore]`-gated: six deliberate diagnostic / bisection tools (annotated at the call site) and the one documented input-handling residual below.
+9 tests are `#[ignore]`-gated: four FFI diagnostic / bisection tools (annotated at the call site), the Q-INS-i and X-INS-i end-to-end tests (they need external binaries), the minutes-long `--dpparttree` n = 250 check against the in-tree C build, and the two documented residuals below (the trailing-X `--add` tie and the homopolymer FFT case).
 
 ## Known limitations
 
@@ -672,7 +672,7 @@ It needs:
   dependencies already built, longer from a cold build.
 
 ```bash
-# Whole workspace: 48 suites, 537 tests pass, 7 ignored diagnostics
+# Whole workspace: 53 suites, 582 tests pass, 9 ignored
 cargo test --workspace --exclude pymafft --release
 
 # Just unit tests (faster; no FFI or fixture suites, but the first build

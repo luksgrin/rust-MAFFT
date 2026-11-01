@@ -80,7 +80,7 @@ Results are relative to the C build on your platform; see
 ### Workspace suite
 
 ```sh
-# 537 tests + 7 ignored across 48 suites; builds the C reference in-tree
+# 582 tests + 9 ignored across 53 suites; builds the C reference in-tree
 # (mafft-c-bindings/build.rs) on the first run
 cargo test --workspace --exclude pymafft --release
 ```
