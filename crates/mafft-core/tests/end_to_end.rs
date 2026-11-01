@@ -425,17 +425,18 @@ fn fftns2_bl45_byte_identical_to_c() {
 /// The flatter BL50 score landscape (vs BL62/30/45/80) makes this the most
 /// tie-break-sensitive of the BLOSUM fixtures, and it is the one that exposes
 /// the floating-point contraction policy (`mafft_types::fp`): C MAFFT 7.526
-/// itself is not bit-reproducible across architectures here. The arm64 clang
-/// build fuses `a + b * c` into FMA (~1025 `fmadd` per binary) and produces
-/// width 712; the baseline x86-64 gcc build has no FMA and produces width
-/// 738. Closed 2026-05-08 on arm64 by matching clang's fusion in
+/// leaves `-ffp-contract` unset, so the compiler chooses the rounding. Apple
+/// clang fuses `a + b * c` into one rounding (~1025 `fmadd` per binary) and
+/// produces width 712; gcc in the Makefile's `-std=c99` mode does not fuse,
+/// even on aarch64, and produces width 738. Closed 2026-05-08 on arm64 by
+/// matching clang's fusion in
 /// `profile_align_imp_with_boundary` (TODO §4); the x86-64 divergence was
 /// found by @mahogny when the same test failed on x86-64. Both fixture
 /// variants are re-derived from the in-tree C build by CI
 /// (`scripts/regen_policy_fixtures.sh`).
 ///
-/// Reference: `tests/fixtures/sample.bl50.fftns2.fma` (arm64 C, width 712)
-/// or `tests/fixtures/sample.bl50.fftns2.nofma` (x86-64 C, width 738),
+/// Reference: `tests/fixtures/sample.bl50.fftns2.fma` (Apple clang, width 712)
+/// or `tests/fixtures/sample.bl50.fftns2.nofma` (gcc, including Linux aarch64, width 738),
 /// selected by `fixture_path_fp` according to `CONTRACTS_FMA`.
 #[test]
 fn fftns2_bl50_byte_identical_to_c() {
