@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -1106,29 +1106,17 @@ fn read_input(args: &Args) -> Result<SequenceSet, MafftError> {
             match result {
                 Ok(set) => set,
                 // The wrapper exits 0 with empty stdout when the file has
-                // no records (`disttbfast.c:3352-3365`). A NUL stays on the
-                // error path: C stops a line at a NUL, and that stays.
+                // no records (`disttbfast.c:3352-3365`), including a file
+                // of NUL or other bytes with no header line.
                 Err(mafft_io::IoError::EmptyInput) => {
-                    let raw = std::fs::read(path).map_err(|e| {
-                        MafftError::new(1, format!("Error reading {}: {e}", path.display()))
-                    })?;
-                    if raw.contains(&0) {
-                        return Err(read_error(
-                            &path.display().to_string(),
-                            mafft_io::IoError::EmptyInput,
-                        ));
-                    }
                     SequenceSet { sequences: Vec::new(), seq_type: SeqType::Unknown }
                 }
                 Err(e) => return Err(read_error(&path.display().to_string(), e)),
             }
         }
         None => {
-            let mut raw = Vec::new();
-            io::stdin().lock().read_to_end(&mut raw).map_err(|e| {
-                MafftError::new(1, format!("Error reading stdin: {e}"))
-            })?;
-            let reader = BufReader::new(io::Cursor::new(raw.as_slice()));
+            let stdin = io::stdin();
+            let reader = BufReader::new(stdin.lock());
             let result = if anysymbol_read {
                 read_fasta_from_reader_casepreserve(reader)
             } else {
@@ -1136,7 +1124,7 @@ fn read_input(args: &Args) -> Result<SequenceSet, MafftError> {
             };
             match result {
                 Ok(set) => set,
-                Err(mafft_io::IoError::EmptyInput) if !raw.contains(&0) => {
+                Err(mafft_io::IoError::EmptyInput) => {
                     SequenceSet { sequences: Vec::new(), seq_type: SeqType::Unknown }
                 }
                 Err(e) => return Err(read_error("stdin", e)),

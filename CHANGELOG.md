@@ -148,8 +148,11 @@ public surfaces stable from 0.1.0 anyway.
   `At least 2 sequences should be input!` / `Only 1 sequence found.`
   when the file has one sequence. A `--treein` that merges the same node
   twice is still rejected, and a `--treein` line longer than C's 999-byte
-  `fgets` buffer is still read in full. An empty input and a file with no
-  header line exit 0 with empty stdout, as the wrapper does.
+  `fgets` buffer is still read in full. An empty input, a file with no
+  header line, and a file of only NUL bytes exit 0 with empty stdout, as
+  the wrapper does. `run_from_seqs` returns an empty alignment
+  for an empty input instead of an error (pymafft still raises
+  `ValueError` before calling it).
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the

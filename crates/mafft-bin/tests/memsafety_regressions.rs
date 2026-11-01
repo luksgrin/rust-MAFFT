@@ -169,11 +169,10 @@ fn treein_overlong_line_is_kept() {
     assert!(widths.windows(2).all(|p| p[0] == p[1]), "ragged output: {widths:?}");
 }
 
-/// Empty file and a file with no header line. The wrapper exits 0 and
-/// writes nothing (`disttbfast.c:3352-3365`). A file of only NUL bytes
-/// stays an error: C stops a line at NUL, and that difference is unchanged.
+/// Empty file, a file with no header line, and a file of only NUL bytes.
+/// The wrapper exits 0 and writes nothing (`disttbfast.c:3352-3365`).
 #[test]
-fn empty_and_headerless_match_c_nul_file_does_not() {
+fn empty_headerless_and_nul_only_match_c() {
     let dir = std::env::temp_dir().join(format!("mafft-rs-empty-header-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -182,22 +181,11 @@ fn empty_and_headerless_match_c_nul_file_does_not() {
     std::fs::write(&empty, b"").unwrap();
     std::fs::write(&nul, vec![0u8; 64]).unwrap();
 
-    let mut out = Vec::new();
-    mafft_rs::run_from(argv(&[], &empty), &mut out).unwrap();
-    assert!(out.is_empty());
-
-    out.clear();
-    mafft_rs::run_from(argv(&[], &memsafety("no_header.fa")), &mut out).unwrap();
-    assert!(out.is_empty());
-
-    out.clear();
-    match mafft_rs::run_from(argv(&[], &nul), &mut out) {
-        Ok(()) => panic!("NUL-only file was accepted"),
-        Err(e) => {
-            assert_eq!(e.code(), 1, "{}", e.message());
-            assert!(e.message().contains("no sequences found in input"), "{}", e.message());
-            assert!(out.is_empty());
-        }
+    for path in [empty, memsafety("no_header.fa"), nul] {
+        let mut out = Vec::new();
+        mafft_rs::run_from(argv(&[], &path), &mut out)
+            .unwrap_or_else(|e| panic!("{}: {}", path.display(), e.message()));
+        assert!(out.is_empty(), "{}", path.display());
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

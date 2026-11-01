@@ -262,8 +262,8 @@ robustness or parity gaps.
   A `--treein` line longer than C's 999-byte `fgets` buffer
   (`tree_overlong_line`) is kept whole. C rejects or truncates that line
   because of the buffer; reading all of it is an improvement. An empty
-  file and a file with no header line match the wrapper: exit 0 and empty
-  stdout. A file that contains a NUL is unchanged.
+  file, a file with no header line, and a file of only NUL bytes match
+  the wrapper: exit 0 and empty stdout.
 - **Byte-identity outside the parity corpora.** Both succeed but the bytes
   differ for: the 3000 × 30 aa set (width 121 vs 129), the 120 kb sequence
   (a few gap moves), and the low-complexity `--adjustdirection` set.
