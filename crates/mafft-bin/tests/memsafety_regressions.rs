@@ -92,6 +92,116 @@ fn treein_negative_index_is_rejected() {
     expect_error(&["--treein", tree.to_str().unwrap()], &memsafety("control_protein.fa"), "invalid im");
 }
 
+/// `--seed` whose rows differ in length. `multi2hat3s` exits 1
+/// (`multi2hat3s.c:199-204`): `Not aligned,  =sd0 - =sd1`. The `=` is
+/// what `readData_pointer` stores in place of `>`.
+#[test]
+fn seed_ragged_is_rejected() {
+    let seed = memsafety("seed_ragged.fa");
+    let mut out = Vec::new();
+    match mafft_rs::run_from(argv(&["--seed", seed.to_str().unwrap()], &memsafety("control_protein.fa")), &mut out) {
+        Ok(()) => panic!("ragged --seed was accepted"),
+        Err(e) => {
+            assert_eq!(e.code(), 1, "{}", e.message());
+            assert!(
+                e.message().contains("## ERROR  ###\nNot aligned,  =sd0 - =sd1\n## ERROR  ###"),
+                "{}",
+                e.message()
+            );
+            assert!(out.is_empty(), "stdout must be empty on failure");
+        }
+    }
+}
+
+/// `--seed` with one sequence. `multi2hat3s` exits 1
+/// (`multi2hat3s.c:326-330`).
+#[test]
+fn seed_single_is_rejected() {
+    let seed = memsafety("seed_single.fa");
+    let mut out = Vec::new();
+    match mafft_rs::run_from(argv(&["--seed", seed.to_str().unwrap()], &memsafety("control_protein.fa")), &mut out) {
+        Ok(()) => panic!("single-sequence --seed was accepted"),
+        Err(e) => {
+            assert_eq!(e.code(), 1, "{}", e.message());
+            assert!(
+                e.message().contains("At least 2 sequences should be input!\nOnly 1 sequence found."),
+                "{}",
+                e.message()
+            );
+            assert!(out.is_empty(), "stdout must be empty on failure");
+        }
+    }
+}
+
+/// `--treein` that merges node 1 with node 2 on every line. C's `loadtree`
+/// exits 0 and writes an alignment, with no diagnostic. mafft-rs rejects
+/// the second merge. That rejection stays.
+#[test]
+fn treein_reused_node_is_rejected() {
+    let tree = memsafety("tree_reused_node.txt");
+    expect_error(
+        &["--treein", tree.to_str().unwrap()],
+        &memsafety("control_protein.fa"),
+        "already merged",
+    );
+}
+
+/// `--treein` whose first line is longer than C's 999-byte `fgets` buffer
+/// (`mltaln9.c:1488`). C reports `Format error (2)` and exits 1. The line
+/// is `1 2` plus 5000 zeros plus `.1 0.1`, which is the same merge as
+/// `1 2 0.1 0.1` once the whole line is read. mafft-rs keeps it and aligns.
+#[test]
+fn treein_overlong_line_is_kept() {
+    let tree = memsafety("tree_overlong_line.txt");
+    let mut out = Vec::new();
+    mafft_rs::run_from(
+        argv(&["--treein", tree.to_str().unwrap()], &memsafety("control_protein.fa")),
+        &mut out,
+    )
+    .unwrap_or_else(|e| panic!("overlong --treein was rejected: {}", e.message()));
+    assert!(out.starts_with(b">"), "expected an alignment, got {:?}", String::from_utf8_lossy(&out));
+    let widths: Vec<usize> = String::from_utf8_lossy(&out)
+        .split('>')
+        .skip(1)
+        .map(|block| block.lines().skip(1).map(str::len).sum())
+        .collect();
+    assert!(widths.len() > 1, "too few rows: {widths:?}");
+    assert!(widths.windows(2).all(|p| p[0] == p[1]), "ragged output: {widths:?}");
+}
+
+/// Empty file and a file with no header line. The wrapper exits 0 and
+/// writes nothing (`disttbfast.c:3352-3365`). A file of only NUL bytes
+/// stays an error: C stops a line at NUL, and that difference is unchanged.
+#[test]
+fn empty_and_headerless_match_c_nul_file_does_not() {
+    let dir = std::env::temp_dir().join(format!("mafft-rs-empty-header-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let empty = dir.join("empty.fa");
+    let nul = dir.join("nul_only.fa");
+    std::fs::write(&empty, b"").unwrap();
+    std::fs::write(&nul, vec![0u8; 64]).unwrap();
+
+    let mut out = Vec::new();
+    mafft_rs::run_from(argv(&[], &empty), &mut out).unwrap();
+    assert!(out.is_empty());
+
+    out.clear();
+    mafft_rs::run_from(argv(&[], &memsafety("no_header.fa")), &mut out).unwrap();
+    assert!(out.is_empty());
+
+    out.clear();
+    match mafft_rs::run_from(argv(&[], &nul), &mut out) {
+        Ok(()) => panic!("NUL-only file was accepted"),
+        Err(e) => {
+            assert_eq!(e.code(), 1, "{}", e.message());
+            assert!(e.message().contains("no sequences found in input"), "{}", e.message());
+            assert!(out.is_empty());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--add` onto an "alignment" whose rows differ in length. C refuses with
 /// "The original N sequences must be aligned" (`disttbfast.c:4154`, where
 /// the wrapper then exits 0 with empty stdout; `addsingle.c:3224` exits 1).

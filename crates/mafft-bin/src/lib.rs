@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -1103,17 +1103,44 @@ fn read_input(args: &Args) -> Result<SequenceSet, MafftError> {
             } else {
                 read_fasta(path)
             };
-            result.map_err(|e| read_error(&path.display().to_string(), e))?
+            match result {
+                Ok(set) => set,
+                // The wrapper exits 0 with empty stdout when the file has
+                // no records (`disttbfast.c:3352-3365`). A NUL stays on the
+                // error path: C stops a line at a NUL, and that stays.
+                Err(mafft_io::IoError::EmptyInput) => {
+                    let raw = std::fs::read(path).map_err(|e| {
+                        MafftError::new(1, format!("Error reading {}: {e}", path.display()))
+                    })?;
+                    if raw.contains(&0) {
+                        return Err(read_error(
+                            &path.display().to_string(),
+                            mafft_io::IoError::EmptyInput,
+                        ));
+                    }
+                    SequenceSet { sequences: Vec::new(), seq_type: SeqType::Unknown }
+                }
+                Err(e) => return Err(read_error(&path.display().to_string(), e)),
+            }
         }
         None => {
-            let stdin = io::stdin();
-            let reader = BufReader::new(stdin.lock());
+            let mut raw = Vec::new();
+            io::stdin().lock().read_to_end(&mut raw).map_err(|e| {
+                MafftError::new(1, format!("Error reading stdin: {e}"))
+            })?;
+            let reader = BufReader::new(io::Cursor::new(raw.as_slice()));
             let result = if anysymbol_read {
                 read_fasta_from_reader_casepreserve(reader)
             } else {
                 read_fasta_from_reader(reader)
             };
-            result.map_err(|e| read_error("stdin", e))?
+            match result {
+                Ok(set) => set,
+                Err(mafft_io::IoError::EmptyInput) if !raw.contains(&0) => {
+                    SequenceSet { sequences: Vec::new(), seq_type: SeqType::Unknown }
+                }
+                Err(e) => return Err(read_error("stdin", e)),
+            }
         }
     };
 
@@ -1234,7 +1261,23 @@ fn align_prepared<'a>(
 
     let user_nseq = input.nseq();
     if user_nseq == 0 {
-        return Err(MafftError::new(1, "Error: no sequences found in input"));
+        // `disttbfast.c:3361`: warning, then exit 0 with nothing written.
+        // `--quiet` silences `reporterr`.
+        if !args.quiet {
+            progress.message("Warning: Only 0 sequence found.");
+        }
+        return Ok((
+            MultipleAlignment {
+                sequences: Vec::new(),
+                names: Vec::new(),
+                score: 0.0,
+                step_trace: Vec::new(),
+                guide_tree: None,
+                first_pass_sequences: None,
+                distance_matrix: None,
+            },
+            input.seq_type,
+        ));
     }
 
     // `--memsave` gating: C MAFFT rejects `--memsave` for every
@@ -1294,6 +1337,9 @@ fn align_prepared<'a>(
         for path in &args.seed_files {
             let seed_set = read_fasta_casepreserve(path).map_err(|e|
                 MafftError::new(1, format!("Error reading {}: {e}", path.display())))?;
+            // `multi2hat3s` exits 1 before writing seed sequences
+            // (`multi2hat3s.c:326-330`, `multi2hat3s.c:199-204`).
+            check_seed_alignment(&seed_set)?;
             groups.push(seed_set.sequences.iter().map(|s| s.data.clone()).collect());
             // Prepend renamed (gap-stripped) seed sequences to the input
             // ahead of the user data — matching C's `multi2hat3s` output
@@ -2071,6 +2117,35 @@ fn read_error(what: &str, e: mafft_io::IoError) -> MafftError {
         }
         _ => MafftError::new(1, format!("Error reading {what}: {e}")),
     }
+}
+
+/// `--seed FILE`: `multi2hat3s` requires at least two sequences
+/// (`multi2hat3s.c:326-330`) and equal row lengths
+/// (`multi2hat3s.c:199-204`). Names in the diagnostic start with `=`
+/// because `readData_pointer` stores that in place of `>` (`io.c:1736`).
+fn check_seed_alignment(set: &SequenceSet) -> Result<(), MafftError> {
+    let n = set.sequences.len();
+    if n < 2 {
+        return Err(MafftError::new(
+            1,
+            format!("At least 2 sequences should be input!\nOnly {n} sequence found."),
+        ));
+    }
+    let alignmentlength = set.sequences[0].data.len();
+    if let Some(seq) = set.sequences.iter().skip(1).find(|s| s.data.len() != alignmentlength) {
+        let left = c_seed_name(&set.sequences[0].name);
+        let right = c_seed_name(&seq.name);
+        return Err(MafftError::new(
+            1,
+            format!("## ERROR  ###\nNot aligned,  {left} - {right}\n## ERROR  ###"),
+        ));
+    }
+    Ok(())
+}
+
+/// `readData_pointer` writes `=` over the leading `>` (`io.c:1736`).
+fn c_seed_name(name: &SeqName) -> String {
+    format!("={}", String::from_utf8_lossy(name.as_bytes()))
 }
 
 /// C `seqcheck` (`mltaln9.c:60-85`): the first character of any sequence
