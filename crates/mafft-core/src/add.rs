@@ -146,9 +146,12 @@ pub fn add_sequences_keeplength_with_map(
     if new_sequences.is_empty() {
         return (existing.clone(), Vec::new());
     }
-    let target_width = existing.sequences.first().map(|s| s.len()).unwrap_or(0);
     let n_existing = existing.nseq();
     let nadd = new_sequences.len();
+    // C `recordoriginalgaps` (`disttbfast.c:3909-3910`): the existing
+    // alignment's all-gap columns, put back after the insertions are
+    // deleted (`restoreoriginalgaps`, `disttbfast.c:4862`).
+    let original_gaps = record_original_gaps(&existing.sequences);
 
     let mut full = add_sequences(existing, new_sequences, new_names, scoring, use_fft);
 
@@ -199,12 +202,13 @@ pub fn add_sequences_keeplength_with_map(
     }
 
     for s in full.sequences.iter_mut() {
-        let mut filtered: Vec<u8> = Vec::with_capacity(target_width);
+        let mut filtered: Vec<u8> = Vec::with_capacity(original_gaps.len());
         for col in 0..s.len() {
             if keep[col] { filtered.push(s[col]); }
         }
         *s = filtered;
     }
+    restore_original_gaps(&mut full.sequences, &original_gaps);
 
     (full, deletelist)
 }
