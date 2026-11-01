@@ -353,13 +353,15 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 ## Status
 
 **Production-ready.** `mafft-rs` produces byte-identical output to C MAFFT
-7.526 for every supported mode — all progressive and iterative strategies,
-scoring matrices, tree variants, `--add`, `--adjustdirection` and the
-auxiliary outputs — including **1930/1930** BBaliBase 3 alignments and the
-DNA and input-handling corpora. The full mode list, the parity matrix, the
-DNA / input-handling tables and the BBaliBase sweep are in
-[docs/architecture/byte-identity.md](docs/architecture/byte-identity.md#parity-status);
-what is not covered is under [Known limitations](#known-limitations).
+7.526 on the parity corpora for the supported modes — all progressive and
+iterative strategies, scoring matrices, tree variants, `--add`,
+`--adjustdirection` and the auxiliary outputs — including **1930/1930**
+BBaliBase 3 alignments and the DNA and input-handling corpora. The full
+mode list, the parity matrix, the DNA / input-handling tables and the
+BBaliBase sweep are in
+[docs/architecture/byte-identity.md](docs/architecture/byte-identity.md#parity-status).
+Every input and option known to give different bytes, or not to be
+implemented, is listed under [Known limitations](#known-limitations).
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -454,7 +456,7 @@ Any regression in DP indexing, boundary handling, FFT anchor placement, refineme
 
 ## Known limitations
 
-These categories cover the modes where `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526. Default `--addfragments` matches C (section D); `--addfragments --localpair` is not a reference.
+These sections list every mode, option and input where `mafft-rs` is known not to produce byte-identical output to C MAFFT 7.526, or does not implement an option. Default `--addfragments` matches C (section D); `--addfragments --localpair` is not a reference.
 
 A zero byte in the input is not one of these limitations. C stops the sequence at it and drops every residue after it in that record, including later lines (`AC\0DE` becomes `AC`). `mafft-rs` drops only that byte and aligns what follows (`ACDE`), and it keeps a zero byte in a name, where C cuts the name at that byte. A normal FASTA file has no zero byte, so the two programs still match on real input. Details are in [Memory safety](docs/architecture/memory-safety.md).
 
@@ -470,7 +472,7 @@ These modes are wired correctly but require third-party binaries not shipped by 
 
 ### B. Intentional residuals (tied-trace)
 
-Two configurations are known to produce a tied-trace divergence from C MAFFT — same alignment width, a residue placed at a neighbouring column due to a DP tie-break on a zero-scoring cell. The alignments are not equal in score: because the tied cell shifts a residue, the unweighted sum-of-pairs score that `--scoreout` reports differs slightly (0.06 % in the first case). No realistic workflow hits either:
+Two configurations in the parity corpora are known to produce a tied-trace divergence from C MAFFT — same alignment width, a residue placed at a neighbouring column due to a DP tie-break on a zero-scoring cell. The alignments are not equal in score: because the tied cell shifts a residue, the unweighted sum-of-pairs score that `--scoreout` reports differs slightly (0.06 % in the first case). No realistic workflow hits either:
 
 | Configuration | Effect |
 |---------------|--------|
@@ -496,6 +498,29 @@ These modes are intentionally not implemented. `mafft-rs` either rejects the fla
 ### D. `--addfragments --localpair` is not a reference (issue #50)
 
 `--add`, `--add --keeplength`, `--add --reorder`, `--add --maxiterate`, `--compactmapout` (alignment and added-sequence names), `--addfragments` and `--addfragments --keeplength` match the in-tree C build on the 30 + 6 sample and on the #40 reproducer. Default `--addfragments` is `addsingle` on the script's `distance=multi` branch (`scripts/mafft:2628`): `dndpre -M 2` among the existing rows, `pairlocalalign -Y` for fragment distances and local homology, then one constrained merge (`-l 2.7`). `--keeplength` is `-Y`. On the 30 + 6 fixture the widths are 871 and 595. `--addfragments --localpair` is not pinned: C reads off the end of a buffer on some of those inputs (see [memory safety](docs/architecture/memory-safety.md)). The large-input 6-mer `addsingle -W` fallback is a different branch and is not what these fixtures exercise.
+
+### E. Other known differences
+
+Partly implemented options:
+
+| Option | Status |
+|--------|--------|
+| `--add` (guide tree) | C runs two guide-tree cycles (`disttbfast -E 2`); `mafft-rs` drives the merge with the first (k-tuple) tree and uses the second only for `--reorder`. The pinned fixtures match; other inputs can differ. |
+| `--add --localpair` (L-INS-i add) | Not implemented. The new sequences are added by the progressive path without local-pair homology. |
+| `--groupsize N` | Accepted and ignored. The help text gives 150 as the default; C's `splittbfast` default is the number of sequences + 1. |
+| `--partsize N` | Not accepted. |
+| `--memsave` with FFT | The non-FFT merges use `MSalignmm` as in C, but FFT merges keep the full DP (`Falign_udpari_long` is not ported). The automatic switch to that path once a profile exceeds 30,000 columns in `disttbfast` / `tbfast` is not ported either, so `--nomemsave` only affects PartTree. |
+
+Inputs from the memory-safety run (2026-10-31, [memory safety](docs/architecture/memory-safety.md)) where both sides succeed but the bytes differ:
+
+| Input | Difference |
+|-------|------------|
+| 3000 short protein sequences (30 aa) | Width 121 for C, 129 for `mafft-rs`. |
+| One 120 kb DNA sequence among others (`--nuc`) | A few gap moves. |
+| Long low-complexity DNA under `--adjustdirection` / `--adjustdirectionaccurately` | Different alignment. |
+| DNA with a long homopolymer (e.g. 300 × `A` + 300 nt) under FFT-NS-1/2/i | Every residue kept, but gap placement inside the run differs (608 vs 600 columns). |
+| `--treein` with `nan` / `inf` branch lengths | Different alignment. |
+| Names longer than about 250 bytes | Intentional: C truncates the name, `mafft-rs` keeps all of it. The alignment is the same. |
 
 ## Performance
 
