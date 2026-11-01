@@ -302,7 +302,22 @@ construction.
 
 ## Byte-identity is per platform build
 
-C MAFFT 7.526 is not bit-identical across CPU architectures. The
+!!! warning "C MAFFT is not bit-reproducible across compilers"
+
+    This is a property of the original MAFFT. Upstream MAFFT 7.526
+    does not set `-ffp-contract`, so the same C source produces two
+    alignments. Apple clang fuses `a * b + c` into one rounding (712
+    columns on the `--bl 50 --retree 2 --maxiterate 0` sentinel).
+    gcc, in the Makefile's `-std=c99` mode, and MSVC round the
+    multiply and the add separately (738 columns), including on Linux
+    aarch64, where the CPU has FMA hardware. A single binary does not
+    flip between the two. rust-MAFFT copies the choice when the binary
+    is built: fused on Apple, not fused on Linux and Windows. There is
+    no runtime switch. `--features fp-contract-fma` matches an
+    Apple-clang C build on any machine; `--features fp-contract-none`
+    matches a gcc or MSVC C build on any machine, including a Mac.
+
+C MAFFT 7.526 is not bit-identical across compilers. The
 upstream Makefile compiles with `-O3` and no `-ffp-contract` setting,
 which leaves the floating-point contraction policy to the compiler:
 

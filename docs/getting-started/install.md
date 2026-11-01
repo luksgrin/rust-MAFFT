@@ -3,6 +3,18 @@
 rust-MAFFT ships through three independent channels. Pick whichever
 fits your workflow — they all produce byte-identical alignments.
 
+!!! warning "C MAFFT is not bit-reproducible across compilers"
+
+    Upstream MAFFT 7.526 does not set `-ffp-contract`. Apple clang
+    fuses `a * b + c` into one rounding (712 columns on the
+    `--bl 50 --retree 2 --maxiterate 0` sentinel). gcc, in the
+    Makefile's `-std=c99` mode, and MSVC round the multiply and the
+    add separately (738 columns), including on Linux aarch64. A
+    default install matches that platform's C toolchain: fused on
+    Apple, not fused on Linux and Windows. There is no runtime
+    switch. The commands to build the other toolchain are under
+    [From source](#from-source).
+
 === "Rust library"
 
     Add the top-level `mafft` crate to your project:

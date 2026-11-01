@@ -298,6 +298,17 @@ listed there can also be passed in-process through `pymafft.run`.
 
 ## Floating-point contraction in published wheels
 
+!!! warning "C MAFFT is not bit-reproducible across compilers"
+
+    Upstream MAFFT 7.526 does not set `-ffp-contract`. Apple clang
+    fuses `a * b + c` into one rounding (712 columns on the
+    `--bl 50 --retree 2 --maxiterate 0` sentinel); gcc and MSVC round
+    the multiply and the add separately (738 columns), including on
+    Linux aarch64. Published wheels follow the toolchain that built
+    them (`*-apple-darwin` fused, Linux and Windows not fused). There
+    is no runtime switch. Build commands for the other toolchain are
+    under [Building from source](#building-from-source).
+
 C MAFFT 7.526 leaves `-ffp-contract` unset, so the same source produces
 two alignments: Apple clang fuses `a * b + c` into one rounding, and gcc
 in the upstream Makefile's `-std=c99` mode does not, including on Linux
