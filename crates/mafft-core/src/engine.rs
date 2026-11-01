@@ -1483,6 +1483,19 @@ impl MafftEngine {
         } else {
             add_sequences(&existing, &new_sequences, &new_names, &scoring, use_fft)
         };
+        // `--add --maxiterate N` (FFT-NS-i): after the progressive add, C runs
+        // `dndpre -M 2` and `dvtditr -K nadd -B -I N` (`scripts/mafft:2076`,
+        // `:2691-2693`). `-B` turns segmentation off. `-K` skips a branch
+        // side that overlaps the existing sequences but is not exactly that
+        // set (`dvtditr.c:912-937`). `--keeplength` / `--mapout` force
+        // `iterate=0` (`scripts/mafft:2077-2086`), so those paths stay
+        // progressive. No `--thread` is `dvtditr -C 0`.
+        let n_existing = existing.nseq();
+        let refine_topo = if !keeplength {
+            self.refine_added_alignment(&mut msa, &scoring, seq_type, n_existing)
+        } else {
+            None
+        };
         // `--add --reorder`: C does not emit the guide tree that drove the
         // merge. `disttbfast -E 2` overwrites `order` with `topolorderz` of
         // the *second* guide tree (`disttbfast.c:4081-4102`), which
@@ -1493,20 +1506,106 @@ impl MafftEngine {
         // on the pinned inputs), so the distances of this MSA are the ones
         // C records. The first-cycle k-tuple tree is a different order.
         if self.reorder_output {
-            let dm = compute_distance_matrix_scoring(
-                &msa.sequences,
-                &scoring.substitution_matrix,
-                &scoring.amino_map,
-                scoring.gap.open,
-            );
-            let topo = musclesupg(&dm, self.cluster_method);
-            let order = topo.dfs_order();
+            // With `--maxiterate`, `dvtditr` overwrites `order` from its own
+            // tree (`dvtditr.c:863-876`) after the second guide tree. Without
+            // it, the file is still disttbfast's second tree.
+            let order = if let Some(topo) = refine_topo.as_ref() {
+                topo.dfs_order()
+            } else {
+                let dm = compute_distance_matrix_scoring(
+                    &msa.sequences,
+                    &scoring.substitution_matrix,
+                    &scoring.amino_map,
+                    scoring.gap.open,
+                );
+                musclesupg(&dm, self.cluster_method).dfs_order()
+            };
             if order.len() == msa.nseq() {
                 msa.sequences = order.iter().map(|&i| msa.sequences[i].clone()).collect();
                 msa.names = order.iter().map(|&i| msa.names[i].clone()).collect();
             }
         }
         msa
+    }
+
+    /// `dndpre -M 2` + `dvtditr -K nadd -B` on an alignment just produced by
+    /// `--add`. Returns the refinement tree when a cycle actually ran, so
+    /// `--reorder` can apply the order file `dvtditr` wrote.
+    fn refine_added_alignment(
+        &self,
+        msa: &mut MultipleAlignment,
+        scoring: &mafft_types::ScoringContext,
+        seq_type: mafft_types::SeqType,
+        n_existing: usize,
+    ) -> Option<mafft_tree::Topology> {
+        let iterations = match self.mode {
+            AlignmentMode::FftNsi { iterations } if iterations > 0 => iterations,
+            _ => return None,
+        };
+        if msa.nseq() < 2 {
+            return None;
+        }
+        // Same shifted matrix as FFT-NS-i's refinement tree: dndpre is
+        // invoked without `-h`, so it uses the default `poffset` and writes
+        // hat2 at `%.3f` (`engine::align`, the ktuples branch).
+        let dndpre_offset_shift = dndpre_offset_shift(seq_type.is_nucleotide());
+        let mut shifted_matrix: Vec<Vec<i32>> = scoring.substitution_matrix
+            .iter()
+            .map(|row| row.iter().map(|&v| v + dndpre_offset_shift).collect())
+            .collect();
+        let nscored = scoring.nscoredalphabets;
+        for i in 0..shifted_matrix.len() {
+            for j in 0..shifted_matrix[i].len() {
+                if i >= nscored || j >= nscored {
+                    shifted_matrix[i][j] = 0;
+                }
+            }
+        }
+        let raw = compute_distance_matrix_scoring(
+            &msa.sequences, &shifted_matrix, &scoring.amino_map, scoring.gap.open,
+        );
+        let n = raw.nseq;
+        let mut rounded = DistanceMatrix::new(n);
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let d = (raw.get(i, j) * 1000.0).round() / 1000.0;
+                rounded.set(i, j, d);
+            }
+        }
+        let topo = musclesupg(&rounded, self.cluster_method);
+        let iterate_limit = if msa.nseq() == 2 {
+            1
+        } else if self.bestfirst {
+            254
+        } else {
+            16
+        };
+        let refine_shift = if self.allowshift {
+            let spfactor = self.shift_penalty_factor.unwrap_or(2.0);
+            Some((spfactor * scoring.gap.open as f64) as i32 as f64)
+        } else {
+            None
+        };
+        let params = RefinementParams {
+            max_iterations: iterations.min(iterate_limit),
+            per_cycle_convergence: self.nthread > 0,
+            use_fft: true,
+            legacy_gap_cost: self.legacy_gap_cost,
+            shift: refine_shift,
+            unalign_level: self.unalign_level,
+            minimum_weight: self.minimum_weight.unwrap_or(0.00001),
+            bestfirst: self.bestfirst,
+            // Non-empty even when every side is kept, so this stays on the
+            // unsegmented `TreeDependentIteration` path (`-B`).
+            skip_branches: nadd_skip_branches(&topo, n_existing),
+            ..Default::default()
+        };
+        if self.bestfirst {
+            crate::refinement::bestfirst_refine(msa, &topo, scoring, &params, None);
+        } else {
+            iterative_refine(msa, &topo, scoring, &params, None);
+        }
+        Some(topo)
     }
 
     /// Same as [`add_to_alignment`] with `keeplength = true`, but also
@@ -1552,6 +1651,21 @@ impl MafftEngine {
         let input = read_fasta(path)?;
         Ok(self.align(&input))
     }
+}
+
+/// `dvtditr.c:935-936`: skip a side that shares a member with the existing
+/// sequences (`reftable` = `0 .. njob-nadd`) but is not that whole set.
+/// A side that is entirely new, or exactly the existing set, is refined.
+fn nadd_skip_branches(topo: &mafft_tree::Topology, n_existing: usize) -> Vec<(bool, bool)> {
+    use std::collections::BTreeSet;
+    let existing: BTreeSet<usize> = (0..n_existing).collect();
+    topo.steps.iter().map(|step| {
+        let skip = |members: &[usize]| {
+            let set: BTreeSet<usize> = members.iter().copied().collect();
+            set.iter().any(|i| existing.contains(i)) && set != existing
+        };
+        (skip(&step.left), skip(&step.right))
+    }).collect()
 }
 
 /// `splittbfast -U` (`--dpparttree`): the recursive PartTree run with

@@ -69,7 +69,6 @@ fn expect_both(flag: &str, extra: &[&str], sample_name: &str, sentinel_name: &st
 /// C `dvtditr -K nadd -B` after the progressive add (`scripts/mafft:2076`,
 /// `:2691-2693`). No `--thread`, so `-C 0` (single-threaded rules).
 #[test]
-#[ignore = "differs from in-tree C --add --maxiterate 2 (#50)"]
 fn add_maxiterate_2_matches_c() {
     expect_both(
         "--add",
