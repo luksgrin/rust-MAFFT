@@ -101,6 +101,12 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- The FFI cross-validation tests did not compile on Linux aarch64: 56
+  sites in 15 test files spelled the C `char**` argument (and the `alg`
+  global) as `i8`, which is `c_char` on x86-64 Linux and Apple arm64 but
+  not on Linux aarch64, where `char` is unsigned. They now use `c_char`. CI gains a
+  compile-only leg on `ubuntu-24.04-arm` so the workspace and every test
+  binary are built there on each push.
 - `mafft-rs` lost residues without an error when a profile alignment had
   one empty side: an input record with no residues printed every
   sequence empty, and DNA with a long homopolymer (e.g. 300 × `A`) lost

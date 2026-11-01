@@ -34,8 +34,8 @@ unsafe fn init_c_protein() {
         std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
 
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
     }
 }
@@ -347,8 +347,8 @@ fn profile_align_imp_warp_matches_c_a__align() {
         std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
         // Re-run constants() so trywarp/penalty_shift pick up the factor.
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
 
         // tbfast's group call: A__align(dynamicmtx, penalty, penalty_ex, ...).
@@ -559,8 +559,8 @@ fn profile_align_imp_warp_shifted_matrix_matches_c_a__align() {
         init_c_protein();
         std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
 
         let len1 = group1[0].len();

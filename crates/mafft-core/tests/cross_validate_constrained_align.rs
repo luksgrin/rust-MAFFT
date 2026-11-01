@@ -46,8 +46,8 @@ unsafe fn init_c_protein() {
         std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
 
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
     }
 }
@@ -1220,8 +1220,8 @@ fn rust_global_align_matches_c_g__align11_warp() {
         // We need to re-run it to pick up the new factor. Easiest: re-call
         // constants() with the right seq.
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
         // After constants(): penalty_shift = (int)(factor * penalty).
         // Verify trywarp got set.
@@ -1316,8 +1316,8 @@ fn rust_global_align_matches_c_g__align11_warp_k03494_m92036() {
         std::ptr::addr_of_mut!(mafft_sys::penalty_ex).write(pair_ext_f_unalign as c_int);
         std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
 
         let alloclen = (s1.len() + s2.len()) * 4;
@@ -1400,8 +1400,8 @@ fn rust_global_align_matches_c_g__align11_warp_u22180_m62903() {
         std::ptr::addr_of_mut!(mafft_sys::penalty_ex).write(pair_ext_f_unalign as c_int);
         std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
 
         let alloclen = (s1.len() + s2.len()) * 4;
@@ -1515,8 +1515,8 @@ fn rust_global_align_realign_matches_c_g__align11_warp_u22180_m62903() {
         std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
         std::ptr::addr_of_mut!(mafft_sys::penalty_shift_factor).write(2.0);
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
 
         let alloclen = (s1.len() + s2.len()) * 4;
@@ -1767,8 +1767,8 @@ fn rust_genaffine_align_matches_c_gen_l__align11_einsi_params() {
         std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
 
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
 
         std::ptr::addr_of_mut!(mafft_sys::penalty).write(pair_open);
