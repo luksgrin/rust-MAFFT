@@ -54,7 +54,7 @@ unsafe fn init_c_protein() {
         std::ptr::addr_of_mut!(mafft_sys::cut).write(0.0);
         std::ptr::addr_of_mut!(mafft_sys::outgap).write(1);
         std::ptr::addr_of_mut!(mafft_sys::use_fft).write(0); // enabled by -F later
-        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as c_char);
         std::ptr::addr_of_mut!(mafft_sys::treemethod).write(b'X' as i32);
         std::ptr::addr_of_mut!(mafft_sys::sueff_global).write(0.1);
         std::ptr::addr_of_mut!(mafft_sys::scoremtx).write(1);
@@ -69,8 +69,8 @@ unsafe fn init_c_protein() {
         std::ptr::addr_of_mut!(mafft_sys::poffset).write(0);
 
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
 
         // After constants(), set the -z 50 (fftThreshold) override and use_fft=1 (-F)
@@ -1165,7 +1165,7 @@ fn real_rust_refine_vs_c_falign_iter0_bytediff() {
                 *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
             }
         }
-        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as c_char);
         std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
         std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
         std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
@@ -1365,7 +1365,7 @@ fn trajectory_rust_vs_c_all_iters() {
             }
         }
         // dvtditr.c:76 sets alg='A' (A__align). mafft.tmpl doesn't override.
-        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as c_char);
         std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
         std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
         std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
@@ -1875,7 +1875,7 @@ fn rust_refine_vs_c_direct_iter1() {
                 *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
             }
         }
-        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as c_char);
         std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
         std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
         std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
@@ -1977,7 +1977,7 @@ fn evolving_state_rust_vs_c_falign_iter0() {
                 *(*n_dyn.add(i)).add(j) = scoring.substitution_matrix[i][j] as f64;
             }
         }
-        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as c_char);
         std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
         std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
         std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
@@ -2300,7 +2300,7 @@ fn compare_segmented_falign_with_c_iter0() {
 
             // Ensure C's alg is set to 'M' (MSalignmm) and fftkeika=1 so Falign
             // uses the commongappick-per-segment path we want.
-            std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as i8);
+            std::ptr::addr_of_mut!(mafft_sys::alg).write(b'M' as c_char);
             std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
             std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(1);
             std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);

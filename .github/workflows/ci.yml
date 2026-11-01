@@ -167,6 +167,35 @@ jobs:
         run: make -C mafft-upstream/core -j"$(nproc)"
 
   # ------------------------------------------------------------------
+  # Compile the whole workspace, tests included, on Linux aarch64. This
+  # is the one platform where `c_char` is `u8` (x86-64 Linux and Apple
+  # arm64 both have `i8`), so a test that spells the FFI argument type as
+  # `*mut i8` compiles everywhere except here. Compile only: the
+  # byte-identity sentinel is not run on this leg because the gcc C
+  # reference on aarch64 Linux does not contract FMAs while mafft-rs's
+  # default policy on aarch64 does (see docs/architecture/byte-identity.md
+  # and the open question in issue #51).
+  # ------------------------------------------------------------------
+  build-linux-aarch64:
+    name: "Compile (Linux aarch64)"
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Toolchain report
+        run: |
+          uname -m
+          gcc --version | head -1
+          rustc --print cfg | grep -E 'target_arch|target_os'
+
+      - name: Compile workspace and all test binaries
+        run: cargo test --workspace --exclude pymafft --release --no-run
+
+  # ------------------------------------------------------------------
   # MAFFT C alignment tests (each mode runs as a separate job)
   # ------------------------------------------------------------------
   test-fftns2:

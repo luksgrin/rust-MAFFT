@@ -3,6 +3,7 @@
 ///
 /// C globals are shared mutable state, so all FFI tests must be serialized.
 
+use std::os::raw::c_char;
 use std::ptr::addr_of;
 use std::sync::Mutex;
 
@@ -49,8 +50,8 @@ unsafe fn call_c_constants(dorp: u8, scoremtx: i32, nblosum: i32) { unsafe {
     std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
 
     let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-    let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-    let seq_arr: *mut *mut i8 = &mut seq_ptr;
+    let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+    let seq_arr: *mut *mut c_char = &mut seq_ptr;
     mafft_sys::constants(1, seq_arr);
 }}
 
@@ -66,8 +67,8 @@ unsafe fn call_c_constants_jtt(is_tm: bool, pam_n: i32) { unsafe {
     std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
 
     let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-    let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-    let seq_arr: *mut *mut i8 = &mut seq_ptr;
+    let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+    let seq_arr: *mut *mut c_char = &mut seq_ptr;
     mafft_sys::constants(1, seq_arr);
 }}
 
@@ -674,8 +675,8 @@ fn debug_jtt_pam1_vs_c() {
         std::ptr::addr_of_mut!(mafft_sys::TMorJTT).write(201); // JTT
 
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
 
         let c_matrix = read_c_n_dis();

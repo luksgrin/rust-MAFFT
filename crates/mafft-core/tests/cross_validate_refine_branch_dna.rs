@@ -115,8 +115,8 @@ unsafe fn init_c_dna() {
         std::ptr::addr_of_mut!(mafft_sys::fftThreshold).write(mafft_sys::NOTSPECIFIED);
         std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(0);
         let seq_data = b"acgt\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
     }
 }

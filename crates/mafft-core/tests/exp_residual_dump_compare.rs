@@ -41,8 +41,8 @@ unsafe fn init_c_protein() {
         std::ptr::addr_of_mut!(mafft_sys::nblosum).write(62);
         std::ptr::addr_of_mut!(mafft_sys::fmodel).write(0);
         let seq_data = b"ACDEFGHIKLMNPQRSTVWY\0";
-        let mut seq_ptr = seq_data.as_ptr() as *mut i8;
-        let seq_arr: *mut *mut i8 = &mut seq_ptr;
+        let mut seq_ptr = seq_data.as_ptr() as *mut c_char;
+        let seq_arr: *mut *mut c_char = &mut seq_ptr;
         mafft_sys::constants(1, seq_arr);
     }
 }
@@ -144,7 +144,7 @@ fn exp_residual_compare_per_step_with_a__align() {
         let n_dyn = build_c_dynamicmtx();
 
         // Set globals Falign reads. Mirrors trace_refinement.rs setup.
-        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as i8);
+        std::ptr::addr_of_mut!(mafft_sys::alg).write(b'A' as c_char);
         std::ptr::addr_of_mut!(mafft_sys::fftkeika).write(1);
         std::ptr::addr_of_mut!(mafft_sys::kobetsubunkatsu).write(0);
         std::ptr::addr_of_mut!(mafft_sys::use_fft).write(1);
