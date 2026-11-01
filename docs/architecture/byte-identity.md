@@ -32,7 +32,7 @@ required.
 - All scoring matrices: BLOSUM 30/45/50/62/80, JTT 100/200, TM 100/200 (FFT + NW + `--retree 1`)
 - Tree variants: `--parttree`, `--dpparttree`, `--memsavetree`, `--youngestlinkage`, `--averagelinkage`, `--minimumlinkage`, `--mixedlinkage`, `--pileup`
 - Iteration strategies: `--bestfirst`, `--simplehillclimbing`, `--skipiterate F` (both large- and small-F branches), `--oneiteration`
-- Add-sequence modes: `--add`, `--addfragments`, `--keeplength` (including adversarial inputs with random insertions)
+- Add-sequence modes: `--add`, `--add --reorder`, `--add --maxiterate`, `--keeplength`, `--mapout` / `--compactmapout` (the map and the added-sequence names). `--addfragments` is not in this list: C runs `addsingle`, and the port still uses the progressive `--add` path (issue #50)
 - Auxiliary outputs: `--distout`, `--scoreout`, `--nodeout`, `--mapout` / `--compactmapout`, `--treeout`
 - DNA strand auto-detection: `--adjustdirection` (k-mer) and `--adjustdirectionaccurately` (DP)
 - Refinement controls: `--allowshift`, `--unalignlevel`, `--maxambiguous`, `--minimumweight`, `--nwildcard`, `--leavegappyregion` / `--legacygappenalty`
@@ -60,6 +60,10 @@ Every progressive merge step matches in score and width; every refinement iterat
 | JTT 100 / 200, TM 100 / 200 (FFT + NW)      | match   | match      | 0    | ✓ byte-exact |
 | `--parttree`, `--dpparttree`, `--parttree --nofft`, `--parttree --reorder` | 752 | 752 | 0 | ✓ byte-exact |
 | `--add` / `--add --nofft` / `--add --keeplength` (30+6) | match | match | 0 | ✓ byte-exact |
+| `--add --reorder` (30+6 and the #40 reproducer) | match | match | 0 | ✓ byte-exact. `f2cl -r` applies `topolorderz` of disttbfast's second guide tree (`-E 2`), not the k-tuple tree that drove the merge. On these inputs that order is input order with sequences 11 and 12 swapped, and the second cycle does not move residues |
+| `--add --maxiterate 2` (30+6 and the #40 reproducer) | match | match | 0 | ✓ byte-exact. `dndpre -M 2` then `dvtditr -K nadd -B` (no segmentation; a side is skipped when it overlaps the existing sequences but is not exactly that set). No `--thread` stays on `-C 0` |
+| `--add --compactmapout` (30+6 and the #40 reproducer) | match | match | 0 | ✓ byte-exact, including added-sequence names. The flag implies `--keeplength`; names that lost residues are prefixed with `Nins:` and the first insertion run |
+| `--addfragments` / `--addfragments --keeplength` (30+6) | 871 / 595 | 741 / 595 | differs | not byte-exact (#50). C runs `addsingle` (6-mer, `scripts/mafft:2671`); the port still uses the progressive `--add` path. Tests are `#[ignore]`d. `--addfragments --localpair` is not pinned: C reads off the end of a buffer on some of those inputs |
 | `--add` adversarial (16-existing + 3-added with random insertions) | match | match | 0 | ✓ byte-exact |
 | `--pileup`, `--youngestlinkage`, `--averagelinkage`, `--minimumlinkage` | match | match | 0 | ✓ byte-exact |
 | `--bestfirst` (FFT-NS-i / L-INS-i / G-INS-i)  | match | match      | 0    | ✓ byte-exact |

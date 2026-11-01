@@ -449,7 +449,7 @@ Any regression in DP indexing, boundary handling, FFT anchor placement, refineme
 
 ## Known limitations
 
-These three categories cover everything `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526 for. No other divergence from C is known (2026-09-06).
+These categories cover the modes where `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526. The `--addfragments` gap in D is issue #50.
 
 ### A. External-dependency-blocked modes
 
@@ -485,6 +485,10 @@ These modes are intentionally not implemented. `mafft-rs` either rejects the fla
 | **Alternative pairwise aligners** | `--blastpair`, `--lastpair`, `--lastmultipair`, `--fastapair`, `--fastswpair`, `--hybridpair`, `--longshortpair`, `--shortlongpair` | Require external BLAST/LAST/FASTA binaries with non-trivial output-parsing glue. Use the built-in `--localpair` / `--globalpair` / `--genafpair` aligners instead. |
 | **DASH-only sequence-filter flags** | `--excludehomologs`, `--originalseqonly` | C documents both as "works with `--dash` only"; the DASH structure-DB pipeline falls under the RNA-structure category above. Wired as no-ops, matching what C does without `--dash`. |
 | **MPI parallelism** | `--mpi` | `mafft-rs` uses Rayon for in-process multithreading. |
+
+### D. `--addfragments` is not the C `addsingle` path (issue #50)
+
+`--add`, `--add --keeplength`, `--add --reorder`, `--add --maxiterate` and `--compactmapout` (alignment and added-sequence names) match the in-tree C build on the 30 + 6 sample and on the #40 reproducer. `--addfragments` and `--addfragments --keeplength` do not. C runs `addsingle` (`scripts/mafft:2671`, `addsingle.c`): each fragment is placed against its nearest sequence from 6-mer distances, with `cycle=1` and `iterate=0`. `mafft-rs` still sends that flag through the progressive `--add` path (`disttbfast -K -I`). On the 30 + 6 fixture the widths are 871 (C) and 741 (rust); with `--keeplength` both are 595 columns and the gap placement differs. The tests are `#[ignore]`d in `crates/mafft-bin/tests/add_variants_vs_c.rs`. `--addfragments --localpair` is not used as a reference: C reads off the end of a buffer on some of those inputs (see [memory safety](docs/architecture/memory-safety.md)).
 
 ## Performance
 
