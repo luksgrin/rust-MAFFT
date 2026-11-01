@@ -452,7 +452,7 @@ Selected cells (MiB, median of 3):
 |-------|------|---------------:|----------------:|---------------:|----------------:|
 | BB40049 (62 × 778) | FFT-NS-2 | 478 | 242 | 1,146 | 245 |
 | BB40049 | FFT-NS-i | 478 | 402 | 1,822 | 402 |
-| BB40049 | L-INS-i | 906 | 1,787 | 4,849 | 2,002 |
+| BB40049 | L-INS-i | 906 | 1,787 | 4,849 | 2,036 |
 | BB30003 (142 × 402) | FFT-NS-i | 36 | 23 | 148 | 27 |
 | BB30003 | L-INS-i | 50 | 86 | 185 | 95 |
 | 120 × 1.4 kb CDS | FFT-NS-i | 43 | 56 | 251 | 57 |
@@ -463,13 +463,16 @@ What this shows:
 - C's peak grows with `--thread N` in every mode that has a threaded
   stage (roughly 2–3× from 1 to 4 threads and again towards 8): each
   `athread` / distance worker allocates its own full-size DP and
-  profile scratch. `mafft-rs` grows by a few MiB from 1 to 8 threads in
-  FFT-NS-2 / FFT-NS-i (its rayon workers use pooled thread-local
-  buffers and the refinement itself runs on one thread), and by 10–65 %
-  in L-INS-i (the parallel all-pairs local alignment).
+  profile scratch. `mafft-rs` at `8bff99f` grew by a few MiB from 1 to 8
+  threads in FFT-NS-2 / FFT-NS-i (its rayon workers use pooled
+  thread-local buffers, and the refinement then ran on one thread), and
+  by 10–65 % in L-INS-i (the parallel all-pairs local alignment). These
+  `--thread 4` / `8` figures predate #56, which parallelised the
+  refinement and the progressive merges; they have not been re-measured
+  since.
 - Single-threaded, `mafft-rs` is lower on protein FFT-NS-2 / FFT-NS-i
   (1.2–2.2×) and higher on the DNA fixture (54–56 vs 43 MiB).
-- Single-threaded L-INS-i, `mafft-rs` uses about twice C's memory on
+- Single-threaded L-INS-i, `mafft-rs` uses 1.4–2.3× C's memory on
   every input (BB40049: 1,787 vs 906 MiB). Not investigated yet; the
   likely place is the all-pairs local-alignment stage
   (`mafft-align/src/constraints.rs`), which collects every pair's result
@@ -504,8 +507,9 @@ C at `--thread N ≥ 2` produced outputs different from its own
 sample with G-INS-i at `--thread 2`, where all 3 runs equalled
 `--thread 1`).
 
-**Speedup.** Median wall-clock of 3 runs (seconds), including process
-start-up and, for C, the wrapper script. Apple M4, 2026-10-31, 1-minute
+**Speedup before #56.** Median wall-clock of 3 runs (seconds), including process
+start-up and, for C, the wrapper script, with `mafft-rs` built before
+#56 (single-threaded refinement). Apple M4, 2026-10-31, 1-minute
 load average 2.2–5.9 (median 3.4) during the batch, which other jobs
 shared; `benchmarks/results/threads_2026-10-31.tsv`.
 
@@ -520,27 +524,41 @@ shared; `benchmarks/results/threads_2026-10-31.tsv`.
 | BB30005 | G-INS-i | 20.82 | 6.61 | 5.43 | 33.27 | 27.08 | 26.09 | 3.83× | 1.28× |
 
 `--thread 2` and `10` are in the TSV (10 is no faster than 8 on either
-side). In `mafft-rs`, `--thread N` parallelises the distance matrices
-and the all-pairs pairwise alignments of L-INS-i / G-INS-i; the
+side). In that build, `--thread N` parallelised only the distance
+matrices and the all-pairs pairwise alignments of L-INS-i / G-INS-i; the
 iterative refinement, which dominates FFT-NS-i and most of L-INS-i /
-G-INS-i at `--maxiterate 1000`, runs on one thread, in C's `--thread 1`
-branch order, so that its accept/reject decisions — and therefore the
-output — do not depend on the thread count. C parallelises the
-refinement too, which is where both its speedup and its run-to-run
-variation come from. Single-threaded, `mafft-rs` is faster than C on
-FFT-NS-i (1.2–1.6×) and slower on L-INS-i / G-INS-i on BB30005
-(0.76× / 0.63×); at `--thread 8` C is up to 4.8× faster than `mafft-rs` (BB30005
-G-INS-i) and level with it on the CDS fixture.
-A deterministic parallel refinement (evaluating candidate branches in
-parallel, then applying them in the `--thread 1` order) is the open item,
-tracked in #48.
+G-INS-i at `--maxiterate 1000`, ran on one thread, in C's `--thread 1`
+branch order. C parallelises the refinement too, which is where both its
+speedup and its run-to-run variation come from. Single-threaded,
+`mafft-rs` was faster than C on FFT-NS-i (1.2–1.6×) and slower on
+L-INS-i / G-INS-i on BB30005 (0.76× / 0.63×); at `--thread 8` C was up
+to 4.8× faster (BB30005 G-INS-i) and level on the CDS fixture.
 
-The two results are linked: at `--thread 8` C spreads the refinement over
-8 workers, each with its own scratch, while `mafft-rs` runs it on one, so
-the lower `--thread 8` peak RSS above is measured with `mafft-rs` doing
-most of its work single-threaded. How much of that gap remains once the
-refinement is parallelised is not known yet; the `--thread 1` column is
-the like-for-like comparison.
+**Since #56.** `--thread N` also runs the progressive merges of disjoint
+guide-tree subtrees (one level at a time), the FFT segments of one
+profile-profile merge, the FFT-NS-i refinement segments, and refinement
+branches scored speculatively and then applied in the `--thread 1`
+visiting order. Output is still byte-identical at every thread count
+(`crates/mafft-bin/tests/thread_determinism.rs`). The same PR made two
+single-thread changes on the refinement path. Single runs from #56
+(Apple M4, `nice -n 19`, load about 2–6; not medians):
+
+| Input | Mode | rs t1 | rs t8 |
+|-------|------|------:|------:|
+| BB30005 | FFT-NS-i | 7.5 | 2.8 |
+| BB30005 | L-INS-i | 15.0 | 5.7 |
+| BB30005 | G-INS-i | 17.4 | 5.6 |
+| BB30003 | L-INS-i | 28.5 | 10.9 |
+| BB40049 | L-INS-i | 139 | 64 |
+| 120 × 1.4 kb CDS | L-INS-i | 50.3 | 12.2 |
+| 120 × 1.4 kb CDS | G-INS-i | 60.4 | 14.9 |
+
+These single runs put single-threaded `mafft-rs` below C's `--thread 1`
+median above on BB30005 L-INS-i and G-INS-i (21.29 / 20.82 s), so the
+"slower on L-INS-i / G-INS-i" statement above no longer holds for the
+current code, but the two figures come from different runs and load.
+Idle-machine 3-run medians, and the `--thread 4` / `8` memory figures
+for the current code, are pending (#48).
 
 ### From Python: `pymafft.align(threads=N)`
 
@@ -561,9 +579,11 @@ other jobs sharing the machine; `benchmarks/results/pymafft_threads_2026-11-01.t
 | BB30005 | `linsi` | 27.38 | 25.13 (1.09×) | 23.86 (1.15×) | 23.57 (1.16×) | 23.18 (1.18×) |
 | BB30005 | `ginsi` | 33.15 | 28.92 (1.15×) | 26.57 (1.25×) | 25.63 (1.29×) | 25.46 (1.30×) |
 
-The figures follow the CLI ones above (same stages parallelised, same
-single-threaded refinement): at most ~1.5× at 8–10 threads, ~1.0–1.1×
-for `fftnsi`. Each call builds its own rayon pool, so the per-call
+These were measured before #56 and follow the pre-#56 CLI figures above
+(same stages parallelised, single-threaded refinement): at most ~1.5× at
+8–10 threads, ~1.0–1.1× for `fftnsi`. `pymafft` calls the same
+`run_from_seqs` path, so #56 applies to it as well; it has not been
+re-measured. Each call builds its own rayon pool, so the per-call
 overhead is included.
 
 **GIL release.** BB30005, `fftnsi`, `threads=1` per call, 3 runs: one

@@ -532,12 +532,13 @@ inputs (36-seq sample, 120 × 1.4 kb CDS, the five largest BAliBASE 3 sets),
 | L-INS-i | 0.51 | 1.25 | 2.34 |
 | `--parttree` | 0.57 | 0.56 | 0.55 |
 
-C's peak grows with the thread count; `mafft-rs`'s barely does. Single-threaded,
-`mafft-rs` uses about twice C's memory on L-INS-i (BB40049, 62 × 778: 1,787 vs
-906 MiB) and more on `--parttree` and on the CDS fixture; `--memsave` lowers
-C's figure, while `mafft-rs` has no Hirschberg DP yet.
+C's peak grows with the thread count; `mafft-rs`'s barely did (measured
+before #56, see below). Single-threaded, `mafft-rs` uses 1.4–2.3× C's
+memory on L-INS-i (BB40049, 62 × 778: 1,787 vs 906 MiB) and more on
+`--parttree` and on the CDS fixture; `--memsave` lowers C's figure, while
+`mafft-rs` has no Hirschberg DP in FFT-NS-2 / FFT-NS-i.
 
-Wall clock, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.4):
+Wall clock before #56, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.4):
 
 | Input | Mode | C t1 | C t8 | `mafft-rs` t1 | `mafft-rs` t8 |
 |-------|------|-----:|-----:|--------------:|--------------:|
@@ -548,16 +549,25 @@ Wall clock, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.
 
 `mafft-rs` output is byte-identical at every thread count (and equal to C
 `--thread 1`) on every run, including all 76 BAliBASE RV11 sets at
-`--thread 1/4/8`; C's `--thread N ≥ 2` output varied between runs. The
-price: `mafft-rs` parallelises the distance and all-pairs stages but runs
-the iterative refinement on one thread, so `--thread 8` gains at most
-1.5× on these inputs where C gains 1.6–3.8× (tracked in
-[#48](https://github.com/luksgrin/rust-MAFFT/issues/48)). The `--thread 8`
-memory ratios therefore compare 8 C workers with a mostly single-threaded
-`mafft-rs`; `--thread 1` is the like-for-like column. From Python, `pymafft.align(threads=8)` gains
-1.05–1.53× over `threads=1` (all results equal to the CLI at `--thread 1`),
-and two concurrent calls in two Python threads take as long as one
-(GIL released); details in
+`--thread 1/4/8`; C's `--thread N ≥ 2` output varied between runs.
+
+The memory ratios and the wall-clock table above were measured before
+[#56](https://github.com/luksgrin/rust-MAFFT/pull/56), when `mafft-rs`
+ran the iterative refinement on one thread, so its `--thread 8` gained at
+most 1.5× there and the `--thread 8` memory column compares 8 C workers
+with a mostly single-threaded `mafft-rs`; `--thread 1` is the
+like-for-like column. Since #56, `--thread N` also runs the progressive
+merges of independent subtrees, the FFT-NS-i refinement segments and
+speculatively scored refinement branches on the pool, with output still
+byte-identical at every thread count. Single runs on the same machine
+(not medians; load about 2–6): BB30005 FFT-NS-i 7.5 → 2.8 s, L-INS-i
+15.0 → 5.7 s, G-INS-i 17.4 → 5.6 s, and the CDS fixture under L-INS-i
+50.3 → 12.2 s at `--thread 1` → `8`. Idle-machine medians, and the
+memory figures after #56, are pending (tracked in
+[#48](https://github.com/luksgrin/rust-MAFFT/issues/48)). From Python,
+`pymafft.align(threads=N)` uses the same code path and its results equal
+the CLI at `--thread 1`; two concurrent calls in two Python threads take
+as long as one (GIL released); details in
 [the Python API docs](docs/python-api/index.md#multi-threading-from-python).
 
 ## Building from source
