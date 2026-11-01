@@ -600,7 +600,7 @@ as long as one (GIL released); details in
 
 ### Prerequisites
 
-- Rust 1.80+ (edition 2024)
+- Rust 1.85+ (edition 2024)
 - Git (for submodule checkout)
 - GCC/Clang (only needed to build the C reference for FFI cross-validation tests; checked in CI with GCC 13–15 on Linux and Apple clang on macOS)
 - Python 3 with the standard `venv` module and `pip` (only for the Python bindings)
@@ -748,7 +748,7 @@ policy was his finding too.
 
 If you use rust-MAFFT in published work, **you must cite the original
 MAFFT paper.** The rust-MAFFT manuscript (in preparation for
-*Bioinformatics*) should be cited additionally once published — but
+*Bioinformatics Advances*) should be cited additionally once published — but
 the algorithmic foundation always remains the Katoh et al. work, and
 that citation never goes away.
 

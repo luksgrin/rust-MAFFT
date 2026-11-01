@@ -9,7 +9,7 @@ engineering on top of their science.
 
 If you use rust-MAFFT in published work, **you must cite the original
 MAFFT paper**. The rust-MAFFT manuscript (in preparation for
-*Bioinformatics*) should be cited additionally once it is published —
+*Bioinformatics Advances*) should be cited additionally once it is published —
 but the algorithmic foundation always remains the Katoh et al. work,
 and that citation never goes away.
 
@@ -162,7 +162,7 @@ cffconvert -f apalike -i CITATION.cff
 
 ## Citing the rust-MAFFT port
 
-The rust-MAFFT manuscript is **in preparation for *Bioinformatics***.
+The rust-MAFFT manuscript is **in preparation for *Bioinformatics Advances***.
 Once published, the citation will appear here and `CITATION.cff` will
 be updated. Until then, please:
 
