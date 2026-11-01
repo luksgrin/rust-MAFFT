@@ -296,11 +296,11 @@ cells where the two C builds disagree with each other.
 
 `benchmarks/results/scaling_smoke_2026-10-31.tsv` is the pipeline check
 (n = 100, `--thread 1`, one replicate, every set): FFT-NS-2 is
-byte-identical between C, `mafft-rs` and pymafft on all 11 sets;
-`mafft-rs --parttree` panics on all 11 (`index out of bounds` in
-`mafft_core::progressive::merge_step_cached`, from n ≈ 50 sequences up),
-which has to be fixed before the `--parttree` column of the full run
-means anything.
+byte-identical between C, `mafft-rs` and pymafft on all 11 sets.
+In that TSV `mafft-rs --parttree` panics on all 11 (`index out of
+bounds` in `mafft_core::progressive::merge_step_cached`, from n ≈ 50
+sequences up); the PartTree port of #44 fixed that, and the smoke file
+has not been re-run since.
 
 ## High-throughput workload: thousands of small alignments (issue #23)
 
@@ -400,11 +400,10 @@ jobs, so its times only show that the measurements are wired up. Every
 path produced all 100 alignments. C outputs agree across the Snakemake
 and loop paths; Rust (CLI and pymafft) matches C on 50/50 orthogroups and
 49/50 DNA clusters. The exception, `dna_01715` (three CDS of 3.6–5.0 kb,
-`g01_1465`, `g02_1487`, `g11_1500`), is a genuine divergence on the FFT
-path: it differs with `--retree 1` / `--retree 2` (with or without
-`--maxiterate`, `--thread 1` or none) and agrees with `--nofft`,
-`--localpair` and `--globalpair`. The full run reports how many more
-clusters behave like it.
+`g01_1465`, `g02_1487`, `g11_1500`), was an FFT-path divergence
+(issue #43), fixed in #54: C's `Falign` correlates nucleotides on one
+channel. The cluster is now an end-to-end fixture and byte-identical
+under FFT-NS-1/2/i and `--auto`; the smoke TSV predates the fix.
 
 ## Memory footprint (issue #26)
 
@@ -480,9 +479,11 @@ What this shows:
 - `--parttree`: `mafft-rs` is higher on every input (the 120-sequence
   DNA fixture: 80 vs 23 MiB). Neither side uses threads here.
 - `--memsave`: C's figure drops (CDS FFT-NS-2 at one thread: 43 → 30
-  MiB); `mafft-rs` accepts the flag but has no Hirschberg DP yet
-  (`--memsave` in the CLI reference), so its figure is unchanged and C
-  is lower single-threaded on the CDS fixture.
+  MiB). In `mafft-rs`, `--memsave` routes only the non-FFT progressive
+  merges through `MSalignmm` (Hirschberg DP); the FFT merges of
+  FFT-NS-2 / FFT-NS-i keep the full DP (C's `Falign_udpari_long` is
+  not ported), so its figure is unchanged and C is lower
+  single-threaded on the CDS fixture.
 
 ## Multi-threading: determinism and speedup (issue #24)
 

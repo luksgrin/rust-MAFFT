@@ -536,7 +536,8 @@ C's peak grows with the thread count; `mafft-rs`'s barely did (measured
 before #56, see below). Single-threaded, `mafft-rs` uses 1.4–2.3× C's
 memory on L-INS-i (BB40049, 62 × 778: 1,787 vs 906 MiB) and more on
 `--parttree` and on the CDS fixture; `--memsave` lowers C's figure, while
-`mafft-rs` has no Hirschberg DP in FFT-NS-2 / FFT-NS-i.
+`mafft-rs` keeps the full DP for FFT merges (C's `Falign_udpari_long` and
+the 30,000-column switch are not ported).
 
 Wall clock before #56, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.4):
 

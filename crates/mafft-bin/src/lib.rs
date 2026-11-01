@@ -505,18 +505,17 @@ struct Args {
     seedtable: Option<PathBuf>,
 
     /// Memory-saving mode (matches C MAFFT `--memsave` →
-    /// `tbfast -M -B`, `scripts/mafft:543-544`). In C, this routes the
-    /// profile DP through `MSalignmm` (Hirschberg-style linear-space
-    /// divide-and-conquer) for the group merge, avoiding the O(N×M)
-    /// allocation. For sequences that fit in memory (≤ 30000 residues)
-    /// the alignment is byte-identical to default-mode output — C's
-    /// auto-switch at `len > 30000` (`tbfast.c:1096`) makes the two
-    /// paths converge for typical inputs. Our engine uses full-memory
-    /// DP regardless; the flag is accepted (for CLI parity) and
-    /// validated against the same script-level gating as C. NOTE: the
-    /// actual Hirschberg DP is not yet ported — long sequences that
-    /// would auto-trigger C's memsave path may OOM here. Tracked in
-    /// TODO §B.3.
+    /// `tbfast -M -B`, `scripts/mafft:543-544`). In C this sets
+    /// `alg='M'`: non-FFT profile merges use `MSalignmm`
+    /// (Hirschberg-style linear-space DP) and FFT merges use
+    /// `Falign_udpari_long`. Here the non-FFT progressive merges go
+    /// through the ported `MSalignmm`; FFT merges keep the full-memory
+    /// DP, because `Falign_udpari_long` is not ported. C's automatic
+    /// switch to `alg='M'` once a profile exceeds 30,000 columns in
+    /// `disttbfast` / `tbfast` (`tbfast.c:1096`) is not ported either,
+    /// so very long inputs that C would align in linear space may run
+    /// out of memory here. The flag is validated against the same
+    /// script-level gating as C.
     #[arg(long)]
     memsave: bool,
 
@@ -524,6 +523,8 @@ struct Args {
     /// (matches C MAFFT `--nomemsave` → `splittbfast -N` /
     /// `tbfast -N`, `scripts/mafft:545-546`). Sets `nevermemsave`, so
     /// PartTree keeps `A__align` after a profile passes 10_000 columns.
+    /// The 30,000-column switch of `disttbfast` / `tbfast` is not
+    /// ported, so outside PartTree the flag has no effect.
     #[arg(long)]
     nomemsave: bool,
 
