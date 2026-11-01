@@ -301,14 +301,14 @@ struct Args {
     pileup: bool,
 
     /// Write the per-input-column mapping (gap-insertion positions)
-    /// to `<ADDFILE>.map`. Requires `--add` / `--addfragments` plus
-    /// `--keeplength` (matches C MAFFT `--mapout` → internal
+    /// to `<ADDFILE>.map`. Used with `--add` / `--addfragments`, and
+    /// implies `--keeplength` (matches C MAFFT `--mapout` → internal
     /// `-Z -Y`). Mirrors `reconstructdeletemap` (addfunctions.c:1985).
     #[arg(long)]
     mapout: bool,
 
-    /// Compact form of `--mapout`. Same requirements. Mirrors C's
-    /// `reconstructdeletemap_compact` (`addfunctions.c:2047`).
+    /// Compact form of `--mapout`. Also implies `--keeplength`. Mirrors
+    /// C's `reconstructdeletemap_compact` (`addfunctions.c:2047`).
     #[arg(long)]
     compactmapout: bool,
 

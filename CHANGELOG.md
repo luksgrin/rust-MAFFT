@@ -124,6 +124,11 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **`--mapout` / `--compactmapout` help text.** Both imply
+  `--keeplength` (as in C, `scripts/mafft:699-710`); the help and
+  `docs/cli-reference.md` still said they required it. The
+  `--addfragments` code comment now describes the `distance=multi` path
+  it implements.
 - **`--addfragments --reorder` and the linkage options.** `addsingle`
   writes an `order` file (the existing tree's root members, each
   followed by the fragments placed next to it, `addsingle.c:3601-3615`)
