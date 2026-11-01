@@ -2137,20 +2137,6 @@ fn c_seed_name(name: &SeqName) -> String {
     format!("={}", String::from_utf8_lossy(name.as_bytes()))
 }
 
-/// C `seqcheck` (`mltaln9.c:60-85`): the first character of any sequence
-/// with `amino_n[c] == -1` aborts with `Illegal character c`, exit 1.
-/// Which residues are legal is decided by [`mafft_io::find_illegal_residue`]
-/// (C's `locaminod` / `locaminon` alphabets from `mafft_scoring`); this
-/// function only formats the failure. It is called from
-/// [`align_prepared`], so the file path and [`run_from_seqs`] apply the
-/// identical rule. Case has already been folded by the reader /
-/// [`prepare_in_memory`], as in C (`io.c:1462-1467`), so
-/// `dorp`-dependent legality (e.g. nucleotide `O` → `o` → illegal) falls
-/// out the same way.
-///
-/// C's banner goes through `reporterr`, which `--quiet` silences; the
-/// one-line `Illegal character` message is kept even then so a failing
-/// exit status is never mute.
 /// `--add` / `--addfragments`: the existing sequences must already be an
 /// alignment (all rows the same length). C checks this in
 /// `disttbfast.c:4147-4160` and `addsingle.c:3217-3228` with the message
@@ -2202,6 +2188,20 @@ fn check_output_alphabet(msa: &MultipleAlignment) -> Result<(), MafftError> {
     Ok(())
 }
 
+/// C `seqcheck` (`mltaln9.c:60-85`): the first character of any sequence
+/// with `amino_n[c] == -1` aborts with `Illegal character c`, exit 1.
+/// Which residues are legal is decided by [`mafft_io::find_illegal_residue`]
+/// (C's `locaminod` / `locaminon` alphabets from `mafft_scoring`); this
+/// function only formats the failure. It is called from
+/// [`align_prepared`], so the file path and [`run_from_seqs`] apply the
+/// identical rule. Case has already been folded by the reader /
+/// [`prepare_in_memory`], as in C (`io.c:1462-1467`), so
+/// `dorp`-dependent legality (e.g. nucleotide `O` → `o` → illegal) falls
+/// out the same way.
+///
+/// C's banner goes through `reporterr`, which `--quiet` silences; the
+/// one-line `Illegal character` message is kept even then so a failing
+/// exit status is never mute.
 fn seqcheck(set: &SequenceSet, quiet: bool) -> Result<(), MafftError> {
     let Some(bad) = mafft_io::find_illegal_residue(set) else {
         return Ok(());
