@@ -1478,11 +1478,35 @@ impl MafftEngine {
         let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();
         let new_names: Vec<String> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
 
-        if keeplength {
+        let mut msa = if keeplength {
             add_sequences_keeplength(&existing, &new_sequences, &new_names, &scoring, use_fft)
         } else {
             add_sequences(&existing, &new_sequences, &new_names, &scoring, use_fft)
+        };
+        // `--add --reorder`: C does not emit the guide tree that drove the
+        // merge. `disttbfast -E 2` overwrites `order` with `topolorderz` of
+        // the *second* guide tree (`disttbfast.c:4081-4102`), which
+        // `msadistmtxthread` builds from the first-cycle alignment
+        // (`:4618-4693`). `f2cl -r` then permutes `pre`
+        // (`scripts/mafft:2282`). On `--add` that second cycle does not
+        // move residues (`--retree 1` and the default are the same bytes
+        // on the pinned inputs), so the distances of this MSA are the ones
+        // C records. The first-cycle k-tuple tree is a different order.
+        if self.reorder_output {
+            let dm = compute_distance_matrix_scoring(
+                &msa.sequences,
+                &scoring.substitution_matrix,
+                &scoring.amino_map,
+                scoring.gap.open,
+            );
+            let topo = musclesupg(&dm, self.cluster_method);
+            let order = topo.dfs_order();
+            if order.len() == msa.nseq() {
+                msa.sequences = order.iter().map(|&i| msa.sequences[i].clone()).collect();
+                msa.names = order.iter().map(|&i| msa.names[i].clone()).collect();
+            }
         }
+        msa
     }
 
     /// Same as [`add_to_alignment`] with `keeplength = true`, but also

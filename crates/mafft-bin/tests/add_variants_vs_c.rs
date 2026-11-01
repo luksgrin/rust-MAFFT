@@ -83,7 +83,6 @@ fn add_maxiterate_2_matches_c() {
 /// (`-E 2`, `disttbfast.c:4081-4102`) and `f2cl -r` applies it. On these
 /// inputs that order is input order with sequences 11 and 12 swapped.
 #[test]
-#[ignore = "differs from in-tree C --add --reorder (#50)"]
 fn add_reorder_matches_c() {
     expect_both("--add", &["--reorder"], "sample.add6.reorder.aln", "sentinel.reorder.aln");
 }
