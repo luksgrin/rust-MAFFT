@@ -241,15 +241,15 @@ parity gaps, and none is undefined behaviour:
   garbage-only input.
 - **Byte-identity outside the parity corpora.** Both succeed but the bytes
   differ for: the 3000 × 30 aa set (width 121 vs 129), the 120 kb sequence
-  (a few gap moves), the low-complexity `--adjustdirection` set, `--treein`
-  with `nan`/`inf` branch lengths, and the `sample_add` runs other than
-  `--add` and `--add --keeplength`, which match since #49:
-  `--add --maxiterate 2`, `--add --reorder`, `--addfragments` and
-  `--addfragments --keeplength`. These also differ on the canonical
-  30 + 6 `--add` fixture. `residues` is `same` for all of them. They
-  contradict the statement in
-  [upstream policy](upstream-policy.md#bug-fix-direction) that no
-  other divergence is known, and need their own issues.
+  (a few gap moves), the low-complexity `--adjustdirection` set, and `--treein`
+  with `nan`/`inf` branch lengths. Of the `sample_add` runs, `--add` and
+  `--add --keeplength` have matched since #49. `--add --maxiterate 2`,
+  `--add --reorder` and the `--compactmapout` added-sequence names match
+  since #50, on the canonical 30 + 6 fixture and on the #40 reproducer.
+  `--addfragments` and `--addfragments --keeplength` still differ
+  (`residues` is `same`): C runs `addsingle`, and the port still uses the
+  progressive `--add` path. On the 30 + 6 fixture the widths are 871 vs
+  741, and 595 vs 595 with `--keeplength`.
 
 ## Published reports
 

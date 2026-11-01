@@ -1727,8 +1727,9 @@ fn align_prepared<'a>(
         // C (`scripts/mafft:699-710` set `-Y` along with `-z`/`-Z`).
         // Use the with-map variant so we can write the `.map` file
         // below. The keeplength alignment itself is identical.
-        if args.keeplength && (args.mapout || args.compactmapout) {
-            let (msa, deletelist) = engine.add_to_alignment_with_map(input, &new_input);
+        let keep = args.keeplength || args.mapout || args.compactmapout;
+        if keep && (args.mapout || args.compactmapout) {
+            let (mut msa, deletelist) = engine.add_to_alignment_with_map(input, &new_input);
             // Write .map file alongside the addfile, mirroring C
             // `scripts/mafft:2833-2837` (`cp _deletemap "$addfile.map"`).
             let map_path = {
@@ -1737,6 +1738,9 @@ fn align_prepared<'a>(
                 p
             };
             let map_content = if args.compactmapout {
+                // C rewrites the added sequences' names in the same pass
+                // (`addfunctions.c:2156-2161`, `MODIFYNAME`).
+                apply_compact_map_names(&mut msa, &deletelist, &new_input, input.nseq());
                 build_compact_map(&deletelist, &new_input, &msa, input.nseq())
             } else {
                 build_full_map(&deletelist, &new_input, &msa, input.nseq())
@@ -1749,7 +1753,7 @@ fn align_prepared<'a>(
             }
             msa
         } else {
-            engine.add_to_alignment(input, &new_input, args.keeplength)
+            engine.add_to_alignment(input, &new_input, keep)
         }
     } else {
         if args.maxambiguous.is_some() && !args.quiet {
@@ -1860,7 +1864,16 @@ fn align_prepared<'a>(
     // in the alignment it can only be a protein residue.
     if let Some(orig_map) = originals {
         for i in 0..msa.sequences.len() {
-            let Some(orig) = orig_map.get(&msa.names[i]) else { continue };
+            // `--compactmapout` has already prefixed the name with
+            // `Nins:…|` (`addfunctions.c:2159`). C's `restoreu` looks up
+            // the original title after that `|` when `mapout == 2`
+            // (`restoreu.c:270-274`).
+            let lookup = if args.compactmapout {
+                msa.names[i].split_once('|').map(|(_, rest)| rest).unwrap_or(msa.names[i].as_str())
+            } else {
+                msa.names[i].as_str()
+            };
+            let Some(orig) = orig_map.get(lookup) else { continue };
             let orig_no_gaps: Vec<u8> = orig.iter().copied()
                 .filter(|c| *c != b'-').collect();
             let mut k = 0;
@@ -2539,6 +2552,55 @@ fn build_full_map(
         }
     }
     out
+}
+
+/// C `reconstructdeletemap_compact` rewrites each added sequence that
+/// lost residues to `{nins}ins:{first-run}|{original}`
+/// (`addfunctions.c:2108-2161`, `MODIFYNAME`). One insertion run is
+/// `{start}{residue}-{end}{residue}`; further runs collapse to `etc`.
+/// The name buffer is `B` = 256 bytes including the leading `>`
+/// (`mltaln.h`), so the displayed title is at most 255 bytes.
+fn compact_insertion_name(original: &str, addbk: &[u8], runs: &[(usize, usize)]) -> String {
+    if runs.is_empty() {
+        return original.to_string();
+    }
+    let (pos, len) = runs[0];
+    let start = pos + 1;
+    let end = pos + len;
+    let first = addbk.get(pos).copied().unwrap_or(b'X') as char;
+    let last = addbk.get(pos + len - 1).copied().unwrap_or(b'X') as char;
+    let ins = if runs.len() == 1 {
+        format!("{start}{first}-{end}{last}")
+    } else {
+        format!("{start}{first}-{end}{last},etc")
+    };
+    let full = format!("{}ins:{ins}|{original}", runs.len());
+    let mut end_byte = full.len().min(255);
+    while end_byte > 0 && !full.is_char_boundary(end_byte) {
+        end_byte -= 1;
+    }
+    full[..end_byte].to_string()
+}
+
+/// Apply [`compact_insertion_name`] to the added rows of `msa`.
+/// `deletelist[i]` indexes the gap-stripped added sequence (`gappick0`).
+fn apply_compact_map_names(
+    msa: &mut mafft_core::MultipleAlignment,
+    deletelist: &[Vec<(usize, usize)>],
+    new_input: &mafft_types::SequenceSet,
+    n_existing: usize,
+) {
+    for (i, runs) in deletelist.iter().enumerate() {
+        if runs.is_empty() {
+            continue;
+        }
+        let raw = &new_input.sequences[i].data;
+        let addbk: Vec<u8> = raw.iter().copied().filter(|&c| c != b'-').collect();
+        let name = compact_insertion_name(&new_input.sequences[i].name, &addbk, runs);
+        if let Some(slot) = msa.names.get_mut(n_existing + i) {
+            *slot = name;
+        }
+    }
 }
 
 /// Build the C `--compactmapout` map: one block per added sequence

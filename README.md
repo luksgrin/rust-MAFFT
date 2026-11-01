@@ -433,7 +433,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 | `mafft-core/tests/end_to_end.rs`      | 120 (2 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
 | Rust FFI cross-validation (`cross_validate*.rs`, 15 files) | 82 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
 | `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
-| `mafft-bin/tests/` (`input_handling_vs_c`, `inmemory_parity`, `c_parity_dna`) | 58 (1 ignored) | CLI-level byte-identity: the 22-file input corpus, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`) |
+| `mafft-bin/tests/` (`input_handling_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`) | 61 (3 ignored) | CLI-level byte-identity: the 22-file input corpus, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), and the `--add` variant fixtures (two `--addfragments` tests stay ignored) |
 | `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
 | Python tests                          | 160 | API (32), parity/shape (23), **CLI-option parity against the `mafft-rs` binary** (82), Biopython interop (18), console script (5) |
 
@@ -445,11 +445,11 @@ Regression guards for C parity live in:
 
 Any regression in DP indexing, boundary handling, FFT anchor placement, refinement-tree distance, profile blending, `--add` profilealignment, the input read path or the `--thread` refinement rules fails at least one of them.
 
-7 tests are `#[ignore]`-gated: six deliberate diagnostic / bisection tools (annotated at the call site) and the one documented input-handling residual below.
+7 tests are `#[ignore]`-gated: six deliberate diagnostic / bisection tools (annotated at the call site) and the one documented input-handling residual below. Two further tests in `add_variants_vs_c.rs` stay ignored until `--addfragments` follows C's `addsingle` (section D).
 
 ## Known limitations
 
-These three categories cover everything `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526 for. No other divergence from C is known (2026-09-06).
+These categories cover the modes where `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526. The `--addfragments` gap in D is issue #50.
 
 ### A. External-dependency-blocked modes
 
@@ -485,6 +485,10 @@ These modes are intentionally not implemented. `mafft-rs` either rejects the fla
 | **Alternative pairwise aligners** | `--blastpair`, `--lastpair`, `--lastmultipair`, `--fastapair`, `--fastswpair`, `--hybridpair`, `--longshortpair`, `--shortlongpair` | Require external BLAST/LAST/FASTA binaries with non-trivial output-parsing glue. Use the built-in `--localpair` / `--globalpair` / `--genafpair` aligners instead. |
 | **DASH-only sequence-filter flags** | `--excludehomologs`, `--originalseqonly` | C documents both as "works with `--dash` only"; the DASH structure-DB pipeline falls under the RNA-structure category above. Wired as no-ops, matching what C does without `--dash`. |
 | **MPI parallelism** | `--mpi` | `mafft-rs` uses Rayon for in-process multithreading. |
+
+### D. `--addfragments` is not the C `addsingle` path (issue #50)
+
+`--add`, `--add --keeplength`, `--add --reorder`, `--add --maxiterate` and `--compactmapout` (alignment and added-sequence names) match the in-tree C build on the 30 + 6 sample and on the #40 reproducer. `--addfragments` and `--addfragments --keeplength` do not. C runs `addsingle` (`scripts/mafft:2671`, `addsingle.c`): each fragment is placed against its nearest sequence from 6-mer distances, with `cycle=1` and `iterate=0`. `mafft-rs` still sends that flag through the progressive `--add` path (`disttbfast -K -I`). On the 30 + 6 fixture the widths are 871 (C) and 741 (rust); with `--keeplength` both are 595 columns and the gap placement differs. The tests are `#[ignore]`d in `crates/mafft-bin/tests/add_variants_vs_c.rs`. `--addfragments --localpair` is not used as a reference: C reads off the end of a buffer on some of those inputs (see [memory safety](docs/architecture/memory-safety.md)).
 
 ## Performance
 
