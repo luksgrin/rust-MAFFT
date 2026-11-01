@@ -23,7 +23,7 @@ This project provides:
 ## Install
 
 > [!WARNING]
-> C MAFFT is not bit-reproducible across compilers. Upstream MAFFT 7.526 does not set `-ffp-contract`: Apple clang fuses `a * b + c` into one rounding (the `--bl 50 --retree 2 --maxiterate 0` sentinel is 712 columns) and gcc / MSVC round the multiply and the add separately (738 columns), including on Linux aarch64. A default install matches the C toolchain on that platform — fused on Apple, not fused on Linux and Windows — and the published wheels are built the same way. There is no runtime switch. [Details, and how to build the other toolchain.](docs/architecture/byte-identity.md#byte-identity-is-per-platform-build)
+> C MAFFT is not bit-reproducible across compilers. Upstream MAFFT 7.526 does not set `-ffp-contract`: Apple clang on Apple Silicon fuses `a * b + c` into one rounding (the `--bl 50 --retree 2 --maxiterate 0` sentinel is 712 columns) and gcc / MSVC round the multiply and the add separately (738 columns), including on Linux aarch64 and on Intel macOS. A default install matches the C toolchain on that platform — fused on Apple Silicon, not fused on Intel macOS, Linux and Windows — and the published wheels are built the same way. There is no runtime switch. [Details, and how to build the other toolchain.](docs/architecture/byte-identity.md#byte-identity-is-per-platform-build)
 
 ```bash
 pip install pymafft        # Python API + the bundled `mafft-rs` CLI
@@ -365,15 +365,16 @@ The original MAFFT C code is included as a git submodule for testing and cross-v
 
 ### Reference build and platforms
 
-C MAFFT 7.526 is not bit-reproducible across compilers. The upstream Makefile leaves `-ffp-contract` unset (`-O3 -std=c99`), so the same C source produces both alignments: Apple clang fuses `a*b + c` into one rounding, and gcc in that ISO C mode does not, including on Linux aarch64, where the CPU has FMA hardware. MSVC does not contract by default either. On some inputs the rounding changes the alignment, so byte-identity is stated per platform. The reference is the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags (`make -C mafft-upstream/core`), on the platform you run on; no fixture is generated from a downloaded binary.
+C MAFFT 7.526 is not bit-reproducible across compilers. The upstream Makefile leaves `-ffp-contract` unset (`-O3 -std=c99`), so the same C source produces both alignments: Apple clang on Apple Silicon fuses `a*b + c` into one rounding, and gcc in that ISO C mode does not, including on Linux aarch64, where the CPU has FMA hardware. MSVC does not contract by default either, and neither does Apple clang on Intel macOS, whose baseline x86-64 target has no FMA instruction. On some inputs the rounding changes the alignment, so byte-identity is stated per platform. The reference is the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags (`make -C mafft-upstream/core`), on the platform you run on; no fixture is generated from a downloaded binary.
 
 | Platform | C compiler | Fused ops per C binary | `--bl 50` width (C = mafft-rs) |
 |----------|------------|------------------------|--------------------------------|
 | macOS arm64 | Apple clang | ~1140 | 712 |
 | Linux x86-64 | gcc | 0 | 738 |
 | Linux aarch64 | gcc | 0 | 738 |
+| macOS x86-64 | Apple clang | 0 | 738 |
 
-A default `mafft-rs` build follows that compiler: fused on Apple targets, not fused on Linux or Windows. The BAliBASE 1930/1930 protein sweep was run on macOS arm64. CI verifies the full byte-identity and FFI cross-validation suite against the in-tree C build on ubuntu x86-64, ubuntu aarch64 and macOS arm64 on every push. The aarch64 leg checks that gcc emitted 0 fused ops and that the `--bl 50` sentinel is 738 columns and equal to C, and each leg re-derives the policy-sensitive fixtures from that build. See [docs/architecture/byte-identity.md](docs/architecture/byte-identity.md). To match the other C build, rebuild from source with a Cargo feature; there is no runtime flag. The commands are under [Building from source](#building-from-source).
+A default `mafft-rs` build follows that compiler: fused on Apple Silicon, not fused on Intel macOS, Linux or Windows. The macOS x86-64 row follows from the compiler output (`mulsd` + `addsd` at `-O3 -std=c99`); CI has no Intel macOS leg. The BAliBASE 1930/1930 protein sweep was run on macOS arm64. CI verifies the full byte-identity and FFI cross-validation suite against the in-tree C build on ubuntu x86-64, ubuntu aarch64 and macOS arm64 on every push. The aarch64 leg checks that gcc emitted 0 fused ops and that the `--bl 50` sentinel is 738 columns and equal to C, and each leg re-derives the policy-sensitive fixtures from that build. See [docs/architecture/byte-identity.md](docs/architecture/byte-identity.md). To match the other C build, rebuild from source with a Cargo feature; there is no runtime flag. The commands are under [Building from source](#building-from-source).
 
 ## Architecture
 
@@ -576,17 +577,17 @@ cd rust-MAFFT
 cargo build --release
 ```
 
-The binary is at `target/release/mafft-rs`. C MAFFT leaves `-ffp-contract` unset, so the compiler chooses the rounding: Apple clang fuses `a * b + c`, and gcc in `-std=c99` (including on Linux aarch64) and MSVC do not. A default build does the same, which is also what `pip install pymafft` installs. There is no runtime flag; `fmadd` is fixed when the binary is compiled. A published wheel that should follow the other C build has to be rebuilt from source with a feature:
+The binary is at `target/release/mafft-rs`. C MAFFT leaves `-ffp-contract` unset, so the compiler chooses the rounding: Apple clang on Apple Silicon fuses `a * b + c`, and gcc in `-std=c99` (including on Linux aarch64), MSVC and Apple clang on Intel macOS do not. A default build does the same, which is also what `pip install pymafft` installs. There is no runtime flag; `fmadd` is fixed when the binary is compiled. A published wheel that should follow the other C build has to be rebuilt from source with a feature:
 
 ```bash
 # Platform default, same as `pip install pymafft`:
-# fused on Apple, not fused on Linux (x86-64 and aarch64) or Windows.
+# fused on Apple Silicon, not fused on Intel macOS, Linux (x86-64 and aarch64) or Windows.
 cargo build --release -p mafft-rs
 
 # Not fused, on any machine (a gcc or MSVC C build; 738-column sentinel).
 cargo build --release -p mafft-rs --features fp-contract-none
 
-# Fused, on any machine (an Apple-clang C build; 712-column sentinel).
+# Fused, on any machine (an Apple Silicon clang C build; 712-column sentinel).
 cargo build --release -p mafft-rs --features fp-contract-fma
 ```
 

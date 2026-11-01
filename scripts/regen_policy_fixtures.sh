@@ -77,8 +77,8 @@ if [ -z "${MAFFT_BINARIES:-}" ]; then
 fi
 
 # Policy: explicit override, else the default in-tree compiler.
-# Apple clang (Darwin) contracts; gcc -std=c99 does not, including on
-# Linux aarch64. `uname -m` stays in the diff labels below.
+# Apple clang on arm64 contracts; Apple clang on x86-64 and gcc -std=c99
+# do not, including on Linux aarch64. `uname -m` stays in the diff labels below.
 arch=$(uname -m)
 os=$(uname -s)
 if [ -n "${MAFFT_FP_POLICY:-}" ]; then
@@ -86,10 +86,10 @@ if [ -n "${MAFFT_FP_POLICY:-}" ]; then
     policy_source="MAFFT_FP_POLICY"
 else
     case "$os" in
-        Darwin) policy=fma ;;
+        Darwin) case "$arch" in arm64|aarch64) policy=fma ;; *) policy=nofma ;; esac ;;
         *)      policy=nofma ;;
     esac
-    policy_source="uname -s = $os"
+    policy_source="uname -s = $os, uname -m = $arch"
 fi
 case "$policy" in
     fma|nofma) ;;

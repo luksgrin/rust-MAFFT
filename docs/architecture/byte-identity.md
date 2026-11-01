@@ -315,13 +315,14 @@ construction.
 
     This is a property of the original MAFFT. Upstream MAFFT 7.526
     does not set `-ffp-contract`, so the same C source produces two
-    alignments. Apple clang fuses `a * b + c` into one rounding (712
+    alignments. Apple clang on Apple Silicon fuses `a * b + c` into one rounding (712
     columns on the `--bl 50 --retree 2 --maxiterate 0` sentinel).
     gcc, in the Makefile's `-std=c99` mode, and MSVC round the
     multiply and the add separately (738 columns), including on Linux
     aarch64, where the CPU has FMA hardware. A single binary does not
     flip between the two. rust-MAFFT copies the choice when the binary
-    is built: fused on Apple, not fused on Linux and Windows. There is
+    is built: fused on Apple Silicon, not fused on Intel macOS, Linux
+    and Windows. There is
     no runtime switch. `--features fp-contract-fma` matches an
     Apple-clang C build on any machine; `--features fp-contract-none`
     matches a gcc or MSVC C build on any machine, including a Mac.
@@ -351,8 +352,11 @@ sentinel case is `--bl 50 --retree 2 --maxiterate 0` on the 36-sequence
 | macOS arm64 | Apple clang | ~1140 | 712 | 712 |
 | Linux x86-64 | gcc | 0 | 738 | 738 |
 | Linux aarch64 | gcc | 0 | 738 | 738 |
+| macOS x86-64 | Apple clang | 0 | 738 (not in CI) | 738 |
 
-`mafft_types::fp::CONTRACTS_FMA` defaults to fused only on Apple targets,
+Apple clang on Intel emits `mulsd` + `addsd` for `a*b + c` at `-O3 -std=c99`:
+the baseline x86-64 target has no FMA instruction unless `-mfma` is given.
+`mafft_types::fp::CONTRACTS_FMA` defaults to fused only on Apple Silicon,
 so the Linux aarch64 build matches that gcc reference rather than the
 Apple-clang one. A gcc build on Apple Silicon also matches the `.nofma`
 fixtures (checked with `MAFFT_FP_POLICY=nofma scripts/regen_policy_fixtures.sh … check`)
@@ -376,9 +380,10 @@ against.
 
 - `mafft_types::fp::CONTRACTS_FMA` — a `const bool`, chosen at compile
   time (no runtime flag, so the inner loop does not grow a per-cell
-  check). With neither feature it is `true` on Apple targets
-  (`target_vendor = "apple"`, mirroring Apple clang) and `false`
-  elsewhere (gcc in `-std=c99`, including Linux aarch64, and MSVC).
+  check). With neither feature it is `true` on Apple Silicon
+  (`target_vendor = "apple"` and `target_arch = "aarch64"`, mirroring
+  Apple clang there) and `false` elsewhere (Apple clang on Intel macOS,
+  gcc in `-std=c99` including Linux aarch64, and MSVC).
 - `mafft_types::fp::fmadd(a, b, c)` — computes `a*b + c` with a single
   rounding when `CONTRACTS_FMA` is set, and as two separate operations
   otherwise. Every hot loop that has to match a contracted C expression

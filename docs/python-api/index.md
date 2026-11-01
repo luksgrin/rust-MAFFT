@@ -301,18 +301,20 @@ listed there can also be passed in-process through `pymafft.run`.
 !!! warning "C MAFFT is not bit-reproducible across compilers"
 
     Upstream MAFFT 7.526 does not set `-ffp-contract`. Apple clang
-    fuses `a * b + c` into one rounding (712 columns on the
+    on Apple Silicon fuses `a * b + c` into one rounding (712 columns on the
     `--bl 50 --retree 2 --maxiterate 0` sentinel); gcc and MSVC round
     the multiply and the add separately (738 columns), including on
-    Linux aarch64. Published wheels follow the toolchain that built
-    them (`*-apple-darwin` fused, Linux and Windows not fused). There
+    Linux aarch64 and Intel macOS. Published wheels follow the toolchain
+    that built them (`arm64` macOS fused; Intel macOS, Linux and Windows
+    not fused). There
     is no runtime switch. Build commands for the other toolchain are
     under [Building from source](#building-from-source).
 
 C MAFFT 7.526 leaves `-ffp-contract` unset, so the same source produces
-two alignments: Apple clang fuses `a * b + c` into one rounding, and gcc
-in the upstream Makefile's `-std=c99` mode does not, including on Linux
-aarch64. MSVC does not contract by default either. The 36-sequence
+two alignments: Apple clang on Apple Silicon fuses `a * b + c` into one
+rounding, and gcc in the upstream Makefile's `-std=c99` mode does not,
+including on Linux aarch64. MSVC and Apple clang on Intel macOS do not
+contract by default either. The 36-sequence
 sample with `--bl 50 --retree 2 --maxiterate 0` is 712 columns when
 fused and 738 when not.
 
@@ -323,7 +325,8 @@ source with a Cargo feature (below).
 
 | Wheel tag | Policy |
 |--|--|
-| `*-apple-darwin` | fused (Apple clang; 712-column sentinel) |
+| `macosx_*_arm64` | fused (Apple clang; 712-column sentinel) |
+| `macosx_*_x86_64` | not fused (Apple clang without FMA; 738-column sentinel) |
 | `*-unknown-linux-*` | not fused (gcc `-std=c99`; 738-column sentinel) |
 | `*-windows-*` | not fused (MSVC; 738-column sentinel) |
 
@@ -346,7 +349,7 @@ To match the other C build, use one of these instead of
 
 ```sh
 maturin develop --release --features fp-contract-none   # gcc / MSVC, any machine
-maturin develop --release --features fp-contract-fma    # Apple clang, any machine
+maturin develop --release --features fp-contract-fma    # Apple Silicon clang, any machine
 ```
 
 `maturin develop` does not bundle the `mafft-rs` console script; see
