@@ -662,10 +662,7 @@ pub fn align_with_anchors_outgap(
     cut2.push(prof2.length);
     let count = cut1.len();
 
-    let mut all_ops = Vec::new();
-    let mut total_score = 0.0;
-
-    for i in 0..count - 1 {
+    let align_segment = |i: usize| -> Option<Alignment> {
         let p1 = cut1[i];
         let p2 = cut2[i];
         let q1 = cut1[i + 1];
@@ -680,10 +677,26 @@ pub fn align_with_anchors_outgap(
         if q1 > p1 || q2 > p2 {
             let sub1 = prof1.sub_profile(p1, q1);
             let sub2 = prof2.sub_profile(p2, q2);
-            let seg_aln = profile_align(&sub1, &sub2, matrix, gap, head_gap, tail_gap);
-            total_score += seg_aln.score;
-            all_ops.extend(seg_aln.operations);
+            Some(profile_align(&sub1, &sub2, matrix, gap, head_gap, tail_gap))
+        } else {
+            None
         }
+    };
+    // The segments' DPs are independent of each other; on a multi-thread
+    // pool they run in parallel, each into its own slot, and are then
+    // concatenated and summed in segment order exactly as in the serial loop.
+    let segments: Vec<Option<Alignment>> = if count > 2 && crate::parallel_enabled() {
+        use rayon::prelude::*;
+        (0..count - 1).into_par_iter().map(align_segment).collect()
+    } else {
+        (0..count - 1).map(align_segment).collect()
+    };
+
+    let mut all_ops = Vec::new();
+    let mut total_score = 0.0;
+    for seg_aln in segments.into_iter().flatten() {
+        total_score += seg_aln.score;
+        all_ops.extend(seg_aln.operations);
     }
 
     Alignment {

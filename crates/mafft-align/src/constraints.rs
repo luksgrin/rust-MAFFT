@@ -44,7 +44,81 @@ pub fn build_imp_matrix(
     fastathreshold: f64,
 ) -> Vec<Vec<f64>> {
     let mut imp = vec![vec![0.0f64; lgth2]; lgth1];
+    for_each_imp_cell(
+        localhom, group1, group2, g1_seqs, g2_seqs, eff1, eff2, lgth1, lgth2, fastathreshold,
+        |k1, k2, importance, effij| {
+            // C `mltaln9.c:15665`:
+            //   impmtx[k1][k2] += tmpptr->importance * effij;
+            // arm64 clang fuses into a single `fmadd` (one
+            // rounding; baseline x86-64 gcc does not, see
+            // `mafft_types::fp`). Plain Rust `+=` is 2 roundings, and
+            // the resulting per-cell ULP drift accumulates
+            // over the diagonal sum into a multi-unit
+            // impmatch drift that flips accept/reject
+            // decisions late in iterative refinement
+            // (BB30028 L-INS-i iter=3 fingerprint).
+            imp[k1][k2] = fmadd(importance, effij, imp[k1][k2]);
+        },
+    );
+    if std::env::var_os("RS_IMPMTX_DUMP").is_some() {
+        dump_imp_matrix(&imp, localhom, group1, group2, g1_seqs, g2_seqs, eff1, eff2, lgth1, lgth2, fastathreshold);
+    }
+    imp
+}
+
+/// The diagonal `impmtx[k][k]` (`k < min(lgth1, lgth2)`) of the matrix
+/// `build_imp_matrix` would return, without materialising the other cells.
+/// Every diagonal cell receives exactly the same `fmadd` sequence, in the
+/// same `(member1, member2, region)` order, as in `build_imp_matrix`, so the
+/// values are bit-identical.
+pub fn build_imp_diagonal(
+    localhom: &LocalHomologyTable,
+    group1: &[usize],
+    group2: &[usize],
+    g1_seqs: &[&[u8]],
+    g2_seqs: &[&[u8]],
+    eff1: &[f64],
+    eff2: &[f64],
+    lgth1: usize,
+    lgth2: usize,
+    fastathreshold: f64,
+) -> Vec<f64> {
+    let mut diag = vec![0.0f64; lgth1.min(lgth2)];
+    for_each_imp_cell(
+        localhom, group1, group2, g1_seqs, g2_seqs, eff1, eff2, lgth1, lgth2, fastathreshold,
+        |k1, k2, importance, effij| {
+            if k1 == k2 {
+                diag[k1] = fmadd(importance, effij, diag[k1]);
+            }
+        },
+    );
+    diag
+}
+
+/// The `fillimp` walk shared by `build_imp_matrix` and `build_imp_diagonal`:
+/// calls `add(k1, k2, importance, effij)` for every residue-residue column
+/// of every region, in C's `(member1, member2, region, column)` order.
+#[inline(always)]
+fn for_each_imp_cell(
+    localhom: &LocalHomologyTable,
+    group1: &[usize],
+    group2: &[usize],
+    g1_seqs: &[&[u8]],
+    g2_seqs: &[&[u8]],
+    eff1: &[f64],
+    eff2: &[f64],
+    lgth1: usize,
+    lgth2: usize,
+    fastathreshold: f64,
+    mut add: impl FnMut(usize, usize, f64, f64),
+) {
     let effijx = fastathreshold;
+
+    // Raw-residue -> gapped-column tables, built once per member instead of
+    // re-walking the gapped sequence for every region endpoint (the walk
+    // dominated L-INS-i / G-INS-i refinement time on long inputs).
+    let pos1: Vec<ResiduePositions> = g1_seqs.iter().map(|s| ResiduePositions::new(s)).collect();
+    let pos2: Vec<ResiduePositions> = g2_seqs.iter().map(|s| ResiduePositions::new(s)).collect();
 
     for (gi, &s1) in group1.iter().enumerate() {
         for (gj, &s2) in group2.iter().enumerate() {
@@ -53,28 +127,30 @@ pub fn build_imp_matrix(
             let effij = eff1[gi] * eff2[gj] * effijx;
             let seq1 = g1_seqs[gi];
             let seq2 = g2_seqs[gj];
+            let p1 = &pos1[gi];
+            let p2 = &pos2[gj];
 
             for region in regions {
-                let start1 = match move_to_seq_pos(seq1, region.start1 as usize) {
+                let start1 = match p1.get(region.start1 as usize) {
                     Some(p) => p,
                     None => continue,
                 };
                 let end1 = if region.start1 == region.end1 {
                     start1
                 } else {
-                    match move_to_seq_pos(seq1, region.end1 as usize) {
+                    match p1.get(region.end1 as usize) {
                         Some(p) => p,
                         None => continue,
                     }
                 };
-                let start2 = match move_to_seq_pos(seq2, region.start2 as usize) {
+                let start2 = match p2.get(region.start2 as usize) {
                     Some(p) => p,
                     None => continue,
                 };
                 let end2 = if region.start2 == region.end2 {
                     start2
                 } else {
-                    match move_to_seq_pos(seq2, region.end2 as usize) {
+                    match p2.get(region.end2 as usize) {
                         Some(p) => p,
                         None => continue,
                     }
@@ -87,17 +163,7 @@ pub fn build_imp_matrix(
                     let c2 = seq2[k2];
                     if c1 != b'-' && c2 != b'-' {
                         if k1 < lgth1 && k2 < lgth2 {
-                            // C `mltaln9.c:15665`:
-                            //   impmtx[k1][k2] += tmpptr->importance * effij;
-                            // arm64 clang fuses into a single `fmadd` (one
-                            // rounding; baseline x86-64 gcc does not, see
-                            // `mafft_types::fp`). Plain Rust `+=` is 2 roundings, and
-                            // the resulting per-cell ULP drift accumulates
-                            // over the diagonal sum into a multi-unit
-                            // impmatch drift that flips accept/reject
-                            // decisions late in iterative refinement
-                            // (BB30028 L-INS-i iter=3 fingerprint).
-                            imp[k1][k2] = fmadd(region.importance, effij, imp[k1][k2]);
+                            add(k1, k2, region.importance, effij);
                         }
                         k1 += 1;
                         k2 += 1;
@@ -114,6 +180,22 @@ pub fn build_imp_matrix(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dump_imp_matrix(
+    imp: &[Vec<f64>],
+    localhom: &LocalHomologyTable,
+    group1: &[usize],
+    group2: &[usize],
+    g1_seqs: &[&[u8]],
+    g2_seqs: &[&[u8]],
+    eff1: &[f64],
+    eff2: &[f64],
+    lgth1: usize,
+    lgth2: usize,
+    effijx: f64,
+) {
     if let Ok(f) = std::env::var("RS_IMPMTX_DUMP") {
         use std::io::Write;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -122,7 +204,7 @@ pub fn build_imp_matrix(
         if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
             let mut sum = 0.0f64;
             let mut nonzero = 0usize;
-            for row in &imp {
+            for row in imp {
                 for &v in row {
                     if v != 0.0 { sum += v; nonzero += 1; }
                 }
@@ -177,7 +259,6 @@ pub fn build_imp_matrix(
             }
         }
     }
-    imp
 }
 
 /// Extract local-homology regions from a pair of pre-aligned sequences,
@@ -637,6 +718,33 @@ fn move_to_seq_pos(seq: &[u8], raw_pos: usize) -> Option<usize> {
     }
 }
 
+/// Precomputed `move_to_seq_pos` for one gapped sequence: the column of
+/// every residue, so each lookup is O(1) and returns exactly what
+/// `move_to_seq_pos(seq, raw_pos)` returns.
+struct ResiduePositions {
+    cols: Vec<usize>,
+}
+
+impl ResiduePositions {
+    fn new(seq: &[u8]) -> Self {
+        let cols = seq
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| c != b'-')
+            .map(|(idx, _)| idx)
+            .collect();
+        ResiduePositions { cols }
+    }
+
+    #[inline]
+    fn get(&self, raw_pos: usize) -> Option<usize> {
+        match self.cols.get(raw_pos) {
+            Some(&idx) => Some(idx),
+            None => self.cols.last().map(|&last| last + 1),
+        }
+    }
+}
+
 /// Result of one pairwise alignment for parallel collection.
 struct PairResult {
     i: usize,
@@ -1070,6 +1178,17 @@ pub fn build_homology_table_with_unalign(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn residue_positions_match_move_to_seq_pos() {
+        let seqs: [&[u8]; 6] = [b"", b"---", b"A", b"-A-C--GT-", b"ACGT", b"--AC-G-T--"];
+        for s in seqs {
+            let p = ResiduePositions::new(s);
+            for raw in 0..s.len() + 4 {
+                assert_eq!(p.get(raw), move_to_seq_pos(s, raw), "seq {:?} raw {raw}", s);
+            }
+        }
+    }
 
     fn simple_setup() -> (Vec<Vec<f64>>, [u8; 256]) {
         let mut mtx = vec![vec![-100.0f64; 5]; 5];

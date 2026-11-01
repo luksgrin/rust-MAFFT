@@ -212,6 +212,37 @@ public surfaces stable from 0.1.0 anyway.
   `C build: gcc 14` / `gcc 15` job that builds the shim and runs the
   upstream Makefile in the official `gcc` images.
 
+### Performance
+
+- **`--thread N` scales the iterative modes** (issue #48). The per-call
+  rayon pool is unchanged. On it, independent units write into
+  preallocated slots and are consumed in a fixed order, so `mafft-rs` at
+  every thread count matches `mafft-rs --thread 1`, which matches C
+  `--thread 1` (C's `athread` rules when `nthread > 0`). C's own
+  `--thread N` for N ≥ 2 is nondeterministic and is not the reference.
+  No DP cell arithmetic and no decision-boundary summation changed
+  (`mafft_types::fp::fmadd` operand order is the same). What runs on the
+  pool:
+  - the all-vs-all pairwise alignments of L-INS-i, G-INS-i and E-INS-i
+    (already parallel; unchanged here);
+  - progressive merges of disjoint guide-tree subtrees, one level at a
+    time (`--c-compat` stays serial, because its cpmx memo carries from
+    merge to merge), and the FFT segments of one profile-profile merge;
+  - the FFT-NS-i refinement segments, each started from its own slice;
+  - refinement branches: up to `--thread N` branches are scored
+    speculatively against the same alignment, then applied in the
+    `--thread 1` visiting order. An accepted branch discards the later
+    speculative results, which are re-scored against the updated
+    alignment. `--thread 1` still selects C's `athread` convergence rule
+    and does no speculative work.
+  Two single-thread changes sit on the same path: `build_imp_matrix`
+  maps a raw column to its residue index in constant time, and the
+  `G__align11` row loop hoists the substitution-matrix row and skips the
+  warp-record copies when warp is off.
+  Idle-machine wall-clock medians for `--thread 1` versus `--thread 8`
+  are not in this entry yet; they replace this sentence after the formal
+  run.
+
 ### Python
 
 - `pymafft` builds against PyO3 0.30 (was 0.24), which supports

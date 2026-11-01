@@ -30,7 +30,7 @@ pub use multimtx::MultiMtx;
 pub use fft_align::{fft_profile_align, fft_total_eff, find_fft_anchors, FftAlignParams, Anchor};
 pub use constraints::{
     build_local_homology_table, build_homology_table,
-    build_homology_table_with_unalign, build_imp_matrix,
+    build_homology_table_with_unalign, build_imp_diagonal, build_imp_matrix,
     recompute_importance, PairAligner, FASTATHRESHOLD_DEFAULT,
     extract_putlocalhom2_regions, build_seed_homology_table,
     merge_homology_tables, parse_hat3_seed, SeedGroup,
@@ -39,3 +39,28 @@ pub use constrained_align::{
     constrained_profile_align, partial_profile_align, ConstrainedAlignParams,
 };
 pub use msalign::msalignmm;
+
+/// Whether any forensic trace is requested through the environment
+/// (`RS_*`, `RDBG*`, `MAFFT_DEBUG*`, `MAFFT_DUMP*`, `RUST_MAFFT_TRACE`,
+/// `RUST_IMP_DUMP`). Those traces append to files from inside the DP and
+/// refinement code in call order, so the parallel paths (which only ever
+/// change *where* independent work runs, never its result) fall back to
+/// the sequential order while one is set.
+pub fn forensic_trace_active() -> bool {
+    std::env::vars_os().any(|(k, _)| {
+        k.to_str().is_some_and(|k| {
+            k.starts_with("RS_")
+                || k.starts_with("RDBG")
+                || k.starts_with("MAFFT_DEBUG")
+                || k.starts_with("MAFFT_DUMP")
+                || k == "RUST_MAFFT_TRACE"
+                || k == "RUST_IMP_DUMP"
+        })
+    })
+}
+
+/// Run independent work on the current rayon pool when it has more than
+/// one thread and no forensic trace is active.
+pub fn parallel_enabled() -> bool {
+    rayon::current_num_threads() > 1 && !forensic_trace_active()
+}
