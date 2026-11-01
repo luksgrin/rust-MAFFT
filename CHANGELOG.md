@@ -158,7 +158,7 @@ public surfaces stable from 0.1.0 anyway.
   is not valid UTF-8, is dropped and the rest is aligned, as C's residue
   filter does; a sequence name keeps its original bytes (`SeqName`). Every
   `\r` becomes `\n` before records are split, matching the wrapper's
-  `tr "\r" "\n"`, so a CR-only file of N sequences yields N sequences.   A
+  `tr "\r" "\n"`, so a CR-only file of N sequences yields N sequences. A
   zero byte does not end the line. C's `fgets` discards the rest of
   that line (`AC\0DE` becomes `AC`); `mafft-rs` drops only the zero
   byte and keeps the residues after it (`ACDE`). That is an
