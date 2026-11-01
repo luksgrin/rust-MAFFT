@@ -114,8 +114,35 @@ against C MAFFT is a contributor task with its own prerequisites; see
 ```sh
 git clone --recurse-submodules https://github.com/luksgrin/rust-MAFFT
 cd rust-MAFFT
-cargo build --release -p mafft-rs   # CLI
+cargo build --release -p mafft-rs   # CLI, platform default (see below)
 cargo test -p mafft-rs --lib        # quick check: unit tests, no C compiler needed
+```
+
+C MAFFT 7.526 leaves `-ffp-contract` unset. The same source produces two
+alignments, because the compiler chooses the rounding: Apple clang fuses
+`a * b + c` into one rounding, and gcc in the Makefile's `-std=c99` mode
+does not, including on Linux aarch64 where the CPU has FMA hardware. MSVC
+does not contract by default either. On the 36-sequence sample,
+`--bl 50 --retree 2 --maxiterate 0` is 712 columns when fused and 738
+when not.
+
+A default build follows the C toolchain usual for that platform, and so
+does `pip install pymafft`. There is no runtime flag: `fmadd` is chosen
+when the binary is compiled. To get the other alignment, rebuild from
+source.
+
+```sh
+# Platform default, same as `pip install pymafft` and
+# `cargo build --release -p mafft-rs`: fused on Apple, not fused on
+# Linux (x86-64 and aarch64) or Windows.
+cargo build --release -p mafft-rs
+pip install pymafft
+
+# Not fused, on any machine (a gcc or MSVC C build; 738 columns).
+cargo build --release -p mafft-rs --features fp-contract-none
+
+# Fused, on any machine (an Apple-clang C build; 712 columns).
+cargo build --release -p mafft-rs --features fp-contract-fma
 ```
 
 The full test suite (`cargo test --workspace --exclude pymafft --release`,
@@ -136,6 +163,16 @@ python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install maturin
 maturin develop --release
+```
+
+`maturin develop --release` is the platform default, the same policy as
+`pip install pymafft`. To follow the other C build, run one of these
+instead (a wheel already installed with `pip` does not change policy at
+runtime):
+
+```sh
+maturin develop --release --features fp-contract-none  # gcc / MSVC, any machine
+maturin develop --release --features fp-contract-fma   # Apple clang, any machine
 ```
 
 See [Contributing](../contributing/index.md#python-bindings) for the test

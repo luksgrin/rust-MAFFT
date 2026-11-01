@@ -308,29 +308,33 @@ which leaves the floating-point contraction policy to the compiler:
 
 | C reference build | Compiler | Fused multiply-adds per binary |
 |--|--|--|
-| arm64 (Apple Silicon, `make` in-tree) | clang | on the order of a thousand — 1025 in the census that motivated this section; 882 scalar `fmadd`-family (1139 including vector `fmla`/`fmls`) with Apple clang 21, ~1140 in CI |
+| arm64 (Apple Silicon, `make` in-tree) | Apple clang | on the order of a thousand — 1025 in the census that motivated this section; 882 scalar `fmadd`-family (1139 including vector `fmla`/`fmls`) with Apple clang 21, ~1140 in CI |
 | x86-64 (`make` in-tree on Linux) | gcc | 0 |
+| aarch64 (`make` in-tree on Linux) | gcc | 0 |
 | arm64 (Apple Silicon, `make CC=gcc-15` in-tree) | Homebrew GCC 15.2 | 0 |
 
-clang fuses `a*b + c` into a single `fmadd` (one rounding); gcc on
-x86-64 emits a multiply followed by an add (two roundings). Both are
-valid C, and the resulting binaries disagree on some inputs. The policy
-follows the compiler, not the architecture: GCC in an ISO mode such as
-the Makefile's `-std=c99` does not contract even on arm64, so a GCC build
-on Apple Silicon matches the `.nofma` fixtures (checked with
-`MAFFT_FP_POLICY=nofma scripts/regen_policy_fixtures.sh … check`) and is
-mirrored with `--features fp-contract-none`. The known
+Apple clang fuses `a*b + c` into a single `fmadd` (one rounding). gcc in
+the Makefile's `-std=c99` mode does not: that mode implies
+`-ffp-contract=off`, so gcc emits a multiply followed by an add even on
+aarch64, where the CPU has FMA hardware. A gcc 15 build on arm64 was
+checked previously: 0 fused instructions, and output identical to the
+x86-64 fixtures. MSVC does not contract by default either. The known
 sentinel case is `--bl 50 --retree 2 --maxiterate 0` on the 36-sequence
 `mafft-upstream/test/sample`:
 
-| Platform | C MAFFT columns | rust-MAFFT columns (default policy) |
-|--|--|--|
-| arm64 / clang | 712 | 712 |
-| x86-64 / gcc | 738 | 738 |
+| Platform | C compiler | Fused ops | C MAFFT columns | rust-MAFFT columns (default policy) |
+|--|--|--|--|--|
+| macOS arm64 | Apple clang | ~1140 | 712 | 712 |
+| Linux x86-64 | gcc | 0 | 738 | 738 |
+| Linux aarch64 | gcc | 0 | 738 | 738 |
 
-So "byte-identical to C" is always relative to a C build made on the
-same platform, and rust-MAFFT tracks that platform rather than picking
-one universal answer.
+`mafft_types::fp::CONTRACTS_FMA` defaults to fused only on Apple targets,
+so the Linux aarch64 build matches that gcc reference rather than the
+Apple-clang one. A gcc build on Apple Silicon also matches the `.nofma`
+fixtures (checked with `MAFFT_FP_POLICY=nofma scripts/regen_policy_fixtures.sh … check`)
+and is mirrored with `--features fp-contract-none`. So "byte-identical
+to C" is always relative to a C build made on the same platform, and
+rust-MAFFT tracks that platform's usual compiler rather than the ISA.
 
 ### The reference build
 
@@ -346,19 +350,24 @@ against.
 
 `mafft_types::fp` centralises the decision:
 
-- `mafft_types::fp::CONTRACTS_FMA` — a `const bool`. Defaults to `true`
-  on `aarch64` (mirroring clang's behaviour there) and `false`
-  elsewhere.
+- `mafft_types::fp::CONTRACTS_FMA` — a `const bool`, chosen at compile
+  time (no runtime flag, so the inner loop does not grow a per-cell
+  check). With neither feature it is `true` on Apple targets
+  (`target_vendor = "apple"`, mirroring Apple clang) and `false`
+  elsewhere (gcc in `-std=c99`, including Linux aarch64, and MSVC).
 - `mafft_types::fp::fmadd(a, b, c)` — computes `a*b + c` with a single
   rounding when `CONTRACTS_FMA` is set, and as two separate operations
   otherwise. Every hot loop that has to match a contracted C expression
   goes through it rather than calling `f64::mul_add` directly.
 - Cargo features `fp-contract-fma` / `fp-contract-none` override the
-  default. They are defined on `mafft-types` and forwarded by every
-  crate in the workspace, so `cargo test -p mafft-core --features
-  fp-contract-none` builds the whole dependency graph under the x86-64
-  policy on any host. (`--features` cannot be passed at the
-  virtual-workspace root; use `-p <crate>`.)
+  default on any target: fused, to match an Apple-clang C build, or not
+  fused, to match a gcc or MSVC C build. They are defined on
+  `mafft-types` and forwarded by every crate in the workspace, so
+  `cargo build --release -p mafft-rs --features fp-contract-none` (or
+  `fp-contract-fma`) builds the whole dependency graph under that
+  policy. (`--features` cannot be passed at the virtual-workspace root;
+  use `-p <crate>`.) A wheel that should follow the other C build is
+  rebuilt from source with the feature; nothing switches it at runtime.
 
 ### Fixture convention
 
@@ -370,8 +379,10 @@ Fixtures without a suffix are identical under both policies.
 Each pair is described by a line in
 `crates/mafft-core/tests/fixtures/policy_fixtures.tsv`
 (`fixture_basename<TAB>input_relpath<TAB>mafft_args`) and regenerated by
-`scripts/regen_policy_fixtures.sh`, which detects the policy from
-`uname -m` (arm64/aarch64 => `.fma`, else `.nofma`; override with
+`scripts/regen_policy_fixtures.sh`, which detects the policy from the
+host OS (`uname -s`: Darwin => `.fma`, anything else => `.nofma`,
+because a default in-tree `make` is Apple clang on macOS and gcc in
+`-std=c99` on Linux, including aarch64; override with
 `MAFFT_FP_POLICY=fma|nofma`):
 
 ```bash
@@ -380,25 +391,26 @@ scripts/regen_policy_fixtures.sh mafft-upstream/scripts/mafft check   # diff aga
 scripts/regen_policy_fixtures.sh mafft-upstream/scripts/mafft write   # overwrite this host's variant
 ```
 
-A `.fma` fixture therefore comes from the in-tree build on an arm64 host
-and a `.nofma` one from the in-tree build on an x86-64 host; never from
-the other, and never from a binary you did not build from the pinned
-source.
+A `.fma` fixture therefore comes from the in-tree Apple-clang build and
+a `.nofma` one from the in-tree gcc build (Linux x86-64 or Linux
+aarch64); never from the other, and never from a binary you did not
+build from the pinned source.
 
 ### What CI checks
 
-- The `Build (x86-64)` and `Build (arm64)` jobs each build the C
-  submodule in-tree and run the full suite (lib, integration and FFI
-  `cross_validate_*` tests) against it, so the claim is checked on both
-  reference platforms. Each job prints an FMA census of the C binaries
-  it just built and runs the `--bl 50` sentinel above, diffing
-  `mafft-rs` against the same-platform C `mafft` wrapper. It then runs
-  `scripts/regen_policy_fixtures.sh ... check`, regenerating every
-  policy-sensitive fixture from that in-tree C build and failing on any
-  byte difference from the checked-in variant for the runner's policy
-  (`.nofma` on x86-64, `.fma` on arm64) — so the committed fixtures are
-  continuously re-derived from the reference definition rather than
-  trusted.
+- The `Build (x86-64)`, `Build (arm64)` and `Build (Linux aarch64)` jobs
+  each build the C submodule in-tree and run the full suite (lib,
+  integration and FFI `cross_validate_*` tests) against it. Each job
+  prints an FMA census of the C binaries it just built and runs the
+  `--bl 50` sentinel above, diffing `mafft-rs` against the same-platform
+  C `mafft` wrapper. The Linux aarch64 leg records that the gcc build has
+  0 fused ops and that the sentinel is 738 columns on both sides. Each
+  job then runs `scripts/regen_policy_fixtures.sh ... check`, regenerating
+  every policy-sensitive fixture from that in-tree C build and failing on
+  any byte difference from the checked-in variant for the runner's policy
+  (`.fma` on macOS, `.nofma` on Linux, including aarch64) — so the
+  committed fixtures are continuously re-derived from the reference
+  definition rather than trusted.
 - A `policy-cross-check` job runs the fixture-based (non-FFI) test
   binaries on the arm64 runner with `--features fp-contract-none`, which
   checks the `.nofma` fixtures from an arm64 host. The FFI tests are

@@ -15,8 +15,9 @@ checked for both alphabets at once against C's `constants()`. Also hosts
 the C `seqcheck` alphabets (`PROTEIN_ALPHABET` / `DNA_ALPHABET`) that
 `mafft-io` uses to reject illegal residues the way C MAFFT does.
 Multiply-adds that must match the C reference go through
-`mafft_types::fp::fmadd`, which fuses on aarch64 and not elsewhere,
-mirroring the platform's C build.
+`mafft_types::fp::fmadd`, which fuses on Apple targets and not elsewhere,
+mirroring that platform's C compiler (Apple clang fuses; gcc `-std=c99`
+and MSVC do not).
 
 ## Install
 

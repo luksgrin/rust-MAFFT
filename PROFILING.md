@@ -134,7 +134,8 @@ buffers.
 The DP body has FMA throughout (`§4` BL50 close, `§B.2` audit, `§C.2.1`
 profile-build fusion) and matches C's inner loop arithmetic 1-for-1 on
 the same platform (since 2026-09-06 through `mafft_types::fp::fmadd`,
-fused on aarch64 and not on x86-64, mirroring the reference C build —
+fused on Apple targets and not elsewhere (gcc `-std=c99` does not fuse
+even on aarch64), mirroring the reference C build —
 see `docs/architecture/byte-identity.md`) — but C's `A__align` re-uses
 `static TLS` buffers across calls (the BB20027 deep-dive in
 `balibase_parity_run.md` records the static-state investigation) while,

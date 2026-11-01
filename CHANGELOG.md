@@ -124,12 +124,26 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **The default floating-point contraction followed the ISA, not the C compiler**
+  (issue #51). C MAFFT 7.526 leaves `-ffp-contract` unset, so the same
+  source produces both alignments: Apple clang fuses `a * b + c` into one
+  rounding, and gcc in the Makefile's `-std=c99` mode does not, including
+  on Linux aarch64, where the CPU has FMA hardware. MSVC does not contract
+  by default either. The 36-sequence `--bl 50 --retree 2 --maxiterate 0`
+  sentinel is 712 columns when fused and 738 when not.
+  `mafft_types::fp::CONTRACTS_FMA` now defaults to fused only on Apple
+  targets, so a Linux aarch64 build (and the published `*-unknown-linux-*`
+  wheel) matches gcc instead of Apple clang. `fp-contract-fma` and
+  `fp-contract-none` still force either policy at build time; there is no
+  runtime switch, and a wheel that should follow the other C build is
+  rebuilt from source with the feature. CI on `ubuntu-24.04-arm` builds
+  the in-tree gcc reference, checks that it has 0 fused ops, and requires
+  the sentinel to be 738 columns and equal to C.
 - The FFI cross-validation tests did not compile on Linux aarch64: 56
   sites in 15 test files spelled the C `char**` argument (and the `alg`
   global) as `i8`, which is `c_char` on x86-64 Linux and Apple arm64 but
-  not on Linux aarch64, where `char` is unsigned. They now use `c_char`. CI gains a
-  compile-only leg on `ubuntu-24.04-arm` so the workspace and every test
-  binary are built there on each push.
+  not on Linux aarch64, where `char` is unsigned. They now use `c_char`. CI
+  builds and tests the workspace on `ubuntu-24.04-arm` on each push.
 - **FFT modes diverged from C on long nucleotide sequences** (issue #43).
   C's `Falign` correlates nucleotides on a single channel — `n20or4or2 =
   1` when `scoremtx == -1` (`Falign.c:923`), so only `a` enters the FFT —

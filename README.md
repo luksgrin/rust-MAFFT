@@ -362,14 +362,15 @@ The original MAFFT C code is included as a git submodule for testing and cross-v
 
 ### Reference build and platforms
 
-C MAFFT 7.526 is itself not bit-reproducible across CPU architectures — the compiler decides whether `a*b + c` is contracted into a fused multiply-add, and on some inputs that changes the alignment — so byte-identity is stated per platform. The reference is defined as the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags (`make -C mafft-upstream/core`), on the platform you run on; no fixture is generated from a downloaded binary.
+C MAFFT 7.526 is not bit-reproducible across compilers. The upstream Makefile leaves `-ffp-contract` unset (`-O3 -std=c99`), so the same C source produces both alignments: Apple clang fuses `a*b + c` into one rounding, and gcc in that ISO C mode does not, including on Linux aarch64, where the CPU has FMA hardware. MSVC does not contract by default either. On some inputs the rounding changes the alignment, so byte-identity is stated per platform. The reference is the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags (`make -C mafft-upstream/core`), on the platform you run on; no fixture is generated from a downloaded binary.
 
-| Platform | Fused ops per C binary | `--bl 50` width (C = mafft-rs) |
-|----------|------------------------|--------------------------------|
-| arm64 / clang (macOS) | ~1140 | 712 |
-| x86-64 / gcc (Linux) | 0 | 738 |
+| Platform | C compiler | Fused ops per C binary | `--bl 50` width (C = mafft-rs) |
+|----------|------------|------------------------|--------------------------------|
+| macOS arm64 | Apple clang | ~1140 | 712 |
+| Linux x86-64 | gcc | 0 | 738 |
+| Linux aarch64 | gcc | 0 | 738 |
 
-The BBaliBase 1930/1930 protein sweep was run on macOS arm64. CI verifies the full byte-identity and FFI cross-validation suite against the in-tree C build on both ubuntu x86-64 and macOS arm64 on every push, and re-derives the policy-sensitive fixtures from that build. See [docs/architecture/byte-identity.md](docs/architecture/byte-identity.md); to reproduce the other platform's output on your host, build with `--features fp-contract-none` (x86-64 behaviour) or `--features fp-contract-fma` (arm64 behaviour) on a `-p <crate>` invocation.
+A default `mafft-rs` build follows that compiler: fused on Apple targets, not fused on Linux or Windows. The BAliBASE 1930/1930 protein sweep was run on macOS arm64. CI verifies the full byte-identity and FFI cross-validation suite against the in-tree C build on ubuntu x86-64, ubuntu aarch64 and macOS arm64 on every push. The aarch64 leg checks that gcc emitted 0 fused ops and that the `--bl 50` sentinel is 738 columns and equal to C, and each leg re-derives the policy-sensitive fixtures from that build. See [docs/architecture/byte-identity.md](docs/architecture/byte-identity.md). To match the other C build, rebuild from source with a Cargo feature; there is no runtime flag. The commands are under [Building from source](#building-from-source).
 
 ## Architecture
 
@@ -407,7 +408,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 - **`num_complex::Complex64`** replaces the C `Fukusosuu` struct. A hand-ported bit-for-bit Cooley-Tukey FFT in `mafft-fft/src/fft_c_compat.rs` matches C's `fft.c` rounding exactly. Off-the-shelf FFT libraries vary in butterfly grouping order, producing 1-ULP correlation differences that flip FFT-anchor selection on flat-landscape matrices; the hand port is required for byte-identity.
 
-- **`f64` DP matrices with a per-target floating-point contraction policy.** The substitution matrix is stored as `Vec<Vec<i32>>` and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic (matches C's `n_dis_consweight_multi`). Whether `a + b * c` rounds once (fused multiply-add) or twice is decided by the C compiler, and C MAFFT 7.526 is therefore not bit-reproducible across architectures. The reference is the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags, on the platform you run on; CI measures that build at ~1140 fused ops per engine binary (`disttbfast` / `dvtditr` / `tbfast`) with arm64 clang and 0 with x86-64 gcc, and on the 36-seq sample `--bl 50` gives 712 columns on arm64 vs 738 on x86-64 — with `mafft-rs` matching the same-platform C on both (CI sentinel). Every contraction-sensitive site goes through `mafft_types::fp::fmadd`, which is `mul_add` when `CONTRACTS_FMA` is set and plain `a * b + c` otherwise. The default mirrors the reference C build of the target you run on (fused on aarch64, not fused elsewhere); the `fp-contract-fma` / `fp-contract-none` cargo features force either policy. Fixtures whose bytes depend on it are committed as `<name>.fma` / `<name>.nofma` and re-derived from the in-tree C build by `scripts/regen_policy_fixtures.sh` in CI. `scripts/fma_census.sh <dir>` counts the fused instructions in any C MAFFT build so you can check which build you are comparing against.
+- **`f64` DP matrices with a per-target floating-point contraction policy.** The substitution matrix is stored as `Vec<Vec<i32>>` and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic (matches C's `n_dis_consweight_multi`). Whether `a + b * c` rounds once (fused multiply-add) or twice is decided by the C compiler, and C MAFFT 7.526 is therefore not bit-reproducible across architectures. The reference is the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags, on the platform you run on; CI measures that build at ~1140 fused ops per engine binary (`disttbfast` / `dvtditr` / `tbfast`) with Apple clang and 0 with gcc, including on Linux aarch64 (gcc in `-std=c99` emits no fused ops even though the CPU has FMA hardware). On the 36-seq sample `--bl 50` gives 712 columns with Apple clang and 738 with gcc — with `mafft-rs` matching the same-platform C on each (CI sentinel). Every contraction-sensitive site goes through `mafft_types::fp::fmadd`, which is `mul_add` when `CONTRACTS_FMA` is set and plain `a * b + c` otherwise. The default mirrors the usual C compiler for the target (fused on Apple, not fused on Linux or Windows); the `fp-contract-fma` / `fp-contract-none` cargo features force either policy at build time. There is no runtime flag. Fixtures whose bytes depend on it are committed as `<name>.fma` / `<name>.nofma` and re-derived from the in-tree C build by `scripts/regen_policy_fixtures.sh` in CI. `scripts/fma_census.sh <dir>` counts the fused instructions in any C MAFFT build so you can check which build you are comparing against.
 
 - **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring. Sequential float summation is preserved at accept/reject decision boundaries to keep refinement output deterministic across thread counts.
 
@@ -570,7 +571,21 @@ cd rust-MAFFT
 cargo build --release
 ```
 
-The binary is at `target/release/mafft-rs`. By default it mirrors the floating-point contraction of the reference C build for your architecture (fused multiply-add on aarch64, none elsewhere — see [Key design decisions](#key-design-decisions)); to reproduce the *other* architecture's C output, build with `cargo build --release -p mafft-rs --features fp-contract-none` (or `fp-contract-fma`). To match C MAFFT's symlink-based shortcuts (`linsi` / `ginsi` / `einsi` / `fftns` / `fftnsi` / `nwns` / `nwnsi` / `qinsi` / `xinsi`), drop the binary on your `PATH` and create symlinks:
+The binary is at `target/release/mafft-rs`. C MAFFT leaves `-ffp-contract` unset, so the compiler chooses the rounding: Apple clang fuses `a * b + c`, and gcc in `-std=c99` (including on Linux aarch64) and MSVC do not. A default build does the same, which is also what `pip install pymafft` installs. There is no runtime flag; `fmadd` is fixed when the binary is compiled. A published wheel that should follow the other C build has to be rebuilt from source with a feature:
+
+```bash
+# Platform default, same as `pip install pymafft`:
+# fused on Apple, not fused on Linux (x86-64 and aarch64) or Windows.
+cargo build --release -p mafft-rs
+
+# Not fused, on any machine (a gcc or MSVC C build; 738-column sentinel).
+cargo build --release -p mafft-rs --features fp-contract-none
+
+# Fused, on any machine (an Apple-clang C build; 712-column sentinel).
+cargo build --release -p mafft-rs --features fp-contract-fma
+```
+
+To match C MAFFT's symlink-based shortcuts (`linsi` / `ginsi` / `einsi` / `fftns` / `fftnsi` / `nwns` / `nwnsi` / `qinsi` / `xinsi`), drop the binary on your `PATH` and create symlinks:
 
 ```bash
 ln -s mafft-rs linsi
@@ -592,6 +607,8 @@ cargo build --release -p mafft-rs   # the CLI the option-parity tests compare ag
 maturin develop --release
 pytest tests/ -v   # 160 tests (32 API + 23 parity/shape + 82 CLI-option parity + 18 Biopython interop + 5 console script; the console-script tests skip unless the binary is bundled)
 ```
+
+`maturin develop --release` uses the platform default above, the same policy as the published wheel. To match the other C build, replace that line with `maturin develop --release --features fp-contract-none` (gcc / MSVC) or `maturin develop --release --features fp-contract-fma` (Apple clang). An already-installed wheel does not change policy at runtime.
 
 `maturin develop` installs the extension module but not the bundled CLI; to
 get the `mafft-rs` console script (and run the console-script tests), copy the
@@ -626,9 +643,11 @@ cargo test --workspace --exclude pymafft --lib
 # replaces only its -O3, so keep -O3 and do not add -std= or -ffp-contract=
 make -C mafft-upstream/core
 
-# Run the suite under the other floating-point contraction policy (fixtures
-# switch to their `.nofma` / `.fma` variants; the FFI tests that compare
-# against the in-tree C build skip when the policies do not match)
+# On Apple this runs the suite under the gcc/MSVC policy (`.nofma` fixtures).
+# On Linux and Windows the default is already that policy; pass
+# `--features fp-contract-fma` to test the Apple-clang policy (`.fma`).
+# FFI tests that compare against the in-tree C build skip when the
+# policies do not match.
 cargo test --workspace --exclude pymafft --release --features fp-contract-none
 ```
 
@@ -654,7 +673,7 @@ git commit -m "Bump MAFFT upstream to <version>"
 
 | Workflow | Triggers | What |
 |----------|----------|------|
-| **CI** (`ci.yml`, via reusable `build-test.yml`) | push to main, PR to any branch | Build the in-tree C reference and the Rust workspace on ubuntu x86-64 and macOS arm64; full test suite (lib + integration + FFI) on both; FMA census of the C binaries; `--bl 50` sentinel diff vs same-platform C; `regen_policy_fixtures.sh check`; FP-policy cross-check (`fp-contract-none` fixtures on arm64); C-binary regression tests on x86-64 |
+| **CI** (`ci.yml`, via reusable `build-test.yml`) | push to main, PR to any branch | Build the in-tree C reference and the Rust workspace on ubuntu x86-64, ubuntu aarch64 and macOS arm64; full test suite (lib + integration + FFI) on each; FMA census of the C binaries (0 fused ops on Linux aarch64); `--bl 50` sentinel diff vs same-platform C (738 columns on Linux aarch64); `regen_policy_fixtures.sh check`; FP-policy cross-check (`fp-contract-none` fixtures on arm64); C-binary regression tests on x86-64 |
 | **Python** (`python.yml`) | push to main, PR to any branch | `cargo check -p pymafft` with `-D warnings`; one abi3 wheel per target (Linux x86-64/aarch64, macOS x86-64/arm64, Windows, `cp39-abi3`, any CPython >= 3.9), sdist, wheel tests on 3.12 |
 | | release, manual dispatch | Same 5 wheels + sdist, wheel tests on 3.9/3.12/3.14 (the same wheel on each); publish to PyPI on release |
 | **Documentation** (`docs.yml`) | push to main and PRs touching `docs/**`, `mkdocs.yml`, `crates/mafft-bin/src/**`, `crates/pymafft/**`, `scripts/gen-cli-reference.sh`; release; manual dispatch | Build the mkdocs site (regenerates the CLI reference, introspects pymafft); deploy to GitHub Pages from main/release/dispatch |

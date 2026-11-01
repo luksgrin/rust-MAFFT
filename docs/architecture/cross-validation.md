@@ -59,18 +59,20 @@ workspace is 537 passing tests + 7 ignored across 48 suites (2026-09-06).
 
 ## Platform-relative comparison
 
-C MAFFT 7.526 itself differs between clang/arm64 (which contracts
-`a*b + c` into fused multiply-adds) and gcc/x86-64 (which does not) —
+C MAFFT 7.526 itself differs between Apple clang (which contracts
+`a*b + c` into fused multiply-adds) and gcc in `-std=c99` (which does
+not, on x86-64 and on aarch64) —
 see [Byte-identity is per platform
 build](byte-identity.md#byte-identity-is-per-platform-build). The FFI
 tests compare Rust against the C that `mafft-c-bindings/build.rs`
 compiled on the *same* machine, so they are meaningful only when Rust's
 policy matches that C build. The default `mafft_types::fp::CONTRACTS_FMA`
-(true on `aarch64`, false elsewhere) does exactly that on both CI
-runners. Do not run the `cross_validate_*` binaries with
-`--features fp-contract-none` on arm64 or `--features fp-contract-fma`
-on x86-64: the C side would still be using the host compiler's policy
-and the comparison would be between two different policies.
+(true on Apple targets, false elsewhere, including Linux aarch64) does
+exactly that on the CI runners: Apple clang fuses, and gcc in `-std=c99`
+does not. Do not run the `cross_validate_*` binaries with
+`--features fp-contract-none` on Apple or `--features fp-contract-fma`
+on Linux or Windows: the C side would still be using the host compiler's
+policy and the comparison would be between two different policies.
 
 The fixture-based tests, by contrast, *can* be run under the foreign
 policy: `fixture_path_fp` selects `<name>.fma` or `<name>.nofma` by
@@ -145,13 +147,16 @@ the BAliBASE sweep (`scripts/balibase_parity.py`) are covered in
 The `ci.yml` workflow runs the whole suite on every push and pull
 request (documentation-only changes excepted) on two
 reference platforms via the reusable `build-test.yml` job: `Build
-(x86-64)` on `ubuntu-latest` (gcc, no contraction) and `Build (arm64)`
-on `macos-latest` (Apple clang, FMA contraction). Each leg builds the C
-submodule in-tree, prints an FMA census of the binaries it just built,
-runs `cargo test --workspace --lib` and `cargo test --workspace --release
---tests`, and finishes with an end-to-end sentinel that diffs
-`mafft-rs --bl 50 --retree 2 --maxiterate 0` against the same-platform C
-`mafft` wrapper (712 columns on arm64, 738 on x86-64).
+(x86-64)` on `ubuntu-latest` (gcc, no contraction), `Build (Linux
+aarch64)` on `ubuntu-24.04-arm` (gcc `-std=c99`, no contraction: the
+census must be 0 fused ops and the sentinel 738 columns) and `Build
+(arm64)` on `macos-latest` (Apple clang, FMA contraction). Each leg
+builds the C submodule in-tree, prints an FMA census of the binaries it
+just built, runs `cargo test --workspace --lib` and `cargo test
+--workspace --release --tests`, and finishes with an end-to-end sentinel
+that diffs `mafft-rs --bl 50 --retree 2 --maxiterate 0` against the
+same-platform C `mafft` wrapper (712 columns on Apple clang, 738 on gcc,
+including Linux aarch64).
 
 A parallel set of x86-64 jobs exercises the C MAFFT binaries on the
 same `mafft-upstream/test/sample` input and compares to canonical output

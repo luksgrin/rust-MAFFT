@@ -16,20 +16,21 @@ flags and do not define the reference.
 
 ## Per-policy fixtures: `<name>.fma` / `<name>.nofma`
 
-C MAFFT 7.526 is not bit-reproducible across CPU architectures: the arm64
-clang build contracts `a*b+c` into fused multiply-adds (~1140 fused
-instructions per engine binary in CI's in-tree build, see
-`scripts/fma_census.sh`), the x86-64 gcc build emits none. Where that
-changes the output, the fixture is committed twice and the plain name is
-removed:
+C MAFFT 7.526 leaves `-ffp-contract` unset, so the compiler chooses the
+rounding. The Apple-clang build contracts `a*b+c` into fused multiply-adds
+(~1140 fused instructions per engine binary in CI's in-tree build, see
+`scripts/fma_census.sh`). gcc in the Makefile's `-std=c99` mode emits none,
+on x86-64 and on aarch64. Where that changes the output, the fixture is
+committed twice and the plain name is removed:
 
-- `<name>.fma` — output of the in-tree C build on arm64/aarch64 (fused).
-- `<name>.nofma` — output of the in-tree C build on x86-64 (not fused).
+- `<name>.fma` — output of the in-tree Apple-clang build (fused).
+- `<name>.nofma` — output of the in-tree gcc build (not fused), including Linux aarch64.
 
 Both variants are produced by `scripts/regen_policy_fixtures.sh`, driven by
 the manifest `policy_fixtures.tsv` in this directory (one line per pair:
 `fixture_basename<TAB>input_relpath<TAB>mafft_args`). The script picks the
-variant from `uname -m` (arm64/aarch64 => `.fma`, else `.nofma`;
+variant from `uname -s` (Darwin => `.fma`, else `.nofma`, because a default
+in-tree `make` is Apple clang on macOS and gcc `-std=c99` on Linux;
 `MAFFT_FP_POLICY=fma|nofma` overrides), regenerates it with the in-tree C
 build and either diffs (`check`) or overwrites (`write`):
 
@@ -39,9 +40,9 @@ scripts/regen_policy_fixtures.sh mafft-upstream/scripts/mafft check   # diff
 scripts/regen_policy_fixtures.sh mafft-upstream/scripts/mafft write   # regenerate this host's variant
 ```
 
-CI runs the `check` form on both an x86-64 and an arm64 runner after
-building the C in-tree, so a variant that drifts from the in-tree build
-fails the build. Adding a new policy-sensitive fixture means adding its
+CI runs the `check` form on ubuntu x86-64, ubuntu aarch64 and macOS
+arm64 after building the C in-tree, so a variant that drifts from the
+in-tree build fails the build. Linux aarch64 checks the `.nofma` variant. Adding a new policy-sensitive fixture means adding its
 manifest line; the script fails on any `.fma`/`.nofma` file the manifest
 does not describe. To refresh the other platform's variant, run `write` on
 that platform (or in its CI job); never copy it from a binary you did not
@@ -50,14 +51,14 @@ build from the pinned source.
 `fixture_path_fp(name)` in `end_to_end.rs` returns the variant matching
 `mafft_types::fp::CONTRACTS_FMA` (the build's contraction policy, selected by
 the `fp-contract-fma` / `fp-contract-none` cargo features, defaulting to
-fused on aarch64 only) and falls back to the plain `<name>` when no variant
+fused on Apple targets only) and falls back to the plain `<name>` when no variant
 exists. Do not commit a plain `<name>` alongside a variant pair.
 
 ### `sample.bl50.fftns2.fma` / `sample.bl50.fftns2.nofma`
 
 C's alignment output for `mafft --quiet --bl 50 --retree 2 --maxiterate 0
-mafft-upstream/test/sample`: width 712 from the in-tree arm64 (clang) build,
-width 738 from the in-tree x86-64 (gcc) build. The x86-64 divergence was
+mafft-upstream/test/sample`: width 712 from the in-tree Apple-clang build,
+width 738 from the in-tree gcc build (Linux x86-64 and Linux aarch64). The x86-64 divergence was
 first reported by @mahogny (mahogny/rust-MAFFT); CI confirms both widths
 against its own in-tree builds on every push. `fftns2_bl50_byte_identical_to_c`
 asserts against the variant matching the build's policy. Manifest line in
