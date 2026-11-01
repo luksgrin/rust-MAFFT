@@ -9,7 +9,7 @@
 use mafft_types::fp::fmadd;
 use mafft_fft::{
     alignable_segments, block_align, get_top_candidates,
-    multichannel_correlate, SegmentParams,
+    multichannel_correlate, soukan_c_compat, SegmentParams,
 };
 
 use crate::dp::{Alignment, GapModel};
@@ -27,7 +27,8 @@ pub struct FftAlignParams {
     /// Whether to penalize head/tail gaps.
     pub head_gap: bool,
     pub tail_gap: bool,
-    /// Number of FFT channels (20 for protein, 4 for DNA). Ignored when
+    /// Number of FFT indicator channels: C's `n20or4or2` (20 for protein
+    /// without `fftscore`, 1 for DNA — only `a` is correlated). Ignored when
     /// `property_channels` is `Some(_)`.
     pub num_channels: usize,
     /// Per-internal-index polarity and volume values. When `Some`, the FFT
@@ -37,6 +38,11 @@ pub struct FftAlignParams {
     /// `seq_vec_3`. C uses property channels for all protein scoring
     /// matrices (BLOSUM/JTT/TM); DNA always uses indicator channels.
     pub property_channels: Option<(Vec<f64>, Vec<f64>)>,
+    /// C's `totaleff` (`alignableReagion`, `fftFunctions.c:244`): the
+    /// per-site anchor scores are divided by `Σ_i Σ_j eff1[i] * eff2[j]`.
+    /// The group weights are normalised, so this is 1.0 up to rounding;
+    /// compute it with [`fft_total_eff`] to reproduce C's rounding.
+    pub total_eff: f64,
 }
 
 impl FftAlignParams {
@@ -49,6 +55,7 @@ impl FftAlignParams {
             tail_gap: true,
             num_channels: 20,
             property_channels: None,
+            total_eff: 1.0,
         }
     }
 
@@ -63,8 +70,10 @@ impl FftAlignParams {
             gap: GapModel::new(dna_gap.penalty as f64, dna_gap.penalty_ex as f64),
             head_gap: true,
             tail_gap: true,
-            num_channels: 4,
+            // `n20or4or2 = 1` for nucleotides (`Falign.c:923`).
+            num_channels: 1,
             property_channels: None,
+            total_eff: 1.0,
         }
     }
 }
@@ -94,30 +103,31 @@ pub fn find_fft_anchors(
         return None;
     }
 
-    let fft_size = n.max(m).next_power_of_two();
-    let (channels_a, channels_b) = if let Some((polarity, volume)) = &params.property_channels {
+    let fft_size = fft_length(n, m);
+    let soukan = if let Some((polarity, volume)) = &params.property_channels {
         // Mirrors C's `seq_vec_2` 2-channel polarity+volume convolution
         // (`Falign.c:342-348`). Used by all protein scoring matrices.
-        (
-            profile_to_property_channels(prof1, polarity, volume, fft_size),
-            profile_to_property_channels(prof2, polarity, volume, fft_size),
-        )
+        let channels_a = profile_to_property_channels(prof1, polarity, volume, fft_size);
+        let channels_b = profile_to_property_channels(prof2, polarity, volume, fft_size);
+        let raw_corr = multichannel_correlate(&channels_a, &channels_b);
+        let nlen = fft_size;
+        let nlen2 = nlen / 2;
+        let mut soukan = vec![0.0f64; nlen];
+        for idx in 0..nlen {
+            let lag = idx as i32 - nlen2 as i32;
+            let src = lag.rem_euclid(nlen as i32) as usize;
+            soukan[idx] = raw_corr[src];
+        }
+        soukan
     } else {
-        (
-            profile_to_channels(prof1, params.num_channels, fft_size),
-            profile_to_channels(prof2, params.num_channels, fft_size),
-        )
+        // C's `seq_vec_3` indicator channels (`Falign.c:1133`), correlated
+        // exactly as `Falign` does. For nucleotides that is ONE channel:
+        // `n20or4or2 = 1` when `scoremtx == -1` (`Falign.c:923`), so only
+        // the first alphabet letter (`a`) enters the correlation.
+        let channels_a = profile_to_channels(prof1, params.num_channels, fft_size);
+        let channels_b = profile_to_channels(prof2, params.num_channels, fft_size);
+        soukan_c_compat(&channels_a, &channels_b)
     };
-    let raw_corr = multichannel_correlate(&channels_a, &channels_b);
-
-    let nlen = fft_size;
-    let nlen2 = nlen / 2;
-    let mut soukan = vec![0.0f64; nlen];
-    for idx in 0..nlen {
-        let lag = idx as i32 - nlen2 as i32;
-        let src = lag.rem_euclid(nlen as i32) as usize;
-        soukan[idx] = raw_corr[src];
-    }
 
     let candidates = get_top_candidates(&soukan, params.num_candidates);
 
@@ -135,7 +145,7 @@ pub fn find_fft_anchors(
     for cand in &candidates {
         let lag = cand.lag;
         if lag <= -(n as i32) || lag >= m as i32 { continue; }
-        let shifted_scores = shift_and_score(prof1, prof2, matrix, lag);
+        let shifted_scores = shift_and_score(prof1, prof2, matrix, lag, params.total_eff);
         let segments = alignable_segments(&shifted_scores, &params.segment_params);
         if segments.is_empty() {
             break; // C: `if(tmpint == 0) break;`
@@ -307,6 +317,7 @@ fn shift_and_score(
     prof2: &Profile,
     matrix: &[Vec<f64>],
     lag: i32,
+    total_eff: f64,
 ) -> Vec<f64> {
     let n = prof1.length as i32;
     let m = prof2.length as i32;
@@ -318,15 +329,76 @@ fn shift_and_score(
     let mut scores = vec![0.0f64; valid_len];
     if lag >= 0 {
         for i in 0..valid_len {
-            scores[i] = prof1.match_score(i, prof2, i + lag as usize, matrix);
+            scores[i] = site_score(prof1, i, prof2, i + lag as usize, matrix, total_eff);
         }
     } else {
         let off = (-lag) as usize;
         for i in 0..valid_len {
-            scores[i] = prof1.match_score(i + off, prof2, i, matrix);
+            scores[i] = site_score(prof1, i + off, prof2, i, matrix, total_eff);
         }
     }
     scores
+}
+
+/// `stra[i]` of C's `alignableReagion` (`fftFunctions.c:243-288`), in C's
+/// summation order: residues of `prf1` with non-zero weight in ascending
+/// index order (the `hat1` list), and for each the residues of `prf2` the
+/// same way, accumulating `n_disFFT[k][j] * prf1[k] * prf2[j]`; then the sum
+/// is divided by `totaleff`.
+///
+/// [`Profile::match_score`] adds the same terms in a different order (it is
+/// C's `match_calc` order, for the DP), which rounds differently as soon as
+/// a group has more than one sequence.
+fn site_score(
+    prof1: &Profile,
+    i: usize,
+    prof2: &Profile,
+    j: usize,
+    matrix: &[Vec<f64>],
+    total_eff: f64,
+) -> f64 {
+    let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
+    let f1 = &prof1.freqs[i];
+    let f2 = &prof2.freqs[j];
+    let mut s = 0.0f64;
+    for k in 0..nalpha {
+        let p1 = f1[k];
+        if p1 == 0.0 { continue; }
+        let row = &matrix[k];
+        for l in 0..nalpha.min(row.len()) {
+            let p2 = f2[l];
+            if p2 == 0.0 { continue; }
+            // `stra[i] += n_disFFT[k][j] * prf1[k] * prf2[j]`: arm64 clang
+            // contracts the outer multiply-add (see `mafft_types::fp`).
+            s = fmadd(row[l] * p1, p2, s);
+        }
+    }
+    s / total_eff
+}
+
+/// C's `totaleff` in `alignableReagion` (`fftFunctions.c:244`):
+/// `Σ_i Σ_j eff1[i] * eff2[j]`, accumulated in C's order.
+pub fn fft_total_eff(eff1: &[f64], eff2: &[f64]) -> f64 {
+    let mut t = 0.0f64;
+    for &a in eff1 {
+        for &b in eff2 {
+            t = fmadd(a, b, t);
+        }
+    }
+    t
+}
+
+/// FFT length used by C's `Falign` (`Falign.c:873-874`): the smallest power
+/// of two STRICTLY greater than the longer profile (`while (nlentmp >= nlen)
+/// nlen <<= 1`), which is twice `next_power_of_two` when the longer length is
+/// itself a power of two.
+fn fft_length(len1: usize, len2: usize) -> usize {
+    let nlentmp = len1.max(len2);
+    let mut nlen = 1usize;
+    while nlentmp >= nlen {
+        nlen <<= 1;
+    }
+    nlen
 }
 
 #[cfg(test)]
@@ -364,6 +436,7 @@ mod tests {
             tail_gap: true,
             num_channels: 4,
             property_channels: None,
+            total_eff: 1.0,
         };
         let aln = fft_profile_align(&prof, &prof, &mtx, &params);
         assert!(aln.score > 0.0);

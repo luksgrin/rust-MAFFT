@@ -15,6 +15,6 @@ pub use segments::{alignable_segments, AlignableSegment, SegmentParams};
 pub use candidates::get_top_candidates;
 pub use vectorize::{
     sequences_to_channels,
-    multichannel_correlate, PROTEIN_CHANNELS, DNA_CHANNELS,
+    multichannel_correlate, soukan_c_compat, PROTEIN_CHANNELS, DNA_CHANNELS,
 };
 pub use block_align::{block_align, block_align3};

@@ -7,6 +7,7 @@
 /// per-channel and summed, giving a position-specific similarity score that
 /// accounts for all residue types simultaneously.
 
+use mafft_types::fp::fmadd;
 use num_complex::Complex64;
 
 /// Number of channels for different sequence types.
@@ -86,6 +87,67 @@ pub fn multichannel_correlate(
 
     fft_inplace(&mut sum, /* inverse = */ true);
     sum.iter().map(|c| c.re).collect()
+}
+
+/// C's `calcNaiseki` (`fftFunctions.c`): `x * conj(y)`, written exactly as
+/// C does so that the reference build's contraction (`fmadd`, see
+/// `mafft_types::fp`) rounds the same way.
+#[inline]
+fn calc_naiseki(x: Complex64, y: Complex64) -> Complex64 {
+    Complex64::new(
+        fmadd(x.re, y.re, x.im * y.im),
+        fmadd(-x.re, y.im, x.im * y.re),
+    )
+}
+
+/// The correlation array `soukan` of C's `Falign` (`Falign.c:1200-1248`),
+/// bit for bit.
+///
+/// Per channel `k`, forward-FFTs both inputs, takes
+/// `naiseki[k] = calcNaiseki(a_k, b_k)` (`a * conj(b)`), sums the channels
+/// in order into `naisekiNoWa`, inverse-FFTs it and reorders it so that
+/// `soukan[m]` is the score of lag `m - n/2` (the index convention of
+/// `getKouho`).
+///
+/// [`multichannel_correlate`] computes the same correlation mathematically,
+/// but as `conj(a) * b` read back at the mirrored index, which is not the
+/// same floating-point computation. On nucleotide input the correlation is
+/// a count of matching residues, so distinct lags tie exactly and only the
+/// rounding noise decides which one `getKouho` (strict `>`) picks first.
+pub fn soukan_c_compat(
+    channels_a: &[Vec<Complex64>],
+    channels_b: &[Vec<Complex64>],
+) -> Vec<f64> {
+    assert_eq!(channels_a.len(), channels_b.len());
+    if channels_a.is_empty() || channels_a[0].is_empty() {
+        return Vec::new();
+    }
+    use crate::fft_c_compat::fft_inplace;
+
+    let n = channels_a[0].len();
+    let mut naiseki_no_wa = vec![Complex64::new(0.0, 0.0); n];
+    for (a, b) in channels_a.iter().zip(channels_b) {
+        let mut fa = a.clone();
+        let mut fb = b.clone();
+        fft_inplace(&mut fb, false);
+        fft_inplace(&mut fa, false);
+        for l in 0..n {
+            let v = calc_naiseki(fa[l], fb[l]);
+            naiseki_no_wa[l].re += v.re;
+            naiseki_no_wa[l].im += v.im;
+        }
+    }
+    fft_inplace(&mut naiseki_no_wa, true);
+
+    let nlen2 = n / 2;
+    let mut soukan = vec![0.0f64; n];
+    for m in 0..=nlen2.min(n - 1) {
+        soukan[m] = naiseki_no_wa[nlen2 - m].re;
+    }
+    for m in (nlen2 + 1)..n {
+        soukan[m] = naiseki_no_wa[n + nlen2 - m].re;
+    }
+    soukan
 }
 
 #[cfg(test)]

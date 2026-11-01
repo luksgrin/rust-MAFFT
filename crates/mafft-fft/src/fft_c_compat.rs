@@ -41,10 +41,13 @@ fn make_sintbl(n: usize, sintbl: &mut [f64]) {
     let mut s = 0.0;
     sintbl[0] = 0.0;
     for i in 1..n8 {
+        // arm64 clang contracts both recurrences (`fmadd` with `t` and with
+        // `-t`). Fused and unfused tables happen to agree bit for bit up
+        // to n = 2^18, but not from 2^19 on (sequences over 256 kb).
         c -= dc;
-        dc += t * c;
+        dc = fmadd(t, c, dc);
         s += ds;
-        ds -= t * s;
+        ds = fmadd(-t, s, ds);
         sintbl[i] = s;
         sintbl[n4 - i] = c;
     }

@@ -86,6 +86,7 @@ Every progressive merge step matches in score and width; every refinement iterat
 | Same input, `--thread 1 --maxiterate 1/2/3/1000` (C's `athread` refinement rules) | ✓ byte-exact |
 | First 8 sequences of the above, `--retree 2 --maxiterate 1000` (trailing `searchAnchors` region) | ✓ byte-exact |
 | panaroo gene clusters (5 × 4 seqs, ~300–2300 bp), `--auto --adjustdirection --thread 1 --nuc` | ✓ byte-exact |
+| 3 × 3.6–5.0 kb CDS (`dna_01715.fa`, issue #43), FFT-NS-1 / FFT-NS-2 / FFT-NS-i / `--auto --adjustdirection --thread 1 --nuc` | ✓ byte-exact |
 | DNA L-INS-1 / `--auto` on synthetic clusters (pair-phase gap scale ×3, `dndpre` offset 220) | ✓ 60/60 and 30/30 |
 | Two-sequence input under `--maxiterate 1000` (C refines a pair exactly once, unweighted) | ✓ byte-exact |
 | Input read path corpus (22 files × `default` / `--anysymbol` / `--localpair --maxiterate 0` / `--nuc` / `--add` modes, 71 cells incl. C's exit-1 cases) | ✓ 70/71 (see [What's still out of scope](index.md#whats-still-out-of-scope)) |
@@ -424,6 +425,16 @@ realfft, FFTW) vary in butterfly grouping order, producing 1-ULP
 correlation differences. On flat-landscape similarity matrices those
 ULPs flip FFT-anchor selection — which propagates into different
 alignment segmentation and ultimately different output bytes.
+
+The same holds for what is fed to it. For nucleotides C's `Falign`
+correlates a single channel (`n20or4or2 = 1`, `Falign.c:923`: only `a`
+enters `seq_vec_3`), and the correlation is a count of matching `a`s, so
+distinct lags tie exactly and only rounding decides which one `getKouho`
+picks first. `mafft_fft::soukan_c_compat` therefore reproduces `Falign`'s
+correlation step by step (`calcNaiseki`'s `a · conj(b)` with clang's
+contraction, channel sum, inverse FFT, read-back order), and
+`cross_validate_falign_dna.rs` checks it bit for bit against C's own `fft`
+and `calcNaiseki` on 4–5 kb sequences (issue #43).
 
 ### FP order matters
 

@@ -29,6 +29,9 @@
 //!   the panaroo-rs tiny/core parity corpus (issue #1), the exact workload
 //!   panaroo-rs hands to MAFFT: `--auto --adjustdirection --thread 1 --nuc`.
 //!   See the README in that directory for provenance and regeneration.
+//! * `dna_01715` — three 3.6–5.0 kb CDS from the high-throughput corpus
+//!   (issue #43) on which the FFT anchor search diverged: the nucleotide
+//!   correlation must use C's single `a` channel.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -178,6 +181,34 @@ fn fftnsi_first8_dna_trailing_anchor_matches_c() {
         &f.join("mtb_cds_first8.fa"),
         &f.join("mtb_cds_first8.fftnsi.expected"),
     );
+}
+
+/// Three *S. pneumoniae* CDS of 3.6–5.0 kb (`dna_01715` of the
+/// high-throughput corpus, issue #43) under the FFT progressive modes.
+///
+/// C's `Falign` correlates nucleotides on ONE channel: `n20or4or2 = 1` when
+/// `scoremtx == -1` (`Falign.c:923`), so `seq_vec_3` keeps only `a`. The port
+/// correlated all ten scored letters, which ranks the 20 candidate lags
+/// differently. Similar sequences hide it — the best lag carries the
+/// anchors either way — but on these the second merge (2 vs 1) picked
+/// different anchors and the alignment differed from column 2759 on.
+/// `--nofft`, `--localpair` and `--globalpair` never reach `Falign` and
+/// were already identical.
+///
+/// C gives the same bytes for all four commands below (FFT-NS-2, FFT-NS-1,
+/// FFT-NS-i and the panaroo argv), and for a build without FP contraction
+/// (`-ffp-contract=off`), so one reference serves every case and policy.
+#[test]
+fn fft_long_cds_dna_01715_matches_c() {
+    let f = fixtures();
+    for flags in [
+        &[][..],
+        &["--retree", "1"][..],
+        &["--maxiterate", "1000"][..],
+        &["--auto", "--adjustdirection", "--thread", "1", "--nuc"][..],
+    ] {
+        expect_identical(flags, &f.join("dna_01715.fa"), &f.join("dna_01715.expected"));
+    }
 }
 
 /// Differential test on realistic clusters under the pipeline invocation
