@@ -281,7 +281,8 @@ robustness or parity gaps.
 Checked on 2026-10-31:
 
 - [GitLab `sysimm/mafft` issues](https://gitlab.com/sysimm/mafft/-/issues)
-  has four issues in total. None is an input-triggered crash. #3, output
+  had no input-triggered crash among the issues filed by then (later
+  issues, #6 onwards, were not checked for this list). #3, output
   nondeterminism with `--auto --thread 10`, is threading rather than
   memory safety, and its input is behind a login-only upload. #4 is a
   GCC 15 build failure, already handled by this repository.

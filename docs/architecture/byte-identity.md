@@ -112,7 +112,8 @@ Below 50 sequences `splittbfast` keeps every pivot (`tokyoripara = 0`
 when `picksize > njob`), so the 36-sequence sample exercises only one
 level of `splitseq_mq`. From 50 sequences on, redundant pivots are
 filtered, yuko groups hold distinct sequences, `splitseq_mq` recurses
-into them, and for `nin > 50` the pivot draw consumes libc `rand()`. The
+into them. The pivot draw consumes libc `rand()` whenever more than one
+candidate is left to draw from (`nkouho > 1`, `splittbfast.c:1517-1530`). The
 recursive port (`mafft-tree/src/parttree_splitseq.rs`) reproduces all of
 it, including the macOS `rand()` sequence and the macOS `qsort` order of
 tied distances. Checked against the in-tree C build on the scaling corpus

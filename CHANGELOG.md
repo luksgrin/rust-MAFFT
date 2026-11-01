@@ -25,16 +25,17 @@ public surfaces stable from 0.1.0 anyway.
   Apple M4 on 2026-10-31 / 2026-11-01 in `benchmarks/results/` and in
   `PROFILING.md` ("Memory footprint", "Multi-threading"), the README
   "Performance" section and the Python API page ("Multi-threading from
-  Python"). In short: at `--thread 8` `mafft-rs` peaks 2.3–4.8× lower
-  than C on FFT-NS-2, FFT-NS-i and L-INS-i (median over 7 inputs per
-  mode), but single-threaded it uses about twice C's memory on L-INS-i
-  and more on `--parttree`; its output was identical across thread
-  counts in every run (incl. all 76 BAliBASE RV11 sets), while its
-  `--thread 8` speedup is at most 1.5× (C: 1.6–3.8×) because the
-  iterative refinement runs on one thread (#48). `pymafft.align(threads=N)`
-  behaves the same (1.05–1.53× at 8 threads, all 90 results equal to the
-  CLI at `--thread 1`), and two concurrent calls in two Python threads
-  take as long as one (7.53 vs 7.37 s), confirming the GIL is released.
+  Python"). These runs predate the parallel refinement under
+  "Performance" below. In short: at `--thread 8` `mafft-rs` peaked
+  2.3–4.8× lower than C on FFT-NS-2, FFT-NS-i and L-INS-i (median over 7
+  inputs per mode), but single-threaded it uses 1.4–2.3× C's memory on
+  L-INS-i and more on `--parttree`; its output was identical across
+  thread counts in every run (incl. all 76 BAliBASE RV11 sets). With the
+  refinement still on one thread, its `--thread 8` speedup was at most
+  1.5× (C: 1.6–3.8×), and `pymafft.align(threads=N)` behaved the same
+  (1.05–1.53× at 8 threads, all 90 results equal to the CLI at
+  `--thread 1`). Two concurrent calls in two Python threads take as long
+  as one (7.53 vs 7.37 s), confirming the GIL is released.
 - **High-throughput workload benchmark** (`benchmarks/htworkload_corpus.py`,
   `benchmarks/htworkload.py`, `benchmarks/htworkload/Snakefile`, issue
   #23). A corpus of 2695 *S. pneumoniae* gene families (30 RefSeq
@@ -315,9 +316,10 @@ public surfaces stable from 0.1.0 anyway.
   maps a raw column to its residue index in constant time, and the
   `G__align11` row loop hoists the substitution-matrix row and skips the
   warp-record copies when warp is off.
-  Idle-machine wall-clock medians for `--thread 1` versus `--thread 8`
-  are not in this entry yet; they replace this sentence after the formal
-  run.
+  Single runs on an Apple M4 (load about 2–6, not medians) went from
+  15.0 to 5.7 s on BB30005 L-INS-i and from 50.3 to 12.2 s on the
+  120 × 1.4 kb CDS fixture under L-INS-i at `--thread 1` versus `8`.
+  Idle-machine medians are pending (#48).
 
 ### Python
 

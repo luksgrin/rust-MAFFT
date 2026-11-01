@@ -242,9 +242,10 @@ jobs:
           path: crates/pymafft/dist/*.tar.gz
 
   # ------------------------------------------------------------------
-  # Test wheels on native runners (one target per OS; cross-compiled
-  # aarch64-linux wheels are exercised via QEMU at publish time, not
-  # here — installing them on x86_64 would fail by design).
+  # Test wheels on native runners (one target per OS). The
+  # cross-compiled aarch64-linux wheels are built but not installed or
+  # tested anywhere in this workflow; installing them on x86_64 would
+  # fail by design.
   #
   # The `python` axis installs the SAME abi3 wheel (`wheels-<target>`)
   # on each interpreter, which is what checks the stable-ABI claim: the

@@ -80,7 +80,7 @@ Results are relative to the C build on your platform; see
 ### Workspace suite
 
 ```sh
-# 537 tests + 7 ignored across 48 suites; builds the C reference in-tree
+# 582 tests + 9 ignored across 53 suites; builds the C reference in-tree
 # (mafft-c-bindings/build.rs) on the first run
 cargo test --workspace --exclude pymafft --release
 ```
@@ -94,8 +94,10 @@ lists how to run a single layer, file or test.
 # Fixture tests under the other C compiler's contraction policy.
 # On Apple Silicon the default fuses, so fp-contract-none matches gcc/MSVC.
 # On Intel macOS, Linux (including aarch64) and Windows the default does not fuse,
-# so fp-contract-fma matches Apple clang. FFI tests that compare
-# against the in-tree C build skip when the policies do not match.
+# so fp-contract-fma matches Apple clang on Apple Silicon. Of the FFI tests, only
+# cross_validate_bl50_fft.rs checks CONTRACTS_FMA and skips when the
+# policies do not match; cross_validate_cpmx.rs builds its reference
+# with fp::fmadd, so it follows the build's policy.
 cargo test --workspace --exclude pymafft --release --features fp-contract-none
 
 # Re-derive the policy-sensitive fixtures from the in-tree C build and diff

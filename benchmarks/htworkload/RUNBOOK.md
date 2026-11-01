@@ -102,10 +102,11 @@ caffeinate -i .venv/bin/python benchmarks/htworkload.py run --smoke --molecule d
 .venv/bin/python benchmarks/htworkload.py summarize benchmarks/results/htworkload_<os>-<arch>_<date>.tsv
 ```
 
-Expect: all 50 clusters aligned on every path, `identical = yes` for every
-Rust/pymafft cell except cluster `dna_01715` (issue #43, a known FFT-path
-divergence; it is one cluster and does not affect timing). If anything
-else is not identical, stop and report it before measuring.
+Expect: all 50 clusters aligned on every path and `identical = yes` for
+every Rust/pymafft cell. Cluster `dna_01715` diverged in the committed
+smoke TSV (issue #43); that FFT-path divergence is fixed and the cluster
+is now a byte-identity fixture. If anything is not identical, stop and
+report it before measuring.
 
 ## The full run
 
@@ -152,8 +153,8 @@ count, and the byte-identity count. Deliver:
    into `PROFILING.md` under "High-throughput workload", with the host
    (CPU model, core count, RAM, OS), the commit measured, the date, and
    the load average observed;
-3. a short note of any cell that is not byte-identical beyond
-   `dna_01715`, with the cluster id, as a comment on issue #23.
+3. a short note of any cell that is not byte-identical, with the
+   cluster id, as a comment on issue #23.
 
 Open a pull request against `main` with `Closes #23`. That PR touches only
 `benchmarks/` and `PROFILING.md`, so no CI runs; that is expected.
