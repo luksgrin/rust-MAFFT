@@ -214,8 +214,21 @@ out. After the R3 fix no `mafft-rs` run panicked.
 
 ## Other differences seen (not memory safety)
 
-These are documented here so they are not lost. They are robustness or
-parity gaps, and none is undefined behaviour:
+These are documented here so they are not lost. None is undefined
+behaviour. The NUL case is an improvement over C. The rest are
+robustness or parity gaps.
+
+!!! note "A zero byte in the file is kept"
+
+    This is an improvement, and it stays. C reads each line with
+    `fgets`, which stops at the first zero byte and silently discards
+    the rest of that line. `AC\0DE` is aligned as `AC`. `mafft-rs`
+    drops only the zero byte, because it is not a letter, and aligns
+    the residues after it, so the same input is `ACDE`. A zero byte in
+    a name is kept, together with the bytes that follow it; C cuts the
+    name off. A normal FASTA file contains no zero byte, so the two
+    programs still match on real input. Of the mutants whose residues
+    differed in the 2026-10-31 sweep, 74 of 76 were this case.
 
 - **Non-UTF-8 input.** The FASTA reader takes the file as bytes. A
   non-alphabetic byte, including one that is not valid UTF-8, is dropped
@@ -225,11 +238,6 @@ parity gaps, and none is undefined behaviour:
   and every non-ASCII and binary input. That refusal is gone.
   `input_bytes_vs_c` compares a Latin-1 byte inside a sequence, and a
   non-UTF-8 name, with the in-tree C build.
-- **NUL bytes.** Intentional difference, left as it is. C's line reader
-  stops at a NUL and silently drops the rest of that line (`AC\0DE`
-  keeps `AC`). `mafft-rs` drops only the NUL and keeps the rest, which
-  loses less of the input. This accounted for 74 of the 76 mutants whose
-  residues differ in that run.
 - **Line endings.** Every `\r` becomes `\n` before records are split,
   matching the wrapper's `tr "\r" "\n"`. CRLF and a CR-only file of N
   sequences both yield N sequences. The CR-only case is compared with

@@ -455,6 +455,8 @@ Any regression in DP indexing, boundary handling, FFT anchor placement, refineme
 
 These categories cover the modes where `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526. Default `--addfragments` matches C (section D); `--addfragments --localpair` is not a reference.
 
+A zero byte in the input is not one of these limitations. C's `fgets` stops at it and drops the rest of the line (`AC\0DE` becomes `AC`). `mafft-rs` drops only that byte and aligns what follows (`ACDE`), and it keeps a zero byte in a name. A normal FASTA file has no zero byte, so the two programs still match on real input. Details are in [Memory safety](docs/architecture/memory-safety.md).
+
 ### A. External-dependency-blocked modes
 
 These modes are wired correctly but require third-party binaries not shipped by upstream MAFFT; end-to-end validation depends on the binary being on `PATH`. Same limitation as C MAFFT itself faces.
