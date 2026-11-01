@@ -1796,10 +1796,12 @@ fn merge_step_cached(
     };
 
 
-    // C uses Falign (FFT-accelerated) for ALL steps when ffttry is true
-    // (nlen > clus, which is always true). G__align11 is only used when
-    // FFT is disabled (use_fft=false) and both groups are single sequences.
-    // When alg='A', the non-FFT fallback is A__align (= profile_align).
+    // C uses Falign for every step when ffttry is true (nlen > clus,
+    // which is always true). Inside Falign, a 1-vs-1 group is aligned
+    // with G__align11. Finite weights make that profile DP match
+    // G__align11, so the ordinary FFT path below is used. Non-finite
+    // weights are the branch just under `msalign_even_pairs`. When
+    // alg='A', the non-FFT fallback is A__align (= profile_align).
     //
     // C's disttbfast passes `outgap, outgap` for headgp/tailgp in G__align11
     // and A__align. With the -O flag (always set by mafft script), outgap=0,
@@ -1809,6 +1811,25 @@ fn merge_step_cached(
         // `penalize_term_gaps` (1 for PartTree; the script omits `-O`).
         mafft_align::msalignmm(
             &prof1, &prof2, &scoring.consweight_matrix, gap,
+            penalize_term_gaps, penalize_term_gaps,
+        )
+    } else if use_fft
+        && group1.len() == 1
+        && group2.len() == 1
+        && constraints.is_none()
+        && (!weights[group1[0]].is_finite() || !weights[group2[0]].is_finite())
+    {
+        // Falign aligns each segment with `G__align11` when both groups
+        // are single sequences (`Falign.c` case 'A', around the
+        // `clus1 == 1 && clus2 == 1` branch). A non-finite branch length
+        // makes `eff` NaN. `alignableReagion` then never sees
+        // `score > threshold`, so the anchor search stops with no anchors
+        // and the whole sequences are aligned by `G__align11`, which does
+        // not read `eff`. Scoring the NaN profile here diverges.
+        pairwise_align11_ex(
+            &aligned[group1[0]], &aligned[group2[0]],
+            &scoring.consweight_matrix, &scoring.amino_map,
+            scoring.gap.open as f64, scoring.gap.extend as f64,
             penalize_term_gaps, penalize_term_gaps,
         )
     } else if !use_fft && group1.len() == 1 && group2.len() == 1
@@ -2117,7 +2138,10 @@ fn sorted_key(group: &[usize]) -> Vec<usize> {
 fn normalized_group_weights(group: &[usize], weights: &[f64]) -> Vec<f64> {
     let w: Vec<f64> = group.iter().map(|&i| weights[i]).collect();
     let sum: f64 = w.iter().sum();
-    if sum > 0.0 { w.iter().map(|v| v / sum).collect() } else { vec![1.0; group.len()] }
+    // C always executes `peff[m] /= total` (`tddis.c:552-556`). A NaN sum
+    // (every weight NaN after a `nan`/`inf` guide tree) must stay NaN.
+    // A non-positive finite sum keeps the uniform fallback.
+    if sum > 0.0 || sum.is_nan() { w.iter().map(|v| v / sum).collect() } else { vec![1.0; group.len()] }
 }
 
 fn build_profile_from_seqs(
@@ -2151,7 +2175,11 @@ fn build_profile_with_memo(
     let seqs: Vec<&[u8]> = group.iter().map(|&i| aligned[i].as_slice()).collect();
     let w: Vec<f64> = group.iter().map(|&i| weights[i]).collect();
     let sum: f64 = w.iter().sum();
-    let wn: Vec<f64> = if sum > 0.0 { w.iter().map(|v| v / sum).collect() } else { vec![1.0; group.len()] };
+    let wn: Vec<f64> = if sum > 0.0 || sum.is_nan() {
+        w.iter().map(|v| v / sum).collect()
+    } else {
+        vec![1.0; group.len()]
+    };
     let firstmem = group[0] as i32;
     let icyc = group.len();
     let lgth = seqs.first().map_or(0, |s| s.len());

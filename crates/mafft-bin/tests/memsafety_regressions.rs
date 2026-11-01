@@ -68,6 +68,23 @@ fn treein_zero_index_is_rejected() {
     expect_error(&["--treein", tree, "--maxiterate", "2"], &memsafety("control_protein.fa"), "out of range");
 }
 
+/// `--treein` branch lengths `nan`, `inf`, `-inf`, and `1e308`. C accepts
+/// them (`loadtree` keeps `nan`/`+inf` and stores `-inf` as 0) and the
+/// alignment is 132 columns. mafft-rs used to succeed with a different
+/// alignment (288 columns).
+#[test]
+fn treein_nan_lengths_match_c() {
+    let tree = memsafety("tree_nan_lengths.txt");
+    let mut out = Vec::new();
+    mafft_rs::run_from(
+        argv(&["--thread", "1", "--treein", tree.to_str().unwrap()], &memsafety("control_protein.fa")),
+        &mut out,
+    )
+    .unwrap_or_else(|e| panic!("mafft-rs failed: {}", e.message()));
+    let want = std::fs::read(memsafety("tree_nan_lengths.fftns2.expected")).unwrap();
+    assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want));
+}
+
 /// `--treein` with a negative index: same C read path as the 0 index.
 #[test]
 fn treein_negative_index_is_rejected() {

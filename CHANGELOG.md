@@ -131,6 +131,17 @@ public surfaces stable from 0.1.0 anyway.
   message with exit code 1. The new `MafftEngine::try_align` and
   `try_align_file` return that error; `align` and `align_file` keep their
   signatures and panic with the message instead of exiting.
+- **`--treein` with `nan` / `inf` branch lengths matches C** (part of #41).
+  `loadtree` keeps `nan` and `+inf`, and a negative length, including
+  `-inf`, becomes 0. The sequence weights are still divided by their
+  total when that total is `nan`, so every weight is `nan`. A 1-vs-1
+  merge then uses `G__align11`, which does not read the weights; a
+  profile merge keeps them. mafft-rs skipped the division and scored
+  the `nan` profile on the 1-vs-1 step. The adversarial
+  `tree_nan_lengths` alignment now matches the in-tree C build. An
+  index of 0, a negative index, and an out-of-range index are still
+  errors. A length of exactly `-1` is C's "branch length is not given"
+  sentinel and exits 1, as in C.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the
