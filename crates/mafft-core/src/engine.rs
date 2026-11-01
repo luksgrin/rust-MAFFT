@@ -432,10 +432,19 @@ impl MafftEngine {
 
     /// Align a set of sequences.
     ///
+    /// Panics with the [`EngineError`] message where [`Self::try_align`]
+    /// returns an error. Use `try_align` to handle a bad `--treein` file or
+    /// a failed RNA base-pair step without unwinding.
+    pub fn align(&self, input: &SequenceSet) -> MultipleAlignment {
+        self.try_align(input).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Align a set of sequences, returning an error instead of panicking.
+    ///
     /// A bad `--treein` file and a failure while computing RNA base-pair
     /// probabilities are [`Err`]s. They used to call `std::process::exit(1)`,
     /// which also killed an in-process caller.
-    pub fn align(&self, input: &SequenceSet) -> Result<MultipleAlignment, EngineError> {
+    pub fn try_align(&self, input: &SequenceSet) -> Result<MultipleAlignment, EngineError> {
         let seq_type = input.seq_type;
         let scoring_model = if seq_type.is_nucleotide() {
             ScoringModel::Dna
@@ -1783,10 +1792,17 @@ impl MafftEngine {
         (scoring, use_fft, existing, new_sequences, new_names)
     }
 
-    /// Convenience: read FASTA file and align.
-    pub fn align_file(&self, path: &std::path::Path) -> Result<MultipleAlignment, EngineError> {
+    /// Convenience: read FASTA file and align. Panics like [`Self::align`]
+    /// on an alignment error; see [`Self::try_align_file`].
+    pub fn align_file(&self, path: &std::path::Path) -> Result<MultipleAlignment, mafft_io::IoError> {
+        let input = read_fasta(path)?;
+        Ok(self.align(&input))
+    }
+
+    /// Convenience: read FASTA file and align, returning every failure.
+    pub fn try_align_file(&self, path: &std::path::Path) -> Result<MultipleAlignment, EngineError> {
         let input = read_fasta(path).map_err(|e| EngineError::new(e.to_string()))?;
-        self.align(&input)
+        self.try_align(&input)
     }
 }
 
@@ -1977,7 +1993,7 @@ mod tests {
     #[test]
     fn engine_fftns2() {
         let engine = MafftEngine::new(AlignmentMode::FftNs2);
-        let msa = engine.align(&make_test_input()).expect("align");
+        let msa = engine.align(&make_test_input());
         assert_eq!(msa.nseq(), 3);
         let w = msa.width();
         assert!(w >= 13);
@@ -1987,7 +2003,7 @@ mod tests {
     #[test]
     fn engine_with_refinement() {
         let engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 5 });
-        let msa = engine.align(&make_test_input()).expect("align");
+        let msa = engine.align(&make_test_input());
         assert_eq!(msa.nseq(), 3);
         let w = msa.width();
         for seq in &msa.sequences { assert_eq!(seq.len(), w); }
@@ -2003,7 +2019,7 @@ mod tests {
             seq_type: SeqType::Protein,
         };
         let engine = MafftEngine::default();
-        let msa = engine.align(&input).expect("align");
+        let msa = engine.align(&input);
         assert_eq!(msa.nseq(), 2);
         assert_eq!(msa.sequences[0], msa.sequences[1]);
     }
@@ -2011,7 +2027,7 @@ mod tests {
     #[test]
     fn engine_linsi_mode() {
         let engine = MafftEngine::new(AlignmentMode::LInsi { iterations: 2 });
-        let msa = engine.align(&make_test_input()).expect("align");
+        let msa = engine.align(&make_test_input());
         assert_eq!(msa.nseq(), 3);
         let w = msa.width();
         for seq in &msa.sequences { assert_eq!(seq.len(), w); }
@@ -2020,8 +2036,8 @@ mod tests {
     #[test]
     fn engine_retree_1_vs_2() {
         let input = make_test_input();
-        let msa1 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input).expect("align");
-        let msa2 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(2).align(&input).expect("align");
+        let msa1 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input);
+        let msa2 = MafftEngine::new(AlignmentMode::FftNs2).with_retree(2).align(&input);
         // Both should produce valid alignments
         assert_eq!(msa1.nseq(), 3);
         assert_eq!(msa2.nseq(), 3);
@@ -2055,7 +2071,7 @@ mod tests {
             seq_type: SeqType::Protein,
         };
         let engine = MafftEngine::new(AlignmentMode::FftNsi { iterations: 5 });
-        let msa = engine.align(&input).expect("align");
+        let msa = engine.align(&input);
         assert_eq!(msa.nseq(), 5);
         let w = msa.width();
         for (i, seq) in msa.sequences.iter().enumerate() {
@@ -2090,12 +2106,11 @@ mod tests {
         std::fs::write(&path, b"0 2 0.1 0.1\n").unwrap();
         let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
         engine.treein_path = Some(path.clone());
-        let err = engine.align(&make_test_input()).unwrap_err();
+        let err = engine.try_align(&make_test_input()).unwrap_err();
         assert!(err.to_string().starts_with("--treein:"), "{err}");
         let _ = std::fs::remove_file(&path);
         let ok = MafftEngine::new(AlignmentMode::FftNs2)
-            .align(&make_test_input())
-            .expect("align");
+            .align(&make_test_input());
         assert_eq!(ok.nseq(), 3);
     }
 

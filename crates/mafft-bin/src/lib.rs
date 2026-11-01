@@ -1794,7 +1794,7 @@ fn align_prepared<'a>(
             };
             *input = Cow::Owned(adjust_direction_mode(input, mode));
         }
-        engine.align(input).map_err(|e| MafftError::new(1, e.to_string()))
+        engine.try_align(input).map_err(|e| MafftError::new(1, e.to_string()))
     }
     })?;
     check_output_alphabet(&msa)?;

@@ -13,7 +13,7 @@
 //!
 //! let input: SequenceSet = read_fasta("input.fasta").unwrap();
 //! let engine = MafftEngine::new(AlignmentMode::FftNs2);
-//! let msa = engine.align(&input).unwrap();
+//! let msa = engine.align(&input);
 //! for (name, seq) in msa.names.iter().zip(msa.sequences.iter()) {
 //!     println!(">{name}");
 //!     println!("{}", std::str::from_utf8(seq).unwrap());
