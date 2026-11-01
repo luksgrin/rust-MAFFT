@@ -76,12 +76,21 @@ pub fn parse_mafft_tree_str(content: &str, nseq: usize) -> Result<Topology, Stri
         let jm_1: usize = jm_s.parse().map_err(|_| {
             format!("line {}: invalid jm '{jm_s}'", line_no + 1)
         })?;
-        let len0: f64 = l0_s.parse().map_err(|_| {
+        let mut len0: f64 = l0_s.parse().map_err(|_| {
             format!("line {}: invalid len0 '{l0_s}'", line_no + 1)
         })?;
-        let len1: f64 = l1_s.parse().map_err(|_| {
+        let mut len1: f64 = l1_s.parse().map_err(|_| {
             format!("line {}: invalid len1 '{l1_s}'", line_no + 1)
         })?;
+        // C `loadtree` (`mltaln9.c:2630-2631`): `if (len < 0.0) len = 0.0`.
+        // The comparison is false for NaN and +inf, so those values are
+        // kept. -inf is negative and becomes 0.
+        if len0 < 0.0 {
+            len0 = 0.0;
+        }
+        if len1 < 0.0 {
+            len1 = 0.0;
+        }
 
         if im_1 == 0 || jm_1 == 0 || im_1 > nseq || jm_1 > nseq {
             return Err(format!(
@@ -212,5 +221,35 @@ mod tests {
         let content = "\n\n1 2 0.1 0.1\n\n1 3 0.3 0.3\n";
         let topo = parse_mafft_tree_str(content, 3).unwrap();
         assert_eq!(topo.num_steps(), 2);
+    }
+
+    /// C `loadtree` accepts `nan` / `inf` (`sscanf %lf`) and stores `-inf`
+    /// as 0 because `-inf < 0`. Index checks are unchanged.
+    #[test]
+    fn nan_inf_lengths_follow_loadtree() {
+        let content = "\
+1 2 nan nan
+3 4 inf -inf
+1 3 0.2 0.2
+5 6 0.1 0.1
+1 5 1e308 1e308
+";
+        let topo = parse_mafft_tree_str(content, 6).unwrap();
+        assert!(topo.steps[0].left_length.is_nan());
+        assert!(topo.steps[0].right_length.is_nan());
+        assert!(topo.steps[1].left_length.is_infinite() && topo.steps[1].left_length.is_sign_positive());
+        assert_eq!(topo.steps[1].right_length, 0.0);
+        assert!((topo.steps[2].left_length - 0.2).abs() < 1e-12);
+        assert!((topo.steps[4].left_length - 1e308).abs() / 1e308 < 1e-12);
+        let w = crate::sequence_weights(&topo);
+        assert!(w.iter().all(|v| v.is_nan()), "{w:?}");
+    }
+
+    #[test]
+    fn zero_and_negative_index_still_rejected() {
+        let err = parse_mafft_tree_str("0 2 0.1 0.1\n1 3 0.1 0.1\n", 3).unwrap_err();
+        assert!(err.contains("out of range"), "{err}");
+        let err = parse_mafft_tree_str("-5 2 0.1 0.1\n1 3 0.1 0.1\n", 3).unwrap_err();
+        assert!(err.contains("invalid im"), "{err}");
     }
 }

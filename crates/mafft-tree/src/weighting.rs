@@ -48,7 +48,12 @@ pub fn sequence_weights(topo: &Topology) -> Vec<f64> {
         *w += GETA;
     }
     let total: f64 = rootnode.iter().sum();
-    if total > 0.0 {
+    // C `counteff_simple_double_nostatic_memsave` always divides
+    // (`mltaln9.c:9926-9937`), including when `total` is NaN. A `--treein`
+    // length of `nan` or `inf` makes every weight NaN. `total > 0` is
+    // false for NaN, which used to skip the division and leave infinities
+    // in the vector.
+    if total > 0.0 || total.is_nan() {
         for w in &mut rootnode {
             *w /= total;
         }
