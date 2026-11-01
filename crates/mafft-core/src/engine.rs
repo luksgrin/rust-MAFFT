@@ -11,7 +11,7 @@ use mafft_types::{ScoringModel, SequenceSet, LocalHomologyTable};
 
 use crate::progressive::MultipleAlignment;
 use crate::refinement::{iterative_refine, RefinementParams};
-use crate::add::{add_fragments, add_fragments_keeplength_with_map, add_sequences, add_sequences_keeplength_with_map};
+use crate::add::{add_sequences, add_sequences_keeplength_with_map};
 
 /// Alignment mode (strategy).
 #[derive(Debug, Clone)]
@@ -1673,8 +1673,7 @@ impl MafftEngine {
     ///
     /// Gap extension is the wrapper's hardcoded `-g -0.01`, scaled the
     /// same way as `-f` (`constants.c`). `--op` / `--ep` still override
-    /// open and offset, matching `add_to_alignment`. No `dvtditr`, and
-    /// no second-guide-tree reorder.
+    /// open and offset, matching `add_to_alignment`. No `dvtditr`.
     pub fn add_fragments_to_alignment(
         &self,
         existing_input: &SequenceSet,
@@ -1693,7 +1692,7 @@ impl MafftEngine {
         new_input: &SequenceSet,
         keeplength: bool,
     ) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
-        self.add_fragments_impl(existing_input, new_input, keeplength)
+        self.add_fragments_impl(existing_input, new_input, keeplength, true)
     }
 
     /// `--addfragments` with `--mapout` / `--compactmapout` (both imply
@@ -1703,7 +1702,7 @@ impl MafftEngine {
         existing_input: &SequenceSet,
         new_input: &SequenceSet,
     ) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
-        self.add_fragments_impl(existing_input, new_input, true)
+        self.add_fragments_impl(existing_input, new_input, true, false)
     }
 
     fn add_fragments_impl(
@@ -1711,18 +1710,25 @@ impl MafftEngine {
         existing_input: &SequenceSet,
         new_input: &SequenceSet,
         keeplength: bool,
+        allow_reorder: bool,
     ) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
         let (scoring, use_fft, existing, new_sequences, new_names) =
             self.fragment_add_inputs(existing_input, new_input);
-        if keeplength {
-            add_fragments_keeplength_with_map(
-                &existing, &new_sequences, &new_names, &scoring, use_fft,
-            )
-        } else {
-            let n = new_sequences.len();
-            let msa = add_fragments(&existing, &new_sequences, &new_names, &scoring, use_fft);
-            (msa, vec![Vec::new(); n])
+        // `addsingle` gets the wrapper's `$treealg` (`scripts/mafft:2623`),
+        // so `--averagelinkage` / `--minimumlinkage` / `--mixedlinkage`
+        // reach both the existing tree and `addonetip`.
+        let r = crate::add::add_fragments(
+            &existing, &new_sequences, &new_names, &scoring, use_fft, keeplength,
+            self.cluster_method,
+        );
+        let mut msa = r.msa;
+        // `--reorder`: `f2cl -r` applies the `order` file `addsingle`
+        // writes (`addsingle.c:3601-3615`, `scripts/mafft:2274-2282`).
+        if self.reorder_output && allow_reorder && r.order.len() == msa.nseq() {
+            msa.sequences = r.order.iter().map(|&i| msa.sequences[i].clone()).collect();
+            msa.names = r.order.iter().map(|&i| msa.names[i].clone()).collect();
         }
+        (msa, r.deletelist)
     }
 
     fn fragment_add_inputs(

@@ -124,6 +124,14 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **`--addfragments --reorder` and the linkage options.** `addsingle`
+  writes an `order` file (the existing tree's root members, each
+  followed by the fragments placed next to it, `addsingle.c:3601-3615`)
+  that `f2cl -r` applies; `mafft-rs` ignored `--reorder` on this path.
+  `addsingle` also gets the wrapper's `$treealg`, so `--averagelinkage`,
+  `--minimumlinkage` and `--mixedlinkage` change both the existing-rows
+  tree and the `addonetip` placement (`sueff_global`,
+  `mltaln9.c:14464`); `mafft-rs` always used `-X 0.1`.
 - **`--anysymbol` restore with `--keeplength`, `--mapout` and
   `--compactmapout`.** C's `restoreu` first blanks the residues
   `--keeplength` dropped from each added sequence (`_deletelist`,

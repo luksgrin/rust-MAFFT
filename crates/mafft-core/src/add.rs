@@ -279,44 +279,26 @@ pub fn commongappick(sequences: &[Vec<u8>]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// `--addfragments`: C `addsingle` (`scripts/mafft` default branch,
-/// `addsingle -Q 100 -W 6 -O -K -I nadd -g -0.01 -F -f -1.53 -h 0.0 -X 0.1`,
-/// plus `-Y` when `--keeplength`).
-///
-/// Each fragment is placed on its own. A 6-mer distance picks a node in
-/// the existing UPGMA tree (`addonetip`, with the ungapped-length gate),
-/// one profile DP aligns the fragment to that sister clade (`treebase`,
-/// new gaps marked `=`), and the independent gap lists are merged
-/// (`makegaplistcompact` / `gaplist2alnx` /
-/// `insertgapsbyotherfragments_compact`). Blocks where more than one
-/// fragment opened a column are realigned (`dorealignment_tree`).
-///
-/// `scoring.gap.extend` must already be the scaled `-g -0.01` value.
-/// This does not run `dvtditr` and does not apply `--add --reorder`'s
-/// second guide tree.
-pub fn add_fragments(
-    existing: &MultipleAlignment,
-    new_sequences: &[Vec<u8>],
-    new_names: &[mafft_types::SeqName],
-    scoring: &ScoringContext,
-    use_fft: bool,
-) -> MultipleAlignment {
-    let (msa, _) = add_fragments_inner(
-        existing, new_sequences, new_names, scoring, use_fft, false,
-    );
-    msa
+/// Result of [`add_fragments`].
+pub(crate) struct FragmentAdd {
+    pub msa: MultipleAlignment,
+    /// Per fragment, the `(start_in_addbk, run_len)` runs `-Y` dropped.
+    pub deletelist: Vec<Vec<(usize, usize)>>,
+    /// The `order` file `addsingle` writes for `--reorder`
+    /// (`addsingle.c:3601-3615`): the existing tree's root members
+    /// (`ordertable`, `:3459`), each followed by the fragments placed
+    /// next to it (`follower[]`, `:3581-3598`), in input order.
+    pub order: Vec<usize>,
 }
 
-/// `--addfragments --keeplength` (`addsingle -Y`), also the mapout path.
-/// Returns the per-fragment deletelist `(start_in_addbk, run_len)`.
-pub fn add_fragments_keeplength_with_map(
-    existing: &MultipleAlignment,
-    new_sequences: &[Vec<u8>],
-    new_names: &[mafft_types::SeqName],
-    scoring: &ScoringContext,
-    use_fft: bool,
-) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
-    add_fragments_inner(existing, new_sequences, new_names, scoring, use_fft, true)
+/// `sueff` for `addonetip`, which always uses the mixed-linkage formula
+/// with `sueff_global` (`mltaln9.c:14464-14465`).
+fn cluster_sueff(cluster: ClusterMethod) -> f64 {
+    match cluster {
+        ClusterMethod::Mix { sueff } => sueff,
+        ClusterMethod::Average => 1.0,
+        ClusterMethod::Minimum => 0.0,
+    }
 }
 
 /// `hat2` / `hat2n` are written with `%.3f` and read back by `addsingle`.
@@ -410,28 +392,48 @@ fn fragment_homology(all: &LocalHomologyTable, norg: usize, iadd: usize) -> Loca
     table
 }
 
-fn add_fragments_inner(
+/// `--addfragments`: C `addsingle` (`scripts/mafft` default branch,
+/// `addsingle -Q 100 -W 6 -O -K -I nadd -g -0.01 -F -f -1.53 -h 0.0 -X 0.1`,
+/// plus `-Y` when `--keeplength`).
+///
+/// Each fragment is placed on its own. A 6-mer distance picks a node in
+/// the existing UPGMA tree (`addonetip`, with the ungapped-length gate),
+/// one profile DP aligns the fragment to that sister clade (`treebase`,
+/// new gaps marked `=`), and the independent gap lists are merged
+/// (`makegaplistcompact` / `gaplist2alnx` /
+/// `insertgapsbyotherfragments_compact`). Blocks where more than one
+/// fragment opened a column are realigned (`dorealignment_tree`).
+///
+/// `scoring.gap.extend` must already be the scaled `-g -0.01` value.
+/// This does not run `dvtditr`. `keeplength` is `-Y`.
+pub(crate) fn add_fragments(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
     new_names: &[mafft_types::SeqName],
     scoring: &ScoringContext,
     use_fft: bool,
     keeplength: bool,
-) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
+    cluster: ClusterMethod,
+) -> FragmentAdd {
     if new_sequences.is_empty() {
-        return (existing.clone(), Vec::new());
+        return FragmentAdd {
+            msa: existing.clone(),
+            deletelist: Vec::new(),
+            order: (0..existing.nseq()).collect(),
+        };
     }
     let norg = existing.nseq();
     if norg == 0 {
         let msa = crate::progressive::progressive_align(
             new_sequences,
             new_names,
-            &musclesupg(&compute_ktuple_dm(new_sequences), ClusterMethod::default()),
+            &musclesupg(&compute_ktuple_dm(new_sequences), cluster),
             scoring,
             use_fft,
             None,
         );
-        return (msa, vec![Vec::new(); new_sequences.len()]);
+        let n = new_sequences.len();
+        return FragmentAdd { msa, deletelist: vec![Vec::new(); n], order: (0..n).collect() };
     }
 
     let original_gaps = record_original_gaps(&existing.sequences);
@@ -466,7 +468,7 @@ fn add_fragments_inner(
     let existing_topo = if norg == 1 {
         Topology::new(1)
     } else {
-        musclesupg(&existing_dm, ClusterMethod::default())
+        musclesupg(&existing_dm, cluster)
     };
     let nogaplen: Vec<usize> = ungapped.iter().take(norg).map(|s| s.len()).collect();
     let alnlen = aln_len_in_node(&stripped, &existing_topo);
@@ -490,7 +492,7 @@ fn add_fragments_inner(
         let added = addonetip_fragment(
             &existing_topo,
             &dists,
-            0.1,
+            cluster_sueff(cluster),
             &nogaplen,
             frag.len(),
             &alnlen,
@@ -570,7 +572,22 @@ fn add_fragments_inner(
         first_pass_sequences: None,
         distance_matrix: None,
     };
-    (msa, deletelist)
+
+    let ordertable: Vec<usize> = match existing_topo.steps.last() {
+        Some(root) if norg > 1 => root.left.iter().chain(root.right.iter()).copied().collect(),
+        _ => vec![0],
+    };
+    let mut follower: Vec<Vec<usize>> = vec![Vec::new(); norg];
+    for (iadd, &f) in follows.iter().enumerate() {
+        follower[f].push(iadd);
+    }
+    let mut order = Vec::with_capacity(norg + follows.len());
+    for &e in &ordertable {
+        order.push(e);
+        order.extend(follower[e].iter().map(|&a| norg + a));
+    }
+
+    FragmentAdd { msa, deletelist, order }
 }
 
 struct PlacedFragment {

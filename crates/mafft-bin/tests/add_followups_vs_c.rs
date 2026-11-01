@@ -65,6 +65,7 @@ fn expect(tag: &str, case: &str, flag: &str, extra: &[&str]) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `restoreu` blanks the residues `--keeplength` dropped (`_deletelist`)
 /// before copying the originals back (`restoreu.c:183-206`).
 #[test]
 fn add_anysymbol_keeplength_matches_c() {
@@ -82,6 +83,8 @@ fn addfragments_anysymbol_keeplength_matches_c() {
     );
 }
 
+/// `restoreu` skips the `Nins:…|` prefix only on the rows that lost
+/// residues (`insname[i]`, `restoreu.c:270`); `sp|P3|NAME_3` is looked up
 /// whole and keeps its `#`.
 #[test]
 fn add_anysymbol_compactmapout_matches_c() {
@@ -93,6 +96,7 @@ fn add_anysymbol_compactmapout_matches_c() {
     );
 }
 
+/// `restoreoriginalgaps` puts the existing alignment's all-gap columns
 /// back after the insertions are deleted (`disttbfast.c:4862`).
 #[test]
 fn add_keeplength_keeps_all_gap_columns() {
@@ -105,6 +109,7 @@ fn add_mapout_matches_c() {
     expect("sample33.add.mapout", "sample33", "--add", &["--mapout"]);
 }
 
+/// `addsingle` passes the aligned rows to `reconstructdeletemap_compact`
 /// (`addsingle.c:3819`), so `vN` is an alignment column there.
 #[test]
 fn addfragments_compactmapout_matches_c() {
@@ -113,5 +118,30 @@ fn addfragments_compactmapout_matches_c() {
         "sample33",
         "--addfragments",
         &["--compactmapout"],
+    );
+}
+
+/// `f2cl -r` applies the `order` file `addsingle` writes
+/// (`addsingle.c:3601-3615`).
+#[test]
+fn addfragments_reorder_matches_c() {
+    expect("sample33.addfragments.reorder", "sample33", "--addfragments", &["--reorder"]);
+    expect("bb12019.addfragments.reorder", "bb12019", "--addfragments", &["--reorder"]);
+}
+
+/// `addsingle` gets `$treealg` (`-X 1.0` / `-X 0.0`).
+#[test]
+fn addfragments_linkage_matches_c() {
+    expect(
+        "bb12019.addfragments.averagelinkage",
+        "bb12019",
+        "--addfragments",
+        &["--averagelinkage"],
+    );
+    expect(
+        "bb12019.addfragments.minimumlinkage",
+        "bb12019",
+        "--addfragments",
+        &["--minimumlinkage"],
     );
 }
