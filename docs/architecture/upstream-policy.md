@@ -186,9 +186,8 @@ in summary:
   `--add` runs one guide-tree cycle where C runs two, `--add --localpair`
   is not implemented, `--groupsize` is ignored, `--partsize` is not
   accepted, and `--memsave` does not change the FFT merges. A few inputs
-  outside the parity corpora (3000 short proteins, a 120 kb sequence,
-  low-complexity and homopolymer DNA, `nan` / `inf` `--treein` lengths)
-  give different bytes. These are gaps in the port, carried until fixed.
+  outside the parity corpora (a 120 kb sequence, low-complexity and
+  homopolymer DNA) give different bytes. These are gaps in the port, carried until fixed.
   Keeping long names whole where C truncates them is intentional.
 
 The floating-point contraction policy is not a residual. C MAFFT 7.526

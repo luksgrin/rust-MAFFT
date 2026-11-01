@@ -48,9 +48,8 @@ The full list, with the inputs, is the README's
   FFT merges, and the 30,000-column switch of `disttbfast` / `tbfast` is
   not ported.
 - **Inputs outside the parity corpora** — the memory-safety run found
-  different bytes on 3000 short protein sequences, a 120 kb DNA
-  sequence, low-complexity DNA under `--adjustdirection`, homopolymer
-  DNA under FFT and `--treein` with `nan` / `inf` branch lengths; names
+  different bytes on a 120 kb DNA sequence, low-complexity DNA under
+  `--adjustdirection` and homopolymer DNA under FFT; names
   longer than about 250 bytes are kept whole where C truncates them
   (intentional).
 - **`--thread N ≥ 2`** — C MAFFT itself is nondeterministic there, so

@@ -515,11 +515,9 @@ Inputs from the memory-safety run (2026-10-31, [memory safety](docs/architecture
 
 | Input | Difference |
 |-------|------------|
-| 3000 short protein sequences (30 aa) | Width 121 for C, 129 for `mafft-rs`. |
 | One 120 kb DNA sequence among others (`--nuc`) | A few gap moves. |
 | Long low-complexity DNA under `--adjustdirection` / `--adjustdirectionaccurately` | Different alignment. |
 | DNA with a long homopolymer (e.g. 300 × `A` + 300 nt) under FFT-NS-1/2/i | Every residue kept, but gap placement inside the run differs (608 vs 600 columns). |
-| `--treein` with `nan` / `inf` branch lengths | Different alignment. |
 | Names longer than about 250 bytes | Intentional: C truncates the name, `mafft-rs` keeps all of it. The alignment is the same. |
 
 ## Performance
