@@ -140,7 +140,8 @@ public surfaces stable from 0.1.0 anyway.
   the `nan` profile on the 1-vs-1 step. The adversarial
   `tree_nan_lengths` alignment now matches the in-tree C build. An
   index of 0, a negative index, and an out-of-range index are still
-  errors.
+  errors. A length of exactly `-1` is C's "branch length is not given"
+  sentinel and exits 1, as in C.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the

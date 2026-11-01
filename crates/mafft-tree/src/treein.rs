@@ -82,16 +82,6 @@ pub fn parse_mafft_tree_str(content: &str, nseq: usize) -> Result<Topology, Stri
         let mut len1: f64 = l1_s.parse().map_err(|_| {
             format!("line {}: invalid len1 '{l1_s}'", line_no + 1)
         })?;
-        // C `loadtree` (`mltaln9.c:2630-2631`): `if (len < 0.0) len = 0.0`.
-        // The comparison is false for NaN and +inf, so those values are
-        // kept. -inf is negative and becomes 0.
-        if len0 < 0.0 {
-            len0 = 0.0;
-        }
-        if len1 < 0.0 {
-            len1 = 0.0;
-        }
-
         if im_1 == 0 || jm_1 == 0 || im_1 > nseq || jm_1 > nseq {
             return Err(format!(
                 "line {}: im={} or jm={} out of range [1, {nseq}]",
@@ -107,6 +97,21 @@ pub fn parse_mafft_tree_str(content: &str, nseq: usize) -> Result<Topology, Stri
                 "line {}: im ({im_1}) must be strictly less than jm ({jm_1}) — use newick2mafft.rb to convert",
                 line_no + 1
             ));
+        }
+        // C presets both lengths to -1.0 and exits when one is still -1.0
+        // after the read (`mltaln9.c:2624-2628`), so a literal -1 is an
+        // error, not a negative length.
+        if len0 == -1.0 || len1 == -1.0 {
+            return Err(format!("line {}: branch length is not given", line_no + 1));
+        }
+        // C `loadtree` (`mltaln9.c:2630-2631`): `if (len < 0.0) len = 0.0`.
+        // The comparison is false for NaN and +inf, so those values are
+        // kept. -inf is negative and becomes 0.
+        if len0 < 0.0 {
+            len0 = 0.0;
+        }
+        if len1 < 0.0 {
+            len1 = 0.0;
         }
 
         let i0 = im_1 - 1;
@@ -243,6 +248,19 @@ mod tests {
         assert!((topo.steps[4].left_length - 1e308).abs() / 1e308 < 1e-12);
         let w = crate::sequence_weights(&topo);
         assert!(w.iter().all(|v| v.is_nan()), "{w:?}");
+    }
+
+    /// A length of exactly -1 is C's "not given" sentinel and exits 1;
+    /// any other negative length becomes 0.
+    #[test]
+    fn minus_one_length_is_not_given() {
+        let err = parse_mafft_tree_str("1 2 -1 0.1\n1 3 0.1 0.1\n", 3).unwrap_err();
+        assert!(err.contains("branch length is not given"), "{err}");
+        let err = parse_mafft_tree_str("1 2 0.1 -1.0\n1 3 0.1 0.1\n", 3).unwrap_err();
+        assert!(err.contains("branch length is not given"), "{err}");
+        let topo = parse_mafft_tree_str("1 2 -0.5 -2\n1 3 0.1 0.1\n", 3).unwrap();
+        assert_eq!(topo.steps[0].left_length, 0.0);
+        assert_eq!(topo.steps[0].right_length, 0.0);
     }
 
     #[test]
