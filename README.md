@@ -688,8 +688,9 @@ make -C mafft-upstream/core
 # On Apple this runs the suite under the gcc/MSVC policy (`.nofma` fixtures).
 # On Linux and Windows the default is already that policy; pass
 # `--features fp-contract-fma` to test the Apple-clang policy (`.fma`).
-# FFI tests that compare against the in-tree C build skip when the
-# policies do not match.
+# Of the FFI tests, only cross_validate_bl50_fft.rs checks CONTRACTS_FMA
+# and skips when the policies do not match; cross_validate_cpmx.rs builds
+# its reference with fp::fmadd, so it follows the build's policy.
 cargo test --workspace --exclude pymafft --release --features fp-contract-none
 ```
 
