@@ -440,7 +440,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 | `mafft-core/tests/end_to_end.rs`      | 126 (3 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
 | Rust FFI cross-validation (`cross_validate*.rs`, 16 files) | 87 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
 | `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
-| `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`, `memsafety_regressions`, `thread_determinism`) | 81 (2 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
+| `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`, `memsafety_regressions`, `thread_determinism`) | 90 (1 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
 | `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
 | Python tests                          | 160 | API (32), parity/shape (23), **CLI-option parity against the `mafft-rs` binary** (82), Biopython interop (18), console script (5) |
 
@@ -452,7 +452,7 @@ Regression guards for C parity live in:
 
 Any regression in DP indexing, boundary handling, FFT anchor placement, refinement-tree distance, profile blending, `--add` profilealignment, the input read path or the `--thread` refinement rules fails at least one of them.
 
-9 tests are `#[ignore]`-gated: four FFI diagnostic / bisection tools (annotated at the call site), the Q-INS-i and X-INS-i end-to-end tests (they need external binaries), the minutes-long `--dpparttree` n = 250 check against the in-tree C build, and the two documented residuals below (the trailing-X `--add` tie and the homopolymer FFT case).
+8 tests are `#[ignore]`-gated: four FFI diagnostic / bisection tools (annotated at the call site), the Q-INS-i and X-INS-i end-to-end tests (they need external binaries), the minutes-long `--dpparttree` n = 250 check against the in-tree C build, and the documented residual below (the trailing-X `--add` tie).
 
 ## Known limitations
 
@@ -516,8 +516,7 @@ Inputs from the memory-safety run (2026-10-31, [memory safety](docs/architecture
 | Input | Difference |
 |-------|------------|
 | One 120 kb DNA sequence among others (`--nuc`) | A few gap moves. |
-| Long low-complexity DNA under `--adjustdirection` / `--adjustdirectionaccurately` | Different alignment. |
-| DNA with a long homopolymer (e.g. 300 × `A` + 300 nt) under FFT-NS-1/2/i | Every residue kept, but gap placement inside the run differs (608 vs 600 columns). |
+| Long low-complexity DNA and DNA with a long homopolymer, under `--memsave` | Different alignment (`--memsave` sends FFT merges to `Falign_udpari_long`). Without `--memsave` both match C, including `--adjustdirection` / `--adjustdirectionaccurately`. |
 | Names longer than about 250 bytes | Intentional: C truncates the name, `mafft-rs` keeps all of it. The alignment is the same. |
 
 ## Performance
