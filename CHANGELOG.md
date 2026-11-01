@@ -231,6 +231,13 @@ public surfaces stable from 0.1.0 anyway.
   `long_seq_30k`, `long_seq_memsave_2402`, `mtb_cds_first8.memsave`, and
   the two `--memsave` memory-safety sets. A new FFI test runs C's
   `Falign_udpari_long` against the port.
+- **`--addfragments --compactmapout` map coordinates.** `addsingle`
+  passes the aligned rows to `reconstructdeletemap_compact`
+  (`addsingle.c:3819`), so each `vN` is an alignment column, while
+  `disttbfast` / `tbfast` (`--add`) pass the raw sequences and `vN`
+  counts kept residues. `mafft-rs` used the `--add` convention for both
+  (e.g. `18v19` where C writes `24v25`). The test now compares the
+  `.map` file as well as stdout.
 - **`--add --keeplength` keeps the existing alignment's all-gap columns.**
   C records them before the merge and puts them back after the
   insertions are deleted (`recordoriginalgaps` /
