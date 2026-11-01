@@ -531,4 +531,42 @@ FFT-NS-i (1.2–1.6×) and slower on L-INS-i / G-INS-i on BB30005
 (0.76× / 0.63×); at `--thread 8` C is up to 4.8× faster than `mafft-rs` (BB30005
 G-INS-i) and level with it on the CDS fixture.
 A deterministic parallel refinement (evaluating candidate branches in
-parallel, then applying them in the `--thread 1` order) is the open item.
+parallel, then applying them in the `--thread 1` order) is the open item,
+tracked in #48.
+
+The two results are linked: at `--thread 8` C spreads the refinement over
+8 workers, each with its own scratch, while `mafft-rs` runs it on one, so
+the lower `--thread 8` peak RSS above is measured with `mafft-rs` doing
+most of its work single-threaded. How much of that gap remains once the
+refinement is parallelised is not known yet; the `--thread 1` column is
+the like-for-like comparison.
+
+### From Python: `pymafft.align(threads=N)`
+
+`benchmarks/pymafft_threads.py` calls `pymafft.align(records,
+strategy=..., maxiterate=1000, threads=N)` in one Python process, 3 runs
+per cell, and compares every result row for row with the `mafft-rs
+--thread 1` CLI output for the same flags. All 90 results were equal to
+it (`equals_cli_t1` = 1). Median wall-clock (s) and speedup over
+`threads=1`; Apple M4, 2026-11-01, 1-minute load 2.2–14.8 (median 3.6),
+other jobs sharing the machine; `benchmarks/results/pymafft_threads_2026-11-01.tsv`.
+
+| Input | Strategy | `threads=1` | `2` | `4` | `8` | `10` |
+|-------|----------|------------:|----:|----:|----:|-----:|
+| sample (36 × 377) | `fftnsi` | 0.44 | 0.39 (1.14×) | 0.38 (1.16×) | 0.39 (1.13×) | 0.39 (1.13×) |
+| sample | `linsi` | 0.99 | 0.94 (1.05×) | 0.79 (1.26×) | 0.75 (1.32×) | 0.75 (1.32×) |
+| sample | `ginsi` | 1.29 | 1.02 (1.27×) | 0.90 (1.43×) | 0.84 (1.53×) | 0.85 (1.52×) |
+| BB30005 (113 × 491) | `fftnsi` | 7.67 | 7.46 (1.03×) | 7.68 (1.00×) | 7.30 (1.05×) | 7.28 (1.05×) |
+| BB30005 | `linsi` | 27.38 | 25.13 (1.09×) | 23.86 (1.15×) | 23.57 (1.16×) | 23.18 (1.18×) |
+| BB30005 | `ginsi` | 33.15 | 28.92 (1.15×) | 26.57 (1.25×) | 25.63 (1.29×) | 25.46 (1.30×) |
+
+The figures follow the CLI ones above (same stages parallelised, same
+single-threaded refinement): at most ~1.5× at 8–10 threads, ~1.0–1.1×
+for `fftnsi`. Each call builds its own rayon pool, so the per-call
+overhead is included.
+
+**GIL release.** BB30005, `fftnsi`, `threads=1` per call, 3 runs: one
+call alone took 7.37 s (median); two identical calls started together in
+two Python threads finished in 7.53 s (median), against ~14.7 s if they
+had run one after the other — a ratio of 1.02 to a single call (1.0 = full
+overlap, 2.0 = serialised). Both results of every pair were identical.

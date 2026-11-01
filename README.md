@@ -540,7 +540,14 @@ Wall clock, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.
 `--thread 1/4/8`; C's `--thread N ≥ 2` output varied between runs. The
 price: `mafft-rs` parallelises the distance and all-pairs stages but runs
 the iterative refinement on one thread, so `--thread 8` gains at most
-1.5× on these inputs where C gains 1.6–3.8×.
+1.5× on these inputs where C gains 1.6–3.8× (tracked in
+[#48](https://github.com/luksgrin/rust-MAFFT/issues/48)). The `--thread 8`
+memory ratios therefore compare 8 C workers with a mostly single-threaded
+`mafft-rs`; `--thread 1` is the like-for-like column. From Python, `pymafft.align(threads=8)` gains
+1.05–1.53× over `threads=1` (all results equal to the CLI at `--thread 1`),
+and two concurrent calls in two Python threads take as long as one
+(GIL released); details in
+[the Python API docs](docs/python-api/index.md#multi-threading-from-python).
 
 ## Building from source
 

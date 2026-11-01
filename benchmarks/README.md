@@ -118,7 +118,7 @@ python3 benchmarks/threads.py --summarize benchmarks/results/threads_<date>.tsv
 | `results/threads_2026-10-31.tsv` | `threads.py` timing + determinism: sample36 (FFT-NS-i, L-INS-i, G-INS-i), 120 × 1.4 kb CDS (FFT-NS-i), BB30005 (all three); load 2.2–5.9 |
 | `results/threads_bb_largest_determinism_2026-10-31.tsv` | `mafft-rs` only, five largest BAliBASE sets, FFT-NS-i / L-INS-i, `--thread 1 4 8`, 2 runs (timings not meaningful: ran alongside `memory.py`) |
 | `results/threads_rv11_determinism_2026-10-31.tsv` | `mafft-rs` only, all 76 RV11 sets, FFT-NS-i / L-INS-i / G-INS-i, `--thread 1 4 8`, 3 runs (timings not meaningful) |
-| `results/pymafft_threads_2026-10-31.tsv` | `pymafft_threads.py`: sample36 and BB30005, plus the GIL demonstration |
+| `results/pymafft_threads_2026-11-01.tsv` | `pymafft_threads.py --inputs sample36 BB30005.tfa --gil-input BB30005.tfa --gil-strategy fftnsi`: `threads=1/2/4/8/10`, FFT-NS-i / L-INS-i / G-INS-i, 3 runs, all 90 equal to the CLI at `--thread 1`; GIL rows (`gil:fftnsi`): two concurrent calls 7.53 s vs one call 7.37 s; load 2.2–14.8 |
 
 Interpretation and the headline tables: `PROFILING.md` ("Memory
 footprint", "Multi-threading") and the README "Performance" section.
