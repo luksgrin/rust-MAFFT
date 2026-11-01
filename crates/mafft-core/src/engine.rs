@@ -11,7 +11,7 @@ use mafft_types::{ScoringModel, SequenceSet, LocalHomologyTable};
 
 use crate::progressive::MultipleAlignment;
 use crate::refinement::{iterative_refine, RefinementParams};
-use crate::add::{add_sequences, add_sequences_keeplength};
+use crate::add::{add_fragments, add_fragments_keeplength_with_map, add_sequences, add_sequences_keeplength};
 
 /// Alignment mode (strategy).
 #[derive(Debug, Clone)]
@@ -1644,6 +1644,97 @@ impl MafftEngine {
         crate::add::add_sequences_keeplength_with_map(
             &existing, &new_sequences, &new_names, &scoring, use_fft,
         )
+    }
+
+    /// `--addfragments` (`addsingle`). `keeplength` is `-Y`.
+    ///
+    /// Gap extension is the wrapper's hardcoded `-g -0.01`, scaled the
+    /// same way as `-f` (`constants.c`). `--op` / `--ep` still override
+    /// open and offset, matching `add_to_alignment`. No `dvtditr`, and
+    /// no second-guide-tree reorder.
+    pub fn add_fragments_to_alignment(
+        &self,
+        existing_input: &SequenceSet,
+        new_input: &SequenceSet,
+        keeplength: bool,
+    ) -> MultipleAlignment {
+        let (scoring, use_fft, existing, new_sequences, new_names) =
+            self.fragment_add_inputs(existing_input, new_input);
+        if keeplength {
+            add_fragments_keeplength_with_map(
+                &existing, &new_sequences, &new_names, &scoring, use_fft,
+            ).0
+        } else {
+            add_fragments(&existing, &new_sequences, &new_names, &scoring, use_fft)
+        }
+    }
+
+    /// `--addfragments` with `--mapout` / `--compactmapout` (both imply
+    /// `-Y`). Deletelist entries are `(start_in_addbk, run_len)`.
+    pub fn add_fragments_to_alignment_with_map(
+        &self,
+        existing_input: &SequenceSet,
+        new_input: &SequenceSet,
+    ) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
+        let (scoring, use_fft, existing, new_sequences, new_names) =
+            self.fragment_add_inputs(existing_input, new_input);
+        add_fragments_keeplength_with_map(
+            &existing, &new_sequences, &new_names, &scoring, use_fft,
+        )
+    }
+
+    fn fragment_add_inputs(
+        &self,
+        existing_input: &SequenceSet,
+        new_input: &SequenceSet,
+    ) -> (mafft_types::ScoringContext, bool, MultipleAlignment, Vec<Vec<u8>>, Vec<String>) {
+        let seq_type = existing_input.seq_type;
+        let scoring_model = if seq_type.is_nucleotide() {
+            ScoringModel::Dna
+        } else {
+            self.scoring_model
+        };
+        let mut scoring = build_context(scoring_model, seq_type);
+        if let Some(op) = self.gap_open {
+            let ppenalty = -(op * 1000.0) as i32;
+            let scale = if seq_type.is_nucleotide() { 3.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+            scoring.gap.open = (scale * ppenalty as f64 + 0.5) as i32;
+        }
+        if let Some(ep) = self.gap_offset {
+            let poffset = -(ep * 1000.0) as i32;
+            let scale = if seq_type.is_nucleotide() { 1.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+            let new_offset = (scale * poffset as f64 + 0.5) as i32;
+            let matrix_offset = 0i32;
+            let delta = new_offset - matrix_offset;
+            if delta != 0 {
+                let nscored = scoring.nscoredalphabets;
+                for i in 0..nscored {
+                    for j in 0..nscored {
+                        scoring.substitution_matrix[i][j] -= delta;
+                        scoring.consweight_matrix[i][j] = scoring.substitution_matrix[i][j] as f64;
+                        scoring.fft_matrix[i][j] = scoring.substitution_matrix[i][j] + new_offset;
+                    }
+                }
+            }
+            scoring.gap.offset = new_offset;
+        }
+        // `addarg` hardcodes `-g -0.01`. `ppenalty_ex = (int)(-0.01*1000 - 0.5) = -10`,
+        // then the protein/DNA scale in `constants.c`.
+        let scale = if seq_type.is_nucleotide() { 3.0 * 600.0 / 1000.0 } else { 600.0 / 1000.0 };
+        scoring.gap.extend = (scale * -10.0 + 0.5) as i32;
+        let use_fft = !self.nofft && matches!(
+            self.mode,
+            AlignmentMode::FftNs2 | AlignmentMode::FftNsi { .. }
+        );
+        let existing = MultipleAlignment {
+            sequences: existing_input.sequences.iter().map(|s| s.data.clone()).collect(),
+            names: existing_input.sequences.iter().map(|s| s.name.clone()).collect(),
+            score: 0.0,
+            step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
+        };
+        let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();
+        let new_names: Vec<String> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
+        (scoring, use_fft, existing, new_sequences, new_names)
     }
 
     /// Convenience: read FASTA file and align.

@@ -1728,8 +1728,13 @@ fn align_prepared<'a>(
         // Use the with-map variant so we can write the `.map` file
         // below. The keeplength alignment itself is identical.
         let keep = args.keeplength || args.mapout || args.compactmapout;
+        let fragments = args.addfragments.is_some();
         if keep && (args.mapout || args.compactmapout) {
-            let (mut msa, deletelist) = engine.add_to_alignment_with_map(input, &new_input);
+            let (mut msa, deletelist) = if fragments {
+                engine.add_fragments_to_alignment_with_map(input, &new_input)
+            } else {
+                engine.add_to_alignment_with_map(input, &new_input)
+            };
             // Write .map file alongside the addfile, mirroring C
             // `scripts/mafft:2833-2837` (`cp _deletemap "$addfile.map"`).
             let map_path = {
@@ -1752,6 +1757,8 @@ fn align_prepared<'a>(
                 Err(e) => eprintln!("Warning: could not write {}: {e}", map_path.display()),
             }
             msa
+        } else if fragments {
+            engine.add_fragments_to_alignment(input, &new_input, keep)
         } else {
             engine.add_to_alignment(input, &new_input, keep)
         }
