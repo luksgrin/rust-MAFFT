@@ -217,18 +217,24 @@ out. After the R3 fix no `mafft-rs` run panicked.
 These are documented here so they are not lost. They are robustness or
 parity gaps, and none is undefined behaviour:
 
-- **Non-UTF-8 input.** `mafft-rs` refuses any byte sequence that is not
-  valid UTF-8 (`stream did not contain valid UTF-8`). C drops
-  non-alphabetic bytes and aligns. Affected inputs: 57 of 75 substitution
-  mutants and every non-ASCII and binary input. The failure is a clear
-  error, not a crash.
-- **NUL bytes.** C's line reader stops at a NUL and silently drops the rest
-  of that line (`AC\0DE…` keeps `AC`). `mafft-rs` drops only the NUL. This
-  accounts for 74 of the 76 mutants whose residues differ. Here C is the
-  side that loses data.
-- **CR-only and mixed line endings.** The wrapper turns every `\r` into
-  `\n` (`tr "\r" "\n"`). `mafft-rs` handles CRLF but not a lone CR (the
-  CR-only file reads as one record).
+- **Non-UTF-8 input.** The FASTA reader takes the file as bytes. A
+  non-alphabetic byte, including one that is not valid UTF-8, is dropped
+  and the remaining residues are aligned, which is what C does. A name
+  keeps its original bytes. The 2026-10-31 run refused these files
+  (`stream did not contain valid UTF-8`): 57 of 75 substitution mutants
+  and every non-ASCII and binary input. That refusal is gone.
+  `input_bytes_vs_c` compares a Latin-1 byte inside a sequence, and a
+  non-UTF-8 name, with the in-tree C build.
+- **NUL bytes.** Intentional difference, left as it is. C's line reader
+  stops at a NUL and silently drops the rest of that line (`AC\0DE`
+  keeps `AC`). `mafft-rs` drops only the NUL and keeps the rest, which
+  loses less of the input. This accounted for 74 of the 76 mutants whose
+  residues differ in that run.
+- **Line endings.** Every `\r` becomes `\n` before records are split,
+  matching the wrapper's `tr "\r" "\n"`. CRLF and a CR-only file of N
+  sequences both yield N sequences. The CR-only case is compared with
+  the in-tree C build in `input_bytes_vs_c`. Previously a lone CR was
+  not a line break, so that file read as one record.
 - **Header length.** C keeps about the first 250 bytes of a name.
   `mafft-rs` keeps all of it, so long names give different bytes but the
   same alignment.
