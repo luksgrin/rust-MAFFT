@@ -116,7 +116,6 @@ fn addfragments_keeplength_matches_c() {
 /// and `reconstructdeletemap_compact` rewrites added-sequence names to
 /// `Nins:<first-run>,etc|<original>` (`addfunctions.c:2159`, `MODIFYNAME`).
 #[test]
-#[ignore = "differs from in-tree C --add --compactmapout (added-sequence names, #50)"]
 fn add_compactmapout_matches_c() {
     expect_both(
         "--add",
