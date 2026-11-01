@@ -36,7 +36,7 @@ use crate::progressive::{MergeOrAlign, MultipleAlignment};
 pub fn add_sequences(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
-    new_names: &[String],
+    new_names: &[mafft_types::SeqName],
     scoring: &ScoringContext,
     use_fft: bool,
 ) -> MultipleAlignment {
@@ -73,7 +73,7 @@ pub fn add_sequences(
         let raw: Vec<u8> = s.iter().filter(|&&c| c != b'-').copied().collect();
         all_seqs.push(raw);
     }
-    let mut all_names: Vec<String> = existing.names.clone();
+    let mut all_names: Vec<mafft_types::SeqName> = existing.names.clone();
     all_names.extend(new_names.iter().cloned());
 
     // 3. Guide tree on the all-N+nadd sequences. Distance is computed
@@ -113,7 +113,7 @@ pub fn add_sequences(
 pub fn add_sequences_keeplength(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
-    new_names: &[String],
+    new_names: &[mafft_types::SeqName],
     scoring: &ScoringContext,
     use_fft: bool,
 ) -> MultipleAlignment {
@@ -139,7 +139,7 @@ pub fn add_sequences_keeplength(
 pub fn add_sequences_keeplength_with_map(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
-    new_names: &[String],
+    new_names: &[mafft_types::SeqName],
     scoring: &ScoringContext,
     use_fft: bool,
 ) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
@@ -293,7 +293,7 @@ pub fn commongappick(sequences: &[Vec<u8>]) -> Vec<Vec<u8>> {
 pub fn add_fragments(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
-    new_names: &[String],
+    new_names: &[mafft_types::SeqName],
     scoring: &ScoringContext,
     use_fft: bool,
 ) -> MultipleAlignment {
@@ -308,7 +308,7 @@ pub fn add_fragments(
 pub fn add_fragments_keeplength_with_map(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
-    new_names: &[String],
+    new_names: &[mafft_types::SeqName],
     scoring: &ScoringContext,
     use_fft: bool,
 ) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
@@ -409,7 +409,7 @@ fn fragment_homology(all: &LocalHomologyTable, norg: usize, iadd: usize) -> Loca
 fn add_fragments_inner(
     existing: &MultipleAlignment,
     new_sequences: &[Vec<u8>],
-    new_names: &[String],
+    new_names: &[mafft_types::SeqName],
     scoring: &ScoringContext,
     use_fft: bool,
     keeplength: bool,
@@ -503,7 +503,7 @@ fn add_fragments_inner(
         }
         let mut rows = stripped.clone();
         rows.push(frag.clone());
-        let names: Vec<String> = (0..rows.len()).map(|i| i.to_string()).collect();
+        let names: Vec<mafft_types::SeqName> = (0..rows.len()).map(|i| i.to_string().into()).collect();
         let tags = compute_mergeoralign(&topo, norg, 1);
         // `addsingle -l 2.7` sets `constraint = 2`: one `A__align` with
         // the homology table, not the FFT merge. `-d` stores that table

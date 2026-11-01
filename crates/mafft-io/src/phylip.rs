@@ -51,8 +51,7 @@ pub fn write_phylip<W: Write>(
             // uses `%-*.*s` which truncates AND pads to `namelen`; the
             // Rust `{:<width$}` only pads, so we use a helper.
             if pos == 0 {
-                let first_word = seq.name.split_whitespace().next().unwrap_or(&seq.name);
-                write_name_field(writer, first_word, name_len)?;
+                write_name_field(writer, seq.name.first_word(), name_len)?;
             } else {
                 write_name_field(writer, "", name_len)?;
             }
@@ -82,10 +81,10 @@ pub fn write_phylip<W: Write>(
 /// `width` chars with spaces, AND truncate if longer than `width`.
 fn write_name_field<W: Write>(
     writer: &mut W,
-    name: &str,
+    name: impl AsRef<[u8]>,
     width: usize,
 ) -> Result<(), IoError> {
-    let bytes = name.as_bytes();
+    let bytes = name.as_ref();
     let len = bytes.len().min(width);
     writer.write_all(&bytes[..len])?;
     for _ in len..width {

@@ -185,9 +185,9 @@ fn parse_contrafold_output(content: &str) -> Vec<BasePairProb> {
 /// Calls: `dash_client -url <server> -i <infile> -hat3 <outfile>`
 /// Input: FASTA (ungapped)
 /// Output: hat3 format constraint table
-pub fn run_dash(
+pub fn run_dash<N: AsRef<[u8]>>(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[N],
     server_url: &str,
 ) -> Result<Vec<(usize, usize, f64, usize, usize, usize, usize)>, String> {
     let tool_path = find_tool("dash_client")
@@ -201,7 +201,9 @@ pub fn run_dash(
     let mut f = std::fs::File::create(&infile)
         .map_err(|e| format!("Cannot create temp file: {e}"))?;
     for (name, seq) in names.iter().zip(sequences.iter()) {
-        writeln!(f, ">{name}").map_err(|e| format!("Write error: {e}"))?;
+        f.write_all(b">").map_err(|e| format!("Write error: {e}"))?;
+        f.write_all(name.as_ref()).map_err(|e| format!("Write error: {e}"))?;
+        writeln!(f).map_err(|e| format!("Write error: {e}"))?;
         let ungapped: Vec<u8> = seq.iter().filter(|&&c| c != b'-').copied().collect();
         f.write_all(&ungapped).map_err(|e| format!("Write error: {e}"))?;
         writeln!(f).map_err(|e| format!("Write error: {e}"))?;

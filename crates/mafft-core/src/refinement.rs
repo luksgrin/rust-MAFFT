@@ -2623,7 +2623,7 @@ mod tests {
             b"ACDEHIKLMNP".to_vec(),
             b"ACDHIKLMNP".to_vec(),
         ];
-        let names: Vec<String> = (0..4).map(|i| format!("s{i}")).collect();
+        let names: Vec<mafft_types::SeqName> = (0..4).map(|i| format!("s{i}").into()).collect();
 
         let mut dm = DistanceMatrix::new(4);
         dm.set(0, 1, 0.1); dm.set(0, 2, 0.2); dm.set(0, 3, 0.3);
@@ -2660,7 +2660,7 @@ mod tests {
             b"ACDHIKLMNP".to_vec(),
             b"ACDHIKLM".to_vec(),
         ];
-        let names: Vec<String> = (0..6).map(|i| format!("s{i}")).collect();
+        let names: Vec<mafft_types::SeqName> = (0..6).map(|i| format!("s{i}").into()).collect();
 
         let mut dm = DistanceMatrix::new(6);
         for i in 0..6 {
@@ -2701,7 +2701,7 @@ mod tests {
             b"ACDHIKLMNPQR".to_vec(),
             b"ACDHIKLM".to_vec(),
         ];
-        let names: Vec<String> = (0..6).map(|i| format!("s{i}")).collect();
+        let names: Vec<mafft_types::SeqName> = (0..6).map(|i| format!("s{i}").into()).collect();
 
         let mut dm = DistanceMatrix::new(6);
         for i in 0..6 {

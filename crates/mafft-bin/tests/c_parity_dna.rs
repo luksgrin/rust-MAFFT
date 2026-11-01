@@ -318,8 +318,8 @@ fn panaroo_tiny_clusters_run_from_seqs_matches_c() {
         let set = mafft_io::read_fasta(input).expect("read cluster");
         let msa = run_from_seqs(argv.clone(), &set, &SilentProgress)
             .unwrap_or_else(|e| panic!("run_from_seqs {name}: {}", e.message()));
-        let got: Vec<(String, Vec<u8>)> = msa.names.into_iter().zip(msa.sequences).collect();
-        let want: Vec<(String, Vec<u8>)> = mafft_io::read_fasta(input.with_extension("expected"))
+        let got: Vec<_> = msa.names.into_iter().zip(msa.sequences).collect();
+        let want: Vec<_> = mafft_io::read_fasta(input.with_extension("expected"))
             .expect("read expected")
             .sequences
             .into_iter()

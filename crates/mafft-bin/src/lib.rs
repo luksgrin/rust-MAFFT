@@ -16,7 +16,7 @@ pub use progress::{Progress, SilentProgress, StderrProgress};
 /// The types [`run_from_seqs`] takes and returns, re-exported so a caller
 /// that only depends on `mafft-rs` can name them.
 pub use mafft_core::MultipleAlignment;
-pub use mafft_types::{SeqType, Sequence, SequenceSet};
+pub use mafft_types::{SeqName, SeqType, Sequence, SequenceSet};
 
 /// MAFFT-rs: Multiple sequence alignment (Rust implementation)
 #[derive(Parser, Debug)]
@@ -1304,7 +1304,7 @@ fn align_prepared<'a>(
                 let ungapped: Vec<u8> = s.data.iter().copied()
                     .filter(|&c| c != b'-' && c != b'.').collect();
                 let renamed = Sequence {
-                    name: format!("_seed_{}", s.name),
+                    name: s.name.prefixed(b"_seed_"),
                     data: ungapped,
                 };
                 input.to_mut().sequences.insert(seed_seq_count, renamed);
@@ -1328,9 +1328,9 @@ fn align_prepared<'a>(
     // characters via name-keyed lookup. Mirrors C `replaceu` +
     // `restoreu` (`mafft-upstream/core/replaceu.c`, `restoreu.c`).
     let anysymbol = args.anysymbol || args.preservecase;
-    let mut originals: Option<std::collections::HashMap<String, Vec<u8>>> = if anysymbol {
+    let mut originals: Option<std::collections::HashMap<SeqName, Vec<u8>>> = if anysymbol {
         let is_dna = input.seq_type.is_nucleotide();
-        let map: std::collections::HashMap<String, Vec<u8>> = input.sequences.iter()
+        let map: std::collections::HashMap<SeqName, Vec<u8>> = input.sequences.iter()
             .map(|s| (s.name.clone(), s.data.clone())).collect();
         for s in input.to_mut().sequences.iter_mut() {
             replace_unusual(&mut s.data, is_dna);
@@ -1799,7 +1799,7 @@ fn align_prepared<'a>(
                     p.as_mut_os_string().push(".hat2");
                     p
                 };
-                let names: Vec<String> = input.sequences.iter()
+                let names: Vec<SeqName> = input.sequences.iter()
                     .map(|s| s.name.clone()).collect();
                 let mut distances: Vec<Vec<f64>> = Vec::with_capacity(dm.nseq);
                 for i in 0..dm.nseq {
@@ -1875,10 +1875,13 @@ fn align_prepared<'a>(
             // `Nins:…|` (`addfunctions.c:2159`). C's `restoreu` looks up
             // the original title after that `|` when `mapout == 2`
             // (`restoreu.c:270-274`).
-            let lookup = if args.compactmapout {
-                msa.names[i].split_once('|').map(|(_, rest)| rest).unwrap_or(msa.names[i].as_str())
+            let lookup: &[u8] = if args.compactmapout {
+                msa.names[i]
+                    .split_once_byte(b'|')
+                    .map(|(_, rest)| rest)
+                    .unwrap_or(msa.names[i].as_bytes())
             } else {
-                msa.names[i].as_str()
+                msa.names[i].as_bytes()
             };
             let Some(orig) = orig_map.get(lookup) else { continue };
             let orig_no_gaps: Vec<u8> = orig.iter().copied()
@@ -2514,14 +2517,33 @@ fn build_nodeout_density_section(
 /// `deletelist[i]` carries `(addbk_pos_0based, run_len)` runs of
 /// dropped insertion residues for added-sequence `i`.
 /// `new_input.sequences[i].data` is the gap-stripped `addbk[i]`.
+/// Map text that can also carry a header which is not UTF-8. `writeln!`
+/// of an ASCII line matches the old `String` builder byte for byte.
+struct MapText(Vec<u8>);
+
+impl std::fmt::Write for MapText {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
+}
+
+impl MapText {
+    fn name_line(&mut self, name: &SeqName) {
+        self.0.push(b'>');
+        self.0.extend_from_slice(name.as_bytes());
+        self.0.push(b'\n');
+    }
+}
+
 fn build_full_map(
     deletelist: &[Vec<(usize, usize)>],
     new_input: &mafft_types::SequenceSet,
     msa: &mafft_core::MultipleAlignment,
     n_existing: usize,
-) -> String {
+) -> Vec<u8> {
     use std::fmt::Write as _;
-    let mut out = String::new();
+    let mut out = MapText(Vec::new());
     for (i, dl) in deletelist.iter().enumerate() {
         let addbk: &[u8] = &new_input.sequences[i].data;
         let len = addbk.len();
@@ -2532,7 +2554,7 @@ fn build_full_map(
                 if p + k < len { dropped[p + k] = true; }
             }
         }
-        let _ = writeln!(out, ">{}", new_input.sequences[i].name);
+        out.name_line(&new_input.sequences[i].name);
         let _ = writeln!(
             out,
             "# letter, position in the original sequence, position in the reference alignment"
@@ -2558,7 +2580,7 @@ fn build_full_map(
             }
         }
     }
-    out
+    out.0
 }
 
 /// C `reconstructdeletemap_compact` rewrites each added sequence that
@@ -2567,9 +2589,9 @@ fn build_full_map(
 /// `{start}{residue}-{end}{residue}`; further runs collapse to `etc`.
 /// The name buffer is `B` = 256 bytes including the leading `>`
 /// (`mltaln.h`), so the displayed title is at most 255 bytes.
-fn compact_insertion_name(original: &str, addbk: &[u8], runs: &[(usize, usize)]) -> String {
+fn compact_insertion_name(original: &SeqName, addbk: &[u8], runs: &[(usize, usize)]) -> SeqName {
     if runs.is_empty() {
-        return original.to_string();
+        return original.clone();
     }
     let (pos, len) = runs[0];
     let start = pos + 1;
@@ -2581,12 +2603,18 @@ fn compact_insertion_name(original: &str, addbk: &[u8], runs: &[(usize, usize)])
     } else {
         format!("{start}{first}-{end}{last},etc")
     };
-    let full = format!("{}ins:{ins}|{original}", runs.len());
+    // The label is ASCII for an alphabetic residue. Appending the header
+    // bytes (instead of formatting the name) keeps a non-UTF-8 header
+    // intact. The 255-byte cut is the same `is_char_boundary` walk a
+    // UTF-8 `String` used, so an existing UTF-8 title is unchanged.
+    let mut full = format!("{}ins:{ins}|", runs.len()).into_bytes();
+    full.extend_from_slice(original.as_bytes());
     let mut end_byte = full.len().min(255);
-    while end_byte > 0 && !full.is_char_boundary(end_byte) {
+    while end_byte > 0 && end_byte < full.len() && (full[end_byte] as i8) < -0x40 {
         end_byte -= 1;
     }
-    full[..end_byte].to_string()
+    full.truncate(end_byte);
+    SeqName::from(full)
 }
 
 /// Apply [`compact_insertion_name`] to the added rows of `msa`.
@@ -2620,10 +2648,10 @@ fn build_compact_map(
     new_input: &mafft_types::SequenceSet,
     _msa: &mafft_core::MultipleAlignment,
     _n_existing: usize,
-) -> String {
+) -> Vec<u8> {
     use std::fmt::Write as _;
-    let mut out = String::new();
-    out.push_str("# Insertion in added sequence > Position in reference\n");
+    let mut out = MapText(Vec::new());
+    out.0.extend_from_slice(b"# Insertion in added sequence > Position in reference\n");
     for (i, dl) in deletelist.iter().enumerate() {
         if dl.is_empty() { continue; }
         let addbk: &[u8] = &new_input.sequences[i].data;
@@ -2634,7 +2662,7 @@ fn build_compact_map(
                 if p + k < len { dropped[p + k] = true; }
             }
         }
-        let _ = writeln!(out, ">{}", new_input.sequences[i].name);
+        out.name_line(&new_input.sequences[i].name);
         // C `addfunctions.c:2074` calls this with `realn = seq+njob-nadd`
         // — the RAW (gap-free) added sequences, NOT the aligned ones.
         // The `while (realn[i][p] == '-')` skip is therefore a no-op,
@@ -2672,7 +2700,7 @@ fn build_compact_map(
             let _ = writeln!(out, "{}{} > {}v{}", j, prev_ch as char, p, p + 1);
         }
     }
-    out
+    out.0
 }
 
 fn write_output<W: Write>(
@@ -3421,7 +3449,7 @@ atggcaagcttagacctttgcaggtacgcatggaactagggcctttaggcattgacctag
             sequences: data
                 .iter()
                 .enumerate()
-                .map(|(i, d)| Sequence { name: format!("s{i}"), data: d.to_vec() })
+                .map(|(i, d)| Sequence { name: format!("s{i}").into(), data: d.to_vec() })
                 .collect(),
             seq_type,
         }

@@ -1,5 +1,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 
+use mafft_types::SeqName;
+
 use crate::error::IoError;
 
 /// MAFFT's hat2 distance matrix format.
@@ -19,7 +21,7 @@ use crate::error::IoError;
 #[derive(Debug, Clone)]
 pub struct Hat2Matrix {
     /// Sequence names.
-    pub names: Vec<String>,
+    pub names: Vec<SeqName>,
     /// Upper-triangular distances: `distances[i][j]` is the distance
     /// between sequence `i` and sequence `i + j + 1`.
     /// So row `i` has `nseq - i - 1` elements.
@@ -81,8 +83,8 @@ pub fn read_hat2<R: Read>(reader: R) -> Result<Hat2Matrix, IoError> {
         } else {
             line.trim_start()
         };
-        let name = raw.strip_prefix('=').unwrap_or(raw).to_string();
-        names.push(name);
+        let name = raw.strip_prefix('=').unwrap_or(raw);
+        names.push(SeqName::from(name));
     }
 
     // Distance values: upper triangle, 6-char fixed-width fields.
@@ -152,7 +154,9 @@ pub fn write_hat2<W: Write>(mat: &Hat2Matrix, writer: &mut W) -> Result<(), IoEr
     // inserting `=` between the index dot and the (un-prefixed) name
     // we hold internally — the on-disk output is the same.
     for (i, name) in mat.names.iter().enumerate() {
-        writeln!(writer, "{:>4}. ={name}", i + 1)?;
+        write!(writer, "{:>4}. =", i + 1)?;
+        writer.write_all(name.as_bytes())?;
+        writeln!(writer)?;
     }
 
     // Distance values: upper triangle, rows 0..nseq-1

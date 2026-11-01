@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 
-use mafft_types::{Sequence, SequenceSet};
+use mafft_types::{SeqName, Sequence, SequenceSet};
 
 use crate::detect::detect_seq_type;
 use crate::error::IoError;
@@ -14,6 +14,11 @@ const DEFAULT_LINE_WIDTH: usize = 60;
 // ---------------------------------------------------------------------------
 
 /// Read a FASTA file from a path into a `SequenceSet`.
+///
+/// The file is bytes. A non-UTF-8 byte is not an error: names keep the
+/// header bytes, and the residue filter below decides which sequence
+/// bytes survive. Every CR is turned into LF first, matching the C
+/// wrapper's `tr "\r" "\n"`, so a lone CR is a line break.
 ///
 /// Performs the same normalization as the C code:
 /// - Strips non-alphabetic characters (except '-', '.') from sequences.
@@ -45,37 +50,7 @@ pub fn read_fasta_casepreserve(path: impl AsRef<Path>) -> Result<SequenceSet, Io
 /// Like `read_fasta_from_reader` but preserves case and non-standard
 /// residues (see `read_fasta_casepreserve`).
 pub fn read_fasta_from_reader_casepreserve<R: BufRead>(reader: R) -> Result<SequenceSet, IoError> {
-    let mut sequences = Vec::new();
-    let mut current_name: Option<String> = None;
-    let mut current_seq = Vec::new();
-
-    for (idx, line_result) in reader.lines().enumerate() {
-        let line = line_result?;
-        reject_blank_before_header(idx, &line)?;
-        if let Some(header) = line.strip_prefix('>') {
-            if let Some(name) = current_name.take() {
-                sequences.push(Sequence {
-                    name,
-                    data: normalize_sequence_casepreserve(&current_seq)?,
-                });
-                current_seq.clear();
-            }
-            current_name = Some(header.to_string());
-        } else if current_name.is_some() {
-            current_seq.extend_from_slice(line.as_bytes());
-        }
-    }
-    if let Some(name) = current_name.take() {
-        sequences.push(Sequence {
-            name,
-            data: normalize_sequence_casepreserve(&current_seq)?,
-        });
-    }
-    if sequences.is_empty() {
-        return Err(IoError::EmptyInput);
-    }
-    let seq_type = detect_seq_type(sequences.iter().map(|s| &s.data));
-    Ok(SequenceSet { sequences, seq_type })
+    read_fasta_bytes(reader, true)
 }
 
 /// Case-preserving sequence normaliser — mirrors C `charfilter`
@@ -115,12 +90,89 @@ fn is_title_only_char(c: u8) -> bool {
 /// (`scripts/mafft:1827-1834`: `grep -c '^[[:blank:]]\+>'` → exit 1).
 /// Without this check a lenient line parser would treat the line as
 /// sequence data and silently glue two records together.
-fn reject_blank_before_header(idx: usize, line: &str) -> Result<(), IoError> {
-    let trimmed = line.trim_start_matches([' ', '\t']);
-    if trimmed.len() != line.len() && trimmed.starts_with('>') {
-        return Err(IoError::BlankBeforeHeader { line: idx + 1, text: line.to_string() });
+///
+/// `text` in the error is lossy UTF-8: it is the diagnostic C prints,
+/// not a sequence or a header that has to round-trip.
+fn reject_blank_before_header(idx: usize, line: &[u8]) -> Result<(), IoError> {
+    let trimmed = trim_ascii_space_tab(line);
+    if trimmed.len() != line.len() && trimmed.first() == Some(&b'>') {
+        return Err(IoError::BlankBeforeHeader {
+            line: idx + 1,
+            text: String::from_utf8_lossy(line).into_owned(),
+        });
     }
     Ok(())
+}
+
+fn trim_ascii_space_tab(line: &[u8]) -> &[u8] {
+    let mut i = 0;
+    while i < line.len() && (line[i] == b' ' || line[i] == b'\t') {
+        i += 1;
+    }
+    &line[i..]
+}
+
+/// Read FASTA from raw bytes.
+///
+/// The file is not text. C's wrapper runs `tr "\r" "\n"`
+/// (`scripts/mafft:1132`) before any engine sees it, so every CR,
+/// including the one in CRLF, becomes LF and a CR-only file splits into
+/// one record per line. A NUL does not end a line: C's `fgets` would
+/// stop and drop the rest, and this reader keeps those bytes (the
+/// default residue filter then drops a NUL in a sequence and keeps what
+/// follows). Names are the header bytes after `>`.
+fn read_fasta_bytes<R: BufRead>(mut reader: R, casepreserve: bool) -> Result<SequenceSet, IoError> {
+    let mut raw = Vec::new();
+    reader.read_to_end(&mut raw)?;
+    for b in &mut raw {
+        if *b == b'\r' {
+            *b = b'\n';
+        }
+    }
+
+    let mut sequences = Vec::new();
+    let mut current_name: Option<SeqName> = None;
+    let mut current_seq = Vec::new();
+
+    for (idx, line) in raw.split(|b| *b == b'\n').enumerate() {
+        reject_blank_before_header(idx, line)?;
+        if let Some(header) = line.strip_prefix(b">") {
+            if let Some(name) = current_name.take() {
+                sequences.push(Sequence {
+                    name,
+                    data: finish_sequence(&current_seq, casepreserve)?,
+                });
+                current_seq.clear();
+            }
+            current_name = Some(SeqName::from(header));
+        } else if current_name.is_some() {
+            current_seq.extend_from_slice(line);
+        }
+    }
+    if let Some(name) = current_name.take() {
+        sequences.push(Sequence {
+            name,
+            data: finish_sequence(&current_seq, casepreserve)?,
+        });
+    }
+    if sequences.is_empty() {
+        return Err(IoError::EmptyInput);
+    }
+
+    let seq_type = detect_seq_type(sequences.iter().map(|s| &s.data));
+    let mut set = SequenceSet { sequences, seq_type };
+    if !casepreserve {
+        apply_case_convention(&mut set);
+    }
+    Ok(set)
+}
+
+fn finish_sequence(raw: &[u8], casepreserve: bool) -> Result<Vec<u8>, IoError> {
+    if casepreserve {
+        normalize_sequence_casepreserve(raw)
+    } else {
+        Ok(normalize_sequence(raw))
+    }
 }
 
 /// Apply the FASTA reader's residue filter to residues that are already in
@@ -169,52 +221,13 @@ pub fn residues_follow_case_convention(data: &[u8], seq_type: mafft_types::SeqTy
 
 /// Read FASTA from any buffered reader.
 ///
-/// Handles non-standard headers with leading whitespace that strict parsers
-/// (like `noodles-fasta`) reject. The full text after '>' is preserved as
-/// the sequence name, matching MAFFT's C behavior.
+/// The stream is bytes, not UTF-8 text. Handles non-standard headers
+/// with leading whitespace that strict parsers (like `noodles-fasta`)
+/// reject. The bytes after `>` are preserved as the sequence name,
+/// including a non-UTF-8 byte and the bytes after a NUL. A lone CR is a
+/// line break, matching the C wrapper's `tr "\r" "\n"`.
 pub fn read_fasta_from_reader<R: BufRead>(reader: R) -> Result<SequenceSet, IoError> {
-    let mut sequences = Vec::new();
-    let mut current_name: Option<String> = None;
-    let mut current_seq = Vec::new();
-
-    for (idx, line_result) in reader.lines().enumerate() {
-        let line = line_result?;
-        reject_blank_before_header(idx, &line)?;
-
-        if let Some(header) = line.strip_prefix('>') {
-            // Flush previous sequence
-            if let Some(name) = current_name.take() {
-                sequences.push(Sequence {
-                    name,
-                    data: normalize_sequence(&current_seq),
-                });
-                current_seq.clear();
-            }
-            current_name = Some(header.to_string());
-        } else if current_name.is_some() {
-            // Sequence data line
-            current_seq.extend_from_slice(line.as_bytes());
-        }
-        // Lines before the first '>' are ignored
-    }
-
-    // Flush last sequence
-    if let Some(name) = current_name.take() {
-        sequences.push(Sequence {
-            name,
-            data: normalize_sequence(&current_seq),
-        });
-    }
-
-    if sequences.is_empty() {
-        return Err(IoError::EmptyInput);
-    }
-
-    let seq_type = detect_seq_type(sequences.iter().map(|s| &s.data));
-
-    let mut set = SequenceSet { sequences, seq_type };
-    apply_case_convention(&mut set);
-    Ok(set)
+    read_fasta_bytes(reader, false)
 }
 
 /// Apply C MAFFT's residue-case convention to an already-parsed set:
@@ -302,7 +315,9 @@ pub fn write_fasta_to_writer_with_width<W: Write>(
     line_width: usize,
 ) -> Result<(), IoError> {
     for seq in &seqs.sequences {
-        writeln!(writer, ">{}", seq.name)?;
+        writer.write_all(b">")?;
+        writer.write_all(seq.name.as_bytes())?;
+        writeln!(writer)?;
 
         if line_width == 0 {
             writer.write_all(&seq.data)?;
@@ -407,6 +422,64 @@ mod tests {
         set.seq_type = mafft_types::SeqType::Protein;
         apply_case_convention(&mut set);
         assert_eq!(set.sequences[0].data, b"ATGC".to_vec());
+    }
+
+    #[test]
+    fn high_byte_in_the_sequence_is_dropped_like_any_other_non_letter() {
+        // Latin-1 e-acute sits between residues. C's default filter
+        // (`onlyAlpha_*`) drops it; the reader used to refuse the file
+        // as invalid UTF-8 before it got that far.
+        let with = read_fasta_from_reader(io::Cursor::new(&b">a\nACDE\xe9FGHIK\n>b\nACDEFGHIKL\n"[..])).unwrap();
+        let without = read_fasta_from_reader(io::Cursor::new(&b">a\nACDEFGHIK\n>b\nACDEFGHIKL\n"[..])).unwrap();
+        assert_eq!(with.nseq(), 2);
+        assert_eq!(with.sequences[0].data, without.sequences[0].data);
+        assert_eq!(with.sequences[1].data, without.sequences[1].data);
+    }
+
+    #[test]
+    fn casepreserve_keeps_a_high_byte_in_the_sequence() {
+        let seqs = read_fasta_from_reader_casepreserve(io::Cursor::new(&b">a\nAC\xe9DE\n"[..])).unwrap();
+        assert_eq!(seqs.sequences[0].data, b"AC\xe9DE");
+    }
+
+    #[test]
+    fn non_utf8_name_roundtrips_as_the_original_bytes() {
+        let seqs = read_fasta_from_reader(io::Cursor::new(&b">a\xff\nACDEFGHIKLMNPQRSTVWY\n"[..])).unwrap();
+        assert_eq!(seqs.sequences[0].name.as_bytes(), b"a\xff");
+        let mut buf = Vec::new();
+        write_fasta_to_writer(&seqs, &mut buf).unwrap();
+        assert!(buf.starts_with(b">a\xff\n"), "{buf:?}");
+        let again = read_fasta_from_reader(io::Cursor::new(&buf)).unwrap();
+        assert_eq!(again.sequences[0].name.as_bytes(), b"a\xff");
+    }
+
+    #[test]
+    fn nul_does_not_end_the_line() {
+        // Intentional difference from C: fgets stops at a NUL and drops
+        // the rest of the line. This reader drops a NUL inside a
+        // sequence (it is not a letter) and keeps the residues after it,
+        // and it keeps a NUL and the following bytes in a name.
+        let seq = read_fasta_from_reader(io::Cursor::new(&b">ab\x00cd\nAC\x00DE\n"[..])).unwrap();
+        let plain = read_fasta_from_reader(io::Cursor::new(&b">abcd\nACDE\n"[..])).unwrap();
+        assert_eq!(seq.sequences[0].name.as_bytes(), b"ab\x00cd");
+        assert_eq!(seq.sequences[0].data, plain.sequences[0].data);
+    }
+
+    #[test]
+    fn lone_cr_is_a_line_break_and_crlf_stays_one_record_boundary() {
+        let lf = b">a\nACDEFGHIK\n>b\nACDEFGHIKL\n";
+        let cr = b">a\rACDEFGHIK\r>b\rACDEFGHIKL\r";
+        let crlf = b">a\r\nACDEFGHIK\r\n>b\r\nACDEFGHIKL\r\n";
+        let mixed = b">a\r\nACDEFGHIK\n>b\rACDEFGHIKL\n";
+        let via_lf = read_fasta_from_reader(io::Cursor::new(&lf[..])).unwrap();
+        for bytes in [&cr[..], &crlf[..], &mixed[..]] {
+            let got = read_fasta_from_reader(io::Cursor::new(bytes)).unwrap();
+            assert_eq!(got.nseq(), 2, "{bytes:?}");
+            assert_eq!(got.sequences[0].name, via_lf.sequences[0].name);
+            assert_eq!(got.sequences[1].name, via_lf.sequences[1].name);
+            assert_eq!(got.sequences[0].data, via_lf.sequences[0].data);
+            assert_eq!(got.sequences[1].data, via_lf.sequences[1].data);
+        }
     }
 
     #[test]

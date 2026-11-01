@@ -2354,7 +2354,7 @@ fn prepare_seed_input(
         let ungapped: Vec<u8> = s.data.iter().copied()
             .filter(|&c| c != b'-' && c != b'.').collect();
         combined.sequences.insert(idx, Sequence {
-            name: format!("_seed_{}", s.name),
+            name: s.name.prefixed(b"_seed_"),
             data: ungapped,
         });
         idx += 1;
