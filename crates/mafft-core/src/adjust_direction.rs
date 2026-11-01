@@ -371,7 +371,7 @@ fn adjust_direction_with(input: &SequenceSet, mode: AdjustMode, nadd: usize) -> 
             // call should be safe either way.
             let rc = reverse_complement(&input.sequences[i].data);
             adjusted.sequences[i] = Sequence {
-                name: format!("_R_{}", input.sequences[i].name),
+                name: input.sequences[i].name.prefixed(b"_R_"),
                 data: rc,
             };
         }
@@ -387,7 +387,7 @@ mod tests {
     fn dna_set(seqs: &[(&str, &str)]) -> SequenceSet {
         SequenceSet {
             sequences: seqs.iter().map(|(n, s)| Sequence {
-                name: (*n).to_string(),
+                name: (*n).into(),
                 data: s.as_bytes().to_vec(),
             }).collect(),
             seq_type: SeqType::Dna,

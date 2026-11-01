@@ -66,7 +66,7 @@ mod tests {
             sequences: rows
                 .iter()
                 .enumerate()
-                .map(|(i, d)| Sequence { name: format!("s{i}"), data: d.to_vec() })
+                .map(|(i, d)| Sequence { name: format!("s{i}").into(), data: d.to_vec() })
                 .collect(),
             seq_type,
         }

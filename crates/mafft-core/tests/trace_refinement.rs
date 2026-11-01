@@ -1146,7 +1146,7 @@ fn real_rust_refine_vs_c_falign_iter0_bytediff() {
     // Run real Rust iterative_refine for 1 iter
     let mut msa_rust = mafft_core::MultipleAlignment {
         sequences: initial.clone(),
-        names: vec![String::new(); nseq],
+        names: vec![mafft_types::SeqName::from(""); nseq],
         score: 0.0,
         step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
     };
@@ -1744,12 +1744,12 @@ fn trajectory_rust_vs_c_all_iters() {
                                         let min = rust_seq.len().min(c_seq.len());
                                         for pos in 0..min {
                                             if rust_seq[pos] != c_seq[pos] {
-                                                first_diff = Some((i, iname.clone(), pos));
+                                                first_diff = Some((i, iname.to_string(), pos));
                                                 break;
                                             }
                                         }
                                         if first_diff.is_none() && rust_seq.len() != c_seq.len() {
-                                            first_diff = Some((i, iname.clone(), min));
+                                            first_diff = Some((i, iname.to_string(), min));
                                         }
                                     }
                                 }
@@ -1826,7 +1826,7 @@ fn rust_refine_vs_c_direct_iter1() {
     // Run our real refinement for iter=1
     let mut msa = mafft_core::MultipleAlignment {
         sequences: initial.clone(),
-        names: vec![String::new(); nseq],
+        names: vec![mafft_types::SeqName::from(""); nseq],
         score: 0.0,
         step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
     };

@@ -17,7 +17,8 @@
 //! * `mltaln9.c:10537` `gappick0` in every driver: `-` is stripped from
 //!   the input before alignment, `.` is not.
 //! * `io.c:2065-2090` `countATGC`: `n` counts toward the nucleotide fraction.
-//! * `scripts/mafft:1132` `tr "\r" "\n"`: CRLF input is fine.
+//! * `scripts/mafft:1132` `tr "\r" "\n"`: every CR becomes LF, so CRLF
+//!   and a lone CR are both line breaks.
 //! * `scripts/mafft:1827-1834`: a description line preceded by blanks is
 //!   fatal (exit 1) with a three-line message.
 //!

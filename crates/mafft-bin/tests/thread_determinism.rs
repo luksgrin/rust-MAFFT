@@ -12,7 +12,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use mafft_rs::{run_from_seqs, SequenceSet, SilentProgress};
+use mafft_rs::{run_from_seqs, SeqName, SequenceSet, SilentProgress};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
@@ -25,7 +25,7 @@ fn upstream_sample() -> PathBuf {
         .expect("mafft-upstream submodule checked out")
 }
 
-fn align(flags: &[&str], threads: usize, set: &SequenceSet) -> Vec<(String, Vec<u8>)> {
+fn align(flags: &[&str], threads: usize, set: &SequenceSet) -> Vec<(SeqName, Vec<u8>)> {
     let mut argv = vec![OsString::from("mafft-rs"), OsString::from("--quiet")];
     argv.extend(flags.iter().map(OsString::from));
     argv.push("--thread".into());

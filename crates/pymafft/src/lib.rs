@@ -262,7 +262,7 @@ fn build_input(pairs: Vec<(String, String)>) -> PyResult<SequenceSet> {
     Ok(SequenceSet {
         sequences: pairs
             .into_iter()
-            .map(|(name, data)| Sequence { name, data: data.into_bytes() })
+            .map(|(name, data)| Sequence { name: name.into(), data: data.into_bytes() })
             .collect(),
         seq_type: SeqType::Unknown,
     })
@@ -320,7 +320,11 @@ fn msa_to_result(msa: MultipleAlignment) -> AlignmentResult {
         .into_iter()
         .zip(msa.names)
         .map(|(seq, name)| AlignedSequence {
-            name,
+            // Python `str` is Unicode. A header that is not UTF-8 cannot
+            // be stored in it; the CLI writes those bytes unchanged.
+            name: name.as_str().map(str::to_owned).unwrap_or_else(|| {
+                String::from_utf8_lossy(name.as_bytes()).into_owned()
+            }),
             sequence: String::from_utf8_lossy(&seq).into_owned(),
         })
         .collect();

@@ -13,6 +13,7 @@
 // negligible cost (cache size is bounded by `nseq`, keys are small
 // `Vec<usize>`).
 use mafft_types::fp::fmadd;
+use mafft_types::SeqName;
 use std::collections::BTreeMap;
 use mafft_align::{profile_align, pairwise_align11_ex, fft_profile_align, Profile, GapModel, AlignOp, FftAlignParams};
 use mafft_tree::{Topology, sequence_weights, compute_distfromtip};
@@ -63,7 +64,7 @@ pub(crate) fn make_dynamic_matrix(base: &[Vec<f64>], distfromtip: f64, unalign_l
 #[derive(Debug, Clone)]
 pub struct MultipleAlignment {
     pub sequences: Vec<Vec<u8>>,
-    pub names: Vec<String>,
+    pub names: Vec<SeqName>,
     pub score: f64,
     /// Per-merge-step trace: one entry per progressive merge. Each entry is
     /// `(clus1_size, clus2_size, width_after_merge, score)` matching C's
@@ -137,7 +138,7 @@ pub enum MergeOrAlign {
 
 pub fn progressive_align(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     scoring: &ScoringContext,
     use_fft: bool,
@@ -159,7 +160,7 @@ pub fn progressive_align(
 /// / `tbfast`'s `fastconjuction_noname` path).
 pub fn progressive_align_unweighted(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     scoring: &ScoringContext,
     use_fft: bool,
@@ -196,7 +197,7 @@ pub fn progressive_align_unweighted(
 /// (= no all-gap columns exist within any active existing subcluster).
 pub fn progressive_align_with_mergeoralign(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     mergeoralign: &[MergeOrAlign],
     scoring: &ScoringContext,
@@ -213,7 +214,7 @@ pub fn progressive_align_with_mergeoralign(
 /// from new rows (which can be freely re-aligned).
 pub fn progressive_align_with_mergeoralign_n(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     mergeoralign: &[MergeOrAlign],
     scoring: &ScoringContext,
@@ -233,7 +234,7 @@ pub fn progressive_align_with_mergeoralign_n(
 /// `eq2dash` commented out).
 pub(crate) fn progressive_align_mergeoralign(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     mergeoralign: &[MergeOrAlign],
     scoring: &ScoringContext,
@@ -1267,7 +1268,7 @@ pub fn progressive_align_partial(
 /// constraints, leaving L-INS-i/E-INS-i shapes systematically off vs C.
 pub fn progressive_align_with_constraints(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     scoring: &ScoringContext,
     use_fft: bool,
@@ -1289,7 +1290,7 @@ pub fn progressive_align_with_constraints(
 /// `weightFromABranch`-based defaults).
 pub fn progressive_align_with_weights_override(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     scoring: &ScoringContext,
     use_fft: bool,
@@ -1311,7 +1312,7 @@ pub fn progressive_align_with_weights_override(
 /// `mltaln9.c::makedynamicmtx`. `--allowshift` sets this to 0.8.
 pub fn progressive_align_full(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     scoring: &ScoringContext,
     use_fft: bool,
@@ -1336,7 +1337,7 @@ pub fn progressive_align_full(
 /// `progressive_align_full` which passes `c_compat=false`.
 pub fn progressive_align_full_c_compat(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     scoring: &ScoringContext,
     use_fft: bool,
@@ -1369,7 +1370,7 @@ pub fn progressive_align_full_c_compat(
 /// which forces fresh `cpmx_calc_new` there.
 pub fn progressive_align_full_c_compat_ex(
     sequences: &[Vec<u8>],
-    names: &[String],
+    names: &[SeqName],
     topology: &Topology,
     scoring: &ScoringContext,
     use_fft: bool,
@@ -2353,7 +2354,7 @@ mod tests {
             b"ACDHIKLMNP".to_vec(),
             b"ACDHIKLM".to_vec(),
         ];
-        let names: Vec<String> = (0..6).map(|i| format!("s{i}")).collect();
+        let names: Vec<SeqName> = (0..6).map(|i| format!("s{i}").into()).collect();
         let mut dm = DistanceMatrix::new(6);
         for i in 0..6 { for j in (i+1)..6 { dm.set(i, j, (j-i) as f64 * 0.1); } }
         let topo = upgma(&dm);

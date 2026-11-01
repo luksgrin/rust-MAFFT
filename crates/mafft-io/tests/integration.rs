@@ -86,11 +86,7 @@ fn clustal_output_has_correct_structure() {
     assert!(output.starts_with("CLUSTAL format alignment by MAFFT"));
 
     // Must contain sequence names (first word)
-    let first_word = seqs.sequences[0]
-        .name
-        .split_whitespace()
-        .next()
-        .unwrap();
+    let first_word = std::str::from_utf8(seqs.sequences[0].name.first_word()).unwrap();
     assert!(
         output.contains(first_word),
         "missing first sequence name: {first_word}"

@@ -33,8 +33,8 @@ fn sanitize_char(c: u8) -> u8 {
     }
 }
 
-fn sanitize_name(name: &str) -> String {
-    name.bytes().map(sanitize_char).map(|b| b as char).collect()
+fn sanitize_name(name: impl AsRef<[u8]>) -> String {
+    name.as_ref().iter().copied().map(sanitize_char).map(|b| b as char).collect()
 }
 
 /// Build a Newick tree string from a topology + leaf names, mirroring
@@ -43,13 +43,13 @@ fn sanitize_name(name: &str) -> String {
 /// Requirements:
 /// - `topology.is_complete()` (i.e., `nseq - 1` merge steps).
 /// - `names.len() == topology.nseq`.
-pub fn topology_to_newick(topology: &Topology, names: &[String]) -> String {
+pub fn topology_to_newick<N: AsRef<[u8]>>(topology: &Topology, names: &[N]) -> String {
     assert_eq!(names.len(), topology.nseq, "names length must equal nseq");
     if topology.nseq == 0 {
         return ";\n".to_string();
     }
     if topology.nseq == 1 {
-        let leaf = format!("\n1_{}\n", sanitize_name(&names[0]));
+        let leaf = format!("\n1_{}\n", sanitize_name(names[0].as_ref()));
         return format!("{};\n", leaf);
     }
 
@@ -57,7 +57,7 @@ pub fn topology_to_newick(topology: &Topology, names: &[String]) -> String {
     // Newick fragment. Initialize with one entry per leaf.
     let mut subtree: BTreeMap<Vec<usize>, String> = BTreeMap::new();
     for i in 0..topology.nseq {
-        let frag = format!("\n{}_{}\n", i + 1, sanitize_name(&names[i]));
+        let frag = format!("\n{}_{}\n", i + 1, sanitize_name(names[i].as_ref()));
         subtree.insert(vec![i], frag);
     }
 

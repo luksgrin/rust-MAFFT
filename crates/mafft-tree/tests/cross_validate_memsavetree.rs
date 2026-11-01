@@ -483,7 +483,7 @@ fn memsavetree_topol_matches_c_step_by_step() {
         // im_leaf is the new rep.
         c_hist[im_leaf] = k as i32;
     }
-    let names: Vec<String> = input.sequences.iter()
+    let names: Vec<_> = input.sequences.iter()
         .map(|s| s.name.clone()).collect();
     let c_via_rust_newick = mafft_tree::newick::topology_to_newick(&c_topo, &names);
     let our_newick = mafft_tree::newick::topology_to_newick(&r_topo, &names);

@@ -139,6 +139,15 @@ public surfaces stable from 0.1.0 anyway.
   rebuilt from source with the feature. CI on `ubuntu-24.04-arm` builds
   the in-tree gcc reference, checks that it has 0 fused ops, and requires
   the sentinel to be 738 columns and equal to C.
+- **Non-UTF-8 FASTA and a CR-only file match C** (part of #41). The reader
+  takes the file as bytes. A byte that is not a letter, including one that
+  is not valid UTF-8, is dropped and the rest is aligned, as C's residue
+  filter does; a sequence name keeps its original bytes (`SeqName`). Every
+  `\r` becomes `\n` before records are split, matching the wrapper's
+  `tr "\r" "\n"`, so a CR-only file of N sequences yields N sequences. A
+  NUL still does not end the line: C keeps only the bytes before it, and
+  `mafft-rs` drops the NUL and keeps the rest. That difference is
+  intentional.
 - The FFI cross-validation tests did not compile on Linux aarch64: 56
   sites in 15 test files spelled the C `char**` argument (and the `alg`
   global) as `i8`, which is `c_char` on x86-64 Linux and Apple arm64 but

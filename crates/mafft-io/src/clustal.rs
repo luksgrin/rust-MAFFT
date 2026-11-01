@@ -81,8 +81,7 @@ pub fn write_clustal_full<W: Write>(
 
         for &idx in order {
             let seq = &seqs.sequences[idx];
-            let first_word = first_word_of(&seq.name);
-            write_name_field(writer, first_word, name_len)?;
+            write_name_field(writer, seq.name.first_word(), name_len)?;
             writer.write_all(b" ")?;
 
             let chunk_end = end.min(seq.data.len());
@@ -213,21 +212,16 @@ fn ascii_upper(b: u8) -> u8 {
 /// breaking column alignment vs C MAFFT.
 fn write_name_field<W: Write>(
     writer: &mut W,
-    name: &str,
+    name: impl AsRef<[u8]>,
     width: usize,
 ) -> Result<(), IoError> {
-    let bytes = name.as_bytes();
+    let bytes = name.as_ref();
     let len = bytes.len().min(width);
     writer.write_all(&bytes[..len])?;
     for _ in len..width {
         writer.write_all(b" ")?;
     }
     Ok(())
-}
-
-/// Extract the first whitespace-delimited word from a name string.
-fn first_word_of(name: &str) -> &str {
-    name.split_whitespace().next().unwrap_or(name)
 }
 
 #[cfg(test)]

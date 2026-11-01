@@ -20,10 +20,11 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use mafft_rs::{
-    run_from_seqs, run_from_with_progress, Mafft, SeqType, Sequence, SequenceSet, SilentProgress,
+    run_from_seqs, run_from_with_progress, Mafft, SeqName, SeqType, Sequence, SequenceSet,
+    SilentProgress,
 };
 
-type Rows = Vec<(String, Vec<u8>)>;
+type Rows = Vec<(SeqName, Vec<u8>)>;
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
@@ -43,15 +44,15 @@ fn argv(flags: &[&str]) -> Vec<OsString> {
     argv
 }
 
-/// Header text after `>` is the name (minus a CRLF's `\r`, which the
-/// reader's `lines()` also drops); data lines are concatenated verbatim,
-/// `\r` included.
+/// Header bytes after `>`. A trailing `\r` is stripped so a CRLF header
+/// compares equal to the name the reader stored (the reader turns every
+/// CR into LF before it splits). Data lines are concatenated verbatim.
 fn parse_fasta_raw(bytes: &[u8]) -> Rows {
     let mut rows: Rows = Vec::new();
     for line in bytes.split(|&b| b == b'\n') {
         if let Some(name) = line.strip_prefix(b">") {
             let name = name.strip_suffix(b"\r").unwrap_or(name);
-            rows.push((String::from_utf8(name.to_vec()).unwrap(), Vec::new()));
+            rows.push((SeqName::from(name.to_vec()), Vec::new()));
         } else if let Some((_, data)) = rows.last_mut() {
             data.extend_from_slice(line);
         }
@@ -317,7 +318,7 @@ fn dna_set() -> SequenceSet {
         sequences: DNA
             .iter()
             .enumerate()
-            .map(|(i, s)| Sequence { name: format!("s{i}"), data: s.as_bytes().to_vec() })
+            .map(|(i, s)| Sequence { name: format!("s{i}").into(), data: s.as_bytes().to_vec() })
             .collect(),
         seq_type: SeqType::Unknown,
     }

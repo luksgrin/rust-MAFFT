@@ -486,7 +486,7 @@ impl MafftEngine {
         let sequences: Vec<Vec<u8>> = input.sequences.iter().map(|s| {
             s.data.iter().copied().filter(|&c| c != b'-').collect()
         }).collect();
-        let names: Vec<String> = input.sequences.iter().map(|s| s.name.clone()).collect();
+        let names: Vec<mafft_types::SeqName> = input.sequences.iter().map(|s| s.name.clone()).collect();
 
         let use_fft = !self.nofft && matches!(
             self.mode,
@@ -1476,7 +1476,7 @@ impl MafftEngine {
         };
 
         let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();
-        let new_names: Vec<String> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
+        let new_names: Vec<mafft_types::SeqName> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
 
         let mut msa = if keeplength {
             add_sequences_keeplength(&existing, &new_sequences, &new_names, &scoring, use_fft)
@@ -1640,7 +1640,7 @@ impl MafftEngine {
             step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         };
         let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();
-        let new_names: Vec<String> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
+        let new_names: Vec<mafft_types::SeqName> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
         crate::add::add_sequences_keeplength_with_map(
             &existing, &new_sequences, &new_names, &scoring, use_fft,
         )
@@ -1687,7 +1687,7 @@ impl MafftEngine {
         &self,
         existing_input: &SequenceSet,
         new_input: &SequenceSet,
-    ) -> (mafft_types::ScoringContext, bool, MultipleAlignment, Vec<Vec<u8>>, Vec<String>) {
+    ) -> (mafft_types::ScoringContext, bool, MultipleAlignment, Vec<Vec<u8>>, Vec<mafft_types::SeqName>) {
         let seq_type = existing_input.seq_type;
         let scoring_model = if seq_type.is_nucleotide() {
             ScoringModel::Dna
@@ -1733,7 +1733,7 @@ impl MafftEngine {
             step_trace: Vec::new(), guide_tree: None, first_pass_sequences: None, distance_matrix: None,
         };
         let new_sequences: Vec<Vec<u8>> = new_input.sequences.iter().map(|s| s.data.clone()).collect();
-        let new_names: Vec<String> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
+        let new_names: Vec<mafft_types::SeqName> = new_input.sequences.iter().map(|s| s.name.clone()).collect();
         (scoring, use_fft, existing, new_sequences, new_names)
     }
 
