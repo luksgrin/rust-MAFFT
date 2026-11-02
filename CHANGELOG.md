@@ -125,6 +125,13 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **The low-complexity `--adjustdirection` fixtures are per FP policy.**
+  The C alignment of that set differs between a contracting and a
+  non-contracting build, so the expected outputs are now committed as
+  `.fma` and `.nofma` and listed in
+  `crates/mafft-bin/tests/fixtures/policy_fixtures.tsv`; the test picks the
+  variant matching `CONTRACTS_FMA`. `scripts/regen_policy_fixtures.sh`
+  accepts a fixture basename in a subdirectory of its manifest.
 - **A `--treein` error during alignment, including with `--add`, and a
   failed RNA base-pair probability are returned to the caller** (part of
   #41). Those two paths called `std::process::exit(1)` inside the engine,
