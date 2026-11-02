@@ -105,9 +105,14 @@ fn fft_port_matches_c_random_input() {
 /// Bit-for-bit at the FFT lengths of long sequences. `make_sintbl` builds
 /// the twiddle table by a recurrence over n/8 steps that arm64 clang
 /// contracts into fused multiply-adds; an unfused table first drifts at
-/// n = 2^19.
+/// n = 2^19. Skipped when the C build and this Rust build use different
+/// contraction policies.
 #[test]
 fn fft_port_matches_c_bitwise_long() {
+    if let Some(reason) = mafft_sys::fp_policy_mismatch(mafft_types::fp::CONTRACTS_FMA) {
+        eprintln!("{reason}");
+        return;
+    }
     let _guard = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     for &n in &[1024usize, 8192, 16384, 1 << 19] {
         let signal: Vec<Complex64> = (0..n).map(|i| {
