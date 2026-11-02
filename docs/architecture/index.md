@@ -41,17 +41,16 @@ The full list, with the inputs, is the README's
   refinement, and a trailing zero-scoring residue under `--add`; same
   width, one residue shifted, so the sum-of-pairs score differs slightly.
   Neither is reachable from a realistic command line.
-- **Partly implemented options** — `--add` runs one guide-tree cycle
-  where C runs two (the pinned fixtures match, other inputs can differ);
-  `--add --localpair` is not implemented; `--groupsize` is accepted and
-  ignored; `--partsize` is not accepted; `--memsave` does not change the
-  FFT merges, and the 30,000-column switch of `disttbfast` / `tbfast` is
-  not ported.
-- **Inputs outside the parity corpora** — the memory-safety run found
-  different bytes on a 120 kb DNA sequence, and on low-complexity and
-  homopolymer DNA under `--memsave`; names
-  longer than about 250 bytes are kept whole where C truncates them
-  (intentional).
+- **Partly implemented options** — `--add --localpair` / `--globalpair`
+  / `--genafpair` are not implemented; `--add --maxiterate N` (N ≥ 2)
+  can differ in the refinement; `--groupsize` is accepted and ignored;
+  `--partsize` and `--6merpair` are not accepted; `--maxiterate N
+  --memsave` does not follow `dvtditr -M`; `--nofft --memsave` differs on
+  one CDS set
+  ([E](https://github.com/luksgrin/rust-MAFFT#e-other-known-differences)).
+- **Inputs outside the parity corpora** — the inputs from the
+  memory-safety run now match C; names longer than about 250 bytes are
+  kept whole where C truncates them (intentional).
 - **`--thread N ≥ 2`** — C MAFFT itself is nondeterministic there, so
   there is no single C output to match. rust-MAFFT is deterministic at
   every thread count and reproduces C's `--thread 1` (`athread`) path.

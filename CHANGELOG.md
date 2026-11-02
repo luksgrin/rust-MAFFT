@@ -231,6 +231,63 @@ public surfaces stable from 0.1.0 anyway.
   `long_seq_30k`, `long_seq_memsave_2402`, `mtb_cds_first8.memsave`, and
   the two `--memsave` memory-safety sets. A new FFI test runs C's
   `Falign_udpari_long` against the port.
+- **Default `--add` runs two guide-tree cycles, as C does.** The wrapper
+  calls `disttbfast -E 2` (`--retree`, clamped to 1..3): after the first
+  add, it builds a new UPGMA tree from distances on that alignment
+  (`msadistmtxthread`, `disttbfast.c:4618-4693`) and redoes the add from
+  the same rows (`disttbfast.c:3934`, `:4320`, `:4324`). `mafft-rs` ran
+  one cycle, so it matched C only with `--retree 1` (BB12019 split 3 + 2
+  differed). `--reorder` now takes the last cycle's tree, and the
+  linkage options (`$treealg`) reach both trees (`--averagelinkage`
+  changes C's output on BB20027 split 25 + 4).
+- **`--add` with merges among the added sequences, and gap-heavy
+  existing rows.** A merge of two groups of added sequences marked them
+  as already aligned; C sets `alreadyaligned` only when a group joins the
+  existing rows (`disttbfast.c:2992`), so later merges padded the other
+  rows instead of placing the new gap columns. The gaps a '2' merge opens
+  are now marked `=` as in C (`newgapstr`, `disttbfast.c:2742-2746`);
+  with `-` they could not be told apart from an existing row's own gaps,
+  and the existing alignment's common gaps were restored at shifted
+  columns. `sample.first36` split 20 + 16 and BB20027 split 25 + 4 now
+  match C.
+- **`--mapout` / `--compactmapout` help text.** Both imply
+  `--keeplength` (as in C, `scripts/mafft:699-710`); the help and
+  `docs/cli-reference.md` still said they required it. The
+  `--addfragments` code comment now describes the `distance=multi` path
+  it implements.
+- **`--addfragments --reorder` and the linkage options.** `addsingle`
+  writes an `order` file (the existing tree's root members, each
+  followed by the fragments placed next to it, `addsingle.c:3601-3615`)
+  that `f2cl -r` applies; `mafft-rs` ignored `--reorder` on this path.
+  `addsingle` also gets the wrapper's `$treealg`, so `--averagelinkage`,
+  `--minimumlinkage` and `--mixedlinkage` change both the existing-rows
+  tree and the `addonetip` placement (`sueff_global`,
+  `mltaln9.c:14464`); `mafft-rs` always used `-X 0.1`.
+- **`--anysymbol` restore with `--keeplength`, `--mapout` and
+  `--compactmapout`.** C's `restoreu` first blanks the residues
+  `--keeplength` dropped from each added sequence (`_deletelist`,
+  `restoreu.c:183-206`) and only then copies the original characters
+  back; `mafft-rs` copied them in order, so after a dropped insertion
+  every residue of that row was shifted. Under `--compactmapout`,
+  `restoreu` strips the `Nins:…|` prefix only from the rows that lost
+  residues (`insname[i]`, `restoreu.c:270`); `mafft-rs` cut every title
+  at its first `|`, so a UniProt title such as `sp|P3|NAME_3` was not
+  found and its non-standard residues came out as `X`. Covers `--add`
+  and `--addfragments`.
+- **`--addfragments --compactmapout` map coordinates.** `addsingle`
+  passes the aligned rows to `reconstructdeletemap_compact`
+  (`addsingle.c:3819`), so each `vN` is an alignment column, while
+  `disttbfast` / `tbfast` (`--add`) pass the raw sequences and `vN`
+  counts kept residues. `mafft-rs` used the `--add` convention for both
+  (`18v19` where C writes `30v31` on `sample.first36` split 33 + 3). The
+  test now compares the `.map` file as well as stdout.
+- **`--add --keeplength` keeps the existing alignment's all-gap columns.**
+  C records them before the merge and puts them back after the
+  insertions are deleted (`recordoriginalgaps` /
+  `restoreoriginalgaps`, `disttbfast.c:3909`, `:4862`); `mafft-rs`
+  dropped them, so `sample.first36` split 33 + 3 came out 664 columns
+  wide instead of 717. This also moves the `--mapout` columns, which are
+  counted on the restored rows. `--addfragments -Y` already did this.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the

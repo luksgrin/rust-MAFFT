@@ -1,0 +1,20 @@
+# Insertion in added sequence > Position in reference
+>    34== L06803   1 Lymnaea stagnalis serotonin receptor <>[PNAS90,11-15'93]
+5T - 9L > 9v10
+24S - 25G > 30v31
+321C - 322N > 413v414
+357P - 358E > 456v457
+394I - 404G > 493v494
+408S - 414Y > 496v497
+>    35=p A47174 serotonin receptor, 5HTlym receptor - great pond snail
+5T - 9L > 9v10
+24S - 25G > 30v31
+321C - 322N > 413v414
+357P - 358E > 456v457
+394I - 404G > 493v494
+408S - 414Y > 496v497
+>    36== X95604   1 Bombyx mori serotonin receptor <antennae>[InsectBiochem.Mol.Bi
+3G - 6G > 7v8
+46W - 48A > 88v89
+297L - 303T > 441v442
+339V - 340A > 481v482

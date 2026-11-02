@@ -183,11 +183,11 @@ in summary:
   supported command line produce different output.
 - **Other known differences**
   ([E](https://github.com/luksgrin/rust-MAFFT#e-other-known-differences)).
-  `--add` runs one guide-tree cycle where C runs two, `--add --localpair`
-  is not implemented, `--groupsize` is ignored, `--partsize` is not
-  accepted, and `--memsave` does not change the FFT merges. A few inputs
-  outside the parity corpora (a 120 kb sequence, and low-complexity and
-  homopolymer DNA under `--memsave`) give different bytes. These are gaps in the port, carried until fixed.
+  `--add --localpair` / `--globalpair` / `--genafpair` are not
+  implemented, `--add --maxiterate N` (N ≥ 2) can differ in the
+  refinement, `--groupsize` is ignored, `--partsize` and `--6merpair` are
+  not accepted, `--maxiterate N --memsave` does not follow `dvtditr -M`,
+  and `--nofft --memsave` differs on one CDS set. These are gaps in the port, carried until fixed.
   Keeping long names whole where C truncates them is intentional.
 
 The floating-point contraction policy is not a residual. C MAFFT 7.526
