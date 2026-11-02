@@ -165,3 +165,23 @@ fn add_reorder_uses_the_last_guide_tree() {
     expect("bb12019g.add.reorder", "bb12019g", "--add", &["--reorder"]);
     expect("sample33g.add.reorder", "sample33g", "--add", &["--reorder"]);
 }
+
+/// 16 added sequences: some merges join added sequences only ('w'), which
+/// do not set `alreadyaligned` (`disttbfast.c:2992`), and the new-gap
+/// columns of a '2' merge are marked `=` (`:2742-2746`), so the restored
+/// common gaps land where C puts them.
+#[test]
+fn add_many_sequences_matches_c() {
+    expect("sample20g.add", "sample20g", "--add", &[]);
+    expect("sample20g.add.retree1", "sample20g", "--add", &["--retree", "1"]);
+    expect("sample20g.add.keeplength", "sample20g", "--add", &["--keeplength"]);
+    expect("bb20027g.add", "bb20027g", "--add", &[]);
+    expect("bb20027g.add.mapout", "bb20027g", "--add", &["--mapout"]);
+}
+
+/// `disttbfast` gets `$treealg`; on this input `--averagelinkage` changes
+/// C's output.
+#[test]
+fn add_linkage_matches_c() {
+    expect("bb20027g.add.averagelinkage", "bb20027g", "--add", &["--averagelinkage"]);
+}

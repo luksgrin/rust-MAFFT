@@ -360,7 +360,12 @@ pub(crate) fn progressive_align_mergeoralign(
                     false,
                     false, // c_compat off in --add path
                     true,  // --add: pass 0 only, cache valid
-                    new_gap_char,
+                    // C writes `=` for the gaps this merge opens on a '1' /
+                    // '2' branch (`newgapstr`, `disttbfast.c:2742-2746`), so
+                    // `findnewgaps` sees exactly those columns. A `-` here
+                    // would be indistinguishable from the existing rows' own
+                    // gaps in the lockstep walk below.
+                    b'=',
                     false,
                     false,
                 );
@@ -578,9 +583,9 @@ pub(crate) fn progressive_align_mergeoralign(
                     false,
                 );
 
-                for &i in step.left.iter().chain(step.right.iter()) {
-                    already_aligned[i] = true;
-                }
+                // C sets `alreadyaligned` only in the '2' case
+                // (`disttbfast.c:2992`); rows joined here stay out of the
+                // `insertnewgaps` set until they meet the existing rows.
 
                 let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
                 step_trace.push(StepTrace {
@@ -2490,3 +2495,4 @@ mod tests {
         check_alignment(&result, &seqs);
     }
 }
+

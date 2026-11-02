@@ -11,10 +11,12 @@ unaligned sequences to add:
 * `sample33.*` — `sample.first36` split 33 + 3; the existing rows keep
   all-gap columns.
 * `bb12019.*` — BAliBASE BB12019 split 3 + 2.
-* `bb12019g.*`, `sample33g.*` — BB12019 3 + 2 and `sample.first36`
-  33 + 3 with the existing alignment's all-gap columns removed. Default
+* `bb12019g.*`, `sample33g.*`, `sample20g.*`, `bb20027g.*` — BB12019
+  3 + 2, `sample.first36` 33 + 3 and 20 + 16, BAliBASE BB20027 25 + 4,
+  with the existing alignment's all-gap columns removed. Default
   `--add` runs two guide-tree cycles (`disttbfast -E 2`); these pin
-  that.
+  that, the 16-sequence add (merges among added sequences) and the
+  linkage options.
 
 ```bash
 make -C mafft-upstream/core
@@ -48,4 +50,10 @@ run bb12019g.add.retree1                        bb12019g  --add          --retre
 run sample33g.add                               sample33g --add
 run sample33g.add.compactmapout                 sample33g --add          --compactmapout
 run sample33g.add.reorder                       sample33g --add          --reorder
+run sample20g.add                               sample20g --add
+run sample20g.add.retree1                       sample20g --add          --retree 1
+run sample20g.add.keeplength                    sample20g --add          --keeplength
+run bb20027g.add                                bb20027g  --add
+run bb20027g.add.averagelinkage                 bb20027g  --add          --averagelinkage
+run bb20027g.add.mapout                         bb20027g  --add          --mapout
 ```

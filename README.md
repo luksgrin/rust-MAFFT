@@ -456,7 +456,7 @@ Any regression in DP indexing, boundary handling, FFT anchor placement, refineme
 
 ## Known limitations
 
-These sections list every mode, option and input where `mafft-rs` is known not to produce byte-identical output to C MAFFT 7.526, or does not implement an option. Default `--addfragments` matches C (section D); `--addfragments --localpair` is not a reference.
+These sections list every mode, option and input where `mafft-rs` is known not to produce byte-identical output to C MAFFT 7.526, or does not implement an option. Default `--add` and `--addfragments` match C (section D); `--addfragments --localpair` is not a reference, and `--add` with `--localpair` / `--globalpair` / `--genafpair` is not implemented.
 
 A zero byte in the input is not one of these limitations. C stops the sequence at it and drops every residue after it in that record, including later lines (`AC\0DE` becomes `AC`). `mafft-rs` drops only that byte and aligns what follows (`ACDE`), and it keeps a zero byte in a name, where C cuts the name at that byte. A normal FASTA file has no zero byte, so the two programs still match on real input. Details are in [Memory safety](docs/architecture/memory-safety.md).
 
@@ -495,9 +495,11 @@ These modes are intentionally not implemented. `mafft-rs` either rejects the fla
 | **DASH-only sequence-filter flags** | `--excludehomologs`, `--originalseqonly` | C documents both as "works with `--dash` only"; the DASH structure-DB pipeline falls under the RNA-structure category above. Wired as no-ops, matching what C does without `--dash`. |
 | **MPI parallelism** | `--mpi` | `mafft-rs` uses Rayon for in-process multithreading. |
 
-### D. `--addfragments --localpair` is not a reference (issue #50)
+### D. `--add` / `--addfragments` limits (issue #50)
 
-`--add`, `--add --keeplength`, `--add --reorder`, `--add --maxiterate`, `--compactmapout` (alignment and added-sequence names), `--addfragments` and `--addfragments --keeplength` match the in-tree C build on the 30 + 6 sample and on the #40 reproducer. `--addfragments` with `--reorder`, the linkage options and `--compactmapout` (map file included), and `--anysymbol` with `--keeplength` and the map options, are pinned on three more inputs (`add_followups_vs_c.rs`). Default `--addfragments` is `addsingle` on the script's `distance=multi` branch (`scripts/mafft:2628`): `dndpre -M 2` among the existing rows, `pairlocalalign -Y` for fragment distances and local homology, then one constrained merge (`-l 2.7`). `--keeplength` is `-Y`. On the 30 + 6 fixture the widths are 871 and 595. `--addfragments --localpair` is not pinned: C reads off the end of a buffer on some of those inputs (see [memory safety](docs/architecture/memory-safety.md)). The large-input 6-mer `addsingle -W` fallback is a different branch and is not what these fixtures exercise.
+`--add`, `--add --keeplength`, `--add --reorder`, `--add --maxiterate`, `--compactmapout` (alignment and added-sequence names), `--addfragments` and `--addfragments --keeplength` match the in-tree C build on the 30 + 6 sample and on the #40 reproducer. `--addfragments` with `--reorder`, the linkage options and `--compactmapout` (map file included), and `--anysymbol` with `--keeplength` and the map options, are pinned on three more inputs, and default `--add` (two guide-tree cycles, as `disttbfast -E 2`), `--retree 1`, `--averagelinkage` and a 20 + 16 add on four more (`add_followups_vs_c.rs`). Default `--addfragments` is `addsingle` on the script's `distance=multi` branch (`scripts/mafft:2628`): `dndpre -M 2` among the existing rows, `pairlocalalign -Y` for fragment distances and local homology, then one constrained merge (`-l 2.7`). `--keeplength` is `-Y`. On the 30 + 6 fixture the widths are 871 and 595. `--addfragments --localpair` is not pinned: C reads off the end of a buffer on some of those inputs (see [memory safety](docs/architecture/memory-safety.md)). The large-input 6-mer `addsingle -W` fallback is a different branch and is not what these fixtures exercise.
+
+`--add` with `--localpair`, `--globalpair` or `--genafpair` is not implemented: C runs `tbfast` with all-pairs `pairlocalalign` distances, a local-homology-constrained merge and added-sequence weights divided by 100 (`tbfast.c:2968`, `:3440`), and `mafft-rs` runs the plain `--add` path instead. `--add --maxiterate 2` (or more) still differs from C on the 20 + 16 sample split; one iteration matches.
 
 ### E. Other known differences
 
@@ -505,7 +507,7 @@ Partly implemented options:
 
 | Option | Status |
 |--------|--------|
-| `--add` (guide tree) | C runs two guide-tree cycles (`disttbfast -E 2`); `mafft-rs` drives the merge with the first (k-tuple) tree and uses the second only for `--reorder`. The pinned fixtures match; other inputs can differ. |
+| `--add --maxiterate N` (N ≥ 2) | The add itself matches C, including both guide-tree cycles, but the `dvtditr -K nadd` refinement can differ: on the 20 + 16 split of the 36-sequence sample, `--maxiterate 1` matches and `--maxiterate 2` does not. |
 | `--add --localpair` (L-INS-i add) | Not implemented. The new sequences are added by the progressive path without local-pair homology. |
 | `--groupsize N` | Accepted and ignored. The help text gives 150 as the default; C's `splittbfast` default is the number of sequences + 1. |
 | `--partsize N` | Not accepted. |

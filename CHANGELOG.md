@@ -238,7 +238,18 @@ public surfaces stable from 0.1.0 anyway.
   the same rows (`disttbfast.c:3934`, `:4320`, `:4324`). `mafft-rs` ran
   one cycle, so it matched C only with `--retree 1` (BB12019 split 3 + 2
   differed). `--reorder` now takes the last cycle's tree, and the
-  linkage options (`$treealg`) reach both trees.
+  linkage options (`$treealg`) reach both trees (`--averagelinkage`
+  changes C's output on BB20027 split 25 + 4).
+- **`--add` with merges among the added sequences, and gap-heavy
+  existing rows.** A merge of two groups of added sequences marked them
+  as already aligned; C sets `alreadyaligned` only when a group joins the
+  existing rows (`disttbfast.c:2992`), so later merges padded the other
+  rows instead of placing the new gap columns. The gaps a '2' merge opens
+  are now marked `=` as in C (`newgapstr`, `disttbfast.c:2742-2746`);
+  with `-` they could not be told apart from an existing row's own gaps,
+  and the existing alignment's common gaps were restored at shifted
+  columns. `sample.first36` split 20 + 16 and BB20027 split 25 + 4 now
+  match C.
 - **`--mapout` / `--compactmapout` help text.** Both imply
   `--keeplength` (as in C, `scripts/mafft:699-710`); the help and
   `docs/cli-reference.md` still said they required it. The
