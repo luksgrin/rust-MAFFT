@@ -281,9 +281,10 @@ robustness or parity gaps.
   matches the in-tree C build (`--thread 1`, default FFT-NS-2 width 121,
   and `--retree 1`) since the 6-mer length correction is fused where the
   C compiler fuses it. The low-complexity set matches with and without
-  `--adjustdirection` / `--adjustdirectionaccurately`. Both succeed but the
-  bytes still differ for: the 120 kb sequence (a few gap moves) and the
-  low-complexity and homopolymer sets under `--memsave`. Of the
+  `--adjustdirection` / `--adjustdirectionaccurately`. The 120 kb
+  sequence, and the low-complexity and homopolymer sets under
+  `--memsave`, match since `disttbfast`'s `alg='M'` switch to
+  `Falign_udpari_long` / `MSalignmm` is ported. Of the
   `sample_add` runs, `--add` and
   `--add --keeplength` have matched since #49. `--add --maxiterate 2`,
   `--add --reorder` and the `--compactmapout` added-sequence names match

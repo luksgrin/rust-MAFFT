@@ -639,6 +639,31 @@ pub fn align_with_anchors_outgap(
     anchors: &[(usize, usize)],
     outgap: bool,
 ) -> Alignment {
+    align_with_anchors_inner(prof1, prof2, matrix, gap, anchors, outgap, false)
+}
+
+/// Same cuts as [`align_with_anchors_outgap`], but each segment is
+/// `MSalignmm` (`Falign_udpari_long`, `Falign.c:3348`).
+pub fn align_with_anchors_outgap_msalign(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<f64>],
+    gap: &GapModel,
+    anchors: &[(usize, usize)],
+    outgap: bool,
+) -> Alignment {
+    align_with_anchors_inner(prof1, prof2, matrix, gap, anchors, outgap, true)
+}
+
+fn align_with_anchors_inner(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<f64>],
+    gap: &GapModel,
+    anchors: &[(usize, usize)],
+    outgap: bool,
+    use_msalign: bool,
+) -> Alignment {
     // Build cut1/cut2 mirroring C's Falign: bracket anchors with [0, …, length].
     let mut cut1: Vec<usize> = Vec::with_capacity(anchors.len() + 2);
     let mut cut2: Vec<usize> = Vec::with_capacity(anchors.len() + 2);
@@ -699,10 +724,19 @@ pub fn align_with_anchors_outgap(
                 tail1: if q1 < prof1.length { prof1.nongap_freq[q1] } else { 1.0 },
                 tail2: if q2 < prof2.length { prof2.nongap_freq[q2] } else { 1.0 },
             };
-            Some(profile_align_imp_with_boundary(
-                &sub1, &sub2, matrix, gap, head_gap, tail_gap,
-                None, false, boundary,
-            ))
+            // `Falign_udpari_long` hands the same `sgap`/`egap` cut copies
+            // to `MSalignmm` (`Falign.c:3354`), which reads them the same
+            // way (`MSalignmm.c:2341-2350`).
+            Some(if use_msalign {
+                crate::msalign::msalignmm_with_boundary(
+                    &sub1, &sub2, matrix, gap, head_gap, tail_gap, boundary,
+                )
+            } else {
+                profile_align_imp_with_boundary(
+                    &sub1, &sub2, matrix, gap, head_gap, tail_gap,
+                    None, false, boundary,
+                )
+            })
         } else {
             None
         }

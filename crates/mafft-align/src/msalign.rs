@@ -59,6 +59,22 @@ pub fn msalignmm(
     head_gap: bool,
     tail_gap: bool,
 ) -> Alignment {
+    msalignmm_with_boundary(prof1, prof2, matrix, gap, head_gap, tail_gap, BoundaryFreqs::default())
+}
+
+/// [`msalignmm`] on a cut segment. `MSalignmm` with `sgap`/`egap`
+/// (`MSalignmm.c:2331-2341`, called from `Falign_udpari_long`,
+/// `Falign.c:3354`) takes `headgapfreq` from the column before the cut
+/// and `gapfreq[lgth]` from the column after it, as nongap fractions.
+pub fn msalignmm_with_boundary(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<f64>],
+    gap: &GapModel,
+    head_gap: bool,
+    tail_gap: bool,
+    boundary: BoundaryFreqs,
+) -> Alignment {
     let n = prof1.length;
     let m = prof2.length;
     if n == 0 || m == 0 {
@@ -69,7 +85,8 @@ pub fn msalignmm(
         prof1, prof2, matrix, gap,
         0, n - 1, 0, m - 1,
         head_gap, tail_gap,
-        1.0, 1.0,
+        boundary.head1, boundary.head2,
+        boundary.tail1, boundary.tail2,
         &mut ops,
     );
     debug_assert_eq!(
@@ -109,6 +126,7 @@ fn msalignmm_rec(
     jst: usize, jen: usize,
     head_gap: bool, tail_gap: bool,
     headgapfreq1_g: f64, headgapfreq2_g: f64,
+    tail1_g: f64, tail2_g: f64,
     out_ops: &mut Vec<AlignOp>,
 ) -> f64 {
     // C `MSalignmm_rec:1099`: `lgth2 <= 0` copies the remaining seq1
@@ -140,6 +158,7 @@ fn msalignmm_rec(
             ist, ien, jst, jen,
             head_gap, tail_gap,
             headgapfreq1_g, headgapfreq2_g,
+            tail1_g, tail2_g,
             out_ops,
         );
     }
@@ -151,9 +170,9 @@ fn msalignmm_rec(
     let fwd = forward_dp(
         prof1, prof2, matrix, gap,
         ist, ien, jst, jen,
-        head_gap,
         imid,
         headgapfreq1_g, headgapfreq2_g,
+        tail1_g, tail2_g,
     );
 
     // Backward DP rows lgth1-2 down to imid-1, adding to midw/midm/midn.
@@ -163,6 +182,7 @@ fn msalignmm_rec(
         tail_gap,
         imid,
         fwd,
+        tail1_g, tail2_g,
     );
 
     let (jumpi, jumpj, jmid) = bwd.split_point;
@@ -173,12 +193,16 @@ fn msalignmm_rec(
     // join (`midw` winner), `jumpi = imid-1` and `jumpj = jmid-1`, so
     // top covers `[ist, ist+imid-1]` (imid rows). Bottom-right starts
     // at `ist+imid` so the union is exact.
+    // C passes the caller's `headgp` and `tailgp` to both halves
+    // (`MSalignmm.c:1886`, `:1975`); the base case decides from the
+    // window position whether a boundary is terminal.
     let mut value = 0.0;
     value += msalignmm_rec(
         prof1, prof2, matrix, gap,
         ist, ist + jumpi, jst, jst + jumpj,
-        head_gap, false,
+        head_gap, tail_gap,
         headgapfreq1_g, headgapfreq2_g,
+        tail1_g, tail2_g,
         out_ops,
     );
 
@@ -233,15 +257,16 @@ fn msalignmm_rec(
     let bottom_jst = jst + jmid;
     let head1_for_bot = if bottom_ist > 0 && bottom_ist - 1 < prof1.length {
         prof1.nongap_freq[bottom_ist - 1]
-    } else { 1.0 };
+    } else { headgapfreq1_g };
     let head2_for_bot = if bottom_jst > 0 && bottom_jst - 1 < prof2.length {
         prof2.nongap_freq[bottom_jst - 1]
-    } else { 1.0 };
+    } else { headgapfreq2_g };
     value += msalignmm_rec(
         prof1, prof2, matrix, gap,
         bottom_ist, ien, bottom_jst, jen,
-        false, tail_gap,
+        head_gap, tail_gap,
         head1_for_bot, head2_for_bot,
+        tail1_g, tail2_g,
         out_ops,
     );
 
@@ -261,6 +286,7 @@ fn base_case(
     jst: usize, jen: usize,
     head_gap: bool, tail_gap: bool,
     headgapfreq1_g: f64, headgapfreq2_g: f64,
+    tail1_g: f64, tail2_g: f64,
     out_ops: &mut Vec<AlignOp>,
 ) -> f64 {
     let sub1 = prof1.sub_profile(ist, ien + 1);
@@ -275,17 +301,20 @@ fn base_case(
     // position `ist - 1` in the parent profile.
     let head1 = if ist > 0 { prof1.nongap_freq[ist - 1] } else { headgapfreq1_g };
     let head2 = if jst > 0 { prof2.nongap_freq[jst - 1] } else { headgapfreq2_g };
-    let tail1 = if ien + 1 < prof1.length { prof1.nongap_freq[ien + 1] } else { 1.0 };
-    let tail2 = if jen + 1 < prof2.length { prof2.nongap_freq[jen + 1] } else { 1.0 };
+    let tail1 = ngf(prof1, ien + 1, tail1_g);
+    let tail2 = ngf(prof2, jen + 1, tail2_g);
 
-    // Internal sub-regions always treat head/tail as "open" (the gap
-    // padding between halves is added in the recursion glue, not in
-    // the base case). This matches `MSalignmm_tanni`'s
-    // `if( headgp || ist != 0 )` and `if( tailgp || jen != fulllen2-1 )`
-    // — when `ist != 0`, the head_gap branch fires regardless of
-    // `headgp` because the boundary is internal.
+    // Head penalties follow `MSalignmm_tanni:781-788`: an internal
+    // start (`ist != 0` or `jst != 0`) is charged even when `headgp`
+    // is 0. Tail freedom follows `Atracking` (`MSalignmm.c:512-514`):
+    // with `tailgp == 1` the tail is always charged; with `tailgp == 0`
+    // the free-end scan runs when EITHER window reaches the global end
+    // (`ien == fulllen1-1 || jen == fulllen2-1`). Requiring both
+    // penalized the tail of a fragment that ends inside a longer
+    // profile, which slid its last residue to a later exact match.
     let effective_head = head_gap || ist != 0 || jst != 0;
-    let effective_tail = tail_gap || ien + 1 != prof1.length || jen + 1 != prof2.length;
+    let at_global_end = ien + 1 == prof1.length || jen + 1 == prof2.length;
+    let effective_tail = tail_gap || !at_global_end;
 
     let aln = profile_align_imp_with_boundary(
         &sub1, &sub2, matrix, gap, effective_head, effective_tail, None, false,
@@ -341,9 +370,9 @@ fn forward_dp(
     gap: &GapModel,
     ist: usize, _ien: usize,
     jst: usize, jen: usize,
-    head_gap: bool,
     imid: usize,
     headgapfreq1_g: f64, headgapfreq2_g: f64,
+    tail1_g: f64, tail2_g: f64,
 ) -> ForwardState {
     let lgth2 = jen - jst + 1;
     let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
@@ -385,22 +414,22 @@ fn forward_dp(
             }
             initverticalw[di] = s;
         }
-        // Add head-gap penalty (C line 1229-1233). C MSalignmm has
-        // `USE_PENALTY_EX = 0` (MSalignmm.c:7), so the `+= fpenalty_ex
-        // * i` increment that `A__align` (`profile_align_imp_with_
-        // boundary`) applies in its head-gap init is OMITTED here.
+        // `MSalignmm_rec` adds this penalty on every call
+        // (`MSalignmm.c:1229-1237`), including the free-terminal-gap
+        // case `headgp == 0 && ist == 0`, so the forward pass takes no
+        // `headgp`. Only `MSalignmm_tanni` gates on `headgp || ist`
+        // (`:781`). `USE_PENALTY_EX` is 0, so there is no per-row
+        // extension term here.
         let gf2_0 = prof2.nongap_freq[jst];
-        if head_gap || ist != 0 {
-            for di in 1..=imid {
-                if di >= initverticalw.len() { break; }
-                let row = ist + di - 1;
-                if row >= prof1.length { break; }
-                initverticalw[di] = fmadd(
-                    fgcp1[row],
-                    gf2_0,
-                    fmadd(ogcp1[ist], headgapfreq2, initverticalw[di]),
-                );
-            }
+        for di in 1..=imid {
+            if di >= initverticalw.len() { break; }
+            let row = ist + di - 1;
+            if row >= prof1.length { break; }
+            initverticalw[di] = fmadd(
+                fgcp1[row],
+                gf2_0,
+                fmadd(ogcp1[ist], headgapfreq2, initverticalw[di]),
+            );
         }
     }
 
@@ -426,18 +455,17 @@ fn forward_dp(
             }
             currentw[dj] = s;
         }
+        // Same unconditional init (`MSalignmm.c:1234-1237`).
         let gf1_0 = prof1.nongap_freq[ist];
-        if head_gap || jst != 0 {
-            for dj in 1..=lgth2 {
-                if dj >= currentw.len() { break; }
-                let col = jst + dj - 1;
-                if col >= prof2.length { break; }
-                currentw[dj] = fmadd(
-                    fgcp2[col],
-                    gf1_0,
-                    fmadd(ogcp2[jst], headgapfreq1, currentw[dj]),
-                );
-            }
+        for dj in 1..=lgth2 {
+            if dj >= currentw.len() { break; }
+            let col = jst + dj - 1;
+            if col >= prof2.length { break; }
+            currentw[dj] = fmadd(
+                fgcp2[col],
+                gf1_0,
+                fmadd(ogcp2[jst], headgapfreq1, currentw[dj]),
+            );
         }
     }
 
@@ -447,7 +475,7 @@ fn forward_dp(
     let mut mp = vec![0i64; lgth2 + 1];
     for dj in 1..=lgth2 {
         let col_prev = jst + dj - 1;
-        let gf2_prev = if col_prev < prof2.length { prof2.nongap_freq[col_prev] } else { 1.0 };
+        let gf2_prev = ngf(prof2, col_prev, tail2_g);
         let row_o = (ist + 1).min(prof1.length.saturating_sub(1));
         m[dj] = fmadd(ogcp1[row_o], gf2_prev, currentw[dj - 1]);
         mp[dj] = 0;
@@ -498,7 +526,7 @@ fn forward_dp(
 
         // `mi = previousw[0] + ogcp2[jst+1] * nongap_freq1[ist+di-1]`
         let row_prev = ist + di - 1;
-        let gf1_prev = if row_prev < prof1.length { prof1.nongap_freq[row_prev] } else { 1.0 };
+        let gf1_prev = ngf(prof1, row_prev, tail1_g);
         let col_o = (jst + 1).min(prof2.length.saturating_sub(1));
         let mut mi = fmadd(ogcp2[col_o], gf1_prev, previousw[0]);
         let mut mpi: i64 = 0;
@@ -512,18 +540,10 @@ fn forward_dp(
             let col_j = jst + dj;
             let col_jm1 = jst + dj - 1;
 
-            let gf1_i = if row_i < prof1.length {
-                prof1.nongap_freq[row_i]
-            } else { 1.0 };
-            let gf1_im1 = if row_im1 < prof1.length {
-                prof1.nongap_freq[row_im1]
-            } else { 1.0 };
-            let gf2_j = if col_j < prof2.length {
-                prof2.nongap_freq[col_j]
-            } else { 1.0 };
-            let gf2_jm1 = if col_jm1 < prof2.length {
-                prof2.nongap_freq[col_jm1]
-            } else { 1.0 };
+            let gf1_i = ngf(prof1, row_i, tail1_g);
+            let gf1_im1 = ngf(prof1, row_im1, tail1_g);
+            let gf2_j = ngf(prof2, col_j, tail2_g);
+            let gf2_jm1 = ngf(prof2, col_jm1, tail2_g);
 
             let mut wm = previousw[dj - 1];
 
@@ -583,6 +603,7 @@ fn backward_dp(
     tail_gap: bool,
     imid: usize,
     fwd: ForwardState,
+    tail1_g: f64, tail2_g: f64,
 ) -> BackwardState {
     let lgth1 = ien - ist + 1;
     let lgth2 = jen - jst + 1;
@@ -595,8 +616,8 @@ fn backward_dp(
 
     let _ = gap.extend; // C MSalignmm has USE_PENALTY_EX = 0; f_ext is unused.
 
-    let tail1: f64 = if ien + 1 < prof1.length { prof1.nongap_freq[ien + 1] } else { 1.0 };
-    let tail2: f64 = if jen + 1 < prof2.length { prof2.nongap_freq[jen + 1] } else { 1.0 };
+    let tail1: f64 = ngf(prof1, ien + 1, tail1_g);
+    let tail2: f64 = ngf(prof2, jen + 1, tail2_g);
 
     let _ = tail_gap; // tail_gap is implicitly handled via tail1/tail2 boundaries
 
@@ -622,7 +643,7 @@ fn backward_dp(
             initverticalw[di] = s;
         }
         let gf2_tail = tail2;
-        let gf2_lgth2m1 = if jen < prof2.length { prof2.nongap_freq[jen] } else { 1.0 };
+        let gf2_lgth2m1 = ngf(prof2, jen, tail2_g);
         for di in 0..lgth1.saturating_sub(1) {
             initverticalw[di] = fmadd(
                 fgcp1[ien],
@@ -655,7 +676,7 @@ fn backward_dp(
             currentw[dj] = s;
         }
         let gf1_tail = tail1;
-        let gf1_lgth1m1 = if ien < prof1.length { prof1.nongap_freq[ien] } else { 1.0 };
+        let gf1_lgth1m1 = ngf(prof1, ien, tail1_g);
         for dj in 0..lgth2.saturating_sub(1) {
             currentw[dj] = fmadd(
                 fgcp2[jen],
@@ -671,7 +692,7 @@ fn backward_dp(
     let row_end_prev = ien.saturating_sub(1);
     for dj in (0..lgth2).rev() {
         let col_next = jst + dj + 1;
-        let gf2_next = if col_next < prof2.length { prof2.nongap_freq[col_next] } else { 1.0 };
+        let gf2_next = ngf(prof2, col_next, tail2_g);
         let cw = if dj + 1 < currentw.len() { currentw[dj + 1] } else { 0.0 };
         m[dj] = fmadd(fgcp1[row_end_prev], gf2_next, cw);
         mp[dj] = (lgth1 as i64) - 1;
@@ -737,7 +758,7 @@ fn backward_dp(
 
         let row_i = ist + di;
         let row_ip1 = ist + di + 1;
-        let gf1_ip1 = if row_ip1 < prof1.length { prof1.nongap_freq[row_ip1] } else { 1.0 };
+        let gf1_ip1 = ngf(prof1, row_ip1, tail1_g);
         let col_end_prev_local = lgth2 - 2;
         let col_end_prev_abs = jst + col_end_prev_local;
         let mut mi = fmadd(fgcp2[col_end_prev_abs], gf1_ip1, previousw[lgth2 - 1]);
@@ -748,10 +769,10 @@ fn backward_dp(
             let dj = dj_signed as usize;
             let col_j = jst + dj;
             let col_jp1 = jst + dj + 1;
-            let gf1_i = if row_i < prof1.length { prof1.nongap_freq[row_i] } else { 1.0 };
-            let gf1_ip1 = if row_ip1 < prof1.length { prof1.nongap_freq[row_ip1] } else { 1.0 };
-            let gf2_j = if col_j < prof2.length { prof2.nongap_freq[col_j] } else { 1.0 };
-            let gf2_jp1 = if col_jp1 < prof2.length { prof2.nongap_freq[col_jp1] } else { 1.0 };
+            let gf1_i = ngf(prof1, row_i, tail1_g);
+            let gf1_ip1 = ngf(prof1, row_ip1, tail1_g);
+            let gf2_j = ngf(prof2, col_j, tail2_g);
+            let gf2_jp1 = ngf(prof2, col_jp1, tail2_g);
 
             // Diagonal default (C lines 1548-1550). In the C
             // MSalignmm backward inner loop, `*prept = previousw[j+1]`
@@ -1208,4 +1229,11 @@ mod tests {
             assert!(aln.operations.len() >= p1.length.max(p2.length));
         }
     }
+}
+
+/// `gapfreq{1,2}f[idx]` in C: the nongap fraction of column `idx`, and
+/// at `idx == lgth` the segment's tail value (`outgapcount` of `egap`,
+/// 1.0 for a whole profile).
+fn ngf(p: &Profile, idx: usize, tail: f64) -> f64 {
+    if idx < p.length { p.nongap_freq[idx] } else { tail }
 }

@@ -362,6 +362,7 @@ pub(crate) fn progressive_align_mergeoralign(
                     true,  // --add: pass 0 only, cache valid
                     new_gap_char,
                     false,
+                    false,
                 );
 
                 let post_merge_width = aligned[existing_grp[0]].len();
@@ -573,6 +574,7 @@ pub(crate) fn progressive_align_mergeoralign(
                     false, // c_compat off in --add path
                     true,  // --add: pass 0 only, cache valid
                     new_gap_char,
+                    false,
                     false,
                 );
 
@@ -1256,6 +1258,7 @@ pub fn progressive_align_partial(
             true,  // partial replay mirrors pass 0
             b'-',
             false,
+            false,
         );
     }
     aligned
@@ -1334,6 +1337,10 @@ pub fn progressive_align_full(
     )
 }
 
+/// `disttbfast.c:2836`: the profile length past which `alg` switches to
+/// `'M'` for the rest of the process.
+pub const DISTTBFAST_MEMSAVE_LEN: usize = 30_000;
+
 /// Like `progressive_align_full` but with an explicit `c_compat` flag
 /// that enables C MAFFT's static-TLS cpmx memoization (see
 /// `mafft_align::profile::CPMX_MEMO`). Default callers should use
@@ -1356,7 +1363,7 @@ pub fn progressive_align_full_c_compat(
     progressive_align_full_c_compat_ex(
         sequences, names, topology, scoring, use_fft, shift_penalty,
         constraints, penalize_term_gaps, weights_override, unalign_level,
-        legacy_gap_cost, memsave_dp, c_compat, true, None,
+        legacy_gap_cost, memsave_dp, c_compat, true, None, None,
     )
 }
 
@@ -1388,9 +1395,19 @@ pub fn progressive_align_full_c_compat_ex(
     use_cache: bool,
     // `splittbfast.c:1020`: once either profile is longer than this,
     // `alg` sticks at `'M'` for the rest of the call. `None` leaves
-    // the aligner alone (tbfast's own switch is 30_000 and is not
-    // this path). PartTree passes `Some(10_000)`.
+    // that switch off. PartTree passes `Some(10_000)`.
     memsave_len_limit: Option<usize>,
+    // `disttbfast`'s global `alg` (`disttbfast.c:2836`, also `:1926`
+    // in `treebasethread` and `:2370` in `dooneiteration`): once either
+    // profile is longer than [`DISTTBFAST_MEMSAVE_LEN`] columns, `alg`
+    // becomes `'M'` and stays there for the rest of the process, so the
+    // flag is carried across guide-tree passes. The caller seeds it with
+    // `-M` (`--memsave`). After the switch FFT merges use
+    // `Falign_udpari_long` and DP merges use `MSalignmm`, including
+    // 1-vs-1. `None` turns the switch off: `-N` (`nevermemsave`),
+    // PartTree (its own 10000-column switch is `memsave_len_limit`), and
+    // the constrained `tbfast` merges.
+    mut long_alg_m: Option<&mut bool>,
 ) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
@@ -1484,6 +1501,13 @@ pub fn progressive_align_full_c_compat_ex(
         None
     };
     if let Some(levels) = levels {
+        // The 30000-column `alg='M'` switch, level by level. A merge over
+        // the limit always switches; its same-level siblings follow C's
+        // thread race, so they keep the state from the previous level.
+        // `--thread 1` takes the serial loop below, which applies the
+        // switch in `topol` order.
+        let long_enabled = long_alg_m.is_some();
+        let mut long_m = long_alg_m.as_deref().is_some_and(|f| *f);
         let mut slots: Vec<Option<StepTrace>> = vec![None; topology.steps.len()];
         for level in &levels {
             let tasks: Vec<(usize, BTreeMap<Vec<usize>, CachedProfile>)> = level
@@ -1510,12 +1534,17 @@ pub fn progressive_align_full_c_compat_ex(
                 for &i in step.left.iter().chain(&step.right) {
                     rows[i] = aligned[i].clone();
                 }
+                let len1 = aligned[step.left[0]].len();
+                let len2 = aligned[step.right[0]].len();
+                let hit = long_enabled
+                    && (len1 > DISTTBFAST_MEMSAVE_LEN || len2 > DISTTBFAST_MEMSAVE_LEN);
+                let switched = long_m || hit;
                 let score = merge_step_cached(
                     &step.left, &step.right, &mut rows, &weights, step_scoring, &gap, use_fft,
                     &mut local, constraints, penalize_term_gaps, memsave_dp, false,
-                    use_cache, b'-', false,
+                    use_cache, b'-', switched && !use_fft, switched && use_fft,
                 );
-                (step_idx, score, rows, local)
+                (step_idx, score, rows, local, hit)
             };
             use rayon::prelude::*;
             let results: Vec<_> = if tasks.len() > 1 {
@@ -1523,7 +1552,8 @@ pub fn progressive_align_full_c_compat_ex(
             } else {
                 tasks.into_iter().map(merge_one).collect()
             };
-            for (step_idx, score, mut rows, local) in results {
+            for (step_idx, score, mut rows, local, hit) in results {
+                long_m |= hit;
                 let step = &topology.steps[step_idx];
                 for &i in step.left.iter().chain(&step.right) {
                     aligned[i] = std::mem::take(&mut rows[i]);
@@ -1537,6 +1567,9 @@ pub fn progressive_align_full_c_compat_ex(
                     score,
                 });
             }
+        }
+        if let Some(flag) = long_alg_m {
+            *flag = long_m;
         }
         let step_trace: Vec<StepTrace> = slots.into_iter().map(|t| t.expect("every step merged")).collect();
         last_score = step_trace.last().map_or(0.0, |t| t.score);
@@ -1561,15 +1594,22 @@ pub fn progressive_align_full_c_compat_ex(
         } else {
             scoring
         };
+        let len1 = aligned[step.left[0]].len();
+        let len2 = aligned[step.right[0]].len();
         if let Some(limit) = memsave_len_limit {
-            let len1 = aligned[step.left[0]].len();
-            let len2 = aligned[step.right[0]].len();
             // `splittbfast.c:1020`. The assignment sticks for later
             // merges even when both profiles are shorter again.
             if !alg_m && (len1 > limit || len2 > limit) {
                 alg_m = true;
             }
         }
+        // `disttbfast.c:2836`. Also sticks, across passes as well.
+        if let Some(flag) = long_alg_m.as_deref_mut() {
+            if !*flag && (len1 > DISTTBFAST_MEMSAVE_LEN || len2 > DISTTBFAST_MEMSAVE_LEN) {
+                *flag = true;
+            }
+        }
+        let long_m = long_alg_m.as_deref().is_some_and(|f| *f);
         // After the switch, `use_fft` selects the aligner
         // (`splittbfast.c:1033-1060`): FFT would call
         // `Falign_udpari_long`, and the DP branch calls `MSalignmm`
@@ -1580,7 +1620,8 @@ pub fn progressive_align_full_c_compat_ex(
             !(alg_m && use_fft),
             "alg=M with FFT is Falign_udpari_long; PartTree leaves use_fft unset",
         );
-        let msalign_even_pairs = alg_m && !use_fft;
+        let msalign_even_pairs = (alg_m || long_m) && !use_fft;
+        let udpari_long = long_m && use_fft;
         last_score = merge_step_cached(
             &step.left, &step.right, &mut aligned, &weights, step_scoring, &gap, use_fft,
             &mut profile_cache, constraints, penalize_term_gaps,
@@ -1588,6 +1629,7 @@ pub fn progressive_align_full_c_compat_ex(
             use_cache,
             b'-',
             msalign_even_pairs,
+            udpari_long,
         );
 
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
@@ -1716,6 +1758,7 @@ pub fn merge_two_groups_progressive(
         false,                 // use_cache off — same reason
         b'-',
         false,                 // not the splittbfast alg='M' switch
+        false,                 // not the 30000 Falign_udpari_long switch
     )
 }
 
@@ -1737,6 +1780,9 @@ fn merge_step_cached(
     // `splittbfast` after `alg='M'`: `MSalignmm` replaces both
     // `A__align` and the 1-vs-1 `G__align11` branch.
     msalign_even_pairs: bool,
+    // `disttbfast` after `alg='M'` with FFT: `Falign_udpari_long`
+    // (`disttbfast.c:2865`).
+    udpari_long: bool,
 ) -> f64 {
     let width1 = aligned[group1[0]].len();
     let width2 = aligned[group2[0]].len();
@@ -1881,6 +1927,7 @@ fn merge_step_cached(
         };
         let fft_params = FftAlignParams {
             num_candidates: 20,
+            udpari_long,
             segment_params: if scoring.seq_type.is_nucleotide() {
                 mafft_fft::SegmentParams::dna()
             } else {
@@ -1902,6 +1949,12 @@ fn merge_step_cached(
                 &normalized_group_weights(group1, weights),
                 &normalized_group_weights(group2, weights),
             ),
+            nuc_rows: (udpari_long && scoring.seq_type.is_nucleotide()).then(|| mafft_align::NucRows {
+                rows1: group1.iter().map(|&i| aligned[i].clone()).collect(),
+                eff1: normalized_group_weights(group1, weights),
+                rows2: group2.iter().map(|&i| aligned[i].clone()).collect(),
+                eff2: normalized_group_weights(group2, weights),
+            }),
         };
         fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params)
     } else if let Some(table) = constraints {
