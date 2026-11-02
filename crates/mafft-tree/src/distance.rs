@@ -399,13 +399,21 @@ fn nogap_len(seq: &[u8]) -> usize {
 /// C's length adjustment factor.
 ///
 /// `lenfac = 1.0 / (shorter/longer * d + b/(longer + c) + a)`
+/// (`disttbfast.c:3856`). Apple clang at `-O3` contracts
+/// `shorter/longer * d + b/(longer + c)` into one `fmadd` and then adds `a`
+/// (checked in the generated assembly). The unfused sum is 1 ULP low for
+/// some unequal lengths (29 vs 30 with the protein constants); that ULP
+/// moves UPGMA branch lengths and flips a progressive tie on large sets of
+/// short sequences.
 fn compute_lenfac(len1: f64, len2: f64, a: f64, b: f64, c: f64, d: f64) -> f64 {
     let longer = len1.max(len2);
     let shorter = len1.min(len2);
     if longer == 0.0 {
         return 1.0;
     }
-    1.0 / (shorter / longer * d + b / (longer + c) + a)
+    let ratio = shorter / longer;
+    let mid = b / (longer + c);
+    1.0 / (mafft_types::fp::fmadd(ratio, d, mid) + a)
 }
 
 #[cfg(test)]
@@ -477,6 +485,24 @@ mod tests {
         let diff = (with_x - without_x).abs();
         assert!(diff > 1e-7,
             "ktuple_distance must depend on nogaplen (X kept), not filtered groups; got with_x={with_x}, without_x={without_x}, diff={diff}");
+    }
+
+    /// Sequences 69 and 649 of `many_short_3000` (lengths 29 and 30, 22
+    /// shared 6-mers, self counts 24 and 25). With Apple clang's contracted
+    /// `lenfac` the distance is `0x1.35450514de674p-3`; the unfused sum is
+    /// one ULP lower. That ULP changed the guide tree and the alignment of
+    /// the first 1726 sequences (issue #41).
+    #[test]
+    fn many_short_unequal_lenfac_distance_matches_c() {
+        let a = b"WAWASRDQREAMMHRFTKRHTFDTMWMLV";
+        let b = b"EPLWASRDQREAVMHRFTKRHTFDTMWMLV";
+        let d = ktuple_distance(a, b, 6);
+        let expected: u64 = if mafft_types::fp::CONTRACTS_FMA {
+            0x3fc3_5450_514d_e674
+        } else {
+            0x3fc3_5450_514d_e673
+        };
+        assert_eq!(d.to_bits(), expected, "distance {:x} ({d})", d.to_bits());
     }
 
     #[test]

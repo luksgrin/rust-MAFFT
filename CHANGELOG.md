@@ -161,6 +161,20 @@ public surfaces stable from 0.1.0 anyway.
   build did not match the C build on the same machine. The default is now
   fused only on aarch64-apple-darwin. `scripts/regen_policy_fixtures.sh`
   and `scripts/fma_census.sh` check `uname -m` on macOS as well.
+- **Large sets of short proteins match C** (part of #41). Apple clang on
+  Apple Silicon contracts `shorter/longer * lenfacd + lenfacb/(longer + lenfacc)` in the
+  6-mer length correction into one fused multiply-add (`disttbfast.c:3856`,
+  and the same expression in `mltaln9.c:15453` and `splittbfast.c:1674`).
+  The unfused Rust sum was 1 ULP low for some unequal lengths (29 vs 30 is
+  one), which changed the guide tree. On `many_short_3000` (3000 × ~30 aa)
+  the alignment was 129 columns against C's 121, and the first 1726
+  sequences already differed under `--retree 1`. Both length-correction
+  helpers now go through `mafft_types::fp::fmadd`, so a build for any other target
+  stays unfused like gcc. The default, `--retree 1`, `--memsavetree`,
+  `--parttree`, `--dpparttree` and `--youngestlinkage` outputs for 3000
+  sequences now match the in-tree build. `many_short_297_fftns2_byte_identical_to_c`
+  (a 297-sequence cut) and `many_short_unequal_lenfac_distance_matches_c`
+  guard it.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the

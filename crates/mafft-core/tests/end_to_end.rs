@@ -2847,6 +2847,68 @@ fn dpparttree_pfam_n250_over_10000_matches_c() {
     }
 }
 
+/// 297 short proteins cut from `many_short_3000` (see `fixtures/README.md`).
+/// Default FFT-NS-2. The 6-mer `lenfac` (`disttbfast.c:3856`) was 1 ULP
+/// below Apple clang's fused result for some unequal lengths, which changed
+/// the guide tree and the alignment. Same bytes with or without contraction.
+///
+/// Reference: `tests/fixtures/many_short_297.fftns2`.
+#[test]
+fn many_short_297_fftns2_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("many_short_297.fftns2"))
+        .expect("missing tests/fixtures/many_short_297.fftns2");
+    let input = read_fasta(fixture_path("many_short_297.fa")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).align(&input);
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(),
+        c_ref.sequences[0].data.len(),
+        "width: Rust={} C={}",
+        msa.sequences[0].len(),
+        c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data, "seq {i} differs from C");
+    }
+}
+
+/// `many_short_3000`: 3000 protein sequences of length about 30, default
+/// FFT-NS-2. The 6-mer length correction used to be 1 ULP off C on unequal
+/// lengths, and the alignment was 129 columns against C's 121. Regenerate
+/// the input with `benchmarks/memsafety_gen.py` if it is not already under
+/// `target/memsafety/adversarial/`.
+///
+/// ```text
+/// MAFFT_BINARIES=$PWD/mafft-upstream/binaries nice -n 19 mafft-upstream/scripts/mafft --thread 1 --quiet target/memsafety/adversarial/many_short_3000.fa
+/// ```
+#[test]
+#[ignore = "3000 x ~30 aa FFT-NS-2 vs in-tree C (minutes). MAFFT_BINARIES=$PWD/mafft-upstream/binaries nice -n 19 mafft-upstream/scripts/mafft --thread 1 --quiet target/memsafety/adversarial/many_short_3000.fa"]
+fn many_short_3000_fftns2_matches_c() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let fasta = root.join("target/memsafety/adversarial/many_short_3000.fa");
+    let input = read_fasta(&fasta).unwrap_or_else(|e| panic!("read {}: {e}", fasta.display()));
+    let mut engine = MafftEngine::new(AlignmentMode::FftNs2);
+    engine.nthread = 1;
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let msa = pool.install(|| engine.align(&input));
+    let c_out = std::process::Command::new(root.join("mafft-upstream/scripts/mafft"))
+        .arg("--thread")
+        .arg("1")
+        .arg("--quiet")
+        .arg(&fasta)
+        .env("MAFFT_BINARIES", root.join("mafft-upstream/binaries"))
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap_or_else(|e| panic!("run C mafft: {e}"));
+    assert!(c_out.status.success(), "C mafft failed: {}", String::from_utf8_lossy(&c_out.stderr));
+    let c_fa = read_fasta_bytes(&c_out.stdout);
+    assert_eq!(msa.nseq(), c_fa.len(), "nseq");
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.names[i].as_bytes(), c_fa[i].0.as_slice(), "name {i}");
+        assert_eq!(msa.sequences[i], c_fa[i].1, "seq {i}");
+    }
+}
+
 fn read_fasta_bytes(text: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut rows = Vec::new();
     let mut name = Vec::new();
