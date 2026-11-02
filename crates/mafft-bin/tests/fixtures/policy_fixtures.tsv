@@ -1,0 +1,11 @@
+# Policy-sensitive fixtures: how each `<fixture_basename>.fma` / `.nofma`
+# pair under this directory is produced from the in-tree C build.
+#
+# Columns (tab-separated): fixture_basename (relative to this directory,
+# without the .fma/.nofma suffix), input_relpath (relative to the
+# repository root), mafft_args (passed to the C `mafft` wrapper before the
+# input path). Consumed by scripts/regen_policy_fixtures.sh (check | write).
+# `.fma` is the in-tree Apple clang build on arm64, `.nofma` the in-tree
+# gcc build. Never generate a variant from a downloaded binary.
+memsafety/adjustdirection_lowcomplexity.adjustdirection	crates/mafft-bin/tests/fixtures/memsafety/adjustdirection_lowcomplexity.fa	--quiet --thread 1 --adjustdirection --nuc
+memsafety/adjustdirection_lowcomplexity.adjustdirectionaccurately	crates/mafft-bin/tests/fixtures/memsafety/adjustdirection_lowcomplexity.fa	--quiet --thread 1 --adjustdirectionaccurately --nuc

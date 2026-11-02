@@ -372,13 +372,18 @@ fn qinsi_bpp_failure_returns_error() {
 /// it on the cut copy (`mltaln9.c:12758`), plus the nongap fractions of the
 /// columns around the cut (`Falign.c:1562-1578`). Without that, mafft-rs
 /// placed two gap blocks 2 columns away from C (or changed the width).
+///
+/// The alignment depends on the contraction policy, so the expected output
+/// is committed as `.fma` (Apple clang on arm64) and `.nofma` (gcc
+/// `-std=c99`), listed in `tests/fixtures/policy_fixtures.tsv`.
 #[test]
 fn adjustdirection_lowcomplexity_matches_c() {
     let input = memsafety("adjustdirection_lowcomplexity.fa");
+    let policy = if mafft_types::fp::CONTRACTS_FMA { "fma" } else { "nofma" };
     for flag in ["--adjustdirection", "--adjustdirectionaccurately"] {
         let mut out = Vec::new();
         mafft_rs::run_from(argv(&[flag, "--nuc"], &input), &mut out).unwrap();
-        let want = std::fs::read(memsafety(&format!("adjustdirection_lowcomplexity.{}.expected", &flag[2..]))).unwrap();
+        let want = std::fs::read(memsafety(&format!("adjustdirection_lowcomplexity.{}.{policy}", &flag[2..]))).unwrap();
         assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want), "{flag}");
     }
 }

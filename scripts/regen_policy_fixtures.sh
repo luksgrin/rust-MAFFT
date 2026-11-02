@@ -133,7 +133,8 @@ for manifest in $manifests; do
             echo "error: $name: input '$input' not found under $repo_root" >&2
             status=1; continue
         fi
-        actual=$tmp/$name.$policy
+        # A basename may name a subdirectory of the manifest directory.
+        actual=$tmp/$(printf %s "$name" | tr / _).$policy
         echo "-- $name.$policy  <=  mafft ${args:-} $input"
         # shellcheck disable=SC2086  # args are meant to be word-split
         if ! "$wrapper" ${args:-} "$input_abs" > "$actual"; then
