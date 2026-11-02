@@ -335,3 +335,102 @@ fn panaroo_tiny_clusters_run_from_seqs_matches_c() {
         failures.len()
     );
 }
+
+/// [`expect_identical`] for outputs too long to print: reports the first
+/// differing byte instead of both alignments.
+fn expect_identical_brief(flags: &[&str], input: &Path, expected: &Path) {
+    let got = run(flags, input);
+    let want = std::fs::read(expected).expect("read expected");
+    if got != want {
+        let first = got.iter().zip(&want).position(|(a, b)| a != b)
+            .unwrap_or(got.len().min(want.len()));
+        panic!(
+            "mafft-rs {:?} {} differs from C ({}): {} vs {} bytes, first difference at byte {}",
+            flags,
+            input.display(),
+            expected.display(),
+            got.len(),
+            want.len(),
+            first,
+        );
+    }
+}
+
+/// A 30001-nt sequence and one 402-nt fragment, cut from the 120 kb
+/// memory-safety input. The merge is past `disttbfast`'s 30000-column
+/// switch (`disttbfast.c:2836`), so C aligns it with `Falign_udpari_long`:
+/// 500 candidate lags, every segment through `MSalignmm`. The port used
+/// ordinary `Falign` and moved the fragment.
+/// Captured from the in-tree C build (`--nuc --thread 1`).
+#[test]
+fn long_seq_30k_matches_c() {
+    let f = fixtures();
+    expect_identical_brief(
+        &["--thread", "1", "--nuc"],
+        &f.join("long_seq_30k.fa"),
+        &f.join("long_seq_30k.expected"),
+    );
+}
+
+/// `--nofft --memsave` on a 2402-nt prefix of that sequence. The
+/// Hirschberg forward pass skipped the leading-gap penalty when terminal
+/// gaps are free (`MSalignmm_rec` adds it unconditionally,
+/// `MSalignmm.c:1229-1237`), and a base case at the end of only one
+/// profile kept its tail penalized (`Atracking`, `MSalignmm.c:512-514`),
+/// so the fragment's tail slid to a later exact match. Same C capture.
+#[test]
+fn long_seq_memsave_2402_matches_c() {
+    let f = fixtures();
+    expect_identical_brief(
+        &["--thread", "1", "--retree", "1", "--nuc", "--nofft", "--memsave"],
+        &f.join("long_seq_memsave_2402.fa"),
+        &f.join("long_seq_memsave_2402.expected"),
+    );
+}
+
+/// `--memsave` starts `disttbfast` at `alg='M'` (`-M`), so with FFT every
+/// merge is `Falign_udpari_long`, not `Falign`. Captured from the in-tree
+/// C build (`--memsave --thread 1`).
+#[test]
+fn memsave_fft_first8_dna_matches_c() {
+    let f = fixtures();
+    expect_identical(
+        &["--memsave"],
+        &f.join("mtb_cds_first8.fa"),
+        &f.join("mtb_cds_first8.memsave.expected"),
+    );
+}
+
+/// The full 120 kb files, run against the in-tree C build. Generate them
+/// with `benchmarks/memsafety_gen.py` (seed 27) into
+/// `target/memsafety/adversarial`.
+#[test]
+#[ignore = "needs target/memsafety/adversarial and the in-tree C build"]
+fn long_seq_120k_matches_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("worktree root");
+    let script = root.join("mafft-upstream/scripts/mafft");
+    let binaries = root.join("mafft-upstream/binaries");
+    for name in ["long_seq_120k.fa", "long_seq_120k_oneline.fa"] {
+        let input = root.join("target/memsafety/adversarial").join(name);
+        assert!(input.is_file(), "missing {} (benchmarks/memsafety_gen.py)", input.display());
+        let c = std::process::Command::new(&script)
+            .args(["--quiet", "--thread", "1", "--nuc"])
+            .arg(&input)
+            .env("MAFFT_BINARIES", &binaries)
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .output()
+            .expect("run C mafft");
+        assert!(c.status.success(), "C mafft failed on {name}");
+        let rust = run(&["--thread", "1", "--nuc"], &input);
+        assert_eq!(
+            rust, c.stdout,
+            "{name} differs from C ({} vs {} bytes)",
+            rust.len(),
+            c.stdout.len()
+        );
+    }
+}

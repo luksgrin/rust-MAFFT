@@ -881,6 +881,9 @@ impl MafftEngine {
             None
         };
 
+        // `disttbfast`'s global `alg`: every pass below runs in the same C
+        // process, so a switch to `'M'` in one pass holds for the next.
+        let mut disttbfast_alg_m = self.memsave_dp;
         for pass in 0..retree {
             let topo = if let Some(ref t) = user_topo {
                 t.clone()
@@ -1021,6 +1024,17 @@ impl MafftEngine {
             } else {
                 None
             };
+            // `disttbfast`'s 30000-column `alg='M'` switch
+            // (`disttbfast.c:2836`). `--memsave` (`-M`) starts at `'M'`;
+            // `--nomemsave` (`-N`) never switches. PartTree has its own
+            // switch above, and the constrained merges are `tbfast`'s.
+            let long_alg_m = if !use_parttree && !self.never_memsave
+                && progress_constraints.is_none()
+            {
+                Some(&mut disttbfast_alg_m)
+            } else {
+                None
+            };
             // Disable the cached profile blend (`blend_profiles_exact`).
             // C's `createcpmxresult` (Salignmm.c:608) omits the eff*1.0 gap
             // contribution at gap-insertion positions ("tsukawanai" comment
@@ -1037,7 +1051,7 @@ impl MafftEngine {
                 progress_constraints, penalize_term_gaps,
                 weights_override.as_deref(), self.unalign_level,
                 self.legacy_gap_cost, self.memsave_dp, self.c_compat,
-                false, memsave_len_limit,
+                false, memsave_len_limit, long_alg_m,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
             final_progressive_topo = Some(topo.clone());

@@ -504,27 +504,20 @@ struct Args {
     #[arg(long = "seedtable", value_name = "FILE")]
     seedtable: Option<PathBuf>,
 
-    /// Memory-saving mode (matches C MAFFT `--memsave` →
-    /// `tbfast -M -B`, `scripts/mafft:543-544`). In C this sets
-    /// `alg='M'`: non-FFT profile merges use `MSalignmm`
-    /// (Hirschberg-style linear-space DP) and FFT merges use
-    /// `Falign_udpari_long`. Here the non-FFT progressive merges go
-    /// through the ported `MSalignmm`; FFT merges keep the full-memory
-    /// DP, because `Falign_udpari_long` is not ported. C's automatic
-    /// switch to `alg='M'` once a profile exceeds 30,000 columns in
-    /// `disttbfast` / `tbfast` (`tbfast.c:1096`) is not ported either,
-    /// so very long inputs that C would align in linear space may run
-    /// out of memory here. The flag is validated against the same
-    /// script-level gating as C.
+    /// Memory-saving mode (matches C MAFFT `--memsave` → `-M -B`,
+    /// `scripts/mafft:543-544`). Progressive merges start at `alg='M'`:
+    /// DP merges use the linear-space `MSalignmm`, including 1-vs-1, and
+    /// FFT merges use `Falign_udpari_long`. Without this flag C, and
+    /// mafft-rs, switch the same way once a profile is longer than 30000
+    /// columns (`disttbfast.c:2836`).
     #[arg(long)]
     memsave: bool,
 
     /// Disable the auto-switch to memory-saving DP for long sequences
-    /// (matches C MAFFT `--nomemsave` → `splittbfast -N` /
-    /// `tbfast -N`, `scripts/mafft:545-546`). Sets `nevermemsave`, so
-    /// PartTree keeps `A__align` after a profile passes 10_000 columns.
-    /// The 30,000-column switch of `disttbfast` / `tbfast` is not
-    /// ported, so outside PartTree the flag has no effect.
+    /// (matches C MAFFT `--nomemsave` → `-N`, `scripts/mafft:545-546`).
+    /// Sets `nevermemsave`: the progressive merges keep `Falign` /
+    /// `A__align` past 30000 columns, and PartTree keeps `A__align` past
+    /// 10000 columns.
     #[arg(long)]
     nomemsave: bool,
 

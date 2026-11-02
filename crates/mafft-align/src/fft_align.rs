@@ -13,7 +13,15 @@ use mafft_fft::{
 };
 
 use crate::dp::{Alignment, GapModel};
-use crate::profile::{align_with_anchors_outgap, profile_align, Profile};
+use crate::msalign::msalignmm;
+use crate::profile::{align_with_anchors_outgap, align_with_anchors_outgap_msalign, profile_align, Profile};
+
+/// `fft.h` `NKOUHO_LONG`. `Falign_udpari_long` asks `getKouho` for this
+/// many lags; ordinary `Falign` asks for `NKOUHO` (20).
+const NKOUHO_LONG: usize = 500;
+/// `Falign.c` `Falign_udpari_long`: at this many segments the upper-level
+/// `blockAlign2` is skipped and a monotonic chain of centers is kept.
+const UDPARI_ANCHOR_CAP: usize = 5000;
 
 /// Parameters controlling FFT-accelerated alignment.
 #[derive(Debug, Clone)]
@@ -43,6 +51,29 @@ pub struct FftAlignParams {
     /// The group weights are normalised, so this is 1.0 up to rounding;
     /// compute it with [`fft_total_eff`] to reproduce C's rounding.
     pub total_eff: f64,
+    /// `Falign_udpari_long` (`Falign.c:2583`), the aligner `disttbfast`
+    /// calls after `alg` switches to `'M'` (`disttbfast.c:2865`). Uses
+    /// [`NKOUHO_LONG`] lags, does not stop at the first lag with no
+    /// alignable segment, skips `blockAlign2` at 5000 segments, and
+    /// runs `MSalignmm` inside each segment.
+    pub udpari_long: bool,
+    /// The aligned rows and normalised weights of both groups. On
+    /// nucleotides `Falign_udpari_long` correlates `seq_vec_4`
+    /// (`Falign.c:83-99`, `:2785`) instead of the `a` indicator:
+    /// `a`/`t` add/subtract the weight on the real part and `g`/`c` on the
+    /// imaginary part, sequence by sequence. That sum depends on the
+    /// sequence order, so it is built from the rows, not the profile.
+    /// Required when `udpari_long` is set and `property_channels` is `None`.
+    pub nuc_rows: Option<NucRows>,
+}
+
+/// Rows and weights of the two groups for [`FftAlignParams::nuc_rows`].
+#[derive(Debug, Clone)]
+pub struct NucRows {
+    pub rows1: Vec<Vec<u8>>,
+    pub eff1: Vec<f64>,
+    pub rows2: Vec<Vec<u8>>,
+    pub eff2: Vec<f64>,
 }
 
 impl FftAlignParams {
@@ -56,6 +87,8 @@ impl FftAlignParams {
             num_channels: 20,
             property_channels: None,
             total_eff: 1.0,
+            udpari_long: false,
+            nuc_rows: None,
         }
     }
 
@@ -74,6 +107,8 @@ impl FftAlignParams {
             num_channels: 1,
             property_channels: None,
             total_eff: 1.0,
+            udpari_long: false,
+            nuc_rows: None,
         }
     }
 }
@@ -104,7 +139,18 @@ pub fn find_fft_anchors(
     }
 
     let fft_size = fft_length(n, m);
-    let soukan = if let Some((polarity, volume)) = &params.property_channels {
+    let udpari_nuc = if params.udpari_long && params.property_channels.is_none() {
+        Some(params.nuc_rows.as_ref().expect("Falign_udpari_long on nucleotides needs nuc_rows"))
+    } else {
+        None
+    };
+    let soukan = if let Some(rows) = udpari_nuc {
+        // `Falign_udpari_long`, `scoremtx == -1`: one complex `seq_vec_4`
+        // channel per group (`Falign.c:2785`, `:2825`).
+        let a = seq_vec_4(&rows.rows1, &rows.eff1, fft_size);
+        let b = seq_vec_4(&rows.rows2, &rows.eff2, fft_size);
+        soukan_c_compat(&[a], &[b])
+    } else if let Some((polarity, volume)) = &params.property_channels {
         // Mirrors C's `seq_vec_2` 2-channel polarity+volume convolution
         // (`Falign.c:342-348`). Used by all protein scoring matrices.
         let channels_a = profile_to_property_channels(prof1, polarity, volume, fft_size);
@@ -129,7 +175,9 @@ pub fn find_fft_anchors(
         soukan_c_compat(&channels_a, &channels_b)
     };
 
-    let candidates = get_top_candidates(&soukan, params.num_candidates);
+    // `Falign_udpari_long` passes `NKOUHO_LONG` (`Falign.c:2942`).
+    let n_cand = if params.udpari_long { NKOUHO_LONG } else { params.num_candidates };
+    let candidates = get_top_candidates(&soukan, n_cand);
 
     // Mirrors C's `Falign` (`Falign.c:1307-1372`): accumulate segments from
     // candidate lags into a single flat list (sorted by score), then
@@ -139,7 +187,8 @@ pub fn find_fft_anchors(
     //
     // C's loop bounds: `if (lag <= -len1 || lag >= len2) continue;`
     // (`Falign.c:1310`) and break on first empty `tmpint == 0`
-    // (`Falign.c:1330`).
+    // (`Falign.c:1330`). `Falign_udpari_long` leaves that break commented
+    // out (`Falign.c:2999`) and walks every candidate.
     struct PairSeg { center1: usize, center2: usize, score: f64 }
     let mut all: Vec<PairSeg> = Vec::new();
     for cand in &candidates {
@@ -148,14 +197,18 @@ pub fn find_fft_anchors(
         let shifted_scores = shift_and_score(prof1, prof2, matrix, lag, params.total_eff);
         let segments = alignable_segments(&shifted_scores, &params.segment_params);
         if segments.is_empty() {
-            break; // C: `if(tmpint == 0) break;`
+            if params.udpari_long {
+                continue;
+            }
+            break; // C Falign: `if(tmpint == 0) break;`
         }
         for seg in segments {
             // shift_and_score's `seg.center` is in the shifted-frame:
             //   lag >= 0: index in prof1 → seq1_idx = center, seq2_idx = center + lag
             //   lag <  0: index in prof2 → seq2_idx = center, seq1_idx = center - lag
             // Either way `seq2_idx - seq1_idx == lag`. Mirrors C's segment1/2
-            // mapping in Falign.c:540-563.
+            // mapping in Falign.c:540-563 and the same mapping in
+            // `Falign_udpari_long` (`Falign.c:3009-3031`).
             let (c1, c2_signed): (usize, i32) = if lag >= 0 {
                 (seg.center, seg.center as i32 + lag)
             } else {
@@ -167,6 +220,34 @@ pub fn find_fft_anchors(
     }
 
     if all.is_empty() { return None; }
+
+    if params.udpari_long && all.len() >= UDPARI_ANCHOR_CAP {
+        // `Falign.c:3164-3202`, over the centers in `mymergesort` order
+        // (`Falign.c:154-189`: a stable merge sort on `center` alone;
+        // `segcmp` is only used by the disabled `qsort` branch).
+        let mut order: Vec<usize> = (0..all.len()).collect();
+        order.sort_by(|&a, &b| all[a].center1.cmp(&all[b].center1));
+        // cuts[0] is the origin C writes into `cut1[0]`/`cut2[0]`.
+        // Later entries are the kept centers (`cut1[count0]`).
+        let mut cuts: Vec<(usize, usize)> = vec![(0, 0)];
+        for (i, &idx) in order.iter().enumerate() {
+            let seg = &all[idx];
+            let (c1, c2) = (seg.center1, seg.center2);
+            let (p1, p2) = *cuts.last().unwrap();
+            if c1 > p1 && c2 > p2 {
+                cuts.push((c1, c2));
+            } else if i > 0 && seg.score > all[order[i - 1]].score && cuts.len() >= 2 {
+                let (q1, q2) = cuts[cuts.len() - 2];
+                if c1 > q1 && c2 > q2 {
+                    *cuts.last_mut().unwrap() = (c1, c2);
+                }
+            }
+        }
+        let anchors: Vec<(usize, usize)> = cuts.into_iter().skip(1)
+            .filter(|&(a, b)| a < n && b < m)
+            .collect();
+        return if anchors.is_empty() { None } else { Some(anchors) };
+    }
 
     let nseg = all.len();
     let mut sort1: Vec<usize> = (0..nseg).collect();
@@ -231,17 +312,33 @@ pub fn fft_profile_align(
     }
 
     match find_fft_anchors(prof1, prof2, matrix, params) {
-        Some(anchors) => align_with_anchors_outgap(
-            prof1, prof2, matrix, &params.gap, &anchors,
+        Some(anchors) => {
             // The fft path's `head_gap`/`tail_gap` are conventionally
             // both equal to the outer C `outgap` (Falign passes a single
             // value into its first/last segment). Pass `head_gap` as the
             // canonical outgap here — for our progressive merges
             // `head_gap == tail_gap` (both controlled by
             // `penalize_term_gaps` in `progressive::merge_step_cached`).
-            params.head_gap,
-        ),
-        None => profile_align(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap),
+            // `Falign_udpari_long` aligns every segment with `MSalignmm`
+            // (`Falign.c:3348-3354`), including a 1-vs-1 segment that
+            // ordinary `Falign` would send to `G__align11`.
+            if params.udpari_long {
+                align_with_anchors_outgap_msalign(
+                    prof1, prof2, matrix, &params.gap, &anchors, params.head_gap,
+                )
+            } else {
+                align_with_anchors_outgap(
+                    prof1, prof2, matrix, &params.gap, &anchors, params.head_gap,
+                )
+            }
+        }
+        None => {
+            if params.udpari_long {
+                msalignmm(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap)
+            } else {
+                profile_align(prof1, prof2, matrix, &params.gap, params.head_gap, params.tail_gap)
+            }
+        }
     }
 }
 
@@ -392,6 +489,25 @@ pub fn fft_total_eff(eff1: &[f64], eff2: &[f64]) -> f64 {
 /// of two STRICTLY greater than the longer profile (`while (nlentmp >= nlen)
 /// nlen <<= 1`), which is twice `next_power_of_two` when the longer length is
 /// itself a power of two.
+/// C `seq_vec_4` (`Falign.c:83-99`) summed over a group in row order:
+/// `a` adds the weight to the real part, `t` subtracts it, `g` adds it to
+/// the imaginary part, `c` subtracts it.
+fn seq_vec_4(rows: &[Vec<u8>], effs: &[f64], fft_size: usize) -> Vec<num_complex::Complex64> {
+    let mut v = vec![num_complex::Complex64::new(0.0, 0.0); fft_size];
+    for (row, &e) in rows.iter().zip(effs) {
+        for (slot, &c) in v.iter_mut().zip(row.iter()) {
+            match c.to_ascii_lowercase() {
+                b'a' => slot.re += e,
+                b't' => slot.re -= e,
+                b'g' => slot.im += e,
+                b'c' => slot.im -= e,
+                _ => {}
+            }
+        }
+    }
+    v
+}
+
 fn fft_length(len1: usize, len2: usize) -> usize {
     let nlentmp = len1.max(len2);
     let mut nlen = 1usize;
@@ -437,6 +553,8 @@ mod tests {
             num_channels: 4,
             property_channels: None,
             total_eff: 1.0,
+            udpari_long: false,
+            nuc_rows: None,
         };
         let aln = fft_profile_align(&prof, &prof, &mtx, &params);
         assert!(aln.score > 0.0);

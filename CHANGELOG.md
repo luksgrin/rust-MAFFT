@@ -194,6 +194,43 @@ public surfaces stable from 0.1.0 anyway.
   matches C under `--adjustdirection --nuc` and
   `--adjustdirectionaccurately --nuc` (previously 7887 vs 7893 and 7758
   vs 7698 columns), and `homopolymer_dna_matches_c` is no longer ignored.
+- **A sequence longer than 30,000 columns, and `--memsave` with FFT,
+  match C** (part of #41). `disttbfast` sets `alg = 'M'` once either
+  profile of a merge is longer than 30000 columns, and the setting holds
+  for every later merge and guide-tree pass in that process
+  (`disttbfast.c:2836`, `:1926`, `:2370`). `--memsave` (`-M`) starts at
+  `'M'`; `--nomemsave` never switches. With FFT the merge is then
+  `Falign_udpari_long` (`Falign.c:2583`). On nucleotides it correlates
+  one complex `seq_vec_4` channel (`a`/`t` on the real part, `g`/`c` on
+  the imaginary part, `Falign.c:83-99`) instead of `Falign`'s `a`
+  indicator. It also takes 500 candidate lags instead of 20, does not
+  stop at the first lag without a segment, and past 5000 segments keeps
+  a monotonic chain of centers (in `mymergesort` order, center only)
+  instead of `blockAlign2`. Every segment, 1-vs-1 included, is aligned
+  with `MSalignmm`, which gets the cut-boundary gap frequencies and
+  closing-gap count that the `A__align` segments already got.
+  Without FFT the merge is `MSalignmm`, including 1-vs-1. The port had
+  none of this. Two `MSalignmm` fixes go with it:
+  - The Hirschberg forward pass adds the leading-gap penalty on every
+    call, as `MSalignmm_rec` does (`MSalignmm.c:1229-1237`), not only
+    when terminal gaps are penalized.
+  - Both halves of a split keep the caller's `headgp` / `tailgp`
+    (`MSalignmm.c:1886`, `:1975`), so a base case with free terminal gaps
+    frees the tail when either profile, not both, reaches its end
+    (`Atracking`, `MSalignmm.c:512`).
+
+  Now byte-identical to the in-tree C build:
+  - The 120 kb memory-safety input (one 120,000-nt sequence and three
+    fragments, wrapped and on one line) under `--nuc`, `--nuc --retree 1`
+    and `--nuc --nofft`. `--nuc --nomemsave` already matched.
+  - Under `--memsave --nuc`: the low-complexity set (10355 columns) and
+    `homopolymer_dna` (667).
+  - Under `--memsave`: `mtb_cds_first8` and `mtb_cds_120x1400`.
+
+  The same bytes come from a non-contracting C build. New fixtures:
+  `long_seq_30k`, `long_seq_memsave_2402`, `mtb_cds_first8.memsave`, and
+  the two `--memsave` memory-safety sets. A new FFI test runs C's
+  `Falign_udpari_long` against the port.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the

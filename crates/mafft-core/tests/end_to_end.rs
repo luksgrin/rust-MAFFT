@@ -806,6 +806,8 @@ fn diagnostic_fft_anchoring() {
         num_channels: 20,
         property_channels: None,
         total_eff: 1.0,
+        udpari_long: false,
+        nuc_rows: None,
     };
     let fft_aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params);
 
@@ -1220,6 +1222,8 @@ fn diagnostic_fft_anchors() {
         num_channels: scoring.nscoredalphabets,
         property_channels: None,
         total_eff: 1.0,
+        udpari_long: false,
+        nuc_rows: None,
     };
 
     let aln_fft = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params);
@@ -1325,6 +1329,8 @@ fn diagnostic_fft_pipeline() {
         num_channels: scoring.nscoredalphabets,
         property_channels: None,
         total_eff: 1.0,
+        udpari_long: false,
+        nuc_rows: None,
     };
     let aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &params);
     eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());
@@ -1392,6 +1398,8 @@ fn diagnostic_step3_anchors() {
         num_channels: scoring.nscoredalphabets,
         property_channels: None,
         total_eff: 1.0,
+        udpari_long: false,
+        nuc_rows: None,
     };
     let aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &params);
     eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());

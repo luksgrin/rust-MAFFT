@@ -387,3 +387,20 @@ fn adjustdirection_lowcomplexity_matches_c() {
         assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want), "{flag}");
     }
 }
+
+/// `--memsave` starts `disttbfast` at `alg='M'`, so every FFT merge is
+/// `Falign_udpari_long`. On nucleotides that correlates the complex
+/// `seq_vec_4` encoding over 500 lags (`Falign.c:83-99`, `:2942`), not
+/// `Falign`'s `a` indicator, and the low-complexity set takes the
+/// many-anchor chain (`Falign.c:3164-3202`). mafft-rs gave widths 664 and
+/// 9964 against C's 667 and 10355. The same bytes come from a
+/// non-contracting C build.
+#[test]
+fn memsave_fft_low_complexity_matches_c() {
+    for name in ["homopolymer_dna", "adjustdirection_lowcomplexity"] {
+        let mut out = Vec::new();
+        mafft_rs::run_from(argv(&["--memsave", "--nuc"], &memsafety(&format!("{name}.fa"))), &mut out).unwrap();
+        let want = std::fs::read(memsafety(&format!("{name}.memsave.expected"))).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want), "{name}");
+    }
+}

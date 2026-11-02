@@ -135,6 +135,24 @@ shorter. `--dpparttree` is one pass (`cycle = 1`); plain `--parttree`
 runs `splittbfast` twice (`retree` 2), and each process starts again at
 `alg = 'A'`. `--nomemsave` suppresses the switch.
 
+`disttbfast` (FFT-NS-1/2/i progressive, NW-NS) has its own switch at
+30000 columns (`disttbfast.c:2836`). It also sticks, and since every
+guide-tree pass runs in the same process it holds across passes. After
+it, FFT merges call `Falign_udpari_long`: a complex `seq_vec_4`
+correlation on nucleotides, 500 lags, the many-anchor chain past 5000
+segments, and `MSalignmm` in every segment. DP merges call `MSalignmm`,
+1-vs-1 included. `--memsave` starts there (`-M`).
+`cross_validate_falign_udpari_long.rs` checks the port against C's
+function. The 120 kb memory-safety input matches the in-tree C build
+under `--nuc`, `--nuc --retree 1` and `--nuc --nofft`. Under
+`--memsave` (FFT), the low-complexity set, `homopolymer_dna`,
+`mtb_cds_first8` and `mtb_cds_120x1400` match too. Still differing:
+- `dvtditr`'s own switch at 50000 columns (`dvtditr.c:645`) and
+  `dvtditr -M` are not ported, so `--maxiterate N --memsave` differs on
+  `mtb_cds_first8`.
+- `--nofft --memsave` on `mtb_cds_120x1400` is 1748 columns against
+  1759.
+
 On the scaling corpus the only n = 250 alignments that cross the
 threshold are `--dpparttree` on PF00069 and PF00400 (the last 3 and 13
 merges). Both now match the in-tree C build on stdout: PF00069 is 11016

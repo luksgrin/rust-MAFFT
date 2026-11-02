@@ -438,7 +438,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 |-------|-------|------|
 | Rust lib tests (`--lib`, all crates)  | 261 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
 | `mafft-core/tests/end_to_end.rs`      | 126 (3 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
-| Rust FFI cross-validation (`cross_validate*.rs`, 16 files) | 87 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
+| Rust FFI cross-validation (`cross_validate*.rs`, 17 files) | 90 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `Falign_udpari_long`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
 | `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
 | `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`, `memsafety_regressions`, `thread_determinism`) | 90 (1 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
 | `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
@@ -509,14 +509,14 @@ Partly implemented options:
 | `--add --localpair` (L-INS-i add) | Not implemented. The new sequences are added by the progressive path without local-pair homology. |
 | `--groupsize N` | Accepted and ignored. The help text gives 150 as the default; C's `splittbfast` default is the number of sequences + 1. |
 | `--partsize N` | Not accepted. |
-| `--memsave` with FFT | The non-FFT merges use `MSalignmm` as in C, but FFT merges keep the full DP (`Falign_udpari_long` is not ported). The automatic switch to that path once a profile exceeds 30,000 columns in `disttbfast` / `tbfast` is not ported either, so `--nomemsave` only affects PartTree. |
+| `--6merpair` | Not accepted. In C it selects the 6-mer distance explicitly (`distance=ktuples`, `scripts/mafft:460-463`). |
+| `--maxiterate N --memsave` | The refinement does not follow `dvtditr -M`, and `dvtditr`'s own switch to `alg='M'` past 50,000 columns (`dvtditr.c:645`) is not ported. On `mtb_cds_first8`, `--maxiterate 2 --memsave` differs from C. |
+| `--nofft --memsave` | On `mtb_cds_120x1400` the width is 1748 against C's 1759: an `MSalignmm` profile merge differs. `--memsave` with FFT matches there. |
 
 Inputs from the memory-safety run (2026-10-31, [memory safety](docs/architecture/memory-safety.md)) where both sides succeed but the bytes differ:
 
 | Input | Difference |
 |-------|------------|
-| One 120 kb DNA sequence among others (`--nuc`) | A few gap moves. |
-| Long low-complexity DNA and DNA with a long homopolymer, under `--memsave` | Different alignment (`--memsave` sends FFT merges to `Falign_udpari_long`). Without `--memsave` both match C, including `--adjustdirection` / `--adjustdirectionaccurately`. |
 | Names longer than about 250 bytes | Intentional: C truncates the name, `mafft-rs` keeps all of it. The alignment is the same. |
 
 ## Performance
@@ -557,9 +557,9 @@ inputs (36-seq sample, 120 × 1.4 kb CDS, the five largest BAliBASE 3 sets),
 C's peak grows with the thread count; `mafft-rs`'s barely did (measured
 before #56, see below). Single-threaded, `mafft-rs` uses 1.4–2.3× C's
 memory on L-INS-i (BB40049, 62 × 778: 1,787 vs 906 MiB) and more on
-`--parttree` and on the CDS fixture; `--memsave` lowers C's figure, while
-`mafft-rs` keeps the full DP for FFT merges (C's `Falign_udpari_long` and
-the 30,000-column switch are not ported).
+`--parttree` and on the CDS fixture. These runs predate the port of
+`Falign_udpari_long` and the 30,000-column switch, so `--memsave` lowered
+only C's figure.
 
 Wall clock before #56, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.4):
 

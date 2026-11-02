@@ -27,7 +27,7 @@ pub use profile::{
     reset_dp_pools, reset_cpmx_memo,
 };
 pub use multimtx::MultiMtx;
-pub use fft_align::{fft_profile_align, fft_total_eff, find_fft_anchors, FftAlignParams, Anchor};
+pub use fft_align::{fft_profile_align, fft_total_eff, find_fft_anchors, FftAlignParams, Anchor, NucRows};
 pub use constraints::{
     build_local_homology_table, build_homology_table,
     build_homology_table_with_unalign, build_imp_diagonal, build_imp_matrix,
@@ -38,7 +38,7 @@ pub use constraints::{
 pub use constrained_align::{
     constrained_profile_align, partial_profile_align, ConstrainedAlignParams,
 };
-pub use msalign::msalignmm;
+pub use msalign::{msalignmm, msalignmm_with_boundary};
 
 /// Whether any forensic trace is requested through the environment
 /// (`RS_*`, `RDBG*`, `MAFFT_DEBUG*`, `MAFFT_DUMP*`, `RUST_MAFFT_TRACE`,
