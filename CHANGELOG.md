@@ -176,6 +176,17 @@ public surfaces stable from 0.1.0 anyway.
   sequences now match the in-tree build. `many_short_297_fftns2_byte_identical_to_c`
   (a 297-sequence cut) and `many_short_unequal_lenfac_distance_matches_c`
   guard it.
+- **FFT segment DP matches C when a cut falls next to gaps** (part of #41).
+  `Falign` passes the columns around each anchor cut to `A__align`, which
+  uses their nongap fractions as the segment's head and tail gap
+  frequencies (`Falign.c:1562-1578`, `Salignmm.c:1565-1568`); mafft-rs
+  used 1.0. And `new_FinalGapCount` counts a gap in the segment's last
+  column as closing whatever follows the cut (`mltaln9.c:12758`); mafft-rs
+  kept the full profile's count. Low-complexity DNA (poly-A, CA repeats)
+  put cuts inside gap runs: the `memsafety_gen.py` low-complexity set now
+  matches C under `--adjustdirection --nuc` and
+  `--adjustdirectionaccurately --nuc` (previously 7887 vs 7893 and 7758
+  vs 7698 columns), and `homopolymer_dna_matches_c` is no longer ignored.
 - **`--dpparttree` matches C after a profile passes 10,000 columns**
   (issue #45). `splittbfast` `pairalign` switches to `MSalignmm` when
   either profile is longer than 10000 columns, and stays there for the
