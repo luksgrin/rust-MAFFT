@@ -353,13 +353,15 @@ The original MAFFT uses a shell script wrapper that invokes multiple C binaries.
 ## Status
 
 **Production-ready.** `mafft-rs` produces byte-identical output to C MAFFT
-7.526 for every supported mode — all progressive and iterative strategies,
-scoring matrices, tree variants, `--add`, `--adjustdirection` and the
-auxiliary outputs — including **1930/1930** BBaliBase 3 alignments and the
-DNA and input-handling corpora. The full mode list, the parity matrix, the
-DNA / input-handling tables and the BBaliBase sweep are in
-[docs/architecture/byte-identity.md](docs/architecture/byte-identity.md#parity-status);
-what is not covered is under [Known limitations](#known-limitations).
+7.526 on the parity corpora for the supported modes — all progressive and
+iterative strategies, scoring matrices, tree variants, `--add`,
+`--adjustdirection` and the auxiliary outputs — including **1930/1930**
+BBaliBase 3 alignments and the DNA and input-handling corpora. The full
+mode list, the parity matrix, the DNA / input-handling tables and the
+BBaliBase sweep are in
+[docs/architecture/byte-identity.md](docs/architecture/byte-identity.md#parity-status).
+Every input and option known to give different bytes, or not to be
+implemented, is listed under [Known limitations](#known-limitations).
 
 The original MAFFT C code is included as a git submodule for testing and cross-validation.
 
@@ -420,7 +422,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 - **Three-way gap insertion** (`apply_c_insertnewgaps` in `mafft-core/src/progressive.rs`): full port of C `addfunctions.c::insertnewgaps` + `profilealignment` for the `--add` path, including profile-alignment-driven compression at adjacent new-merge-gap and common-gap restoration columns. Byte-identical to C on canonical and adversarial inputs.
 
-- **Platform-independent sort tie-break.** C MAFFT calls `qsort()` directly inside `splitseq_mq` to sort sequences by their distance to the pivot. `qsort` is part of the host C library — BSD on macOS, glibc on Linux, MSVC on Windows — and its three implementations disagree on the relative order of *truly tied* elements. That makes C MAFFT's `--parttree --reorder` output platform-dependent on inputs containing exactly-duplicate sequences. Rust ships a hand-written BSD-qsort algorithm (`mafft-tree/src/bsd_qsort.rs`, Bentley-McIlroy) and uses it everywhere `dcompare_sort` is called, so the `mafft-rs` binary produces the **same output on every platform it's built for**, matching macOS C MAFFT 7.526 byte-for-byte.
+- **PartTree follows the macOS C library.** C MAFFT's `splitseq_mq` sorts sequences by their distance to the pivot with the host `qsort()` and draws pivots with the host `rand()`, unseeded. Both belong to the host C library (BSD on macOS, glibc on Linux, MSVC on Windows): the `qsort` implementations order *truly tied* elements differently and the `rand()` sequences differ, so C MAFFT's `--parttree` / `--dpparttree` output can depend on the platform it was built on. `mafft-tree/src/bsd_qsort.rs` is an exact port of the macOS libc `qsort`, and `BsdRand` in `mafft-tree/src/parttree_splitseq.rs` reproduces the macOS `rand()` sequence, so on every platform `mafft-rs` makes the same sort and pivot choices as the macOS C build. On Linux it can therefore differ from a local glibc C build under `--parttree` / `--dpparttree`.
 
 - **Thread-local, flattened scratch buffers.** The hot inner DP loop (`profile_align_imp_multimtx` in `crates/mafft-align/src/profile.rs`) is specialised at codegen time via a `#[inline(always)] fn j_loop<const TW: bool, const STRICT: bool>` helper, dispatched from the i-loop with a 4-way match — LLVM strips the warp arithmetic from the FFT-NS-i path and replaces per-cell branches on `strict_part_tiebreak` with const choices. The `h` / `ijp` DP matrices are flat row-major `(n+1)×(m+1)` buffers and the sparse column profiles are one flat entry list plus an offsets table, all drawn from thread-local pools (matching C `A__align`'s static-TLS buffer strategy); `L__align11` uses a pooled `LocalScratch` the same way. This layout change (1.08–1.21× on Apple Silicon, see [Performance](#performance)) keeps every multiply-add on `fp::fmadd` with unchanged operand order, so output bytes are unaffected.
 
@@ -430,15 +432,15 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 ### Test suite
 
-**537 Rust tests pass + 7 ignored across 48 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, 2026-09-06):
+**582 Rust tests pass + 9 ignored across 53 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, macOS arm64, 2026-11-01):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust lib tests (`--lib`, all crates)  | 248 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
-| `mafft-core/tests/end_to_end.rs`      | 120 (2 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
-| Rust FFI cross-validation (`cross_validate*.rs`, 15 files) | 82 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
+| Rust lib tests (`--lib`, all crates)  | 261 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
+| `mafft-core/tests/end_to_end.rs`      | 126 (3 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
+| Rust FFI cross-validation (`cross_validate*.rs`, 16 files) | 87 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
 | `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
-| `mafft-bin/tests/` (`input_handling_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`) | 64 (1 ignored) | CLI-level byte-identity: the 22-file input corpus, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), and the `--add` / `--addfragments` variant fixtures. The remaining ignore is the trailing-X `--add` tie |
+| `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`, `memsafety_regressions`, `thread_determinism`) | 81 (2 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
 | `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
 | Python tests                          | 160 | API (32), parity/shape (23), **CLI-option parity against the `mafft-rs` binary** (82), Biopython interop (18), console script (5) |
 
@@ -450,11 +452,11 @@ Regression guards for C parity live in:
 
 Any regression in DP indexing, boundary handling, FFT anchor placement, refinement-tree distance, profile blending, `--add` profilealignment, the input read path or the `--thread` refinement rules fails at least one of them.
 
-7 tests are `#[ignore]`-gated: six deliberate diagnostic / bisection tools (annotated at the call site) and the one documented input-handling residual below.
+9 tests are `#[ignore]`-gated: four FFI diagnostic / bisection tools (annotated at the call site), the Q-INS-i and X-INS-i end-to-end tests (they need external binaries), the minutes-long `--dpparttree` n = 250 check against the in-tree C build, and the two documented residuals below (the trailing-X `--add` tie and the homopolymer FFT case).
 
 ## Known limitations
 
-These categories cover the modes where `mafft-rs` does not currently produce byte-identical output to C MAFFT 7.526. Default `--addfragments` matches C (section D); `--addfragments --localpair` is not a reference.
+These sections list every mode, option and input where `mafft-rs` is known not to produce byte-identical output to C MAFFT 7.526, or does not implement an option. Default `--addfragments` matches C (section D); `--addfragments --localpair` is not a reference.
 
 A zero byte in the input is not one of these limitations. C stops the sequence at it and drops every residue after it in that record, including later lines (`AC\0DE` becomes `AC`). `mafft-rs` drops only that byte and aligns what follows (`ACDE`), and it keeps a zero byte in a name, where C cuts the name at that byte. A normal FASTA file has no zero byte, so the two programs still match on real input. Details are in [Memory safety](docs/architecture/memory-safety.md).
 
@@ -470,7 +472,7 @@ These modes are wired correctly but require third-party binaries not shipped by 
 
 ### B. Intentional residuals (tied-trace)
 
-Two configurations are known to produce a tied-trace divergence from C MAFFT — same alignment width, a residue placed at a neighbouring column due to a DP tie-break on a zero-scoring cell. The alignments are not equal in score: because the tied cell shifts a residue, the unweighted sum-of-pairs score that `--scoreout` reports differs slightly (0.06 % in the first case). No realistic workflow hits either:
+Two configurations in the parity corpora are known to produce a tied-trace divergence from C MAFFT — same alignment width, a residue placed at a neighbouring column due to a DP tie-break on a zero-scoring cell. The alignments are not equal in score: because the tied cell shifts a residue, the unweighted sum-of-pairs score that `--scoreout` reports differs slightly (0.06 % in the first case). No realistic workflow hits either:
 
 | Configuration | Effect |
 |---------------|--------|
@@ -496,6 +498,27 @@ These modes are intentionally not implemented. `mafft-rs` either rejects the fla
 ### D. `--addfragments --localpair` is not a reference (issue #50)
 
 `--add`, `--add --keeplength`, `--add --reorder`, `--add --maxiterate`, `--compactmapout` (alignment and added-sequence names), `--addfragments` and `--addfragments --keeplength` match the in-tree C build on the 30 + 6 sample and on the #40 reproducer. Default `--addfragments` is `addsingle` on the script's `distance=multi` branch (`scripts/mafft:2628`): `dndpre -M 2` among the existing rows, `pairlocalalign -Y` for fragment distances and local homology, then one constrained merge (`-l 2.7`). `--keeplength` is `-Y`. On the 30 + 6 fixture the widths are 871 and 595. `--addfragments --localpair` is not pinned: C reads off the end of a buffer on some of those inputs (see [memory safety](docs/architecture/memory-safety.md)). The large-input 6-mer `addsingle -W` fallback is a different branch and is not what these fixtures exercise.
+
+### E. Other known differences
+
+Partly implemented options:
+
+| Option | Status |
+|--------|--------|
+| `--add` (guide tree) | C runs two guide-tree cycles (`disttbfast -E 2`); `mafft-rs` drives the merge with the first (k-tuple) tree and uses the second only for `--reorder`. The pinned fixtures match; other inputs can differ. |
+| `--add --localpair` (L-INS-i add) | Not implemented. The new sequences are added by the progressive path without local-pair homology. |
+| `--groupsize N` | Accepted and ignored. The help text gives 150 as the default; C's `splittbfast` default is the number of sequences + 1. |
+| `--partsize N` | Not accepted. |
+| `--memsave` with FFT | The non-FFT merges use `MSalignmm` as in C, but FFT merges keep the full DP (`Falign_udpari_long` is not ported). The automatic switch to that path once a profile exceeds 30,000 columns in `disttbfast` / `tbfast` is not ported either, so `--nomemsave` only affects PartTree. |
+
+Inputs from the memory-safety run (2026-10-31, [memory safety](docs/architecture/memory-safety.md)) where both sides succeed but the bytes differ:
+
+| Input | Difference |
+|-------|------------|
+| One 120 kb DNA sequence among others (`--nuc`) | A few gap moves. |
+| Long low-complexity DNA under `--adjustdirection` / `--adjustdirectionaccurately` | Different alignment. |
+| DNA with a long homopolymer (e.g. 300 × `A` + 300 nt) under FFT-NS-1/2/i | Every residue kept, but gap placement inside the run differs (608 vs 600 columns). |
+| Names longer than about 250 bytes | Intentional: C truncates the name, `mafft-rs` keeps all of it. The alignment is the same. |
 
 ## Performance
 
@@ -532,12 +555,14 @@ inputs (36-seq sample, 120 × 1.4 kb CDS, the five largest BAliBASE 3 sets),
 | L-INS-i | 0.51 | 1.25 | 2.34 |
 | `--parttree` | 0.57 | 0.56 | 0.55 |
 
-C's peak grows with the thread count; `mafft-rs`'s barely does. Single-threaded,
-`mafft-rs` uses about twice C's memory on L-INS-i (BB40049, 62 × 778: 1,787 vs
-906 MiB) and more on `--parttree` and on the CDS fixture; `--memsave` lowers
-C's figure, while `mafft-rs` has no Hirschberg DP yet.
+C's peak grows with the thread count; `mafft-rs`'s barely did (measured
+before #56, see below). Single-threaded, `mafft-rs` uses 1.4–2.3× C's
+memory on L-INS-i (BB40049, 62 × 778: 1,787 vs 906 MiB) and more on
+`--parttree` and on the CDS fixture; `--memsave` lowers C's figure, while
+`mafft-rs` keeps the full DP for FFT merges (C's `Falign_udpari_long` and
+the 30,000-column switch are not ported).
 
-Wall clock, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.4):
+Wall clock before #56, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.4):
 
 | Input | Mode | C t1 | C t8 | `mafft-rs` t1 | `mafft-rs` t8 |
 |-------|------|-----:|-----:|--------------:|--------------:|
@@ -548,23 +573,32 @@ Wall clock, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.
 
 `mafft-rs` output is byte-identical at every thread count (and equal to C
 `--thread 1`) on every run, including all 76 BAliBASE RV11 sets at
-`--thread 1/4/8`; C's `--thread N ≥ 2` output varied between runs. The
-price: `mafft-rs` parallelises the distance and all-pairs stages but runs
-the iterative refinement on one thread, so `--thread 8` gains at most
-1.5× on these inputs where C gains 1.6–3.8× (tracked in
-[#48](https://github.com/luksgrin/rust-MAFFT/issues/48)). The `--thread 8`
-memory ratios therefore compare 8 C workers with a mostly single-threaded
-`mafft-rs`; `--thread 1` is the like-for-like column. From Python, `pymafft.align(threads=8)` gains
-1.05–1.53× over `threads=1` (all results equal to the CLI at `--thread 1`),
-and two concurrent calls in two Python threads take as long as one
-(GIL released); details in
+`--thread 1/4/8`; C's `--thread N ≥ 2` output varied between runs.
+
+The memory ratios and the wall-clock table above were measured before
+[#56](https://github.com/luksgrin/rust-MAFFT/pull/56), when `mafft-rs`
+ran the iterative refinement on one thread, so its `--thread 8` gained at
+most 1.5× there and the `--thread 8` memory column compares 8 C workers
+with a mostly single-threaded `mafft-rs`; `--thread 1` is the
+like-for-like column. Since #56, `--thread N` also runs the progressive
+merges of independent subtrees, the FFT-NS-i refinement segments and
+speculatively scored refinement branches on the pool, with output still
+byte-identical at every thread count. Single runs on the same machine
+(not medians; load about 2–6): BB30005 FFT-NS-i 7.5 → 2.8 s, L-INS-i
+15.0 → 5.7 s, G-INS-i 17.4 → 5.6 s, and the CDS fixture under L-INS-i
+50.3 → 12.2 s at `--thread 1` → `8`. Idle-machine medians, and the
+memory figures after #56, are pending (tracked in
+[#48](https://github.com/luksgrin/rust-MAFFT/issues/48)). From Python,
+`pymafft.align(threads=N)` uses the same code path and its results equal
+the CLI at `--thread 1`; two concurrent calls in two Python threads take
+as long as one (GIL released); details in
 [the Python API docs](docs/python-api/index.md#multi-threading-from-python).
 
 ## Building from source
 
 ### Prerequisites
 
-- Rust 1.80+ (edition 2024)
+- Rust 1.85+ (edition 2024)
 - Git (for submodule checkout)
 - GCC/Clang (only needed to build the C reference for FFI cross-validation tests; checked in CI with GCC 13–15 on Linux and Apple clang on macOS)
 - Python 3 with the standard `venv` module and `pip` (only for the Python bindings)
@@ -636,7 +670,7 @@ It needs:
   dependencies already built, longer from a cold build.
 
 ```bash
-# Whole workspace: 48 suites, 537 tests pass, 7 ignored diagnostics
+# Whole workspace: 53 suites, 582 tests pass, 9 ignored
 cargo test --workspace --exclude pymafft --release
 
 # Just unit tests (faster; no FFI or fixture suites, but the first build
@@ -652,8 +686,9 @@ make -C mafft-upstream/core
 # On Apple this runs the suite under the gcc/MSVC policy (`.nofma` fixtures).
 # On Linux and Windows the default is already that policy; pass
 # `--features fp-contract-fma` to test the Apple-clang policy (`.fma`).
-# FFI tests that compare against the in-tree C build skip when the
-# policies do not match.
+# Of the FFI tests, only cross_validate_bl50_fft.rs checks CONTRACTS_FMA
+# and skips when the policies do not match; cross_validate_cpmx.rs builds
+# its reference with fp::fmadd, so it follows the build's policy.
 cargo test --workspace --exclude pymafft --release --features fp-contract-none
 ```
 
@@ -712,7 +747,7 @@ policy was his finding too.
 
 If you use rust-MAFFT in published work, **you must cite the original
 MAFFT paper.** The rust-MAFFT manuscript (in preparation for
-*Bioinformatics*) should be cited additionally once published — but
+*Bioinformatics Advances*) should be cited additionally once published — but
 the algorithmic foundation always remains the Katoh et al. work, and
 that citation never goes away.
 

@@ -167,12 +167,15 @@ cores), so calls with different `threads` values do not interfere. The
 result is byte-identical at every thread count and equal to
 `mafft-rs --thread 1` (and C MAFFT `--thread 1`); C MAFFT's own
 `--thread N ≥ 2` output varies between runs. The parallel stages are the
-distance matrices and the all-pairs pairwise alignments of
-`linsi` / `ginsi` / `einsi`; the iterative refinement runs on one thread
-to keep the output independent of N, so the gain is modest (up to ~1.5×
-at 8 threads in the measurements below) and `fftnsi` barely speeds up.
-Making `threads=N` scale like C's `--thread N` is tracked in
-[#48](https://github.com/luksgrin/rust-MAFFT/issues/48).
+distance matrices, the all-pairs pairwise alignments of
+`linsi` / `ginsi` / `einsi`, the progressive merges of independent
+guide-tree subtrees, the FFT-NS-i refinement segments, and refinement
+branches, which are scored in parallel and applied in the `threads=1`
+order so the output does not depend on N. The refinement and merge
+stages became parallel in
+[#56](https://github.com/luksgrin/rust-MAFFT/pull/56), after the
+measurements below; timings for the current code are pending
+([#48](https://github.com/luksgrin/rust-MAFFT/issues/48)).
 
 ```python
 result = pymafft.align(records, strategy="linsi", threads=4)
@@ -195,7 +198,8 @@ with ThreadPoolExecutor(max_workers=8) as pool:
     ))
 ```
 
-Measured with `benchmarks/pymafft_threads.py` (Apple M4, 10 cores,
+Measured with `benchmarks/pymafft_threads.py` before #56, when the
+iterative refinement ran on one thread (Apple M4, 10 cores,
 2026-11-01, `maxiterate=1000`, median of 3 runs, other jobs sharing the
 machine; see [`benchmarks/README.md`](https://github.com/luksgrin/rust-MAFFT/blob/main/benchmarks/README.md)
 and `PROFILING.md`). Every one of the 90 results equalled the
@@ -210,11 +214,11 @@ and `PROFILING.md`). Every one of the 90 results equalled the
 | 113 × 491 | `linsi` | 27.38 s | 23.57 s | 1.16× |
 | 113 × 491 | `ginsi` | 33.15 s | 25.63 s | 1.29× |
 
-`threads=10` is no faster than 8. Two `fftnsi` calls on BB30005 with
+In that build `threads=10` was no faster than 8. Two `fftnsi` calls on BB30005 with
 `threads=1`, started together in two Python threads, finished in 7.53 s
 against 7.37 s for one call alone (1.02×, where 2.0× would mean the GIL
-serialised them), so for many independent alignments a thread pool is
-currently the way to use the cores.
+serialised them), so a thread pool of `threads=1` calls uses the cores
+for many independent alignments.
 
 ## Input shapes
 

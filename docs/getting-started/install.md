@@ -159,7 +159,7 @@ cargo build --release -p mafft-rs --features fp-contract-fma
 ```
 
 The full test suite (`cargo test --workspace --exclude pymafft --release`,
-537 tests + 7 ignored) compiles the C reference with the host C compiler
+582 tests + 9 ignored) compiles the C reference with the host C compiler
 (GCC 13–15 and Apple clang are checked in CI) and takes minutes; see
 [Reproduce the cross-validation suite](../contributing/index.md#reproduce-the-cross-validation-suite).
 

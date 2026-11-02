@@ -150,9 +150,9 @@ it without changing the output C produces on inputs where C is well
 defined.
 
 rust-MAFFT does not knowingly carry behaviour differences from its
-pinned upstream. The divergences that exist are listed in the README's
-[Known limitations](https://github.com/luksgrin/rust-MAFFT#known-limitations),
-and no other is known (2026-09-06):
+pinned upstream. The known divergences are listed in the README's
+[Known limitations](https://github.com/luksgrin/rust-MAFFT#known-limitations);
+in summary:
 
 - **Two tied-trace residuals**
   ([B](https://github.com/luksgrin/rust-MAFFT#b-intentional-residuals-tied-trace)).
@@ -181,6 +181,14 @@ and no other is known (2026-09-06):
   own "temporarily unavailable, 2018/Dec." exit. Not implementing an
   upstream mode is a gap, not a different behaviour: it never makes a
   supported command line produce different output.
+- **Other known differences**
+  ([E](https://github.com/luksgrin/rust-MAFFT#e-other-known-differences)).
+  `--add` runs one guide-tree cycle where C runs two, `--add --localpair`
+  is not implemented, `--groupsize` is ignored, `--partsize` is not
+  accepted, and `--memsave` does not change the FFT merges. A few inputs
+  outside the parity corpora (a 120 kb sequence, low-complexity and
+  homopolymer DNA) give different bytes. These are gaps in the port, carried until fixed.
+  Keeping long names whole where C truncates them is intentional.
 
 The floating-point contraction policy is not a residual. C MAFFT 7.526
 gives different bytes on arm64 clang and x86-64 gcc; rust-MAFFT mirrors

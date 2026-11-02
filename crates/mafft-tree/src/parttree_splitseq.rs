@@ -22,7 +22,9 @@
 //! pass (`--parttree` CALL 2+) and the `-U` DP pass (`--dpparttree`).
 //!
 //! Pivot selection consumes the C library `rand()` (via `rnd()`,
-//! `mltaln.h:56`) once `nin > picksize`. `splittbfast` never seeds it, so
+//! `mltaln.h:56`) on every candidate draw after the first, i.e. whenever
+//! `nkouho > 1` when the draw loop starts (`splittbfast.c:1517-1530`), not
+//! only for large `nin`. `splittbfast` never seeds it, so
 //! each call starts from seed 1. [`BsdRand`] reproduces the macOS / FreeBSD
 //! `rand()` sequence, the same platform pinning as the BSD `qsort` port
 //! used for `dcompare`.

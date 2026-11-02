@@ -505,18 +505,17 @@ struct Args {
     seedtable: Option<PathBuf>,
 
     /// Memory-saving mode (matches C MAFFT `--memsave` →
-    /// `tbfast -M -B`, `scripts/mafft:543-544`). In C, this routes the
-    /// profile DP through `MSalignmm` (Hirschberg-style linear-space
-    /// divide-and-conquer) for the group merge, avoiding the O(N×M)
-    /// allocation. For sequences that fit in memory (≤ 30000 residues)
-    /// the alignment is byte-identical to default-mode output — C's
-    /// auto-switch at `len > 30000` (`tbfast.c:1096`) makes the two
-    /// paths converge for typical inputs. Our engine uses full-memory
-    /// DP regardless; the flag is accepted (for CLI parity) and
-    /// validated against the same script-level gating as C. NOTE: the
-    /// actual Hirschberg DP is not yet ported — long sequences that
-    /// would auto-trigger C's memsave path may OOM here. Tracked in
-    /// TODO §B.3.
+    /// `tbfast -M -B`, `scripts/mafft:543-544`). In C this sets
+    /// `alg='M'`: non-FFT profile merges use `MSalignmm`
+    /// (Hirschberg-style linear-space DP) and FFT merges use
+    /// `Falign_udpari_long`. Here the non-FFT progressive merges go
+    /// through the ported `MSalignmm`; FFT merges keep the full-memory
+    /// DP, because `Falign_udpari_long` is not ported. C's automatic
+    /// switch to `alg='M'` once a profile exceeds 30,000 columns in
+    /// `disttbfast` / `tbfast` (`tbfast.c:1096`) is not ported either,
+    /// so very long inputs that C would align in linear space may run
+    /// out of memory here. The flag is validated against the same
+    /// script-level gating as C.
     #[arg(long)]
     memsave: bool,
 
@@ -524,6 +523,8 @@ struct Args {
     /// (matches C MAFFT `--nomemsave` → `splittbfast -N` /
     /// `tbfast -N`, `scripts/mafft:545-546`). Sets `nevermemsave`, so
     /// PartTree keeps `A__align` after a profile passes 10_000 columns.
+    /// The 30,000-column switch of `disttbfast` / `tbfast` is not
+    /// ported, so outside PartTree the flag has no effect.
     #[arg(long)]
     nomemsave: bool,
 
@@ -2136,20 +2137,6 @@ fn c_seed_name(name: &SeqName) -> String {
     format!("={}", String::from_utf8_lossy(name.as_bytes()))
 }
 
-/// C `seqcheck` (`mltaln9.c:60-85`): the first character of any sequence
-/// with `amino_n[c] == -1` aborts with `Illegal character c`, exit 1.
-/// Which residues are legal is decided by [`mafft_io::find_illegal_residue`]
-/// (C's `locaminod` / `locaminon` alphabets from `mafft_scoring`); this
-/// function only formats the failure. It is called from
-/// [`align_prepared`], so the file path and [`run_from_seqs`] apply the
-/// identical rule. Case has already been folded by the reader /
-/// [`prepare_in_memory`], as in C (`io.c:1462-1467`), so
-/// `dorp`-dependent legality (e.g. nucleotide `O` → `o` → illegal) falls
-/// out the same way.
-///
-/// C's banner goes through `reporterr`, which `--quiet` silences; the
-/// one-line `Illegal character` message is kept even then so a failing
-/// exit status is never mute.
 /// `--add` / `--addfragments`: the existing sequences must already be an
 /// alignment (all rows the same length). C checks this in
 /// `disttbfast.c:4147-4160` and `addsingle.c:3217-3228` with the message
@@ -2201,6 +2188,20 @@ fn check_output_alphabet(msa: &MultipleAlignment) -> Result<(), MafftError> {
     Ok(())
 }
 
+/// C `seqcheck` (`mltaln9.c:60-85`): the first character of any sequence
+/// with `amino_n[c] == -1` aborts with `Illegal character c`, exit 1.
+/// Which residues are legal is decided by [`mafft_io::find_illegal_residue`]
+/// (C's `locaminod` / `locaminon` alphabets from `mafft_scoring`); this
+/// function only formats the failure. It is called from
+/// [`align_prepared`], so the file path and [`run_from_seqs`] apply the
+/// identical rule. Case has already been folded by the reader /
+/// [`prepare_in_memory`], as in C (`io.c:1462-1467`), so
+/// `dorp`-dependent legality (e.g. nucleotide `O` → `o` → illegal) falls
+/// out the same way.
+///
+/// C's banner goes through `reporterr`, which `--quiet` silences; the
+/// one-line `Illegal character` message is kept even then so a failing
+/// exit status is never mute.
 fn seqcheck(set: &SequenceSet, quiet: bool) -> Result<(), MafftError> {
     let Some(bad) = mafft_io::find_illegal_residue(set) else {
         return Ok(());
