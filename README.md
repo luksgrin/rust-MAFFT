@@ -432,15 +432,15 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 ### Test suite
 
-**582 Rust tests pass + 9 ignored across 53 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, macOS arm64, 2026-11-01):
+**618 Rust tests pass + 10 ignored across 55 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, macOS arm64, 2026-11-02):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust lib tests (`--lib`, all crates)  | 261 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
-| `mafft-core/tests/end_to_end.rs`      | 126 (3 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
+| Rust lib tests (`--lib`, all crates)  | 267 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
+| `mafft-core/tests/end_to_end.rs`      | 128 (4 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
 | Rust FFI cross-validation (`cross_validate*.rs`, 17 files) | 90 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `Falign_udpari_long`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
 | `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
-| `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`, `memsafety_regressions`, `thread_determinism`) | 90 (1 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
+| `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`, `add_followups_vs_c`, `memsafety_regressions`, `thread_determinism`) | 107 (2 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
 | `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
 | Python tests                          | 160 | API (32), parity/shape (23), **CLI-option parity against the `mafft-rs` binary** (82), Biopython interop (18), console script (5) |
 
@@ -452,7 +452,7 @@ Regression guards for C parity live in:
 
 Any regression in DP indexing, boundary handling, FFT anchor placement, refinement-tree distance, profile blending, `--add` profilealignment, the input read path or the `--thread` refinement rules fails at least one of them.
 
-8 tests are `#[ignore]`-gated: four FFI diagnostic / bisection tools (annotated at the call site), the Q-INS-i and X-INS-i end-to-end tests (they need external binaries), the minutes-long `--dpparttree` n = 250 check against the in-tree C build, and the documented residual below (the trailing-X `--add` tie).
+10 tests are `#[ignore]`-gated: four FFI diagnostic / bisection tools (annotated at the call site), the Q-INS-i and X-INS-i end-to-end tests (they need external binaries), three minutes-long checks against the in-tree C build (`--dpparttree` at n = 250, the 3000 × 30 aa set, the 120 kb sequence), and the documented residual below (the trailing-X `--add` tie).
 
 ## Known limitations
 
@@ -671,7 +671,7 @@ It needs:
   dependencies already built, longer from a cold build.
 
 ```bash
-# Whole workspace: 53 suites, 582 tests pass, 9 ignored
+# Whole workspace: 55 suites, 618 tests pass, 10 ignored
 cargo test --workspace --exclude pymafft --release
 
 # Just unit tests (faster; no FFI or fixture suites, but the first build
@@ -687,9 +687,11 @@ make -C mafft-upstream/core
 # On Apple this runs the suite under the gcc/MSVC policy (`.nofma` fixtures).
 # On Linux and Windows the default is already that policy; pass
 # `--features fp-contract-fma` to test the Apple-clang policy (`.fma`).
-# Of the FFI tests, only cross_validate_bl50_fft.rs checks CONTRACTS_FMA
-# and skips when the policies do not match; cross_validate_cpmx.rs builds
-# its reference with fp::fmadd, so it follows the build's policy.
+# The bit-for-bit FFI tests in cross_validate_bl50_fft.rs,
+# cross_validate_fft.rs and cross_validate_falign_dna.rs ask the C shim
+# whether it fuses (mafft_sys::c_contracts_fma) and skip when that differs
+# from the Rust build; cross_validate_cpmx.rs builds its reference with
+# fp::fmadd, so it follows the build's policy.
 cargo test --workspace --exclude pymafft --release --features fp-contract-none
 ```
 

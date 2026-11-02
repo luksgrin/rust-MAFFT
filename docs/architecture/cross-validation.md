@@ -24,7 +24,7 @@ The bindings are dev-deps of `mafft-scoring`, `mafft-tree`, `mafft-core`
 
 ## What gets compared
 
-87 FFI test functions across 16 files (counted from `#[test]`
+90 FFI test functions across 17 files (counted from `#[test]`
 attributes in `crates/*/tests/cross_validate*.rs`; 4 of them are
 `#[ignore]`d bisection tools):
 
@@ -36,7 +36,7 @@ attributes in `crates/*/tests/cross_validate*.rs`; 4 of them are
 | Column profiles | `mafft-core/tests/cross_validate_cpmx.rs` (3), `cross_validate_profile.rs` (4) | `cpmx` column profile matrices, inter-group scores, unnormalised / unequal weights |
 | Pairwise & constrained DP | `mafft-core/tests/cross_validate_constrained_align.rs` (12) | `G__align11` (incl. warp variants), `genL__align11` (E-INS-i params), constraint-mode `A__align` with gaps and multi-member groups |
 | Profile DP | `mafft-core/tests/cross_validate_profile_align.rs` (5), `cross_validate_msalign.rs` (12) | `A__align` with `imp` matrix / non-zero `penalty_ex` / shifted matrices, `MSalignmm` recursion, base case, free tail, asymmetric lengths, gappy groups, the PF00069 pair at the PartTree 10,000-column switch |
-| FFT | `mafft-core/tests/cross_validate_fft.rs` (3), `cross_validate_bl50_fft.rs` (2), `cross_validate_falign_dna.rs` (2) | Hand-ported Cooley-Tukey vs C `fft.c` (incl. bit-for-bit on a long input); alignable-region detection and step-24 profile DP on the `--bl 50` sentinel; nucleotide correlation (`calcNaiseki` read back in `Falign`'s order) bit for bit and every merge of the `dna_01715` cluster replayed through C's `Falign` |
+| FFT | `mafft-core/tests/cross_validate_fft.rs` (3), `cross_validate_bl50_fft.rs` (2), `cross_validate_falign_dna.rs` (2), `cross_validate_falign_udpari_long.rs` (3) | Hand-ported Cooley-Tukey vs C `fft.c` (incl. bit-for-bit on a long input); alignable-region detection and step-24 profile DP on the `--bl 50` sentinel; nucleotide correlation (`calcNaiseki` read back in `Falign`'s order) bit for bit and every merge of the `dna_01715` cluster replayed through C's `Falign`; `Falign_udpari_long` (the path past 30,000 columns and under `--memsave`) against the port |
 | Refinement | `mafft-core/tests/cross_validate_counteff.rs` (2), `cross_validate_bb20027_dp.rs` (2), `cross_validate_refine_branch_dna.rs` (1) | Pass-1 widths and `counteff` weights on BB20027, segment-10 DNA refinement profile DP |
 | `--add` machinery | `mafft-core/tests/cross_validate_insertnewgaps.rs` (1) | New-merge-gap insertion, `profilealignment` compression cell-by-cell |
 
@@ -44,18 +44,19 @@ Three further `mafft-core` test binaries also link the C shim but are
 forensic rather than parity tests: `trace_refinement.rs` (15),
 `exp_residual_dump_compare.rs` (1) and `exp_residual_step10.rs` (1).
 
-Together that is 104 test functions linking the C shim.
+Together that is 107 test functions linking the C shim.
 
 The fixture-based end-to-end tests do **not** use the FFI; they compare
 against committed C-canonical outputs generated from the in-tree
-reference build: `mafft-core/tests/end_to_end.rs` (126),
-`mafft-bin/tests/c_parity_dna.rs` (11: the panaroo DNA clusters, the
+reference build: `mafft-core/tests/end_to_end.rs` (128),
+`mafft-bin/tests/c_parity_dna.rs` (15: the panaroo DNA clusters, the
 120 × 1.4 kb CDS under `--retree 2 --maxiterate 2` and `--thread 1`, the
-8-sequence trailing-anchor case), `mafft-bin/tests/input_handling_vs_c.rs`
+8-sequence trailing-anchor case, the 30,000-column and `--memsave`
+long-sequence cases), `mafft-bin/tests/input_handling_vs_c.rs`
 (25: the 22-file read-path corpus incl. C's exit-1 cases),
 `mafft-bin/tests/inmemory_parity.rs` (23: `run_from_seqs` vs `run_from`)
 and the `imp` matrix tests in `mafft-align/tests/` (3). The whole
-workspace is 582 passing tests + 9 ignored across 53 suites (2026-11-01).
+workspace is 618 passing tests + 10 ignored across 55 suites (2026-11-02).
 
 ## Platform-relative comparison
 

@@ -48,6 +48,7 @@ fn main() {
     source_paths.push(wrappers_dir.join("parttree_helpers.c"));
     source_paths.push(wrappers_dir.join("msalignmm_instr.c"));
     source_paths.push(wrappers_dir.join("blend_helpers.c"));
+    source_paths.push(wrappers_dir.join("fp_probe.c"));
 
     let mut build = cc::Build::new();
     build

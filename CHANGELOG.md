@@ -125,6 +125,14 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **Bit-for-bit FFI tests skip only when the C and Rust policies differ.**
+  The C shim now reports whether it fuses `a*b+c`
+  (`mafft_sys::c_contracts_fma`, `wrappers/fp_probe.c`, built with the same
+  flags as the MAFFT sources). `bl50_step24_profile_dp_matches_c_a_align`
+  used to skip on every unfused build, so it never ran on Linux, and
+  `fft_port_matches_c_bitwise_long` and `soukan_matches_c_bitwise` failed
+  under `--features fp-contract-none` on Apple Silicon. All three now run
+  when the policies agree and skip with a message when they do not.
 - **The low-complexity `--adjustdirection` fixtures are per FP policy.**
   The C alignment of that set differs between a contracting and a
   non-contracting build, so the expected outputs are now committed as

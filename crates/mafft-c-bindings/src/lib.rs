@@ -141,11 +141,38 @@ pub const FFT_WINSIZE_D: c_int = 100;
 pub const MAXITERATION: c_int = 500;
 pub const NOTSPECIFIED: c_int = 100_009;
 
+/// `true` when the linked C library contracts `a*b + c` into a fused
+/// multiply-add (Apple clang on arm64), `false` when it rounds twice (gcc
+/// `-std=c99`, MSVC, Apple clang on x86-64). FFI tests that compare
+/// floating-point results bit for bit skip when this differs from
+/// `mafft_types::fp::CONTRACTS_FMA`.
+pub fn c_contracts_fma() -> bool {
+    // SAFETY: a pure function with no arguments and no global state.
+    unsafe { mafft_c_contracts_fma() != 0 }
+}
+
+/// `Some(reason)` when the C library and this Rust build use different
+/// contraction policies, so a bit-for-bit comparison would be meaningless.
+pub fn fp_policy_mismatch(rust_contracts_fma: bool) -> Option<String> {
+    let c = c_contracts_fma();
+    (c != rust_contracts_fma).then(|| {
+        format!(
+            "skipped: the linked C build {} a*b+c but this Rust build {} (see mafft_types::fp)",
+            if c { "fuses" } else { "does not fuse" },
+            if rust_contracts_fma { "fuses" } else { "does not fuse" },
+        )
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Extern C functions
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    // -- Build properties --
+    /// `wrappers/fp_probe.c`: non-zero when this C build fuses `a*b + c`.
+    pub fn mafft_c_contracts_fma() -> c_int;
+
     // -- Initialization & globals --
     pub fn constants(nseq: c_int, seq: *mut *mut c_char);
     pub fn freeconstants();

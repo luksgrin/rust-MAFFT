@@ -116,8 +116,14 @@ fn rust_kouho(soukan: &[f64]) -> Vec<i32> {
     mafft_fft::get_top_candidates(soukan, 20).into_iter().map(|c| c.lag).collect()
 }
 
+/// Skipped when the C build and this Rust build use different contraction
+/// policies (`calcNaiseki` and `make_sintbl` are contracted on arm64 clang).
 #[test]
 fn soukan_matches_c_bitwise() {
+    if let Some(reason) = mafft_sys::fp_policy_mismatch(mafft_types::fp::CONTRACTS_FMA) {
+        eprintln!("{reason}");
+        return;
+    }
     let _g = C_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let seqs = load_input();
     for i in 0..seqs.len() {
