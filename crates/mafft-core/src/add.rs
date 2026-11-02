@@ -24,7 +24,25 @@ use mafft_types::{LocalHomologyTable, ScoringContext};
 
 use crate::progressive::{MergeOrAlign, MultipleAlignment};
 
-/// Add new sequences to an existing alignment.
+/// `--add` settings that come from the wrapper rather than the inputs.
+#[derive(Clone, Copy, Debug)]
+pub struct AddOptions {
+    /// Guide-tree cycles (`disttbfast -E`, the script's `cycle`, i.e.
+    /// `--retree`). C clamps the value to 1..=3; the default is 2.
+    pub cycles: usize,
+    /// Linkage of the UPGMA guide trees (`$treealg`, `-X 0.1` by
+    /// default).
+    pub cluster: ClusterMethod,
+}
+
+impl Default for AddOptions {
+    fn default() -> Self {
+        Self { cycles: 2, cluster: ClusterMethod::default() }
+    }
+}
+
+/// Add new sequences to an existing alignment, with the C defaults
+/// ([`AddOptions::default`]).
 ///
 /// `existing` is the already-aligned MSA (with gaps).
 /// `new_sequences` are the unaligned sequences to add.
@@ -40,34 +58,57 @@ pub fn add_sequences(
     scoring: &ScoringContext,
     use_fft: bool,
 ) -> MultipleAlignment {
+    add_sequences_with(existing, new_sequences, new_names, scoring, use_fft, &AddOptions::default()).0
+}
+
+/// [`add_sequences`] with explicit [`AddOptions`]. Also returns the guide
+/// tree of the last cycle, the one C writes to the `order` file
+/// (`disttbfast.c:4061-4085`), when one was built.
+///
+/// Mirrors the `iguidetree` loop of `disttbfast` (`disttbfast.c:3934`).
+/// Cycle 1 uses 6-mer distances on the gap-stripped sequences. Each later
+/// cycle builds its tree from the previous cycle's alignment
+/// (`msadistmtxthread`, `disttbfast.c:4618-4693`, self-scores from
+/// `naivepairscore11`, `:4453`) and realigns from the same starting rows:
+/// the added sequences gap-free again (`gappick0`, `:4320`) and the
+/// existing rows with their common gaps removed (`commongappick`,
+/// `:4324`). `mergeoralign` and the sequence weights (`counteff`, `:4115`)
+/// follow the new tree.
+pub fn add_sequences_with(
+    existing: &MultipleAlignment,
+    new_sequences: &[Vec<u8>],
+    new_names: &[mafft_types::SeqName],
+    scoring: &ScoringContext,
+    use_fft: bool,
+    opts: &AddOptions,
+) -> (MultipleAlignment, Option<Topology>) {
     if new_sequences.is_empty() {
-        return existing.clone();
+        return (existing.clone(), None);
     }
     let n_existing = existing.nseq();
     let n_new = new_sequences.len();
     if n_existing == 0 {
         // No anchor; just align the new sequences from scratch.
-        return crate::progressive::progressive_align(
+        let topo = musclesupg(&compute_ktuple_dm(new_sequences), opts.cluster);
+        let msa = crate::progressive::progressive_align(
             new_sequences,
             new_names,
-            &musclesupg(&compute_ktuple_dm(new_sequences), ClusterMethod::default()),
+            &topo,
             scoring,
             use_fft,
             None,
         );
+        return (msa, Some(topo));
     }
 
-    // 1. Strip common-gap columns from the existing alignment. C does
-    //    `commongappick(njob-nadd, seq)` at `disttbfast.c:4319` before
-    //    the per-step pairalign loop. With our 30-seq existing (width
-    //    598), this keeps the columns where at least one existing
-    //    sequence has a non-gap residue, dropping the all-gap columns.
+    // 1. Strip common-gap columns from the existing alignment
+    //    (`commongappick(njob-nadd, seq)`, `disttbfast.c:4324`).
     let stripped_existing = commongappick(&existing.sequences);
 
     // 2. Concatenate stripped existing + new (raw).
     let mut all_seqs: Vec<Vec<u8>> = stripped_existing;
     for s in new_sequences {
-        // C `gappick0` on every added sequence (`disttbfast.c:4315`,
+        // C `gappick0` on every added sequence (`disttbfast.c:4320`,
         // `tbfast.c:3192`): only `-` is a gap. `.` is a legal protein
         // residue (`amino_n['.']` = 23) and must survive into the DP.
         let raw: Vec<u8> = s.iter().filter(|&&c| c != b'-').copied().collect();
@@ -76,31 +117,64 @@ pub fn add_sequences(
     let mut all_names: Vec<mafft_types::SeqName> = existing.names.clone();
     all_names.extend(new_names.iter().cloned());
 
-    // 3. Guide tree on the all-N+nadd sequences. Distance is computed
-    //    on the UNGAPPED form (since stripped existing still has
-    //    inter-sequence gaps from the alignment, but the topology
-    //    should reflect ungapped similarity).
+    // 3. Cycle-1 distances: 6-mer on the gap-stripped sequences.
     let ungapped: Vec<Vec<u8>> = all_seqs
         .iter()
         .map(|s| s.iter().filter(|&&c| c != b'-').copied().collect())
         .collect();
-    let dm = compute_ktuple_dm(&ungapped);
-    let topo = musclesupg(&dm, ClusterMethod::default());
+    let mut dm = compute_ktuple_dm(&ungapped);
 
-    // 4. Compute mergeoralign[] tagging each branch.
-    let mergeoralign = compute_mergeoralign(&topo, n_existing, n_new);
+    let cycles = opts.cycles.clamp(1, 3);
+    let mut result = None;
+    for cycle in 0..cycles {
+        let topo = musclesupg(&dm, opts.cluster);
+        // 4. Tag each branch (`mergeoralign`, `disttbfast.c:4276-4301`).
+        let mergeoralign = compute_mergeoralign(&topo, n_existing, n_new);
+        // 5. Progressive alignment with mergeoralign-aware skipping and
+        //    new-gap propagation to the non-active existing rows.
+        let msa = crate::progressive::progressive_align_with_mergeoralign_n(
+            &all_seqs,
+            &all_names,
+            &topo,
+            &mergeoralign,
+            scoring,
+            use_fft,
+            n_existing,
+        );
+        if cycle + 1 < cycles {
+            dm = msa_distance_matrix(&msa.sequences, scoring);
+        }
+        result = Some((msa, topo));
+    }
+    let (msa, topo) = result.expect("at least one cycle");
+    (msa, Some(topo))
+}
 
-    // 5. Run progressive alignment with mergeoralign-aware skipping
-    //    + new-gap propagation to non-active existing rows.
-    crate::progressive::progressive_align_with_mergeoralign_n(
-        &all_seqs,
-        &all_names,
-        &topo,
-        &mergeoralign,
-        scoring,
-        use_fft,
-        n_existing,
-    )
+/// `msadistmtxthread` (`disttbfast.c:4618-4693`): distances from an
+/// alignment, `(1 - naivepairscore / min(selfscore)) * 2`, with the
+/// progressive gap open as `penalty_dist`.
+fn msa_distance_matrix(sequences: &[Vec<u8>], scoring: &ScoringContext) -> DistanceMatrix {
+    let nseq = sequences.len();
+    let pairs: Vec<(usize, usize, f64)> = (0..nseq)
+        .into_par_iter()
+        .flat_map(|i| {
+            ((i + 1)..nseq).into_par_iter().map(move |j| {
+                let d = scoring_matrix_distance(
+                    &sequences[i],
+                    &sequences[j],
+                    &scoring.substitution_matrix,
+                    &scoring.amino_map,
+                    scoring.gap.open,
+                );
+                (i, j, d)
+            })
+        })
+        .collect();
+    let mut dm = DistanceMatrix::new(nseq);
+    for (i, j, d) in pairs {
+        dm.set(i, j, d);
+    }
+    dm
 }
 
 /// Add sequences while preserving the existing alignment's column
@@ -143,8 +217,24 @@ pub fn add_sequences_keeplength_with_map(
     scoring: &ScoringContext,
     use_fft: bool,
 ) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>) {
+    let (msa, deletelist, _) = add_sequences_keeplength_with(
+        existing, new_sequences, new_names, scoring, use_fft, &AddOptions::default(),
+    );
+    (msa, deletelist)
+}
+
+/// [`add_sequences_keeplength_with_map`] with explicit [`AddOptions`];
+/// also returns the last guide tree (see [`add_sequences_with`]).
+pub fn add_sequences_keeplength_with(
+    existing: &MultipleAlignment,
+    new_sequences: &[Vec<u8>],
+    new_names: &[mafft_types::SeqName],
+    scoring: &ScoringContext,
+    use_fft: bool,
+    opts: &AddOptions,
+) -> (MultipleAlignment, Vec<Vec<(usize, usize)>>, Option<Topology>) {
     if new_sequences.is_empty() {
-        return (existing.clone(), Vec::new());
+        return (existing.clone(), Vec::new(), None);
     }
     let n_existing = existing.nseq();
     let nadd = new_sequences.len();
@@ -153,7 +243,7 @@ pub fn add_sequences_keeplength_with_map(
     // deleted (`restoreoriginalgaps`, `disttbfast.c:4862`).
     let original_gaps = record_original_gaps(&existing.sequences);
 
-    let mut full = add_sequences(existing, new_sequences, new_names, scoring, use_fft);
+    let (mut full, tree) = add_sequences_with(existing, new_sequences, new_names, scoring, use_fft, opts);
 
     let width = full.sequences.first().map(|s| s.len()).unwrap_or(0);
     let mut keep = vec![false; width];
@@ -210,7 +300,7 @@ pub fn add_sequences_keeplength_with_map(
     }
     restore_original_gaps(&mut full.sequences, &original_gaps);
 
-    (full, deletelist)
+    (full, deletelist, tree)
 }
 
 /// Compute `mergeoralign[]` for each branch in the guide tree, mirroring

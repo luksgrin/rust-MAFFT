@@ -231,6 +231,14 @@ public surfaces stable from 0.1.0 anyway.
   `long_seq_30k`, `long_seq_memsave_2402`, `mtb_cds_first8.memsave`, and
   the two `--memsave` memory-safety sets. A new FFI test runs C's
   `Falign_udpari_long` against the port.
+- **Default `--add` runs two guide-tree cycles, as C does.** The wrapper
+  calls `disttbfast -E 2` (`--retree`, clamped to 1..3): after the first
+  add, it builds a new UPGMA tree from distances on that alignment
+  (`msadistmtxthread`, `disttbfast.c:4618-4693`) and redoes the add from
+  the same rows (`disttbfast.c:3934`, `:4320`, `:4324`). `mafft-rs` ran
+  one cycle, so it matched C only with `--retree 1` (BB12019 split 3 + 2
+  differed). `--reorder` now takes the last cycle's tree, and the
+  linkage options (`$treealg`) reach both trees.
 - **`--mapout` / `--compactmapout` help text.** Both imply
   `--keeplength` (as in C, `scripts/mafft:699-710`); the help and
   `docs/cli-reference.md` still said they required it. The

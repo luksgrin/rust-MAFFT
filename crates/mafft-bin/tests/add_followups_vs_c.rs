@@ -145,3 +145,23 @@ fn addfragments_linkage_matches_c() {
         &["--minimumlinkage"],
     );
 }
+
+/// Default `--add` is `disttbfast -E 2`: the second guide tree comes from
+/// the first-cycle alignment (`msadistmtxthread`) and the add is redone
+/// on it (`disttbfast.c:3934`, `:4618-4693`). `--retree 1` is one cycle.
+#[test]
+fn add_two_guide_tree_cycles_match_c() {
+    expect("bb12019g.add", "bb12019g", "--add", &[]);
+    expect("bb12019g.add.retree1", "bb12019g", "--add", &["--retree", "1"]);
+    expect("bb12019g.add.keeplength", "bb12019g", "--add", &["--keeplength"]);
+    expect("bb12019g.add.mapout", "bb12019g", "--add", &["--mapout"]);
+    expect("sample33g.add", "sample33g", "--add", &[]);
+    expect("sample33g.add.compactmapout", "sample33g", "--add", &["--compactmapout"]);
+}
+
+/// The `order` file holds the last cycle's tree (`disttbfast.c:4061-4085`).
+#[test]
+fn add_reorder_uses_the_last_guide_tree() {
+    expect("bb12019g.add.reorder", "bb12019g", "--add", &["--reorder"]);
+    expect("sample33g.add.reorder", "sample33g", "--add", &["--reorder"]);
+}
