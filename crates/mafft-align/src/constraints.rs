@@ -66,6 +66,75 @@ pub fn build_imp_matrix(
     imp
 }
 
+thread_local! {
+    /// Per-thread flat buffer for [`build_imp_matrix_flat_into`] callers
+    /// (grow-only, like C's `static TLS double **impmtx` in `Salignmm.c` /
+    /// `partSalignmm.c`). Taken with [`take_imp_pool`] and given back with
+    /// [`return_imp_pool`]; a nested user on the same thread just gets an
+    /// empty `Vec` and allocates.
+    static IMP_POOL: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Take this thread's pooled impmtx buffer (empty if already taken).
+pub fn take_imp_pool() -> Vec<f64> {
+    IMP_POOL.with_borrow_mut(std::mem::take)
+}
+
+/// Give a buffer back to this thread's pool (keeps the larger one).
+pub fn return_imp_pool(buf: Vec<f64>) {
+    IMP_POOL.with_borrow_mut(|p| {
+        if buf.capacity() >= p.capacity() {
+            *p = buf;
+        }
+    });
+}
+
+/// [`build_imp_matrix`] into a flat row-major `lgth1 x lgth2` buffer
+/// (`out[k1 * lgth2 + k2]`). The cells receive exactly the same `fmadd`
+/// sequence, starting from 0.0, as the `Vec<Vec<f64>>` version, so the
+/// values are bit-identical; only the storage differs (one allocation,
+/// reusable across calls, instead of `lgth1` row `Vec`s per call).
+pub fn build_imp_matrix_flat_into(
+    out: &mut Vec<f64>,
+    localhom: &LocalHomologyTable,
+    group1: &[usize],
+    group2: &[usize],
+    g1_seqs: &[&[u8]],
+    g2_seqs: &[&[u8]],
+    eff1: &[f64],
+    eff2: &[f64],
+    lgth1: usize,
+    lgth2: usize,
+    fastathreshold: f64,
+) {
+    let cells = lgth1 * lgth2;
+    out.clear();
+    // Exact growth (no amortised doubling): this buffer is the largest
+    // allocation of the run, like C's `impalloclen`-sized impmtx.
+    out.reserve_exact(cells);
+    out.resize(cells, 0.0);
+    if std::env::var_os("RS_IMPMTX_DUMP").is_some() {
+        // Keep the forensic dump byte-for-byte: build through the row
+        // version (which writes the dump) and copy.
+        let imp = build_imp_matrix(
+            localhom, group1, group2, g1_seqs, g2_seqs, eff1, eff2, lgth1, lgth2, fastathreshold,
+        );
+        for (k1, row) in imp.iter().enumerate() {
+            out[k1 * lgth2..(k1 + 1) * lgth2].copy_from_slice(row);
+        }
+        return;
+    }
+    let buf = &mut out[..];
+    for_each_imp_cell(
+        localhom, group1, group2, g1_seqs, g2_seqs, eff1, eff2, lgth1, lgth2, fastathreshold,
+        |k1, k2, importance, effij| {
+            // Same single `fmadd` as `build_imp_matrix` (C `mltaln9.c:15665`).
+            let c = &mut buf[k1 * lgth2 + k2];
+            *c = fmadd(importance, effij, *c);
+        },
+    );
+}
+
 /// The diagonal `impmtx[k][k]` (`k < min(lgth1, lgth2)`) of the matrix
 /// `build_imp_matrix` would return, without materialising the other cells.
 /// Every diagonal cell receives exactly the same `fmadd` sequence, in the

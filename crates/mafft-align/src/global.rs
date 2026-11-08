@@ -7,6 +7,43 @@
 
 use crate::dp::{AlignOp, Alignment, GapModel};
 
+thread_local! {
+    /// Per-thread flat `ijp` traceback buffer for [`global_align`]
+    /// (grow-only; zero-filled over the used `(n + 2) x (m + 2)` cells on
+    /// every call, so each call starts from the same all-zero matrix the
+    /// former `vec![vec![0i32; m + 2]; n + 2]` gave it). C's `G__align11`
+    /// keeps its `ijp` in `static TLS` storage too (`Galign11.c`).
+    static GLOBAL_IJP_POOL: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Free this thread's pooled `global_align` traceback buffer.
+pub(crate) fn release_global_scratch() {
+    GLOBAL_IJP_POOL.with_borrow_mut(|p| *p = Vec::new());
+}
+
+/// Row view of a flat row-major `i32` matrix, so the DP keeps its
+/// `ijp[i][j]` / `ijp[i][..k]` indexing.
+struct FlatRows<'a> {
+    data: &'a mut [i32],
+    stride: usize,
+}
+
+impl std::ops::Index<usize> for FlatRows<'_> {
+    type Output = [i32];
+    #[inline]
+    fn index(&self, i: usize) -> &[i32] {
+        &self.data[i * self.stride..(i + 1) * self.stride]
+    }
+}
+
+impl std::ops::IndexMut<usize> for FlatRows<'_> {
+    #[inline]
+    fn index_mut(&mut self, i: usize) -> &mut [i32] {
+        let s = self.stride;
+        &mut self.data[i * s..(i + 1) * s]
+    }
+}
+
 /// Perform global alignment of two sequences.
 ///
 /// - `seq1`, `seq2`: raw residue sequences, case-folded per sequence type (uppercase protein, lowercase nucleotide) as the reader emits them.
@@ -113,7 +150,11 @@ pub fn global_align(
     //   -k (k>0)           = horizontal gap of length k (came from (i-1, j-k))
     //   +k (k>0)           = vertical gap of length k (came from (i-k, j-1))
     //   >= warpbase        = warp transition (came from (warpis[v-warpbase], warpjs[v-warpbase]))
-    let mut ijp = vec![vec![0i32; m + 2]; n + 2];
+    let mut ijp_buf: Vec<i32> = GLOBAL_IJP_POOL.with_borrow_mut(std::mem::take);
+    ijp_buf.clear();
+    ijp_buf.reserve_exact((n + 2) * (m + 2));
+    ijp_buf.resize((n + 2) * (m + 2), 0);
+    let mut ijp = FlatRows { data: &mut ijp_buf[..], stride: m + 2 };
 
     let mut wm = 0.0f64;
 
@@ -529,6 +570,9 @@ pub fn global_align(
     a1.reverse();
     a2.reverse();
     ops.reverse();
+
+    drop(ijp);
+    GLOBAL_IJP_POOL.with_borrow_mut(|p| *p = ijp_buf);
 
     Alignment {
         seq1: a1,

@@ -21,7 +21,7 @@
 use mafft_types::fp::fmadd;
 use mafft_align::{
     profile_align, profile_align_imp,
-    profile_align_imp_with_boundary, profile_align_imp_multimtx,
+    profile_align_imp_with_boundary,
     BoundaryFreqs, MultiMtx,
     build_imp_diagonal, build_imp_matrix, FASTATHRESHOLD_DEFAULT,
     Profile, GapModel, AlignOp,
@@ -1304,7 +1304,11 @@ fn realign_all_constrained_fft(
     // Each per-segment partA__align then reads `impmtx[start1+gapmap1[i]][start2+gapmap2[j]]`.
     let g1_full: Vec<&[u8]> = group1.iter().map(|&i| sequences[i].as_slice()).collect();
     let g2_full: Vec<&[u8]> = group2.iter().map(|&i| sequences[i].as_slice()).collect();
-    let global_imp = build_imp_matrix(
+    // Flat `width x width`, from the per-thread pool (C's `static TLS`
+    // impmtx in partSalignmm.c is likewise allocated once and reused).
+    let mut global_imp_buf = mafft_align::take_imp_pool();
+    mafft_align::build_imp_matrix_flat_into(
+        &mut global_imp_buf,
         lh_table,
         group1, group2,
         &g1_full, &g2_full,
@@ -1312,6 +1316,7 @@ fn realign_all_constrained_fft(
         width, width,
         FASTATHRESHOLD_DEFAULT,
     );
+    let global_imp: &[f64] = &global_imp_buf[..width * width];
 
     // `--allowshift`: precompute this branch's multi-distance-class context
     // (C `makescoringmatrices` + `classifypairs` + masklists). Class
@@ -1401,22 +1406,18 @@ fn realign_all_constrained_fft(
             continue;
         }
 
-        // Build the segment's local impmtx by indexing the global impmtx
-        // at (a + gapmap1[i], a + gapmap2[j]) — mirrors C's
+        // The segment's local impmtx is the global impmtx at
+        // (a + gapmap1[i], a + gapmap2[j]) — mirrors C's
         // `imp_match_out_vead_gapmap(imp[j] = impmtx[i1][start2+gapmap2[j]])`
         // (partSalignmm.c:71-83). For refinement, start1 = start2 = a.
-        let l1 = stripped_seg1[0].len();
-        let l2 = stripped_seg2[0].len();
-        let mut local_imp = vec![vec![0.0f64; l2]; l1];
-        for i in 0..l1 {
-            let row = a + gapmap1[i];
-            for j in 0..l2 {
-                let col = a + gapmap2[j];
-                if row < global_imp.len() && col < global_imp[row].len() {
-                    local_imp[i][j] = global_imp[row][col];
-                }
-            }
-        }
+        // Read through a gather view instead of copying it out: C reads
+        // the global impmtx through gapmap the same way. Every index is
+        // < b <= width, so each cell is the value the copy held.
+        let seg_rows: Vec<usize> = gapmap1.iter().map(|&g| a + g).collect();
+        let seg_cols: Vec<usize> = gapmap2.iter().map(|&g| a + g).collect();
+        let local_imp = mafft_align::ImpMtx::Gather {
+            data: global_imp, stride: width, row_idx: &seg_rows, col_idx: &seg_cols,
+        };
 
         let s1_refs: Vec<&[u8]> = stripped_seg1.iter().map(|s| s.as_slice()).collect();
         let s2_refs: Vec<&[u8]> = stripped_seg2.iter().map(|s| s.as_slice()).collect();
@@ -1562,14 +1563,14 @@ fn realign_all_constrained_fft(
                 amino_map: &scoring.amino_map,
                 nalpha: scoring.nalphabets,
             };
-            profile_align_imp_multimtx(
+            mafft_align::profile_align_imp_view(
                 &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap,
-                true, true, Some(&local_imp), true, boundary, Some(&mm),
+                true, true, Some(local_imp), true, boundary, Some(&mm),
             )
         } else {
-            profile_align_imp_with_boundary(
+            mafft_align::profile_align_imp_view(
                 &prof_seg1, &prof_seg2, &scoring.consweight_matrix, gap,
-                true, true, Some(&local_imp), true, boundary,
+                true, true, Some(local_imp), true, boundary, None,
             )
         };
         total_score += seg_aln.score;
@@ -1593,7 +1594,7 @@ fn realign_all_constrained_fft(
             }
             let mut seg_imp = 0.0f64;
             for &(ci, cj) in match_cells.iter().rev() {
-                seg_imp += local_imp[ci][cj];
+                seg_imp += local_imp.get(ci, cj);
             }
             total_impmatch += seg_imp;
         }
@@ -1654,6 +1655,7 @@ fn realign_all_constrained_fft(
         }
     }
 
+    mafft_align::return_imp_pool(global_imp_buf);
     Some((new_sequences, total_score, total_impmatch))
 }
 

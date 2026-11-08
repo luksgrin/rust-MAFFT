@@ -18,11 +18,12 @@ mod msalign;
 
 pub use dp::{Alignment, AlignOp, GapModel, matrix_i32_to_f64};
 pub use global::global_align;
-pub use local::{local_align, LocalAlignment};
+pub use local::{local_align, release_pairwise_scratch, LocalAlignment};
 pub use genaffine::{genaffine_local_align, GenAffineGapModel};
 pub use profile::{
     Profile, profile_align, profile_align_imp, profile_align_imp_with_tiebreak,
     profile_align_imp_with_boundary, profile_align_imp_multimtx, BoundaryFreqs,
+    profile_align_imp_view, ImpMtx,
     pairwise_align11, pairwise_align11_ex, align_with_anchors,
     reset_dp_pools, reset_cpmx_memo,
 };
@@ -31,6 +32,7 @@ pub use fft_align::{fft_profile_align, fft_total_eff, find_fft_anchors, FftAlign
 pub use constraints::{
     build_local_homology_table, build_homology_table,
     build_homology_table_with_unalign, build_imp_diagonal, build_imp_matrix,
+    build_imp_matrix_flat_into, take_imp_pool, return_imp_pool,
     recompute_importance, PairAligner, FASTATHRESHOLD_DEFAULT,
     extract_putlocalhom2_regions, build_seed_homology_table,
     merge_homology_tables, parse_hat3_seed, SeedGroup,

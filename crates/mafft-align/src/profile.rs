@@ -1131,6 +1131,83 @@ fn j_loop<const TW: bool, const STRICT: bool>(
     *mpi = mpi_v;
 }
 
+/// Read-only view of a per-cell importance matrix `impmtx[i][j]` for the
+/// profile DP. The DP only ever reads `impmtx[i][0]`, `impmtx[0][j]` and
+/// whole rows `impmtx[i][0..m]`, so the matrix does not have to be a
+/// `Vec<Vec<f64>>`: a pooled flat buffer (`Flat`) or a gathered window of
+/// a larger flat matrix (`Gather`, C's `imp_match_out_vead_gapmap`,
+/// `partSalignmm.c:71-83`) gives the DP the same `f64` values, added in
+/// the same order, without allocating one row per DP row.
+#[derive(Clone, Copy)]
+pub enum ImpMtx<'a> {
+    /// One `Vec` per row (ragged rows allowed; the original API).
+    Rows(&'a [Vec<f64>]),
+    /// Dense row-major `rows x cols`.
+    Flat { data: &'a [f64], rows: usize, cols: usize },
+    /// Cell `(i, j)` is `data[row_idx[i] * stride + col_idx[j]]`.
+    Gather { data: &'a [f64], stride: usize, row_idx: &'a [usize], col_idx: &'a [usize] },
+}
+
+impl<'a> ImpMtx<'a> {
+    #[inline]
+    pub fn nrows(&self) -> usize {
+        match *self {
+            ImpMtx::Rows(r) => r.len(),
+            ImpMtx::Flat { rows, .. } => rows,
+            ImpMtx::Gather { row_idx, .. } => row_idx.len(),
+        }
+    }
+    /// Length of row `i`.
+    #[inline]
+    pub fn ncols(&self, i: usize) -> usize {
+        match *self {
+            ImpMtx::Rows(r) => r[i].len(),
+            ImpMtx::Flat { cols, .. } => cols,
+            ImpMtx::Gather { col_idx, .. } => col_idx.len(),
+        }
+    }
+    /// `impmtx[i][j]`; panics when out of range, like indexing the rows.
+    #[inline]
+    pub fn get(&self, i: usize, j: usize) -> f64 {
+        match *self {
+            ImpMtx::Rows(r) => r[i][j],
+            ImpMtx::Flat { data, rows, cols } => {
+                assert!(i < rows && j < cols, "ImpMtx::Flat index out of range");
+                data[i * cols + j]
+            }
+            ImpMtx::Gather { data, stride, row_idx, col_idx } => {
+                data[row_idx[i] * stride + col_idx[j]]
+            }
+        }
+    }
+    /// `out[j] += impmtx[i][j]` for `j < min(m, row length)`, in increasing
+    /// `j` -- the DP's per-row `imp_match_out_vead`.
+    #[inline]
+    fn add_row_into(&self, i: usize, out: &mut [f64], m: usize) {
+        match *self {
+            ImpMtx::Rows(r) => {
+                let row = &r[i];
+                for j in 0..m.min(row.len()) {
+                    out[j] += row[j];
+                }
+            }
+            ImpMtx::Flat { data, cols, .. } => {
+                let row = &data[i * cols..(i + 1) * cols];
+                for j in 0..m.min(cols) {
+                    out[j] += row[j];
+                }
+            }
+            ImpMtx::Gather { data, stride, row_idx, col_idx } => {
+                let base = row_idx[i] * stride;
+                let row = &data[base..base + stride];
+                for j in 0..m.min(col_idx.len()) {
+                    out[j] += row[col_idx[j]];
+                }
+            }
+        }
+    }
+}
+
 pub fn profile_align_imp_multimtx(
     prof1: &Profile,
     prof2: &Profile,
@@ -1139,6 +1216,26 @@ pub fn profile_align_imp_multimtx(
     head_gap: bool,
     tail_gap: bool,
     impmtx: Option<&[Vec<f64>]>,
+    strict_part_tiebreak: bool,
+    boundary: BoundaryFreqs,
+    multi: Option<&crate::multimtx::MultiMtx>,
+) -> Alignment {
+    profile_align_imp_view(
+        prof1, prof2, matrix, gap, head_gap, tail_gap,
+        impmtx.map(ImpMtx::Rows), strict_part_tiebreak, boundary, multi,
+    )
+}
+
+/// [`profile_align_imp_multimtx`] taking the importance matrix as an
+/// [`ImpMtx`] view (flat / gathered buffers, no per-row allocation).
+pub fn profile_align_imp_view(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<f64>],
+    gap: &GapModel,
+    head_gap: bool,
+    tail_gap: bool,
+    impmtx: Option<ImpMtx<'_>>,
     strict_part_tiebreak: bool,
     boundary: BoundaryFreqs,
     multi: Option<&crate::multimtx::MultiMtx>,
@@ -1161,10 +1258,12 @@ pub fn profile_align_imp_multimtx(
         let p2 = legacy_gap_profile(prof2);
         let mut gap_clean = gap.clone();
         gap_clean.legacy_gap_cost = false;
-        return profile_align_imp_with_boundary(
+        // Same as the former `profile_align_imp_with_boundary` recursion:
+        // default boundary, no multi-class context.
+        return profile_align_imp_view(
             &p1, &p2, matrix, &gap_clean,
             head_gap, tail_gap, impmtx, strict_part_tiebreak,
-            BoundaryFreqs::default(),
+            BoundaryFreqs::default(), None,
         );
     }
 
@@ -1262,9 +1361,20 @@ pub fn profile_align_imp_multimtx(
     // predecessor reuses the buffer without re-zeroing it.
     let stride = m + 1;
     let cells = (n + 1) * stride;
+    // The score matrix `h` is write-only except for (a) the last computed
+    // row (end-point search / best score below) and (b) the forensic dumps
+    // (`RS_H_DUMP`, `RS_DP_CORNER`, `RS_IJP_DUMP_PREFIX`), which print
+    // arbitrary cells. C's `A__align` keeps no such matrix (only `ijp` and
+    // rolling rows). Without a dump requested, keep one row of `h`
+    // (`stride` cells, row index 0) that every DP row overwrites; the
+    // values written are unchanged, so the result is bit-identical.
+    let keep_full_h = std::env::var_os("RS_H_DUMP").is_some()
+        || std::env::var_os("RS_DP_CORNER").is_some()
+        || std::env::var_os("RS_IJP_DUMP_PREFIX").is_some();
+    let h_cells = if keep_full_h { cells } else { stride };
     let mut h: Vec<f64> = DP_H_POOL.with_borrow_mut(std::mem::take);
     let mut ijp: Vec<i32> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
-    if h.len() < cells { h.resize(cells, 0.0); }
+    if h.len() < h_cells { h.resize(h_cells, 0.0); }
     if ijp.len() < cells { ijp.resize(cells, 0); }
 
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
@@ -1306,7 +1416,7 @@ pub fn profile_align_imp_multimtx(
     // C: imp_match_out_vead_tate(initverticalw, 0, lgth1) — add impmtx[i][0] to initverticalw[i].
     if let Some(imp) = impmtx {
         for i in 0..n {
-            initverticalw[i] += imp[i][0];
+            initverticalw[i] += imp.get(i, 0);
         }
     }
     if head_gap {
@@ -1387,7 +1497,7 @@ pub fn profile_align_imp_multimtx(
     // C: imp_match_out_vead(currentw, 0, lgth2) — add impmtx[0][j] to currentw[j].
     if let Some(imp) = impmtx {
         for j in 0..m {
-            currentw[j] += imp[0][j];
+            currentw[j] += imp.get(0, j);
         }
     }
     if head_gap {
@@ -1407,7 +1517,11 @@ pub fn profile_align_imp_multimtx(
     }
 
     h[..=m].copy_from_slice(&currentw[..=m]);
-    for i in 0..=n { h[i * stride] = initverticalw[i]; }
+    if keep_full_h {
+        for i in 0..=n { h[i * stride] = initverticalw[i]; }
+    } else {
+        h[0] = initverticalw[0];
+    }
 
     // Pooled. The DP body reads mj[j] / mpj[j] only for j in 1..=m, so
     // mj[0]/mpj[0] never matter. mj[1..=m] is initialised by the loop
@@ -1473,15 +1587,15 @@ pub fn profile_align_imp_multimtx(
                 // ~963). Dump impmtx[0][0..5] and impmtx[i][0] for a few i
                 // to compare against C's imp_match_out_vead behaviour.
                 if let Some(imp) = impmtx {
-                    if !imp.is_empty() {
-                        let row0 = &imp[0];
-                        let n0 = row0.len().min(5);
-                        dump_vec(&mut fp, "R_IMP_ROW0_HEAD", &row0[..n0]);
+                    if imp.nrows() > 0 {
+                        let n0 = imp.ncols(0).min(5);
+                        let row0: Vec<f64> = (0..n0).map(|j| imp.get(0, j)).collect();
+                        dump_vec(&mut fp, "R_IMP_ROW0_HEAD", &row0);
                     }
-                    let nrows = imp.len().min(5);
+                    let nrows = imp.nrows().min(5);
                     let mut col0: Vec<f64> = Vec::with_capacity(nrows);
                     for i in 0..nrows {
-                        col0.push(imp[i].first().copied().unwrap_or(0.0));
+                        col0.push(if imp.ncols(i) > 0 { imp.get(i, 0) } else { 0.0 });
                     }
                     dump_vec(&mut fp, "R_IMP_COL0_HEAD", &col0);
                 }
@@ -1583,11 +1697,8 @@ pub fn profile_align_imp_multimtx(
         );
         // C: imp_match_out_vead(currentw, i, lgth2) — add impmtx[i][:] (Salignmm.c:1848).
         if let Some(imp) = impmtx {
-            if i < imp.len() {
-                let row = &imp[i];
-                for j in 0..m.min(row.len()) {
-                    currentw[j] += row[j];
-                }
+            if i < imp.nrows() {
+                imp.add_row_into(i, &mut currentw, m);
             }
         }
         currentw[m] = 0.0; // padding: no substitution score beyond prof2
@@ -1610,7 +1721,13 @@ pub fn profile_align_imp_multimtx(
         // and h/ijp are sized (n+1) * (m+1), so this range is in bounds.
         // CONFIRMED MICRO-WIN ~ a few % on long FFT-NS-i inputs.
         let row_start = i * stride;
-        let h_row: &mut [f64] = &mut h[row_start..row_start + stride];
+        let h_row: &mut [f64] = if keep_full_h {
+            &mut h[row_start..row_start + stride]
+        } else {
+            // Single reused row; cell 0 mirrors `h[i][0] = initverticalw[i]`.
+            h[0] = initverticalw[i];
+            &mut h[..stride]
+        };
         let ijp_row: &mut [i32] = &mut ijp[row_start..row_start + stride];
         // Bind shared cold slices to locals so the inner loop sees them
         // as `&[T]` of statically-known length-bound rather than re-deriving
@@ -1772,8 +1889,12 @@ pub fn profile_align_imp_multimtx(
     //
     // TERMGAPFAC and TERMGAPFAC_EX are both 0.0 (Salignmm.c:12-13), so the
     // additive correction terms drop out.
+    // Best end-point score for `!tail_gap` (C stores it in `h[n][m]`).
+    let mut best_wm: Option<f64> = None;
     if !tail_gap {
-        let last_row_start = (n - 1) * stride;
+        // Row n-1 is the last row the DP computed (row 0 when n == 1); with
+        // the single-row `h` it is the only row kept.
+        let last_row_start = if keep_full_h { (n - 1) * stride } else { 0 };
         let last_row_corner = h[last_row_start + m - 1];
         if impmtx.is_some() {
             // Atracking_localhom port: forward scan, `>=`, includes corner.
@@ -1791,7 +1912,8 @@ pub fn profile_align_imp_multimtx(
                     ijp[n * stride + m] = -((m - j) as i32);
                 }
             }
-            h[n * stride + m] = wm;
+            if keep_full_h { h[n * stride + m] = wm; }
+            best_wm = Some(wm);
         } else {
             // Atracking port: reverse scan, strict `>`, excludes corner,
             // then corner fallback.
@@ -1814,7 +1936,8 @@ pub fn profile_align_imp_multimtx(
                 wm = last_row_corner;
                 ijp[n * stride + m] = 0;
             }
-            h[n * stride + m] = wm;
+            if keep_full_h { h[n * stride + m] = wm; }
+            best_wm = Some(wm);
         }
     }
 
@@ -1908,7 +2031,12 @@ pub fn profile_align_imp_multimtx(
         }
     }
 
-    let best_score = h[n * stride + m];
+    // `tail_gap`: the DP's own cell (n, m), i.e. the last computed row.
+    let best_score = match best_wm {
+        Some(w) => w,
+        None if keep_full_h => h[n * stride + m],
+        None => h[m],
+    };
 
     if let Ok(f) = std::env::var("RS_DP_CORNER") {
         use std::io::Write;
