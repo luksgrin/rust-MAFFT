@@ -738,6 +738,15 @@ impl MafftEngine {
             // double precision here. The 3-decimal hat2 rounding only
             // applies on paths that genuinely write/read `hat2` (e.g.
             // FFT-NS-i + dndpre).
+            // The pairwise DP scratch (largest pair's traceback, per pool
+            // thread) is not needed again; free it on every thread of the
+            // current pool (only when running inside one, so a caller
+            // without a pool does not spin up rayon's global pool).
+            if rayon::current_thread_index().is_some() {
+                rayon::broadcast(|_| mafft_align::release_pairwise_scratch());
+            } else {
+                mafft_align::release_pairwise_scratch();
+            }
             Some((table, DistanceMatrix::from_full(&dist)))
         } else {
             None
@@ -1157,7 +1166,12 @@ impl MafftEngine {
             // refinement tree (mirrors C's `dvtditr` reading the `hat2` file
             // written by initial pairlocalalign instead of recomputing from
             // the progressive alignment).
-            pairwise_for_constraints.as_ref().map(|(t, _)| t.clone())
+            //
+            // Moved, not cloned: the progressive merge was the table's last
+            // reader in `pairwise_for_constraints` (below only its distance
+            // matrix and `is_some()` are used), so a copy only doubled the
+            // table for the whole refinement.
+            pairwise_for_constraints.as_mut().map(|(t, _)| std::mem::take(t))
         } else if let Some(ref seed_lh) = self.seed_homology {
             // `--seed` with a non-INS-i mode (e.g. FFT-NS-i + `--seed`):
             // no pairwise homology was built, but seed entries still

@@ -46,6 +46,16 @@ thread_local! {
     static LOCAL_SCRATCH: RefCell<LocalScratch> = const { RefCell::new(LocalScratch::new()) };
 }
 
+/// Free this thread's `local_align` scratch (and `global_align`'s pooled
+/// traceback). Scratch only: the next call re-allocates, results are
+/// unchanged. The engine calls it on every pool thread once the all-pairs
+/// stage is over, so the largest pair's `(n+1) x (m+1)` traceback is not
+/// kept for the rest of the run (C frees it with the `tbfast` process).
+pub fn release_pairwise_scratch() {
+    LOCAL_SCRATCH.with_borrow_mut(|s| *s = LocalScratch::new());
+    crate::global::release_global_scratch();
+}
+
 /// Traceback code for a local reset (`Lalign11.c` `localstop`).
 const LOCALSTOP: i32 = i32::MIN;
 

@@ -490,6 +490,32 @@ public surfaces stable from 0.1.0 anyway.
   the output unchanged; byte-identical to C on FFT-NS-2, FFT-NS-i,
   `--parttree`, `--add`, L-INS-i and the 16S rRNA sets at 250 and 500.
 
+- **Iterative refinement uses less memory than C.** Four things held
+  the memory of L-INS-i / G-INS-i / E-INS-i refinement. The per-branch
+  importance matrix (W × W `f64`) was rebuilt as a `Vec<Vec<f64>>` and
+  then copied once more per FFT segment, where C reads the one matrix
+  through `gapmap`; `build_imp_matrix_flat_into` now fills a pooled flat
+  matrix once per thread and the segment is an `ImpMtx::Gather` view
+  over it (`profile_align_imp_view`). The DP score matrix `h` was a full
+  (n+1) × (m+1) `f64` matrix read only for its last row; it is now one
+  reused row (the full matrix is kept only under the `RS_H_DUMP`,
+  `RS_DP_CORNER` and `RS_IJP_DUMP_PREFIX` debug dumps), and the row is
+  bit for bit the old last row. The pairwise homology table was stored
+  as both triangles and then cloned for refinement; it is now moved
+  instead. The pairwise-stage DP scratch (the largest pair's traceback
+  on every pool thread) stayed alive through refinement; it is released
+  once the all-pairs stage ends, and the `global_align` traceback is
+  pooled flat. Most of the excess RSS, though, was not live data: the
+  per-row `Vec<Vec<f64>>` churn (tens to hundreds of GB allocated over a
+  run for a live peak of 70–215 MiB) left freed pages resident in the
+  allocator. Peak RSS for L-INS-i (`/usr/bin/time -l`, Apple M4,
+  C / before / after, MiB): PF00528 n=100 `--thread 1` 88.7 / 165.7 /
+  68.6; PF00072 n=100 248.6 / 601.8 / 138.6; PF00069 n=100 1076 / 2367 /
+  657; PF00072 n=100 `--thread 4` 608.6 / 1508.9 / 434.7. Output is
+  unchanged: byte-identical to C on the scaling corpus and the sample
+  set under L-INS-i, G-INS-i, E-INS-i, FFT-NS-2, FFT-NS-i, `--parttree`,
+  `--add` and `--memsave`, and `--thread 4` still equals `--thread 1`.
+
 - **`--thread N` scales the iterative modes** (issue #48). The per-call
   rayon pool is unchanged. On it, independent units write into
   preallocated slots and are consumed in a fixed order, so `mafft-rs` at

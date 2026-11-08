@@ -1979,18 +1979,25 @@ fn merge_step_cached(
         let s2: f64 = w2.iter().sum();
         let w1n: Vec<f64> = if s1 > 0.0 { w1.iter().map(|w| w / s1).collect() } else { vec![1.0; group1.len()] };
         let w2n: Vec<f64> = if s2 > 0.0 { w2.iter().map(|w| w / s2).collect() } else { vec![1.0; group2.len()] };
-        let imp = mafft_align::build_imp_matrix(
+        // Flat, per-thread pooled impmtx (C keeps one `static TLS` impmtx
+        // and only re-allocates it when a merge is larger than any before;
+        // a fresh `Vec<Vec<f64>>` per merge churned the allocator).
+        let (lg1, lg2) = (prof1.length, prof2.length);
+        let mut imp_buf = mafft_align::take_imp_pool();
+        mafft_align::build_imp_matrix_flat_into(
+            &mut imp_buf,
             table,
             group1, group2,
             &g1_seq_refs, &g2_seq_refs,
             &w1n, &w2n,
-            prof1.length, prof2.length,
+            lg1, lg2,
             mafft_align::FASTATHRESHOLD_DEFAULT,
         );
+        let imp = mafft_align::ImpMtx::Flat { data: &imp_buf[..lg1 * lg2], rows: lg1, cols: lg2 };
         if std::env::var_os("RUST_IMP_DUMP").is_some() {
-            let s00 = imp.first().and_then(|r| r.first()).copied().unwrap_or(0.0);
-            let s100 = if imp.len()>100 && imp[100].len()>100 { imp[100][100] } else { 0.0 };
-            let s300 = if imp.len()>300 && imp[300].len()>300 { imp[300][300] } else { 0.0 };
+            let s00 = if lg1 > 0 && lg2 > 0 { imp.get(0, 0) } else { 0.0 };
+            let s100 = if lg1>100 && lg2>100 { imp.get(100, 100) } else { 0.0 };
+            let s300 = if lg1>300 && lg2>300 { imp.get(300, 300) } else { 0.0 };
             eprintln!("[RUST_IMP] g1={:?} g2={:?} lgth1={} lgth2={} eff1={:?} eff2={:?} imp[0,0]={:.4} imp[100,100]={:.4} imp[300,300]={:.4}",
                 group1, group2, prof1.length, prof2.length, w1n, w2n, s00, s100, s300);
             for &gi in group1 {
@@ -2003,10 +2010,15 @@ fn merge_step_cached(
                 }
             }
         }
-        mafft_align::profile_align_imp(
+        // Same as `profile_align_imp` (A__align tie-break, default boundary,
+        // no multi-class context), reading the flat impmtx.
+        let aln = mafft_align::profile_align_imp_view(
             &prof1, &prof2, &scoring.consweight_matrix, gap,
-            penalize_term_gaps, penalize_term_gaps, Some(&imp),
-        )
+            penalize_term_gaps, penalize_term_gaps, Some(imp),
+            false, mafft_align::BoundaryFreqs::default(), None,
+        );
+        mafft_align::return_imp_pool(imp_buf);
+        aln
     } else if memsave_dp {
         // `--memsave`: route through the Hirschberg DP. Mirrors C
         // MAFFT's `MSalignmm` (`tbfast.c:1159-1161` under `alg='M'`).
