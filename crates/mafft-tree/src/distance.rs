@@ -82,34 +82,55 @@ pub fn pairwise_identity_distance(seq1: &[u8], seq2: &[u8]) -> f64 {
     }
 }
 
-/// Compute k-tuple (6-mer) distance between two unaligned sequences.
+/// Compute the k-tuple (6-mer) distance between two unaligned sequences
+/// whose alphabet is already known.
 ///
 /// Ports the C `commonsextet_p` + `distcompact` algorithm exactly:
 /// - Amino acids are mapped to 6 physicochemical groups (matching C's `amino_grp`)
-/// - DNA bases are mapped to 4 groups
+/// - DNA bases are mapped to 4 groups; `n` and the IUPAC ambiguity codes
+///   are dropped from the 6-mer stream (`disttbfast.c::seq_grp_nuc`,
+///   `if( tmp < 4 )`, with `locgrpn` from `DNA.h:44`)
 /// - K-tuples are encoded as integers into a flat frequency table
 /// - Distance includes C's length adjustment factor (`lenfac`)
 ///
 /// Formula: `(1.0 - common/min(ss1,ss2)) * lenfac * 2.0`
-pub fn ktuple_distance(seq1: &[u8], seq2: &[u8], k: usize) -> f64 {
+///
+/// `is_nucleotide` is the input-wide sequence type (`dorp` in C, decided
+/// once per run from the whole input by `countlen`/`getnumlen`), never a
+/// per-pair guess: C never looks at the residues of a pair to choose the
+/// alphabet. Production callers pass `ScoringContext::seq_type.is_nucleotide()`.
+pub fn ktuple_distance_typed(seq1: &[u8], seq2: &[u8], k: usize, is_nucleotide: bool) -> f64 {
     if seq1.is_empty() || seq2.is_empty() || k == 0 {
         return 2.0;
     }
     if seq1.len() < k || seq2.len() < k {
         return 2.0;
     }
-
-    // Detect if DNA or protein based on content
-    let is_dna = seq1.iter().chain(seq2.iter())
-        .filter(|&&c| c.is_ascii_alphabetic())
-        .take(100)
-        .all(|&c| matches!(c, b'A' | b'C' | b'G' | b'T' | b'U' | b'a' | b'c' | b'g' | b't' | b'u' | b'N' | b'n'));
-
-    if is_dna {
+    if is_nucleotide {
         ktuple_distance_nuc(seq1, seq2, k)
     } else {
         ktuple_distance_aa(seq1, seq2, k)
     }
+}
+
+/// [`ktuple_distance_typed`] with the alphabet sniffed from the first 100
+/// letters of the pair.
+///
+/// Only for callers that have no input-wide sequence type at hand (tests,
+/// diagnostics). The sniff is per pair, so a nucleotide sequence with an
+/// IUPAC ambiguity code (R, Y, K, M, W, S, B, D, H, V) among its first 100
+/// bases is treated as protein, and every pair it leads gets the protein
+/// 6-group distance: with the protein grouping A, G and T all fall into
+/// group 0, the pair looks far closer than it is, and the guide tree moves.
+/// C never does this (see [`ktuple_distance_typed`]). The engine and the
+/// `--add` path therefore call the typed function with the run-wide
+/// `SeqType`; this wrapper must not be used on production paths.
+pub fn ktuple_distance(seq1: &[u8], seq2: &[u8], k: usize) -> f64 {
+    let is_dna = seq1.iter().chain(seq2.iter())
+        .filter(|&&c| c.is_ascii_alphabetic())
+        .take(100)
+        .all(|&c| matches!(c, b'A' | b'C' | b'G' | b'T' | b'U' | b'a' | b'c' | b'g' | b't' | b'u' | b'N' | b'n'));
+    ktuple_distance_typed(seq1, seq2, k, is_dna)
 }
 
 /// Amino acid group mapping (C's `locgrpd` from blosum.c).
@@ -512,5 +533,42 @@ mod tests {
         assert!((dm.get(0, 2) - 0.5).abs() < 1e-10);
         assert!((dm.get(2, 0) - 0.5).abs() < 1e-10);
         assert!(dm.get(0, 0).abs() < 1e-10);
+    }
+
+    fn pseudo_dna(mut x: u64, n: usize) -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                b"ACGT"[((x >> 33) & 3) as usize]
+            })
+            .collect()
+    }
+
+    /// An IUPAC code is dropped from the 6-mer stream wherever it sits
+    /// (`seq_grp_nuc`, `tmp < 4`) and still counts in `nogaplen`, so the
+    /// nucleotide distance must not depend on its position. The sniffing
+    /// wrapper breaks this when the code is among the first 100 letters:
+    /// it then takes the pair for protein (16S rRNA records with an `R`
+    /// at base 68 moved the guide tree of a 250-sequence set).
+    #[test]
+    fn typed_nucleotide_distance_ignores_where_the_ambiguity_code_sits() {
+        let other = pseudo_dna(7, 200);
+        let base = pseudo_dna(11, 200);
+        let mut early = base.clone();
+        early.insert(10, b'R');
+        let mut late = base.clone();
+        late.insert(150, b'R');
+
+        let d_early = ktuple_distance_typed(&early, &other, 6, true);
+        let d_late = ktuple_distance_typed(&late, &other, 6, true);
+        assert_eq!(d_early.to_bits(), d_late.to_bits(), "{d_early} vs {d_late}");
+        assert_eq!(d_late.to_bits(), ktuple_distance(&late, &other, 6).to_bits());
+
+        // The sniffing wrapper misreads `early` as protein.
+        assert_ne!(ktuple_distance(&early, &other, 6).to_bits(), d_early.to_bits());
+        assert_eq!(
+            ktuple_distance(&early, &other, 6).to_bits(),
+            ktuple_distance_typed(&early, &other, 6, false).to_bits()
+        );
     }
 }

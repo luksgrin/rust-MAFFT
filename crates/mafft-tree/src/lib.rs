@@ -19,7 +19,10 @@ pub mod newick;
 pub mod treein;
 pub mod memsavetree;
 
-pub use distance::{DistanceMatrix, pairwise_identity_distance, ktuple_distance, scoring_matrix_distance};
+pub use distance::{
+    DistanceMatrix, pairwise_identity_distance, ktuple_distance, ktuple_distance_typed,
+    scoring_matrix_distance,
+};
 pub use nj::neighbor_joining;
 pub use upgma::{upgma, upgma_int};
 pub use musclesupg::{musclesupg, ClusterMethod};

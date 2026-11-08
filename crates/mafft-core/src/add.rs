@@ -18,7 +18,7 @@ use rayon::prelude::*;
 use mafft_align::{build_local_homology_table, profile_align, AlignOp, GapModel, Profile};
 use mafft_tree::{
     addonetip_fragment, scoring_matrix_distance, DistanceMatrix, musclesupg, ClusterMethod,
-    ktuple_distance, Topology,
+    ktuple_distance_typed, Topology,
 };
 use mafft_types::{LocalHomologyTable, ScoringContext};
 
@@ -90,7 +90,10 @@ pub fn add_sequences_with(
     let n_new = new_sequences.len();
     if n_existing == 0 {
         // No anchor; just align the new sequences from scratch.
-        let topo = musclesupg(&compute_ktuple_dm(new_sequences), opts.cluster);
+        let topo = musclesupg(
+            &compute_ktuple_dm(new_sequences, scoring.seq_type.is_nucleotide()),
+            opts.cluster,
+        );
         let msa = crate::progressive::progressive_align(
             new_sequences,
             new_names,
@@ -123,7 +126,7 @@ pub fn add_sequences_with(
         .iter()
         .map(|s| s.iter().filter(|&&c| c != b'-').copied().collect())
         .collect();
-    let mut dm = compute_ktuple_dm(&ungapped);
+    let mut dm = compute_ktuple_dm(&ungapped, scoring.seq_type.is_nucleotide());
 
     let cycles = opts.cycles.clamp(1, 3);
     let mut result = None;
@@ -517,7 +520,10 @@ pub(crate) fn add_fragments(
         let msa = crate::progressive::progressive_align(
             new_sequences,
             new_names,
-            &musclesupg(&compute_ktuple_dm(new_sequences), cluster),
+            &musclesupg(
+                &compute_ktuple_dm(new_sequences, scoring.seq_type.is_nucleotide()),
+                cluster,
+            ),
             scoring,
             use_fft,
             None,
@@ -1316,14 +1322,16 @@ fn commongappick_members(seqs: &mut [Vec<u8>], members: &[usize]) {
     }
 }
 
-fn compute_ktuple_dm(sequences: &[Vec<u8>]) -> DistanceMatrix {
+/// Cycle-1 6-mer distances (`disttbfast.c:3568-3880`). `is_nucleotide` is
+/// the run-wide `dorp`: C picks the 6-mer alphabet once, never per pair.
+fn compute_ktuple_dm(sequences: &[Vec<u8>], is_nucleotide: bool) -> DistanceMatrix {
     let nseq = sequences.len();
     let pairs: Vec<(usize, usize, f64)> = (0..nseq)
         .into_par_iter()
         .flat_map(|i| {
             let seqs = sequences;
             ((i + 1)..nseq).into_par_iter().map(move |j| {
-                let d = ktuple_distance(&seqs[i], &seqs[j], 6);
+                let d = ktuple_distance_typed(&seqs[i], &seqs[j], 6, is_nucleotide);
                 (i, j, d)
             })
         })
