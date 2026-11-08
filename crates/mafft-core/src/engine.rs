@@ -12,6 +12,7 @@ use mafft_types::{ScoringModel, SequenceSet, LocalHomologyTable};
 use crate::progressive::MultipleAlignment;
 use crate::refinement::{iterative_refine, RefinementParams};
 use crate::add::{add_sequences_keeplength_with, add_sequences_with, AddOptions};
+use crate::hat2::hat2_round;
 
 /// Alignment mode (strategy).
 #[derive(Debug, Clone)]
@@ -1228,7 +1229,7 @@ impl MafftEngine {
                     let mut rounded = DistanceMatrix::new(n);
                     for i in 0..n {
                         for j in (i + 1)..n {
-                            let d = (initial_dm.get(i, j) * 1000.0).round() / 1000.0;
+                            let d = hat2_round(initial_dm.get(i, j));
                             rounded.set(i, j, d);
                         }
                     }
@@ -1261,7 +1262,7 @@ impl MafftEngine {
                     let mut rounded = DistanceMatrix::new(n);
                     for i in 0..n {
                         for j in (i + 1)..n {
-                            let d = (raw.get(i, j) * 1000.0).round() / 1000.0;
+                            let d = hat2_round(raw.get(i, j));
                             rounded.set(i, j, d);
                         }
                     }
@@ -1663,7 +1664,7 @@ impl MafftEngine {
         let mut rounded = DistanceMatrix::new(n);
         for i in 0..n {
             for j in (i + 1)..n {
-                let d = (raw.get(i, j) * 1000.0).round() / 1000.0;
+                let d = hat2_round(raw.get(i, j));
                 rounded.set(i, j, d);
             }
         }
