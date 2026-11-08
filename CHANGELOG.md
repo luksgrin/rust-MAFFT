@@ -140,6 +140,31 @@ public surfaces stable from 0.1.0 anyway.
   roughly 2% of 100-sequence inputs and the alignment far more rarely.
   Three unit tests cover the tie cases.
 
+- **DNA k-mer distances follow the input's sequence type.** The 6-mer
+  distance used to decide nucleotide-vs-protein per pair from the first
+  100 letters of the two sequences, in practice the first 100 bases of the
+  first one; a record with an IUPAC ambiguity code (R, Y, K, M, W, S, B,
+  D, H, V) in that window was scored with the protein 6-group alphabet
+  (A, G and T collapse into one group) against every record after it, so
+  those pairs looked far closer than they are and the guide tree joined
+  them first. C decides once per input (`disttbfast.c:3608-3623`) and
+  `seq_grp_nuc` drops ambiguity codes from the 6-mer stream. The distance
+  now takes `SeqType` from the scoring context (`ktuple_distance_typed`),
+  for the main tree, the second tree and `--add`. On the RefSeq 16S rRNA
+  sets this changed the alignment in every mode from about 150 sequences
+  up (FFT-NS-2 at 250: 2089 columns instead of C's 2132); all of them are
+  byte-identical to C now. Fixture `iupac_16s_3x200`.
+- **The pairwise-phase offset also applies to IUPAC rows.** For
+  `--localpair`, `--globalpair` and `--genafpair` on nucleotides, C runs
+  `constants()` again with `poffset` (60 at the default 0.100), subtracts
+  it from the 4x4 matrix and then derives the ambiguity-code rows
+  (`constants.c:322-525`); the port subtracted it only from the 10x10
+  block, so ambiguity codes scored 60 higher in the pairwise DP and the
+  self-scores. The pairwise matrix is now derived the same way as C's,
+  which also reproduces its half-away rounding. Changed one pair distance
+  from 0.755 to C's 0.756 and the 100-sequence 16S L-INS-i alignment from
+  1884 columns to C's 1887. Fixture `iupac_16s_pair`.
+
 - **Bit-for-bit FFI tests skip only when the C and Rust policies differ.**
   The C shim now reports whether it fuses `a*b+c`
   (`mafft_sys::c_contracts_fma`, `wrappers/fp_probe.c`, built with the same

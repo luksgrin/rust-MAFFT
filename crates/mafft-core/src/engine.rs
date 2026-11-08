@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
-use mafft_tree::{DistanceMatrix, musclesupg, ktuple_distance, scoring_matrix_distance};
+use mafft_tree::{DistanceMatrix, musclesupg, ktuple_distance_typed, scoring_matrix_distance};
 use mafft_tree::parttree_pivot::PtSeqKind;
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SequenceSet, LocalHomologyTable};
@@ -683,6 +683,34 @@ impl MafftEngine {
                     shifted[i][j] -= pair_offset_f64;
                 }
             }
+            if seq_type.is_nucleotide() {
+                // C runs `constants()` a second time for the pairwise
+                // phase, with `poffset = laof`: the offset is taken off the
+                // 4x4 PAM before it is expanded (`constants.c:373/464`), and
+                // the IUPAC rows are then derived from the shifted entries
+                // (`ambiguousscore`, `:524`; `nscore` with `--nwildcard`,
+                // `:525`), so `n_dis_consweight_multi` and the `amino_dis`
+                // self-scores carry the offset in the ambiguity rows too.
+                // Shifting only the 10x10 block left those rows unshifted
+                // (60 higher for the default `laof=0.100`), which moved the
+                // pairwise scores, distances and constraints of every 16S
+                // record with an R/Y/K/M/S/W/B/D/H/V. Redo C's derivation on
+                // an integer copy so the half-away rounding also matches.
+                let mut shifted_int: Vec<Vec<i32>> = scoring.substitution_matrix.clone();
+                for i in 0..nscored {
+                    for j in 0..nscored {
+                        shifted_int[i][j] -= pair_offset_int;
+                    }
+                }
+                mafft_scoring::fill_dna_ambiguity_scores(&mut shifted_int);
+                if want_nwildcard {
+                    mafft_scoring::fill_dna_n_scores(&mut shifted_int);
+                }
+                shifted = shifted_int
+                    .iter()
+                    .map(|row| row.iter().map(|&v| v as f64).collect())
+                    .collect();
+            }
             // C's `L__align11` sets `localthr = -offset + scoreoffset * 600`
             // (Lalign11.c:248-249). With `scoreoffset = 0` and the
             // `offset = (int)(0.6 * poffset + 0.5)` computed above
@@ -720,7 +748,7 @@ impl MafftEngine {
         } else if let Some((_, ref pre_dm)) = pairwise_for_constraints {
             pre_dm.clone()
         } else {
-            compute_distance_matrix_from_seqs(&sequences)
+            compute_distance_matrix_from_seqs(&sequences, seq_type.is_nucleotide())
         };
 
         // Load user-supplied guide tree early (`--treein`), so the
@@ -1888,15 +1916,17 @@ pub fn dpparttree_run(
 }
 
 /// Compute pairwise 6-tuple distances from raw (unaligned) sequences.
-/// Matches C's default distance computation using `commonsextet_p`.
-fn compute_distance_matrix_from_seqs(sequences: &[Vec<u8>]) -> DistanceMatrix {
+/// Matches C's default distance computation using `commonsextet_p`
+/// (`disttbfast.c:3568-3880`). `is_nucleotide` is the run-wide `dorp`;
+/// C picks the 6-mer alphabet once from it, never per pair.
+fn compute_distance_matrix_from_seqs(sequences: &[Vec<u8>], is_nucleotide: bool) -> DistanceMatrix {
     let nseq = sequences.len();
     let pairs: Vec<(usize, usize, f64)> = (0..nseq)
         .into_par_iter()
         .flat_map(|i| {
             let seqs = sequences;
             ((i + 1)..nseq).into_par_iter().map(move |j| {
-                let d = ktuple_distance(&seqs[i], &seqs[j], 6);
+                let d = ktuple_distance_typed(&seqs[i], &seqs[j], 6, is_nucleotide);
                 (i, j, d)
             })
         })

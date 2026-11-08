@@ -2880,6 +2880,66 @@ fn many_short_297_fftns2_byte_identical_to_c() {
     }
 }
 
+/// Three 16S rRNA 5' fragments (200 nt), FFT-NS-1 (`--retree 1
+/// --maxiterate 0`); see `fixtures/README.md`. The first record carries an
+/// IUPAC `R` at base 68. The 6-mer distance used to guess the alphabet per
+/// pair from the first 100 letters of the pair, so this record was scored
+/// as protein against the other two (A, G and T all in protein group 0:
+/// 0.386 instead of C's 1.463) and the guide tree put it next to the wrong
+/// neighbour. C decides the alphabet once per run (`dorp`) and drops the
+/// code from the 6-mer stream (`seq_grp_nuc`, `disttbfast.c:679`).
+///
+/// Reference: `tests/fixtures/iupac_16s_3x200.fftns1`.
+#[test]
+fn iupac_16s_3x200_fftns1_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("iupac_16s_3x200.fftns1"))
+        .expect("missing tests/fixtures/iupac_16s_3x200.fftns1");
+    let input = read_fasta(fixture_path("iupac_16s_3x200.fa")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNs2).with_retree(1).align(&input);
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(),
+        c_ref.sequences[0].data.len(),
+        "width: Rust={} C={}",
+        msa.sequences[0].len(),
+        c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data, "seq {i} differs from C");
+    }
+}
+
+/// Two 16S rRNA records with IUPAC codes (`NR_118811.1`: M, Y, K, W, R;
+/// `NR_027588.1`: 14 N), `--localpair --maxiterate 0`; see
+/// `fixtures/README.md`. C's pairwise-phase `constants()` takes the pair
+/// offset (`laof`, 60 in matrix units) off the PAM before deriving the
+/// ambiguity rows, so `r`, `y`, ... score 60 lower in the local DP and in
+/// the self-scores than in the progressive matrix. Rust shifted only the
+/// 10x10 block, so this pair's distance came out 0.755 against C's 0.756;
+/// on the 100-record 16S set the shifted distances moved the L-INS-i guide
+/// tree and the alignment. The alignment of the pair itself is the same
+/// either way; the distance C writes to `hat2` is what discriminates.
+///
+/// References: `tests/fixtures/iupac_16s_pair.linsi.maxit0` (alignment) and
+/// `tests/fixtures/iupac_16s_pair.linsi.hat2` (C `--distout`).
+#[test]
+fn iupac_16s_pair_localpair_distance_and_alignment_match_c() {
+    let c_ref = read_fasta(fixture_path("iupac_16s_pair.linsi.maxit0"))
+        .expect("missing tests/fixtures/iupac_16s_pair.linsi.maxit0");
+    let c_hat2 = std::fs::read_to_string(fixture_path("iupac_16s_pair.linsi.hat2"))
+        .expect("missing tests/fixtures/iupac_16s_pair.linsi.hat2");
+    let c_dist = c_hat2.lines().last().expect("hat2 distance line").trim().to_string();
+    assert_eq!(c_dist, "0.756", "fixture sanity: last hat2 line is the one distance");
+    let input = read_fasta(fixture_path("iupac_16s_pair.fa")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 0 }).align(&input);
+    let dm = msa.distance_matrix.as_ref().expect("L-INS-i exposes its pairwise distance matrix");
+    assert_eq!(format!("{:.3}", dm.get(0, 1)), c_dist, "pairwise distance {} vs C hat2", dm.get(0, 1));
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data, "seq {i} differs from C");
+    }
+}
+
 /// `many_short_3000`: 3000 protein sequences of length about 30, default
 /// FFT-NS-2. The 6-mer length correction used to be 1 ULP off C on unequal
 /// lengths, and the alignment was 129 columns against C's 121. Regenerate

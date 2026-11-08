@@ -203,3 +203,49 @@ export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
 F=crates/mafft-core/tests/fixtures
 LC_ALL=C mafft-upstream/scripts/mafft --quiet $F/many_short_297.fa > $F/many_short_297.fftns2
 ```
+
+## `iupac_16s_3x200.*`
+
+Regression input for the alphabet used by the 6-mer guide-tree distance:
+the first 200 nt of three RefSeq 16S rRNA records (`NR_044223.1`,
+`NR_043651.1`, `NR_036827.1`), cut down by delta debugging from a
+250-sequence set on which Rust and C disagreed from the first guide tree
+on. `NR_044223.1` has an IUPAC `R` at base 68. The 6-mer distance used to
+guess DNA or protein per pair from the first 100 letters of the pair, so
+that record was scored with the protein 6-group alphabet against the other
+two and the guide tree joined it to the wrong neighbour. C fixes the
+alphabet once per run (`dorp`) and drops ambiguity codes from the 6-mer
+stream (`disttbfast.c:679`, `seq_grp_nuc`). The reference is the in-tree
+C build's FFT-NS-1 output (`--retree 1 --maxiterate 0`).
+
+```bash
+make -C mafft-upstream/core
+export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
+F=crates/mafft-core/tests/fixtures
+LC_ALL=C mafft-upstream/scripts/mafft --quiet --retree 1 --maxiterate 0 $F/iupac_16s_3x200.fa > $F/iupac_16s_3x200.fftns1
+```
+
+## `iupac_16s_pair.*`
+
+Regression input for the pairwise-phase scoring matrix of nucleotide
+L/G/E-INS-i: two RefSeq 16S rRNA records from the 100-record 16S set
+(`NR_118811.1` with M, Y, K, W, R ambiguity codes; `NR_027588.1` with 14 N).
+C's second `constants()` call (the one `tbfast _ ... -h $laof ... _` makes
+for the pairwise phase) subtracts the pair offset from the 4x4 PAM before
+expanding it and only then derives the IUPAC rows (`constants.c:373/464`,
+`ambiguousscore` at `:524`), so ambiguity codes carry the offset in the
+local DP and in the `amino_dis` self-scores. Rust used to shift only the
+10x10 block; this pair's `score2dist` distance was 0.755 instead of C's
+0.756, and on the full 100-record set the shifted distances changed the
+L-INS-i guide tree and alignment. `iupac_16s_pair.linsi.maxit0` is the
+in-tree C alignment (`--localpair --maxiterate 0`), which is the same with
+or without the fix; `iupac_16s_pair.linsi.hat2` is the `--distout` matrix,
+whose one distance is what the test checks.
+
+```bash
+make -C mafft-upstream/core
+export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
+F=crates/mafft-core/tests/fixtures
+LC_ALL=C mafft-upstream/scripts/mafft --quiet --localpair --maxiterate 0 --distout $F/iupac_16s_pair.fa > $F/iupac_16s_pair.linsi.maxit0
+mv $F/iupac_16s_pair.fa.hat2 $F/iupac_16s_pair.linsi.hat2
+```
