@@ -125,6 +125,21 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **Refinement-tree distances round like C's `hat2` file.** `dndpre`
+  writes each pairwise distance with `%#6.3f` and `dvtditr` reads it back
+  with `atof`; the port imitated that with `(d * 1000.0).round() / 1000.0`,
+  which differs from printf when the product lands on a `.5` tie (0.5505
+  gave 0.551, C prints 0.550) and on exact odd multiples of 1/16 (0.8125
+  gave 0.813, printf rounds to even: 0.812). The new
+  `mafft_core::hat2::hat2_round` formats with `{:.3}` and parses back, as
+  the hat3 `%7.5f` round trip already did, and is used for the FFT-NS-i,
+  L/G/E-INS-i and `--add --maxiterate` refinement trees. On a 30-sequence
+  BAliBASE sample under `--maxiterate 100` one cherry of the refinement
+  tree moved and the alignment came out 611 columns instead of C's 612;
+  about 5 in a million distances are affected, so the tree changes in
+  roughly 2% of 100-sequence inputs and the alignment far more rarely.
+  Three unit tests cover the tie cases.
+
 - **Bit-for-bit FFI tests skip only when the C and Rust policies differ.**
   The C shim now reports whether it fuses `a*b+c`
   (`mafft_sys::c_contracts_fma`, `wrappers/fp_probe.c`, built with the same

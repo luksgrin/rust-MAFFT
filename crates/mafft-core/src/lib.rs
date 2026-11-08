@@ -15,6 +15,7 @@ mod varidist;
 mod refinement;
 mod engine;
 mod add;
+mod hat2;
 pub mod external;
 
 pub use progressive::{progressive_align, progressive_align_partial, progressive_align_unweighted, progressive_align_with_weights_override, MultipleAlignment, StepTrace};

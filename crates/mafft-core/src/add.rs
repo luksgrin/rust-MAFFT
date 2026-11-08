@@ -22,6 +22,7 @@ use mafft_tree::{
 };
 use mafft_types::{LocalHomologyTable, ScoringContext};
 
+use crate::hat2::hat2_round;
 use crate::progressive::{MergeOrAlign, MultipleAlignment};
 
 /// `--add` settings that come from the wrapper rather than the inputs.
@@ -389,11 +390,6 @@ fn cluster_sueff(cluster: ClusterMethod) -> f64 {
         ClusterMethod::Average => 1.0,
         ClusterMethod::Minimum => 0.0,
     }
-}
-
-/// `hat2` / `hat2n` are written with `%.3f` and read back by `addsingle`.
-fn hat2_round(d: f64) -> f64 {
-    (d * 1000.0).round() / 1000.0
 }
 
 /// Pair-phase penalties for `dndpre` and `pairlocalalign -Y`.
