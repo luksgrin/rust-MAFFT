@@ -61,6 +61,47 @@ pub fn forensic_trace_active() -> bool {
     })
 }
 
+thread_local! {
+    /// Set by `dp_cancel_scope`: the profile DP on this thread gives up as
+    /// soon as `*ptr != expected`.
+    static DP_CANCEL: std::cell::Cell<Option<(*const std::sync::atomic::AtomicU64, u64)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Let the caller abandon a speculative re-alignment early.
+///
+/// While the returned guard lives, the profile DP on this thread polls
+/// `version` every 32 rows and, once it differs from `expected`, stops and
+/// returns a throw-away (well-formed, all-gap) alignment. A caller that
+/// installs this must discard the result of any computation during which
+/// `version` changed; `version` must only ever increase.
+pub fn dp_cancel_scope(version: &std::sync::atomic::AtomicU64, expected: u64) -> DpCancelGuard<'_> {
+    let prev = DP_CANCEL.with(|c| c.replace(Some((version as *const _, expected))));
+    DpCancelGuard { prev, _version: std::marker::PhantomData }
+}
+
+/// Restores the previous cancellation token when dropped.
+pub struct DpCancelGuard<'a> {
+    prev: Option<(*const std::sync::atomic::AtomicU64, u64)>,
+    _version: std::marker::PhantomData<&'a std::sync::atomic::AtomicU64>,
+}
+
+impl Drop for DpCancelGuard<'_> {
+    fn drop(&mut self) {
+        DP_CANCEL.with(|c| c.set(self.prev));
+    }
+}
+
+#[inline]
+pub(crate) fn dp_cancelled() -> bool {
+    DP_CANCEL.with(|c| match c.get() {
+        // SAFETY: only `dp_cancel_scope` installs the pointer, and its guard
+        // borrows the atomic for as long as the pointer is installed.
+        Some((p, v)) => unsafe { &*p }.load(std::sync::atomic::Ordering::Relaxed) != v,
+        None => false,
+    })
+}
+
 /// Run independent work on the current rayon pool when it has more than
 /// one thread and no forensic trace is active.
 pub fn parallel_enabled() -> bool {
