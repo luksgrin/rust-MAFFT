@@ -50,6 +50,16 @@ impl DistanceMatrix {
         }
     }
 
+    /// Build from the upper triangle given row by row: `rows[i][j - i - 1]`
+    /// is the distance between `i` and `j > i` (the internal layout).
+    pub fn from_upper_rows(rows: Vec<Vec<f64>>) -> Self {
+        let nseq = rows.len();
+        for (i, r) in rows.iter().enumerate() {
+            assert_eq!(r.len(), nseq - i - 1, "row {i} of the upper triangle has the wrong length");
+        }
+        Self { nseq, data: rows }
+    }
+
 }
 
 /// Compute identity-based distance between two aligned sequences.
@@ -244,6 +254,283 @@ fn naive_pair_score(
         k += 1;
     }
     score
+}
+
+/// One aligned row prepared for [`MsaDistance::distance`]: its self-score
+/// and the columns that hold a residue, computed once per row.
+///
+/// [`scoring_matrix_distance`] recomputes both self-scores and copies the
+/// two rows without their common-gap columns for every pair, so a matrix
+/// costs about three passes over the full alignment width per pair. C
+/// computes `selfscore[i]` once per sequence (`disttbfast.c:4454`,
+/// `dndpre.c:412`) and walks only the non-common-gap columns through
+/// `makeskiptable` + `commongappickpairfast` (`mltaln9.c:15243`,
+/// `mltaln9.c:13322`).
+#[derive(Debug, Clone)]
+pub struct ScoredRow {
+    len: usize,
+    self_score: f64,
+    /// Columns that are not `'-'`, ascending.
+    pos: Vec<u32>,
+    /// `amino_map` of the residue in each of those columns.
+    code: Vec<u8>,
+}
+
+/// [`scoring_matrix_distance`] for many pairs of rows of one alignment.
+///
+/// Returns bit-identical values: the pair score adds the same terms in the
+/// same column order (a match score per column where both rows have a
+/// residue, `penalty` once per run of columns where exactly one row has a
+/// gap, columns where both have a gap skipped), and the self-scores come
+/// from the same function, called once per row instead of once per pair.
+pub struct MsaDistance<'m> {
+    matrix: &'m [Vec<i32>],
+    amino_map: &'m [u8; 256],
+    penalty: i32,
+    nalpha: usize,
+    /// `matrix` flattened row-major (`nalpha * nalpha`).
+    flat: Vec<i32>,
+}
+
+impl<'m> MsaDistance<'m> {
+    /// `None` when `matrix` is not square (the per-pair function is then
+    /// the only safe choice, since it indexes `matrix[i][j]` lazily).
+    pub fn new(matrix: &'m [Vec<i32>], amino_map: &'m [u8; 256], penalty: i32) -> Option<Self> {
+        let nalpha = matrix.len();
+        if matrix.iter().any(|row| row.len() != nalpha) {
+            return None;
+        }
+        let flat = matrix.iter().flat_map(|row| row.iter().copied()).collect();
+        Some(Self { matrix, amino_map, penalty, nalpha, flat })
+    }
+
+    /// Prepare one aligned row.
+    pub fn row(&self, seq: &[u8]) -> ScoredRow {
+        assert!(seq.len() <= u32::MAX as usize, "alignment too wide");
+        let mut pos = Vec::with_capacity(seq.len() / 2);
+        let mut code = Vec::with_capacity(seq.len() / 2);
+        for (k, &c) in seq.iter().enumerate() {
+            if c != b'-' {
+                pos.push(k as u32);
+                code.push(self.amino_map[c as usize]);
+            }
+        }
+        ScoredRow {
+            len: seq.len(),
+            self_score: self_score(seq, self.matrix, self.amino_map, self.penalty),
+            pos,
+            code,
+        }
+    }
+
+    /// `scoring_matrix_distance(seq_a, seq_b, ..)` for prepared rows.
+    pub fn distance(&self, a: &ScoredRow, b: &ScoredRow) -> f64 {
+        let ss1 = a.self_score;
+        let ss2 = b.self_score;
+        let bunbo = if ss1 < ss2 { ss1 } else { ss2 };
+        if bunbo == 0.0 {
+            return 2.0;
+        }
+        let score = self.pair_score(a, b);
+        let mut d = (1.0 - score / bunbo) * 2.0;
+        if d > 10.0 { d = 10.0; }
+        if d < 0.0 { d = 0.0; }
+        d
+    }
+
+    /// `naive_pair_score` without materialising the common-gap-stripped
+    /// rows: merge the two residue-column lists. A column in both lists is
+    /// a match; a column in only one list is a gap in the other row, and
+    /// consecutive such columns of the same kind form one penalised run.
+    fn pair_score(&self, a: &ScoredRow, b: &ScoredRow) -> f64 {
+        const MATCH: u8 = 0;
+        const GAP1: u8 = 1; // row a has the gap
+        const GAP2: u8 = 2; // row b has the gap
+        // `naive_pair_score` only looks at the first min(len) columns.
+        let lim = a.len.min(b.len) as u32;
+        let na = a.pos.partition_point(|&p| p < lim);
+        let nb = b.pos.partition_point(|&p| p < lim);
+        let (pos1, code1) = (&a.pos[..na], &a.code[..na]);
+        let (pos2, code2) = (&b.pos[..nb], &b.code[..nb]);
+        let nalpha = self.nalpha;
+        let pen = self.penalty as f64;
+        let mut score = 0.0f64;
+        let mut state = MATCH;
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < na && j < nb {
+            let p1 = pos1[i];
+            let p2 = pos2[j];
+            if p1 == p2 {
+                let c1 = code1[i] as usize;
+                let c2 = code2[j] as usize;
+                if c1 < nalpha && c2 < nalpha {
+                    score += self.flat[c1 * nalpha + c2] as f64;
+                }
+                state = MATCH;
+                i += 1;
+                j += 1;
+            } else if p1 < p2 {
+                if state != GAP2 {
+                    score += pen;
+                    state = GAP2;
+                }
+                i += 1;
+            } else {
+                if state != GAP1 {
+                    score += pen;
+                    state = GAP1;
+                }
+                j += 1;
+            }
+        }
+        // Whatever is left of one list is a single run of gaps in the other row.
+        if i < na && state != GAP2 {
+            score += pen;
+        }
+        if j < nb && state != GAP1 {
+            score += pen;
+        }
+        score
+    }
+}
+
+/// One sequence prepared for [`ktuple_distances_from`]: what
+/// `ktuple_distance_typed(seq, other, k, is_nucleotide)` derives from `seq`
+/// alone.
+///
+/// `ktuple_distance_typed` rebuilds both sequences' group strings and
+/// k-tuple point vectors, and allocates two zeroed `alphabet^k`-entry
+/// tables (two 186 KB `calloc`s for protein), for every pair. C builds
+/// `pointt[i]` once per sequence (`disttbfast.c:3601-3633`), one
+/// composition table per row (`disttbfast.c:3827-3835`), and
+/// `commonsextet_p` resets only the `memo` entries it touched
+/// (`mltaln9.c:15376`). [`ktuple_distances_from`] does the same.
+///
+/// The alphabet is the run-wide sequence type (`dorp` in C), fixed once
+/// for the whole matrix by the caller; it is never inferred from the
+/// residues of a sequence or a pair.
+pub struct KtupleSeq {
+    k: usize,
+    /// `true` for the 4-letter nucleotide alphabet, `false` for the
+    /// 6-group protein alphabet.
+    dna: bool,
+    /// Residue count without `'-'` (`nogaplen` in C), for `lenfac`.
+    nogap: usize,
+    /// Whether the raw sequence is empty or shorter than `k` bytes (the
+    /// early `2.0` returns of `ktuple_distance_typed`).
+    too_short: bool,
+    /// k-tuple codes (`make_point_table`) in the chosen alphabet, or
+    /// `None` when the sequence has fewer than `k` grouped letters.
+    points: Option<Vec<u32>>,
+}
+
+impl KtupleSeq {
+    /// Prepare `seq` for the alphabet given by `is_nucleotide`
+    /// (`ScoringContext::seq_type.is_nucleotide()` on production paths).
+    pub fn new(seq: &[u8], k: usize, is_nucleotide: bool) -> Self {
+        let too_short = seq.is_empty() || k == 0 || seq.len() < k;
+        let points = if too_short {
+            None
+        } else {
+            let (group_fn, alphabet): (fn(u8) -> Option<u32>, u32) =
+                if is_nucleotide { (nuc_group, 4) } else { (amino_group, 6) };
+            let groups = seq_to_groups(seq, group_fn);
+            if groups.len() < k {
+                None
+            } else {
+                Some(make_point_table(&groups, k, alphabet))
+            }
+        };
+        Self { k, dna: is_nucleotide, nogap: nogap_len(seq), too_short, points }
+    }
+}
+
+/// Per-thread scratch for [`ktuple_distances_from`]: the composition table
+/// of the current row's sequence (`table1` in C) and the `memo` counts of
+/// `commonsextet_p`, both kept all-zero between uses by resetting only the
+/// entries that were touched.
+#[derive(Default)]
+pub struct KtupleScratch {
+    table: Vec<u32>,
+    /// The row index and the codes counted into `table`.
+    loaded: Option<(usize, Vec<u32>)>,
+    memo: Vec<u32>,
+}
+
+impl KtupleScratch {
+    /// `common_sextets(make_composition_table(p1), p2)`: the same counting
+    /// loop, with `table1` built once per row instead of once per pair.
+    fn common(&mut self, row: usize, dna: bool, k: usize, p1: &[u32], p2: &[u32]) -> u64 {
+        let tsize = if dna { 4usize } else { 6usize }.pow(k as u32);
+        if self.table.len() < tsize {
+            self.table = vec![0; tsize];
+            self.loaded = None;
+        }
+        if self.memo.len() < tsize {
+            self.memo.resize(tsize, 0);
+        }
+        if self.loaded.as_ref().map(|(r, _)| *r) != Some(row) {
+            let table = &mut self.table;
+            if let Some((_, prev)) = self.loaded.take() {
+                for &p in &prev {
+                    table[p as usize] = 0;
+                }
+            }
+            for &p in p1 {
+                table[p as usize] += 1;
+            }
+            self.loaded = Some((row, p1.to_vec()));
+        }
+        let table = &self.table;
+        let memo = &mut self.memo;
+        let mut value = 0u64;
+        for &p in p2 {
+            let tmp = memo[p as usize];
+            memo[p as usize] = tmp + 1;
+            if tmp < table[p as usize] {
+                value += 1;
+            }
+        }
+        for &p in p2 {
+            memo[p as usize] = 0;
+        }
+        value
+    }
+}
+
+/// `ktuple_distance_typed(seqs[i], seqs[j], k, is_nucleotide)` for every
+/// `j > i`, bit-identical, from sequences prepared with the same `k` and
+/// alphabet.
+pub fn ktuple_distances_from(prepared: &[KtupleSeq], i: usize, scratch: &mut KtupleScratch) -> Vec<f64> {
+    let a = &prepared[i];
+    let k = a.k;
+    let dna = a.dna;
+    prepared[i + 1..]
+        .iter()
+        .map(|b| {
+            debug_assert_eq!(k, b.k);
+            debug_assert_eq!(dna, b.dna);
+            if a.too_short || b.too_short {
+                return 2.0;
+            }
+            let (Some(p1), Some(p2)) = (a.points.as_deref(), b.points.as_deref()) else {
+                return 2.0;
+            };
+            let ss1 = p1.len() as u64;
+            let ss2 = p2.len() as u64;
+            if ss1 == 0 || ss2 == 0 {
+                return 2.0;
+            }
+            let common = scratch.common(i, dna, k, p1, p2);
+            let (len1, len2) = (a.nogap as f64, b.nogap as f64);
+            let lenfac = if dna {
+                compute_lenfac(len1, len2, 0.01, 2500.0, 2500.0, 0.1)
+            } else {
+                compute_lenfac(len1, len2, 0.01, 10000.0, 10000.0, 0.1)
+            };
+            (1.0 - common as f64 / ss1.min(ss2) as f64) * lenfac * 2.0
+        })
+        .collect()
 }
 
 /// Self-score: naivepairscore11(seq, seq) = sum of diagonal matrix values.
@@ -524,6 +811,170 @@ mod tests {
             0x3fc3_5450_514d_e673
         };
         assert_eq!(d.to_bits(), expected, "distance {:x} ({d})", d.to_bits());
+    }
+
+    /// xorshift64*, deterministic test input generator.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+        fn pick(&mut self, alphabet: &[u8]) -> u8 {
+            alphabet[self.below(alphabet.len())]
+        }
+    }
+
+    const PROTEIN: &[u8] = b"ACDEFGHIKLMNPQRSTVWYacdefghiklmnpqrstvwyXBZJUOx*.";
+    const DNA: &[u8] = b"ACGTUNacgtun";
+
+    fn random_seq(rng: &mut Rng) -> Vec<u8> {
+        let len = match rng.below(10) {
+            0 => rng.below(8),             // shorter than k, or empty
+            1 => 6 + rng.below(40),        // short: DNA test spills into seq2
+            _ => rng.below(400),
+        };
+        let alphabet = match rng.below(4) {
+            0 => DNA,
+            1 => b"ACGTACGTACGTN-" as &[u8], // nucleotide-looking with gaps
+            _ => PROTEIN,
+        };
+        let mut s: Vec<u8> = (0..len).map(|_| rng.pick(alphabet)).collect();
+        if rng.below(3) == 0 && len > 4 {
+            // mostly-nucleotide prefix with one protein letter later on
+            let at = rng.below(len);
+            s[at] = b'W';
+        }
+        s
+    }
+
+    #[test]
+    fn ktuple_distances_from_is_bit_identical() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for round in 0..20 {
+            let seqs: Vec<Vec<u8>> = (0..40).map(|_| random_seq(&mut rng)).collect();
+            for is_nucleotide in [false, true] {
+                let prepared: Vec<KtupleSeq> =
+                    seqs.iter().map(|s| KtupleSeq::new(s, 6, is_nucleotide)).collect();
+                // one scratch reused across rows (as on a worker thread), and a
+                // fresh one per row: both must give the per-pair values
+                let mut shared = KtupleScratch::default();
+                for i in 0..seqs.len() {
+                    let row_shared = ktuple_distances_from(&prepared, i, &mut shared);
+                    let row_fresh =
+                        ktuple_distances_from(&prepared, i, &mut KtupleScratch::default());
+                    for (off, j) in ((i + 1)..seqs.len()).enumerate() {
+                        let want = ktuple_distance_typed(&seqs[i], &seqs[j], 6, is_nucleotide);
+                        for got in [row_shared[off], row_fresh[off]] {
+                            assert_eq!(got.to_bits(), want.to_bits(),
+                                "round {round} nuc={is_nucleotide} pair ({i},{j}): {got} vs {want}\n{:?}\n{:?}",
+                                String::from_utf8_lossy(&seqs[i]), String::from_utf8_lossy(&seqs[j]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The alphabet is fixed by the caller: a sequence with an ambiguity
+    /// code anywhere (even among its first 100 letters, where the sniffing
+    /// wrapper would have switched the pair to protein) gets the same
+    /// nucleotide distance as `ktuple_distance_typed(.., true)`, and the
+    /// order of the pair does not matter for the alphabet.
+    #[test]
+    fn ktuple_prepared_alphabet_comes_from_the_caller() {
+        let seq1 = b"ACGTACGTAC".to_vec(); // 10 nucleotide letters
+        for w_at in [0usize, 50, 89, 90, 95, 150] {
+            let mut seq2 = b"ACGT".repeat(40);
+            seq2[w_at] = b'R';
+            for is_nucleotide in [true, false] {
+                let fwd = [KtupleSeq::new(&seq1, 6, is_nucleotide), KtupleSeq::new(&seq2, 6, is_nucleotide)];
+                let got = ktuple_distances_from(&fwd, 0, &mut KtupleScratch::default())[0];
+                let want = ktuple_distance_typed(&seq1, &seq2, 6, is_nucleotide);
+                assert_eq!(got.to_bits(), want.to_bits(), "nuc={is_nucleotide}, R at {w_at}");
+                let rev = [KtupleSeq::new(&seq2, 6, is_nucleotide), KtupleSeq::new(&seq1, 6, is_nucleotide)];
+                let got = ktuple_distances_from(&rev, 0, &mut KtupleScratch::default())[0];
+                let want = ktuple_distance_typed(&seq2, &seq1, 6, is_nucleotide);
+                assert_eq!(got.to_bits(), want.to_bits(), "rev, nuc={is_nucleotide}, R at {w_at}");
+            }
+            // The R is dropped from the nucleotide 6-mer stream wherever it
+            // sits, so the prepared nucleotide sequence always has codes.
+            assert!(KtupleSeq::new(&seq2, 6, true).points.is_some(), "R at {w_at}");
+        }
+    }
+
+    #[test]
+    fn msa_distance_prepared_is_bit_identical() {
+        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+        // A small synthetic matrix whose amino_map also sends some letters
+        // past `nalpha` (scored as "no contribution" by naive_pair_score).
+        let nalpha = 6usize;
+        let matrix: Vec<Vec<i32>> = (0..nalpha)
+            .map(|i| (0..nalpha).map(|j| ((i * 7 + j * 3) % 11) as i32 - 4).collect())
+            .collect();
+        let mut amino_map = [255u8; 256];
+        for (k, &c) in b"ACDEFGHIKL".iter().enumerate() {
+            amino_map[c as usize] = (k % 8) as u8; // codes 6 and 7 are out of range
+        }
+        let real = mafft_scoring::build_context(
+            mafft_types::ScoringModel::Blosum(62), mafft_types::SeqType::Protein);
+        for (mtx, amap, alphabet) in [
+            (&matrix, &amino_map, b"ACDEFGHIKLMNX" as &[u8]),
+            (&real.substitution_matrix, &real.amino_map, PROTEIN),
+        ] {
+            for penalty in [-1530, 0, 7] {
+                let ctx = MsaDistance::new(mtx, amap, penalty).expect("square matrix");
+                for round in 0..10 {
+                    let width = 1 + rng.below(300);
+                    let nrow = 30;
+                    let gap_rate = 1 + rng.below(9); // in tenths
+                    let rows: Vec<Vec<u8>> = (0..nrow)
+                        .map(|r| {
+                            // a few rows of a different width exercise min(len)
+                            let w = if r % 11 == 5 { rng.below(width + 20) } else { width };
+                            (0..w)
+                                .map(|_| if rng.below(10) < gap_rate { b'-' } else { rng.pick(alphabet) })
+                                .collect()
+                        })
+                        .collect();
+                    let prepared: Vec<ScoredRow> = rows.iter().map(|s| ctx.row(s)).collect();
+                    for i in 0..nrow {
+                        for j in 0..nrow {
+                            let want = scoring_matrix_distance(&rows[i], &rows[j], mtx, amap, penalty);
+                            let got = ctx.distance(&prepared[i], &prepared[j]);
+                            assert_eq!(got.to_bits(), want.to_bits(),
+                                "penalty {penalty} round {round} pair ({i},{j}): {got} vs {want}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn from_upper_rows_matches_set() {
+        let mut a = DistanceMatrix::new(4);
+        let mut rows = Vec::new();
+        for i in 0..4 {
+            let mut r = Vec::new();
+            for j in (i + 1)..4 {
+                let v = (i * 10 + j) as f64;
+                a.set(i, j, v);
+                r.push(v);
+            }
+            rows.push(r);
+        }
+        let b = DistanceMatrix::from_upper_rows(rows);
+        for i in 0..4 {
+            for j in 0..4 {
+                assert_eq!(a.get(i, j).to_bits(), b.get(i, j).to_bits());
+            }
+        }
     }
 
     #[test]

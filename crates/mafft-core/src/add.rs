@@ -13,12 +13,10 @@
 
 use std::cmp::Ordering;
 
-use rayon::prelude::*;
-
 use mafft_align::{build_local_homology_table, profile_align, AlignOp, GapModel, Profile};
 use mafft_tree::{
     addonetip_fragment, scoring_matrix_distance, DistanceMatrix, musclesupg, ClusterMethod,
-    ktuple_distance_typed, Topology,
+    Topology,
 };
 use mafft_types::{LocalHomologyTable, ScoringContext};
 
@@ -158,27 +156,12 @@ pub fn add_sequences_with(
 /// alignment, `(1 - naivepairscore / min(selfscore)) * 2`, with the
 /// progressive gap open as `penalty_dist`.
 fn msa_distance_matrix(sequences: &[Vec<u8>], scoring: &ScoringContext) -> DistanceMatrix {
-    let nseq = sequences.len();
-    let pairs: Vec<(usize, usize, f64)> = (0..nseq)
-        .into_par_iter()
-        .flat_map(|i| {
-            ((i + 1)..nseq).into_par_iter().map(move |j| {
-                let d = scoring_matrix_distance(
-                    &sequences[i],
-                    &sequences[j],
-                    &scoring.substitution_matrix,
-                    &scoring.amino_map,
-                    scoring.gap.open,
-                );
-                (i, j, d)
-            })
-        })
-        .collect();
-    let mut dm = DistanceMatrix::new(nseq);
-    for (i, j, d) in pairs {
-        dm.set(i, j, d);
-    }
-    dm
+    crate::engine::compute_distance_matrix_scoring(
+        sequences,
+        &scoring.substitution_matrix,
+        &scoring.amino_map,
+        scoring.gap.open,
+    )
 }
 
 /// Add sequences while preserving the existing alignment's column
@@ -439,11 +422,20 @@ fn dndpre_dm(seqs: &[Vec<u8>], scoring: &ScoringContext, phase: &PairPhase) -> D
     let n = seqs.len();
     let mut dm = DistanceMatrix::new(n);
     let penalty = phase.gap.open as i32;
+    // Same values as `scoring_matrix_distance` per pair (see `MsaDistance`).
+    let prepared = mafft_tree::MsaDistance::new(&phase.matrix_i32, &scoring.amino_map, penalty)
+        .map(|ctx| {
+            let rows: Vec<mafft_tree::ScoredRow> = seqs.iter().map(|s| ctx.row(s)).collect();
+            (ctx, rows)
+        });
     for i in 0..n {
         for j in (i + 1)..n {
-            let mut d = scoring_matrix_distance(
-                &seqs[i], &seqs[j], &phase.matrix_i32, &scoring.amino_map, penalty,
-            );
+            let mut d = match &prepared {
+                Some((ctx, rows)) => ctx.distance(&rows[i], &rows[j]),
+                None => scoring_matrix_distance(
+                    &seqs[i], &seqs[j], &phase.matrix_i32, &scoring.amino_map, penalty,
+                ),
+            };
             if d < 0.0 {
                 d = 0.0;
             }
@@ -1325,23 +1317,7 @@ fn commongappick_members(seqs: &mut [Vec<u8>], members: &[usize]) {
 /// Cycle-1 6-mer distances (`disttbfast.c:3568-3880`). `is_nucleotide` is
 /// the run-wide `dorp`: C picks the 6-mer alphabet once, never per pair.
 fn compute_ktuple_dm(sequences: &[Vec<u8>], is_nucleotide: bool) -> DistanceMatrix {
-    let nseq = sequences.len();
-    let pairs: Vec<(usize, usize, f64)> = (0..nseq)
-        .into_par_iter()
-        .flat_map(|i| {
-            let seqs = sequences;
-            ((i + 1)..nseq).into_par_iter().map(move |j| {
-                let d = ktuple_distance_typed(&seqs[i], &seqs[j], 6, is_nucleotide);
-                (i, j, d)
-            })
-        })
-        .collect();
-
-    let mut dm = DistanceMatrix::new(nseq);
-    for (i, j, d) in pairs {
-        dm.set(i, j, d);
-    }
-    dm
+    crate::engine::compute_distance_matrix_from_seqs(sequences, is_nucleotide)
 }
 
 #[cfg(test)]
