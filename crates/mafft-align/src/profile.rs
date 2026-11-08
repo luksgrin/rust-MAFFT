@@ -1684,7 +1684,12 @@ pub fn profile_align_imp_view(
     // Our DP needs these boundary values when i==n or j==m.
     let lasti = if tail_gap { n + 1 } else { n };
 
+    let mut dp_cancel_hit = false;
     for i in 1..lasti {
+        if (i & 31) == 0 && crate::dp_cancelled() {
+            dp_cancel_hit = true;
+            break;
+        }
         std::mem::swap(&mut previousw, &mut currentw);
         previousw[0] = initverticalw[i - 1];
 
@@ -1823,6 +1828,12 @@ pub fn profile_align_imp_view(
         }
     }
 
+    let mut ops: Vec<AlignOp> = Vec::new();
+    let mut best_score = 0.0f64;
+    'traceback: {
+    if dp_cancel_hit {
+        break 'traceback;
+    }
     if let Ok(path) = std::env::var("RS_H_DUMP") {
         use std::io::Write;
         let shape_ok = std::env::var("RS_H_DUMP_SHAPE")
@@ -2021,7 +2032,7 @@ pub fn profile_align_imp_view(
     gaptable1.reverse();
     gaptable2.reverse();
 
-    let mut ops = Vec::with_capacity(gaptable1.len());
+    ops = Vec::with_capacity(gaptable1.len());
     for k in 0..gaptable1.len() {
         match (gaptable1[k], gaptable2[k]) {
             (b'o', b'o') => ops.push(AlignOp::Match),
@@ -2032,7 +2043,7 @@ pub fn profile_align_imp_view(
     }
 
     // `tail_gap`: the DP's own cell (n, m), i.e. the last computed row.
-    let best_score = match best_wm {
+    best_score = match best_wm {
         Some(w) => w,
         None if keep_full_h => h[n * stride + m],
         None => h[m],
@@ -2070,6 +2081,7 @@ pub fn profile_align_imp_view(
         }
     }
 
+    } // 'traceback
     // Return h/ijp to the thread-local pools so the next call avoids
     // re-allocating them. (See the §C.2 path-(1) comment at the top of
     // the function for rationale.) Swap-in/swap-out matches C
@@ -2097,6 +2109,11 @@ pub fn profile_align_imp_view(
             warpis, warpjs,
         };
     });
+    if dp_cancel_hit {
+        // Abandoned by the caller (`dp_cancel_scope`): the result is
+        // discarded, so any well-formed alignment will do.
+        return Alignment::against_gaps(n, m);
+    }
 
     Alignment {
         seq1: Vec::new(),

@@ -516,6 +516,30 @@ public surfaces stable from 0.1.0 anyway.
   set under L-INS-i, G-INS-i, E-INS-i, FFT-NS-2, FFT-NS-i, `--parttree`,
   `--add` and `--memsave`, and `--thread 4` still equals `--thread 1`.
 
+- **Parallel refinement no longer waits for the slowest branch of a
+  batch.** `--thread N` refinement evaluated `N` consecutive branches as
+  one rayon batch, waited for the slowest, then committed them in order.
+  Branch costs differ about 6× (leaf splits vs. splits near the root), so
+  the workers were busy only 60–67% of the refinement wall at 250–500
+  sequences. The batch is replaced by an ordered-commit scheduler with
+  cancellation inside the DP: at most `N` evaluations are in flight over
+  a window of `2N` branches past the commit point, each taking the lowest
+  branch not yet evaluated against the current alignment; the evaluation
+  that completes the branch at the commit point commits it and every
+  completed successor in cycle order through one `Committer` (the
+  unchanged accept / reject / convergence code), and an accepted branch
+  bumps a version that stops every outstanding evaluation at its next
+  phase boundary or within 32 DP rows (`mafft_align::dp_cancel_scope`).
+  This is the Rust analogue of C's abort-and-restart (`chudan`), but
+  every committed evaluation still sees exactly the alignment the
+  sequential walk gives it, so `--thread N` output stays identical to
+  `--thread 1` and to C `--thread 1`. PF00528 n=250 `--thread 8`
+  refinement wall −13% to −29% over 4 alternating pairs, n=500 −21% and
+  −38% (CPU +3–19% for the discarded work). C's own `--thread N` for
+  N ≥ 2 follows a different, nondeterministic trajectory (0.6–2.3× the
+  refinement cycles of its `--thread 1` run on the same input), so its
+  wall times are not a like-for-like comparison.
+
 - **`--thread N` scales the iterative modes** (issue #48). The per-call
   rayon pool is unchanged. On it, independent units write into
   preallocated slots and are consumed in a fixed order, so `mafft-rs` at

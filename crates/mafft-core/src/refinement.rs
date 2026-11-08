@@ -342,6 +342,26 @@ fn evaluate_branch(
     group2: &[usize],
     skipped: bool,
 ) -> BranchEval {
+    evaluate_branch_cancellable(ctx, sequences, iter, step_idx, side, group1, group2, skipped, None)
+        .expect("evaluation without a cancel hook always completes")
+}
+
+/// `evaluate_branch` for a speculative evaluation: returns `None` as soon
+/// as `cancel()` reports (at a phase boundary) that the result is no
+/// longer wanted. `cancel` must stay true once it has become true.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_branch_cancellable(
+    ctx: &BranchCtx<'_>,
+    sequences: &[Vec<u8>],
+    iter: usize,
+    step_idx: usize,
+    side: usize,
+    group1: &[usize],
+    group2: &[usize],
+    skipped: bool,
+    cancel: Option<&dyn Fn() -> bool>,
+) -> Option<BranchEval> {
+    let cancelled = || cancel.is_some_and(|c| c());
     let BranchCtx { topology, scoring, params, constraints, branch_weights, .. } = *ctx;
 
     if let Ok(f) = std::env::var("RS_DISTARR_DUMP") {
@@ -409,7 +429,10 @@ fn evaluate_branch(
     let old_score = old_sub + old_imp;
 
     if skipped {
-        return BranchEval { old_score, outcome: BranchOutcome::Skipped };
+        return Some(BranchEval { old_score, outcome: BranchOutcome::Skipped });
+    }
+    if cancelled() {
+        return None;
     }
 
     // `--allowshift`: per-branch distances-from-tip drive the
@@ -431,8 +454,11 @@ fn evaluate_branch(
         constraints, params.use_fft, mm_input.as_ref(),
         params.minimum_weight,
     ) else {
-        return BranchEval { old_score, outcome: BranchOutcome::NoRealign };
+        return Some(BranchEval { old_score, outcome: BranchOutcome::NoRealign });
     };
+    if cancelled() {
+        return None;
+    }
 
     // C's identity check (tditeration.c:2184-2185): compare only
     // the representative sequences s1=memlist1[0], s2=memlist2[0]
@@ -461,7 +487,7 @@ fn evaluate_branch(
     // score comparison, changing accept/reject decisions
     // and the `converged_count` sequence.
     if !changed {
-        return BranchEval { old_score, outcome: BranchOutcome::Unchanged };
+        return Some(BranchEval { old_score, outcome: BranchOutcome::Unchanged });
     }
 
     // C's tscore = impmatchdouble + tmpdouble (tditeration.c:1094):
@@ -485,7 +511,7 @@ fn evaluate_branch(
         ))
     } else { 0.0 };
     let tscore = new_sub + new_imp;
-    BranchEval { old_score, outcome: BranchOutcome::Changed { new_seqs, tscore } }
+    Some(BranchEval { old_score, outcome: BranchOutcome::Changed { new_seqs, tscore } })
 }
 
 /// How many branches of a cycle to evaluate at once against the same
@@ -497,6 +523,355 @@ fn speculation_width() -> usize {
     if mafft_align::parallel_enabled() { rayon::current_num_threads() } else { 1 }
 }
 
+/// One refinement cycle's decision state.
+///
+/// `commit` is the body of the sequential walk for one branch. It must be
+/// called for the cycle's branches in order, each with the evaluation made
+/// against the alignment that the previous calls produced; it then makes
+/// exactly the decisions of the `--thread 1` walk (C `athread` rules when
+/// `per_cycle_convergence`, `TreeDependentIteration` rules otherwise).
+struct Committer<'c> {
+    params: &'c RefinementParams,
+    iter: usize,
+    history: &'c [std::collections::HashMap<BranchId, f64>],
+    convergence_target: usize,
+    iter_scores: std::collections::HashMap<BranchId, f64>,
+    last_accepted_tscore: Option<f64>,
+    converged_count: usize,
+    athread_finish: bool,
+    any_change: bool,
+    visited: usize,
+    branches: usize,
+    accepted: usize,
+    /// Set when the walk stops right after the committed branch
+    /// (`converged` / `oscillation`), mid-cycle, as
+    /// `TreeDependentIteration` does.
+    stop: Option<&'static str>,
+}
+
+struct CommitOut {
+    /// The accepted re-alignment, which becomes the current alignment.
+    new_seqs: Option<Vec<Vec<u8>>>,
+    /// Stop the walk after this branch.
+    stop: bool,
+}
+
+/// `(step_idx, side, group1, group2, skipped)`.
+type CycleEntry<'a> = (usize, usize, &'a [usize], &'a [usize], bool);
+
+impl Committer<'_> {
+    fn commit(&mut self, entry: CycleEntry<'_>, eval: Option<BranchEval>) -> CommitOut {
+        let params = self.params;
+        let iter = self.iter;
+        let (step_idx, side, group1, group2, _) = entry;
+        let branch_id: BranchId = (step_idx, side);
+
+        // Skipped branches are silently dropped — they do NOT
+        // count toward the convergence target, mirroring C
+        // `tditeration.c:2358` (`identity = 1; tscore = mscore`
+        // for skipped branches, which `tditeration.c:2255-2256`
+        // then treats as "no improvement" without bumping the
+        // converge counter).
+        let Some(BranchEval { old_score, outcome }) = eval else {
+            self.iter_scores.insert(branch_id, 0.0);
+            return CommitOut { new_seqs: None, stop: false };
+        };
+
+        let mut accepted: Option<Vec<Vec<u8>>> = None;
+        match outcome {
+            BranchOutcome::Skipped | BranchOutcome::NoRealign => {
+                if matches!(outcome, BranchOutcome::NoRealign) {
+                    self.visited += 1;
+                }
+                self.iter_scores.insert(branch_id, old_score);
+                self.converged_count += 1;
+            }
+            BranchOutcome::Unchanged => {
+                self.visited += 1;
+                // Identical — no change, count toward convergence
+                let tscore = old_score;
+                if let Ok(f) = std::env::var("RS_REFINE_TRACE") {
+                    use std::io::Write;
+                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                        let _ = writeln!(fp, "NOTHREAD pid={} niter={} iter={} l={} k={} clus1={} clus2={} mscore={:.6} tscore={:.6} accept=0",
+                            std::process::id(), params.max_iterations, iter, step_idx, side, group1.len(), group2.len(), old_score, tscore);
+                    }
+                }
+                self.iter_scores.insert(branch_id, tscore);
+                self.converged_count += 1;
+            }
+            BranchOutcome::Changed { new_seqs, tscore } => {
+                self.visited += 1;
+                let threshold = old_score - params.cut / 100.0 * old_score;
+                self.branches += 1;
+                if tscore > threshold { self.accepted += 1; }
+                if std::env::var("RUST_MAFFT_TRACE").is_ok() {
+                    eprintln!("ACCEPT iter={iter} step={step_idx} side={side} old={:.3} new={:.3} accept={}",
+                        old_score, tscore, tscore > threshold);
+                }
+                if let Ok(f) = std::env::var("RS_REFINE_TRACE") {
+                    use std::io::Write;
+                    if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                        let _ = writeln!(fp, "NOTHREAD pid={} niter={} iter={} l={} k={} clus1={} clus2={} mscore={:.6} tscore={:.6} accept={}",
+                            std::process::id(), params.max_iterations, iter, step_idx, side, group1.len(), group2.len(), old_score, tscore,
+                            if tscore > threshold { 1 } else { 0 });
+                    }
+                }
+                if tscore > threshold {
+                    if let Ok(f) = std::env::var("RS_ALIGN_HASH") {
+                        use std::io::Write;
+                        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+                            let mut h: u64 = 5381;
+                            for s in &new_seqs {
+                                for &c in s { h = h.wrapping_mul(33).wrapping_add(c as u64); }
+                            }
+                            let w = new_seqs.first().map_or(0, |s| s.len());
+                            let _ = writeln!(fp, "ACCEPT iter={} step={} side={} width={} hash={:x}", iter, step_idx, side, w, h);
+                        }
+                    }
+                    self.any_change = true;
+                    self.last_accepted_tscore = Some(tscore);
+                    self.converged_count = 0;
+                    self.iter_scores.insert(branch_id, tscore);
+                    accepted = Some(new_seqs);
+                } else {
+                    self.converged_count += 1;
+                    // C `tditeration.c:2336`: on reject, `tscore = mscore`
+                    // before `history[iterate][l][k] = tscore`. Storing the
+                    // (unchanged) mscore makes oscillation detection fire
+                    // when the same branch's mscore equals an earlier
+                    // iteration's mscore — which is what closes BB12019 /
+                    // BB12029 / BB30018 / BB40043's 4-line residuals.
+                    self.iter_scores.insert(branch_id, old_score);
+                }
+            }
+        }
+
+        if !params.per_cycle_convergence && self.converged_count >= self.convergence_target {
+            self.stop = Some("converged");
+            return CommitOut { new_seqs: accepted, stop: true };
+        }
+
+        if params.per_cycle_convergence {
+            // `athread` worker, `tditeration.c:1217-1230`: the
+            // branch's tscore equals its tscore in ANY earlier cycle
+            // `ii <= iterate-2` (step 1, not 2) -> `*finishpt = 1`.
+            // The collector turns that into `Converged2.` at the end
+            // of the cycle (`:636-637`); the cycle itself completes.
+            if iter >= 2 && !self.athread_finish {
+                let tscore = self.iter_scores[&branch_id];
+                for ii in (0..=iter - 2).rev() {
+                    if let Some(&prev_score) = self.history[ii].get(&branch_id) {
+                        if tscore == prev_score {
+                            self.athread_finish = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if iter >= 2 {
+            // Oscillation detection: check if this branch's score matches
+            // the score from 2, 4, 6... iterations ago (same branch).
+            let tscore = self.iter_scores[&branch_id];
+            let mut oscillating = false;
+            let mut ii = self.history.len() as isize - 2; // iterate-2
+            while ii >= 0 {
+                if let Some(&prev_score) = self.history[ii as usize].get(&branch_id) {
+                    if tscore == prev_score {
+                        oscillating = true;
+                        break;
+                    }
+                }
+                ii -= 2;
+            }
+            if oscillating {
+                self.stop = Some("oscillation");
+                return CommitOut { new_seqs: accepted, stop: true };
+            }
+        }
+        CommitOut { new_seqs: accepted, stop: false }
+    }
+}
+
+/// One refinement cycle on a work-conserving, ordered-commit schedule.
+///
+/// The previous schedule evaluated `width` consecutive branches as one
+/// rayon batch and waited for the slowest before committing any of them.
+/// Branch costs differ by an order of magnitude (leaf vs. near-root
+/// splits), so on n = 500 the workers sat idle a third of the time.
+///
+/// Here at most `width` rayon tasks are in flight. Each takes the lowest
+/// branch in `[commit, commit + window)` with no evaluation against the
+/// current alignment and evaluates it against an immutable snapshot of
+/// that alignment. The task that completes the branch at the commit point
+/// commits it, and every completed branch after it, in cycle order, through
+/// `Committer` (under the mutex), then tops the pool up with new tasks. An
+/// accepted branch installs its re-alignment as the new snapshot and bumps
+/// `version`; every outstanding evaluation was made against the replaced
+/// alignment, so all of them are dropped, and running ones stop at their
+/// next check (`evaluate_branch_cancellable`'s phase boundaries and
+/// `mafft_align::dp_cancel_scope` inside the DP, the analogue of C's
+/// `chudan`). A committed evaluation therefore always saw exactly the
+/// alignment the sequential walk gives it, and the result equals
+/// `--thread 1` whatever the timing.
+fn async_cycle(
+    ctx: &BranchCtx<'_>,
+    cycle: &[CycleEntry<'_>],
+    iter: usize,
+    sequences: &mut Vec<Vec<u8>>,
+    cm: &mut Committer<'_>,
+    width: usize,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    enum Slot {
+        Empty,
+        Running,
+        Done(Option<BranchEval>),
+    }
+    struct State<'a, 'c> {
+        cm: &'a mut Committer<'c>,
+        snapshot: Arc<Vec<Vec<u8>>>,
+        commit: usize,
+        slots: Vec<Slot>,
+        in_flight: usize,
+        done: bool,
+    }
+    struct Shared<'e, 'a, 'c, 'x> {
+        ctx: &'e BranchCtx<'x>,
+        cycle: &'e [CycleEntry<'e>],
+        iter: usize,
+        state: Mutex<State<'a, 'c>>,
+        /// Number of accepted branches so far in this cycle; an evaluation
+        /// is current iff it was started at the present value.
+        version: AtomicU64,
+        width: usize,
+        window: usize,
+    }
+    type Job = (usize, u64, Arc<Vec<Vec<u8>>>);
+
+    /// Commit everything committable, then hand out new work.
+    fn advance(g: &mut State<'_, '_>, sh_cycle: &[CycleEntry<'_>], version: &AtomicU64,
+               width: usize, window: usize) -> Vec<Job> {
+        let n = sh_cycle.len();
+        while !g.done && g.commit < n && matches!(g.slots[g.commit], Slot::Done(_)) {
+            let Slot::Done(eval) = std::mem::replace(&mut g.slots[g.commit], Slot::Empty) else {
+                unreachable!()
+            };
+            let k = g.commit;
+            g.commit += 1;
+            let out = g.cm.commit(sh_cycle[k], eval);
+            if let Some(new_seqs) = out.new_seqs {
+                g.snapshot = Arc::new(new_seqs);
+                version.fetch_add(1, Ordering::AcqRel);
+                // Everything outstanding was (or is being) evaluated
+                // against the replaced alignment.
+                for slot in &mut g.slots[g.commit..] {
+                    *slot = Slot::Empty;
+                }
+            }
+            if out.stop {
+                g.done = true;
+            }
+        }
+        if g.commit >= n {
+            g.done = true;
+        }
+        let mut jobs = Vec::new();
+        if !g.done {
+            let v = version.load(Ordering::Acquire);
+            let end = (g.commit + window).min(n);
+            for j in g.commit..end {
+                if g.in_flight >= width {
+                    break;
+                }
+                if matches!(g.slots[j], Slot::Empty) {
+                    g.slots[j] = Slot::Running;
+                    g.in_flight += 1;
+                    jobs.push((j, v, Arc::clone(&g.snapshot)));
+                }
+            }
+        }
+        jobs
+    }
+
+    fn run<'s, 'e: 's, 'a: 'e, 'c: 'e, 'x: 'e>(
+        s: &rayon::Scope<'s>,
+        sh: &'e Shared<'e, 'a, 'c, 'x>,
+        job: Job,
+    ) {
+        let (k, v, snapshot) = job;
+        let stale = || sh.version.load(Ordering::Acquire) != v;
+        // `None`: abandoned. `Some(None)`: a skipped branch (no evaluation).
+        let mut result: Option<Option<BranchEval>> = None;
+        if !stale() {
+            let (step_idx, side, group1, group2, skipped) = sh.cycle[k];
+            result = if skipped && !sh.ctx.params.per_cycle_convergence {
+                Some(None)
+            } else {
+                let _dp_cancel = mafft_align::dp_cancel_scope(&sh.version, v);
+                evaluate_branch_cancellable(
+                    sh.ctx, &snapshot, sh.iter, step_idx, side, group1, group2, skipped, Some(&stale),
+                )
+                .map(Some)
+            };
+        }
+        drop(snapshot);
+        let jobs = {
+            let mut g = sh.state.lock().unwrap();
+            g.in_flight -= 1;
+            if let Some(eval) = result {
+                // `version` only grows, so equality means no branch was
+                // accepted since this evaluation started.
+                if !g.done && sh.version.load(Ordering::Acquire) == v {
+                    g.slots[k] = Slot::Done(eval);
+                }
+            }
+            advance(&mut g, sh.cycle, &sh.version, sh.width, sh.window)
+        };
+        // Spawn the highest index first so that this thread, which pops its
+        // own deque LIFO, continues with the lowest one.
+        for job in jobs.into_iter().rev() {
+            s.spawn(move |s| run(s, sh, job));
+        }
+    }
+
+    let n = cycle.len();
+    let sh = Shared {
+        ctx,
+        cycle,
+        iter,
+        state: Mutex::new(State {
+            cm,
+            snapshot: Arc::new(std::mem::take(sequences)),
+            commit: 0,
+            slots: (0..n).map(|_| Slot::Empty).collect(),
+            in_flight: 0,
+            done: n == 0,
+        }),
+        version: AtomicU64::new(0),
+        width,
+        // Lookahead past the commit point. Replaying the n = 250 trajectory
+        // with its measured branch costs, 2 x width already keeps the
+        // workers busy; more only adds discarded work.
+        window: 2 * width,
+    };
+    rayon::scope(|s| {
+        let jobs = {
+            let mut g = sh.state.lock().unwrap();
+            advance(&mut g, sh.cycle, &sh.version, sh.width, sh.window)
+        };
+        let sh = &sh;
+        for job in jobs.into_iter().rev() {
+            s.spawn(move |s| run(s, sh, job));
+        }
+    });
+    let state = sh.state.into_inner().unwrap();
+    debug_assert_eq!(state.in_flight, 0);
+    *sequences = Arc::try_unwrap(state.snapshot).unwrap_or_else(|a| (*a).clone());
+}
+
 fn iterative_refine_inner(
     alignment: &mut MultipleAlignment,
     topology: &Topology,
@@ -505,7 +880,6 @@ fn iterative_refine_inner(
     constraints: Option<&LocalHomologyTable>,
     counters: &mut RefineCounters,
 ) -> usize {
-    use rayon::prelude::*;
 
     let nseq = alignment.nseq();
     // C refines two sequences too: `dvtditr.c:704-708` sets
@@ -569,11 +943,11 @@ fn iterative_refine_inner(
     let mut iteration = 0;
     for iter in 0..params.max_iterations {
         iteration = iter + 1;
-        let mut any_change = false;
-        let mut iter_scores: std::collections::HashMap<BranchId, f64> = std::collections::HashMap::new();
+        let any_change = false;
+        let iter_scores: std::collections::HashMap<BranchId, f64> = std::collections::HashMap::new();
         // C `tscorelist[thread_no]` (`tditeration.c:1184`): reset per cycle
         // (`:520`), overwritten on every accept.
-        let mut last_accepted_tscore: Option<f64> = None;
+        let last_accepted_tscore: Option<f64> = None;
 
         // The cycle's branches in visiting order, with their
         // `--skipiterate` small-F flag (port of C `dvtditr.c:1059-1066`'s
@@ -591,171 +965,59 @@ fn iterative_refine_inner(
                 })
                 .collect();
 
-        // Branches are decided strictly in `cycle` order. Up to `width`
-        // of them are evaluated at once against the current alignment;
-        // the results are consumed in order, and everything after an
-        // accepted branch is discarded and re-evaluated against the new
-        // alignment. Each consumed evaluation therefore saw exactly the
-        // alignment the sequential walk would have given it.
-        let mut pos = 0usize;
-        while pos < cycle.len() {
-            let end = (pos + width).min(cycle.len());
-            let eval_one = |k: usize| -> Option<BranchEval> {
-                let (step_idx, side, group1, group2, skipped) = cycle[k];
+        // Branches are decided strictly in `cycle` order by `Committer`.
+        // Every committed evaluation was made against exactly the alignment
+        // the sequential walk gives that branch, so the outcome does not
+        // depend on the schedule or on the thread count.
+        let mut cm = Committer {
+            params,
+            iter,
+            history: &history,
+            convergence_target,
+            iter_scores,
+            last_accepted_tscore,
+            converged_count,
+            athread_finish,
+            any_change,
+            visited: 0,
+            branches: 0,
+            accepted: 0,
+            stop: None,
+        };
+        if width > 1 && cycle.len() > 1 {
+            async_cycle(&ctx, &cycle, iter, &mut alignment.sequences, &mut cm, width);
+        } else {
+            for &entry in &cycle {
+                let (step_idx, side, group1, group2, skipped) = entry;
                 // `athread` (`tditeration.c:1064-1067`, `:1234`) still
                 // computes a skipped branch's `mscore` and records
                 // `tscore = mscore` for the `Converged2.` check, so in
                 // that mode it is scored and only the re-alignment is
                 // skipped. The sequential rule drops it unscored.
-                if skipped && !params.per_cycle_convergence {
-                    return None;
-                }
-                Some(evaluate_branch(
+                let eval = (!skipped || params.per_cycle_convergence).then(|| evaluate_branch(
                     &ctx, &alignment.sequences, iter, step_idx, side, group1, group2, skipped,
-                ))
-            };
-            let evals: Vec<Option<BranchEval>> = if end - pos > 1 {
-                (pos..end).into_par_iter().map(eval_one).collect()
-            } else {
-                vec![eval_one(pos)]
-            };
-
-            for (k, eval) in (pos..end).zip(evals) {
-                pos = k + 1;
-                let (step_idx, side, group1, group2, _) = cycle[k];
-                let branch_id: BranchId = (step_idx, side);
-
-                // Skipped branches are silently dropped — they do NOT
-                // count toward the convergence target, mirroring C
-                // `tditeration.c:2358` (`identity = 1; tscore = mscore`
-                // for skipped branches, which `tditeration.c:2255-2256`
-                // then treats as "no improvement" without bumping the
-                // converge counter).
-                let Some(BranchEval { old_score, outcome }) = eval else {
-                    iter_scores.insert(branch_id, 0.0);
-                    continue;
-                };
-
-                let mut accepted = false;
-                match outcome {
-                    BranchOutcome::Skipped | BranchOutcome::NoRealign => {
-                        if matches!(outcome, BranchOutcome::NoRealign) {
-                            counters.visited += 1;
-                        }
-                        iter_scores.insert(branch_id, old_score);
-                        converged_count += 1;
-                    }
-                    BranchOutcome::Unchanged => {
-                        counters.visited += 1;
-                        // Identical — no change, count toward convergence
-                        let tscore = old_score;
-                        if let Ok(f) = std::env::var("RS_REFINE_TRACE") {
-                            use std::io::Write;
-                            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-                                let _ = writeln!(fp, "NOTHREAD pid={} niter={} iter={} l={} k={} clus1={} clus2={} mscore={:.6} tscore={:.6} accept=0",
-                                    std::process::id(), params.max_iterations, iter, step_idx, side, group1.len(), group2.len(), old_score, tscore);
-                            }
-                        }
-                        iter_scores.insert(branch_id, tscore);
-                        converged_count += 1;
-                    }
-                    BranchOutcome::Changed { new_seqs, tscore } => {
-                        counters.visited += 1;
-                        let threshold = old_score - params.cut / 100.0 * old_score;
-                        counters.branches += 1;
-                        if tscore > threshold { counters.accepted += 1; }
-                        if std::env::var("RUST_MAFFT_TRACE").is_ok() {
-                            eprintln!("ACCEPT iter={iter} step={step_idx} side={side} old={:.3} new={:.3} accept={}",
-                                old_score, tscore, tscore > threshold);
-                        }
-                        if let Ok(f) = std::env::var("RS_REFINE_TRACE") {
-                            use std::io::Write;
-                            if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-                                let _ = writeln!(fp, "NOTHREAD pid={} niter={} iter={} l={} k={} clus1={} clus2={} mscore={:.6} tscore={:.6} accept={}",
-                                    std::process::id(), params.max_iterations, iter, step_idx, side, group1.len(), group2.len(), old_score, tscore,
-                                    if tscore > threshold { 1 } else { 0 });
-                            }
-                        }
-                        if tscore > threshold {
-                            alignment.sequences = new_seqs;
-                            accepted = true;
-                            if let Ok(f) = std::env::var("RS_ALIGN_HASH") {
-                                use std::io::Write;
-                                if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
-                                    let mut h: u64 = 5381;
-                                    for s in &alignment.sequences {
-                                        for &c in s { h = h.wrapping_mul(33).wrapping_add(c as u64); }
-                                    }
-                                    let w = alignment.sequences.first().map_or(0, |s| s.len());
-                                    let _ = writeln!(fp, "ACCEPT iter={} step={} side={} width={} hash={:x}", iter, step_idx, side, w, h);
-                                }
-                            }
-                            any_change = true;
-                            last_accepted_tscore = Some(tscore);
-                            converged_count = 0;
-                            iter_scores.insert(branch_id, tscore);
-                        } else {
-                            converged_count += 1;
-                            // C `tditeration.c:2336`: on reject, `tscore = mscore`
-                            // before `history[iterate][l][k] = tscore`. Storing the
-                            // (unchanged) mscore makes oscillation detection fire
-                            // when the same branch's mscore equals an earlier
-                            // iteration's mscore — which is what closes BB12019 /
-                            // BB12029 / BB30018 / BB40043's 4-line residuals.
-                            iter_scores.insert(branch_id, old_score);
-                        }
-                    }
+                ));
+                let out = cm.commit(entry, eval);
+                if let Some(new_seqs) = out.new_seqs {
+                    alignment.sequences = new_seqs;
                 }
-
-                if !params.per_cycle_convergence && converged_count >= convergence_target {
-                    counters.exit = "converged";
-                    return iteration;
-                }
-
-                if params.per_cycle_convergence {
-                    // `athread` worker, `tditeration.c:1217-1230`: the
-                    // branch's tscore equals its tscore in ANY earlier cycle
-                    // `ii <= iterate-2` (step 1, not 2) -> `*finishpt = 1`.
-                    // The collector turns that into `Converged2.` at the end
-                    // of the cycle (`:636-637`); the cycle itself completes.
-                    if iter >= 2 && !athread_finish {
-                        let tscore = iter_scores[&branch_id];
-                        for ii in (0..=iter - 2).rev() {
-                            if let Some(&prev_score) = history[ii].get(&branch_id) {
-                                if tscore == prev_score {
-                                    athread_finish = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                } else if iter >= 2 {
-                    // Oscillation detection: check if this branch's score matches
-                    // the score from 2, 4, 6... iterations ago (same branch).
-                    let tscore = iter_scores[&branch_id];
-                    let mut oscillating = false;
-                    let mut ii = history.len() as isize - 2; // iterate-2
-                    while ii >= 0 {
-                        if let Some(&prev_score) = history[ii as usize].get(&branch_id) {
-                            if tscore == prev_score {
-                                oscillating = true;
-                                break;
-                            }
-                        }
-                        ii -= 2;
-                    }
-                    if oscillating {
-                        counters.exit = "oscillation";
-                        return iteration;
-                    }
-                }
-
-                // The rest of the batch was evaluated against the
-                // alignment this branch just replaced.
-                if accepted {
+                if out.stop {
                     break;
                 }
             }
+        }
+        counters.visited += cm.visited;
+        counters.branches += cm.branches;
+        counters.accepted += cm.accepted;
+        converged_count = cm.converged_count;
+        athread_finish = cm.athread_finish;
+        let any_change = cm.any_change;
+        let last_accepted_tscore = cm.last_accepted_tscore;
+        let stop = cm.stop;
+        let iter_scores = cm.iter_scores;
+        if let Some(exit) = stop {
+            counters.exit = exit;
+            return iteration;
         }
 
         history.push(iter_scores);
