@@ -4,7 +4,8 @@ use rayon::prelude::*;
 
 use mafft_io::read_fasta;
 use mafft_scoring::{build_context, build_context_with_kimura};
-use mafft_tree::{DistanceMatrix, musclesupg, ktuple_distance_typed, scoring_matrix_distance};
+use mafft_tree::{DistanceMatrix, musclesupg, scoring_matrix_distance};
+use mafft_tree::{KtupleSeq, KtupleScratch, ktuple_distances_from, MsaDistance, ScoredRow};
 use mafft_tree::parttree_pivot::PtSeqKind;
 use mafft_align::{build_local_homology_table, GapModel};
 use mafft_types::{ScoringModel, SequenceSet, LocalHomologyTable};
@@ -1919,24 +1920,26 @@ pub fn dpparttree_run(
 /// Matches C's default distance computation using `commonsextet_p`
 /// (`disttbfast.c:3568-3880`). `is_nucleotide` is the run-wide `dorp`;
 /// C picks the 6-mer alphabet once from it, never per pair.
-fn compute_distance_matrix_from_seqs(sequences: &[Vec<u8>], is_nucleotide: bool) -> DistanceMatrix {
+pub(crate) fn compute_distance_matrix_from_seqs(
+    sequences: &[Vec<u8>],
+    is_nucleotide: bool,
+) -> DistanceMatrix {
+    // `ktuple_distance_typed(&seqs[i], &seqs[j], 6, is_nucleotide)` for
+    // every i < j, with the per-sequence work (groups, 6-tuple codes) done
+    // once per sequence and the composition table once per row, as C does;
+    // see `KtupleSeq`.
     let nseq = sequences.len();
-    let pairs: Vec<(usize, usize, f64)> = (0..nseq)
+    let prepared: Vec<KtupleSeq> = sequences
+        .iter()
+        .map(|s| KtupleSeq::new(s, 6, is_nucleotide))
+        .collect();
+    let rows: Vec<Vec<f64>> = (0..nseq)
         .into_par_iter()
-        .flat_map(|i| {
-            let seqs = sequences;
-            ((i + 1)..nseq).into_par_iter().map(move |j| {
-                let d = ktuple_distance_typed(&seqs[i], &seqs[j], 6, is_nucleotide);
-                (i, j, d)
-            })
+        .map_init(KtupleScratch::default, |scratch, i| {
+            ktuple_distances_from(&prepared, i, scratch)
         })
         .collect();
-
-    let mut dm = DistanceMatrix::new(nseq);
-    for (i, j, d) in pairs {
-        dm.set(i, j, d);
-    }
-    dm
+    DistanceMatrix::from_upper_rows(rows)
 }
 
 /// Compute pairwise distances from aligned sequences using scoring matrix.
@@ -1944,13 +1947,24 @@ fn compute_distance_matrix_from_seqs(sequences: &[Vec<u8>], is_nucleotide: bool)
 /// Ports C's `msadistmtxthread` which uses `naivepairscorefast` for the
 /// retree distance computation. This produces different distances from
 /// simple identity distance and thus a different guide tree.
-fn compute_distance_matrix_scoring(
+pub(crate) fn compute_distance_matrix_scoring(
     sequences: &[Vec<u8>],
     matrix: &[Vec<i32>],
     amino_map: &[u8; 256],
     penalty_dist: i32,
 ) -> DistanceMatrix {
     let nseq = sequences.len();
+    // Self-scores and residue columns once per row, then an
+    // O(residues) merge per pair; bit-identical to the per-pair
+    // `scoring_matrix_distance` below (see `MsaDistance`).
+    if let Some(ctx) = MsaDistance::new(matrix, amino_map, penalty_dist) {
+        let rows: Vec<ScoredRow> = sequences.par_iter().map(|s| ctx.row(s)).collect();
+        let upper: Vec<Vec<f64>> = (0..nseq)
+            .into_par_iter()
+            .map(|i| ((i + 1)..nseq).map(|j| ctx.distance(&rows[i], &rows[j])).collect())
+            .collect();
+        return DistanceMatrix::from_upper_rows(upper);
+    }
     let pairs: Vec<(usize, usize, f64)> = (0..nseq)
         .into_par_iter()
         .flat_map(|i| {

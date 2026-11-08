@@ -21,7 +21,8 @@ pub mod memsavetree;
 
 pub use distance::{
     DistanceMatrix, pairwise_identity_distance, ktuple_distance, ktuple_distance_typed,
-    scoring_matrix_distance,
+    scoring_matrix_distance, KtupleSeq, KtupleScratch, ktuple_distances_from, MsaDistance,
+    ScoredRow,
 };
 pub use nj::neighbor_joining;
 pub use upgma::{upgma, upgma_int};

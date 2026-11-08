@@ -465,6 +465,31 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Performance
 
+- **The two all-pairs distance stages no longer redo per-sequence work
+  per pair.** The 6-mer distance of the first guide tree
+  (`compute_distance_matrix_from_seqs`, also the `--add` cycle-1 matrix)
+  rebuilt both sequences' group strings and 6-mer code lists and
+  allocated and zeroed two 46,656-entry composition tables for every
+  pair; at 500 sequences that is 46 GB of zeroing, and all of
+  `mafft-rs`'s system time was the allocator returning those pages. The
+  codes are now built once per sequence (`KtupleSeq`), the composition
+  table once per row, and the `commonsextet_p` counter clears only the
+  entries it touched (`KtupleScratch`), as C does
+  (`disttbfast.c:3601-3633`, `:3817-3835`, `mltaln9.c:15376`). The
+  alignment-based distance before the second tree
+  (`compute_distance_matrix_scoring`, also FFT-NS-i, `--add` and
+  `dndpre`) recomputed both self-scores and copied both rows without
+  their common-gap columns per pair; `MsaDistance` now computes the
+  self-score and the residue-column list once per row and merges two
+  lists per pair, adding the same terms in the same column order. Both
+  stages produce the same `f64`s bit for bit (four `to_bits()` tests
+  against the per-pair functions), and the 6-mer alphabet is still the
+  run-wide sequence type chosen once from the input, never per pair.
+  PF00528 at 500 sequences, FFT-NS-2 `--thread 1` on an Apple M4: CPU
+  3.0 s -> 1.5 s (user+sys 2.45+0.57 -> 1.50+0.01; C 1.87+0.09), with
+  the output unchanged; byte-identical to C on FFT-NS-2, FFT-NS-i,
+  `--parttree`, `--add`, L-INS-i and the 16S rRNA sets at 250 and 500.
+
 - **`--thread N` scales the iterative modes** (issue #48). The per-call
   rayon pool is unchanged. On it, independent units write into
   preallocated slots and are consumed in a fixed order, so `mafft-rs` at
