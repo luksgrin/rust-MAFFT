@@ -25,6 +25,7 @@ use mafft_align::{
     BoundaryFreqs, MultiMtx,
     build_imp_diagonal, build_imp_matrix, FASTATHRESHOLD_DEFAULT,
     Profile, GapModel, AlignOp,
+    alignable_site_scores, fft_total_eff, matrix_i32_to_f64,
 };
 use mafft_fft::{alignable_segments, SegmentParams};
 use mafft_tree::{Topology, BranchWeights};
@@ -1249,18 +1250,21 @@ fn realign_all(
         };
 
         // Step 1: Compute per-position site scores at lag=0 (C's alignableReagion,
-        // fftFunctions.c:282-287). For refinement, prof1.length == prof2.length,
-        // so we score pairwise at matching columns. C uses n_disFFT which equals
-        // substitution_matrix when offset=0 (mafft default).
-        // C divides by totaleff = sum eff1[i]*eff2[j]; with normalized weights this is 1.
-        let totaleff: f64 = w1n.iter().sum::<f64>() * w2n.iter().sum::<f64>();
-        let len = full_prof1.length.min(full_prof2.length);
-        let mut site_scores = vec![0.0f64; len];
-        for i in 0..len {
-            site_scores[i] =
-                full_prof1.match_score(i, &full_prof2, i, &scoring.consweight_matrix)
-                / totaleff;
-        }
+        // fftFunctions.c:243-288). For refinement, prof1.length == prof2.length,
+        // so we score pairwise at matching columns. C scores the columns
+        // with `n_disFFT` (`constants.c:1435-1442`), NOT with the DP matrix
+        // `n_dis_consweight_multi`: only the scored block (10x10 for
+        // nucleotides, 20x20 for protein) is filled, so an IUPAC ambiguity
+        // code such as `r` adds nothing to a site score even though it
+        // scores against `a`/`g` in the DP. Scoring the sites with
+        // `consweight_matrix` instead puts the cuts elsewhere than C
+        // whenever such a column sits in a window at the threshold.
+        // `fft_matrix` is the port of `n_disFFT`; `alignable_site_scores`
+        // keeps C's summation order and `fft_total_eff` its `totaleff`.
+        let site_matrix = matrix_i32_to_f64(&scoring.fft_matrix);
+        let site_scores = alignable_site_scores(
+            &full_prof1, &full_prof2, &site_matrix, fft_total_eff(&w1n, &w2n),
+        );
 
         // Step 2: Find alignable segments via the sliding window threshold test.
         let segments = alignable_segments(&site_scores, &segment_params);
@@ -1541,15 +1545,13 @@ fn realign_all_constrained_fft(
         SegmentParams::protein().with_threshold(50.0)
     };
 
-    // Per-position site scores at lag=0 (C's alignableReagion).
-    let totaleff: f64 = w1n.iter().sum::<f64>() * w2n.iter().sum::<f64>();
-    let len = full_prof1.length.min(full_prof2.length);
-    let mut site_scores = vec![0.0f64; len];
-    for i in 0..len {
-        site_scores[i] = full_prof1.match_score(
-            i, &full_prof2, i, &scoring.consweight_matrix,
-        ) / totaleff;
-    }
+    // Per-position site scores at lag=0 (C's alignableReagion), scored
+    // with `n_disFFT` (`fft_matrix`), not the DP matrix — see the
+    // unconstrained path above.
+    let site_matrix = matrix_i32_to_f64(&scoring.fft_matrix);
+    let site_scores = alignable_site_scores(
+        &full_prof1, &full_prof2, &site_matrix, fft_total_eff(w1n, w2n),
+    );
     let segments = alignable_segments(&site_scores, &segment_params);
 
     // Cut points (C's `cut1[i+1] = sortedseg1[i]->center` plus 0 and len).
@@ -1559,6 +1561,14 @@ fn realign_all_constrained_fft(
     cuts.push(width);
     cuts.sort();
     cuts.dedup();
+    if let Ok(f) = std::env::var("RS_FFT_CUTS") {
+        use std::io::Write;
+        if let Ok(mut fp) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            let cuts_str: Vec<String> = cuts.iter().map(|c| c.to_string()).collect();
+            let _ = writeln!(fp, "R_FLH clus1={} clus2={} len={} ncut={} cut={}",
+                group1.len(), group2.len(), width, cuts.len(), cuts_str.join(","));
+        }
+    }
 
     // Build the GLOBAL impmtx for the full non-stripped alignment
     // (width × width). C does this via `part_imp_match_init_strict(...,
@@ -1687,50 +1697,43 @@ fn realign_all_constrained_fft(
         let mut prof_seg2 = Profile::from_aligned(&s2_refs, w2n, &scoring.amino_map, scoring.nalphabets);
 
         // Per-segment boundary gap correction (mirrors C's `getkyokaigap`
-        // → `new_OpeningGapCount` in `MSalignmm`/`partA__align`). Same as
-        // the unconstrained FFT path: a sequence already in a gap just
-        // before the segment's first column does NOT count as opening at
-        // position 0.
+        // → `new_OpeningGapCount` in `partA__align`, `partSalignmm.c:987`).
+        // Same as the unconstrained FFT path: a sequence already in a gap
+        // just before the segment's first column does NOT count as opening
+        // at position 0.
+        //
+        // The final gap counts are NOT corrected for the right boundary.
+        // `partA__align` does call `new_FinalGapCount(..., egap)`
+        // (`partSalignmm.c:989-990`), but the compiled body of that
+        // function (`mltaln9.c:12758-12793`, the `#else` branch) walks
+        // `*++spt` up to the terminating NUL, so a gap run that reaches
+        // the segment's last column is always counted as closing there and
+        // the `egappat` block after the loop (`:12784-12790`) never fires.
+        // `Profile::from_aligned` gives that value already. Subtracting the
+        // weight of the sequences whose gap continues into the next
+        // segment, as this path did and the disabled `#if 0` branch of C
+        // would, under-charged such runs; on the 250-record 16S L-INS-i
+        // run that moved a single `c` across a nine-column gap in the
+        // second iteration and the alignment never recovered.
         let sgap_inside = a > 0;
-        let egap_inside = b < width;
-        if sgap_inside || egap_inside {
+        if sgap_inside {
             if !prof_seg1.ogcp.is_empty() {
                 for (k, &idx) in group1.iter().enumerate() {
-                    if sgap_inside
-                        && sequences[idx][a - 1] == b'-'
+                    if sequences[idx][a - 1] == b'-'
                         && !stripped_seg1[k].is_empty()
                         && stripped_seg1[k][0] == b'-'
                     {
                         prof_seg1.ogcp[0] -= w1n[k];
                     }
-                    let l1k = stripped_seg1[k].len();
-                    if egap_inside
-                        && l1k > 0
-                        && stripped_seg1[k][l1k - 1] == b'-'
-                        && sequences[idx][b] == b'-'
-                    {
-                        let last = prof_seg1.fgcp.len() - 1;
-                        prof_seg1.fgcp[last] -= w1n[k];
-                    }
                 }
             }
             if !prof_seg2.ogcp.is_empty() {
                 for (k, &idx) in group2.iter().enumerate() {
-                    if sgap_inside
-                        && sequences[idx][a - 1] == b'-'
+                    if sequences[idx][a - 1] == b'-'
                         && !stripped_seg2[k].is_empty()
                         && stripped_seg2[k][0] == b'-'
                     {
                         prof_seg2.ogcp[0] -= w2n[k];
-                    }
-                    let l2k = stripped_seg2[k].len();
-                    if egap_inside
-                        && l2k > 0
-                        && stripped_seg2[k][l2k - 1] == b'-'
-                        && sequences[idx][b] == b'-'
-                    {
-                        let last = prof_seg2.fgcp.len() - 1;
-                        prof_seg2.fgcp[last] -= w2n[k];
                     }
                 }
             }

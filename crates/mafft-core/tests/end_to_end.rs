@@ -808,6 +808,7 @@ fn diagnostic_fft_anchoring() {
         total_eff: 1.0,
         udpari_long: false,
         nuc_rows: None,
+        site_matrix: None,
     };
     let fft_aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params);
 
@@ -1224,6 +1225,7 @@ fn diagnostic_fft_anchors() {
         total_eff: 1.0,
         udpari_long: false,
         nuc_rows: None,
+        site_matrix: None,
     };
 
     let aln_fft = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params);
@@ -1331,6 +1333,7 @@ fn diagnostic_fft_pipeline() {
         total_eff: 1.0,
         udpari_long: false,
         nuc_rows: None,
+        site_matrix: None,
     };
     let aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &params);
     eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());
@@ -1400,6 +1403,7 @@ fn diagnostic_step3_anchors() {
         total_eff: 1.0,
         udpari_long: false,
         nuc_rows: None,
+        site_matrix: None,
     };
     let aln = fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &params);
     eprintln!("FFT result: score={} ops={}", aln.score, aln.operations.len());
@@ -2935,6 +2939,71 @@ fn iupac_16s_pair_localpair_distance_and_alignment_match_c() {
     let dm = msa.distance_matrix.as_ref().expect("L-INS-i exposes its pairwise distance matrix");
     assert_eq!(format!("{:.3}", dm.get(0, 1)), c_dist, "pairwise distance {} vs C hat2", dm.get(0, 1));
     assert_eq!(msa.nseq(), c_ref.nseq());
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data, "seq {i} differs from C");
+    }
+}
+
+/// Nine RefSeq 16S rRNA records, FFT-NS-i (`--maxiterate 1000`); see
+/// `fixtures/README.md`. `NR_109432.1` carries an IUPAC `R` at base 406.
+/// The refinement tree comes from `dndpre`, whose `constants()` shifts the
+/// 4x4 PAM by the default offset and then derives the ambiguity rows from
+/// the shifted entries (`constants.c:373`, `ambiguousscore` at `:524`).
+/// The port zeroed every row outside the 10x10 block instead, so the `r`
+/// pair scores and self-score were 0 in the `hat2` distances, the UPGMA
+/// branch lengths moved, and the per-branch weights of every refinement
+/// step with them (seq 8: 0.489776 against C's 0.487704 on the first
+/// branch); one accept flipped and `NR_115963.1` ended with a `c` one
+/// column to the right of C's (`-c` for `c-` at columns 1519-1520).
+///
+/// Reference: `tests/fixtures/iupac_16s_9.fftnsi`.
+#[test]
+fn iupac_16s_9_fftnsi_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("iupac_16s_9.fftnsi"))
+        .expect("missing tests/fixtures/iupac_16s_9.fftnsi");
+    let input = read_fasta(fixture_path("iupac_16s_9.fa")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::FftNsi { iterations: 1000 }).align(&input);
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(),
+        c_ref.sequences[0].data.len(),
+        "width: Rust={} C={}",
+        msa.sequences[0].len(),
+        c_ref.sequences[0].data.len(),
+    );
+    for i in 0..msa.nseq() {
+        assert_eq!(msa.sequences[i], c_ref.sequences[i].data, "seq {i} differs from C");
+    }
+}
+
+/// Eighteen RefSeq 16S rRNA records, L-INS-i (`--localpair --maxiterate
+/// 1000`); see `fixtures/README.md`. The constrained refinement
+/// (`Falign_localhom` → `partA__align`) aligns each branch segment by
+/// segment. At a segment's right end the port used to subtract, from the
+/// final-gap count, the weight of every sequence whose gap run continues
+/// into the next segment, so closing such a run at the cut was free. C's
+/// compiled `new_FinalGapCount` (`mltaln9.c:12758-12793`) walks the
+/// segment string up to its NUL and counts the run as closing at the last
+/// column whatever follows; its `egappat` block never fires. Here the
+/// difference let a `t` of `NR_109461.1` cross a 20-column gap (column
+/// 1444 in C, 1423 in the old port); on the 250-record set the same
+/// mechanism changed 1683 columns.
+///
+/// Reference: `tests/fixtures/linsi_16s_18.linsi`.
+#[test]
+fn linsi_16s_18_byte_identical_to_c() {
+    let c_ref = read_fasta(fixture_path("linsi_16s_18.linsi"))
+        .expect("missing tests/fixtures/linsi_16s_18.linsi");
+    let input = read_fasta(fixture_path("linsi_16s_18.fa")).unwrap();
+    let msa = MafftEngine::new(AlignmentMode::LInsi { iterations: 1000 }).align(&input);
+    assert_eq!(msa.nseq(), c_ref.nseq());
+    assert_eq!(
+        msa.sequences[0].len(),
+        c_ref.sequences[0].data.len(),
+        "width: Rust={} C={}",
+        msa.sequences[0].len(),
+        c_ref.sequences[0].data.len(),
+    );
     for i in 0..msa.nseq() {
         assert_eq!(msa.sequences[i], c_ref.sequences[i].data, "seq {i} differs from C");
     }

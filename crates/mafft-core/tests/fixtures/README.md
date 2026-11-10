@@ -249,3 +249,53 @@ F=crates/mafft-core/tests/fixtures
 LC_ALL=C mafft-upstream/scripts/mafft --quiet --localpair --maxiterate 0 --distout $F/iupac_16s_pair.fa > $F/iupac_16s_pair.linsi.maxit0
 mv $F/iupac_16s_pair.fa.hat2 $F/iupac_16s_pair.linsi.hat2
 ```
+
+## `iupac_16s_9.*`
+
+Regression input for the scoring matrix of the FFT-NS-i refinement tree:
+nine RefSeq 16S rRNA records (1.3-1.7 kb) cut down by delta debugging
+from a 250-record set whose FFT-NS-i output differed from C's in one
+column from the first refinement iteration on. `NR_109432.1` carries an
+IUPAC `R` at base 406 (`NR_112553.1` one `N`). The refinement tree is
+built from the distances `dndpre` writes to `hat2`; `dndpre` runs
+`constants()` without `-h`, so the default offset is taken off the 4x4
+PAM (`constants.c:373`) and the IUPAC rows are derived from the shifted
+entries afterwards (`ambiguousscore`, `:524`). Rust used to shift the 10x10
+block and zero every other row, so the `r` pair scores and self-score were
+0 in the distances; the UPGMA branch lengths and with them the weights of
+every refinement branch moved (first branch, seq 8: 0.489776 against C's
+0.487704), one accept flipped and `NR_115963.1` ended with a `c` one column
+to the right of C's. The reference is the in-tree C build's FFT-NS-i
+output (`--maxiterate 1000`, default `--retree 2`).
+
+```bash
+make -C mafft-upstream/core
+export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
+F=crates/mafft-core/tests/fixtures
+LC_ALL=C mafft-upstream/scripts/mafft --quiet --maxiterate 1000 $F/iupac_16s_9.fa > $F/iupac_16s_9.fftnsi
+```
+
+## `linsi_16s_18.*`
+
+Regression input for the segment boundaries of the constrained refinement
+(L/G/E-INS-i): eighteen RefSeq 16S rRNA records (1.2-1.6 kb) cut down by
+delta debugging from the 250-record set, whose L-INS-i output differed
+from C's in 1683 columns from the second refinement iteration on.
+`Falign_localhom` splits every refinement branch into FFT segments and
+aligns them with `partA__align`. At the right end of a segment the port
+used to take the weight of every sequence whose gap run continues into
+the next segment off the final-gap count (the disabled `#if 0` body of
+`new_FinalGapCount`, `mltaln9.c:12730-12757`); the compiled body
+(`:12758-12793`) reads the segment string up to its terminating NUL,
+counts such a run as closing at the last column and never reaches its
+`egappat` block, so C charges the closing penalty there. On this set the
+old port moved one `t` of `NR_109461.1` from column 1444 to 1423 across a
+gap at a cut. The reference is the in-tree C build's L-INS-i output
+(`--localpair --maxiterate 1000`).
+
+```bash
+make -C mafft-upstream/core
+export MAFFT_BINARIES=$PWD/mafft-upstream/binaries
+F=crates/mafft-core/tests/fixtures
+LC_ALL=C mafft-upstream/scripts/mafft --quiet --localpair --maxiterate 1000 $F/linsi_16s_18.fa > $F/linsi_16s_18.linsi
+```

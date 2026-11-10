@@ -65,6 +65,15 @@ pub struct FftAlignParams {
     /// sequence order, so it is built from the rows, not the profile.
     /// Required when `udpari_long` is set and `property_channels` is `None`.
     pub nuc_rows: Option<NucRows>,
+    /// C's `n_disFFT` (`constants.c:1435-1442`): the matrix
+    /// `alignableReagion` (`fftFunctions.c:285`) scores columns with when
+    /// it looks for alignable segments. Unlike `n_dis_consweight_multi`,
+    /// which the segment DPs use, only the scored block is filled (the
+    /// 10x10 `a/g/c/t/u` block for nucleotides, 20x20 for protein), so
+    /// IUPAC ambiguity codes and `n` add nothing to a site score even
+    /// though they do score in the DP. `None` scores sites with the DP
+    /// matrix.
+    pub site_matrix: Option<Vec<Vec<f64>>>,
 }
 
 /// Rows and weights of the two groups for [`FftAlignParams::nuc_rows`].
@@ -89,6 +98,7 @@ impl FftAlignParams {
             total_eff: 1.0,
             udpari_long: false,
             nuc_rows: None,
+            site_matrix: None,
         }
     }
 
@@ -109,6 +119,7 @@ impl FftAlignParams {
             total_eff: 1.0,
             udpari_long: false,
             nuc_rows: None,
+            site_matrix: None,
         }
     }
 }
@@ -178,6 +189,9 @@ pub fn find_fft_anchors(
     // `Falign_udpari_long` passes `NKOUHO_LONG` (`Falign.c:2942`).
     let n_cand = if params.udpari_long { NKOUHO_LONG } else { params.num_candidates };
     let candidates = get_top_candidates(&soukan, n_cand);
+    // `alignableReagion` scores with `n_disFFT`, the DPs below with
+    // `n_dis_consweight_multi` (see `FftAlignParams::site_matrix`).
+    let site_matrix: &[Vec<f64>] = params.site_matrix.as_deref().unwrap_or(matrix);
 
     // Mirrors C's `Falign` (`Falign.c:1307-1372`): accumulate segments from
     // candidate lags into a single flat list (sorted by score), then
@@ -194,7 +208,7 @@ pub fn find_fft_anchors(
     for cand in &candidates {
         let lag = cand.lag;
         if lag <= -(n as i32) || lag >= m as i32 { continue; }
-        let shifted_scores = shift_and_score(prof1, prof2, matrix, lag, params.total_eff);
+        let shifted_scores = shift_and_score(prof1, prof2, site_matrix, lag, params.total_eff);
         let segments = alignable_segments(&shifted_scores, &params.segment_params);
         if segments.is_empty() {
             if params.udpari_long {
@@ -437,6 +451,20 @@ fn shift_and_score(
     scores
 }
 
+/// The `stra[]` array of C's `alignableReagion` at lag 0, column by column
+/// over the common length of the two profiles: what `Falign` computes for
+/// `dvtditr` (`kobetsubunkatsu`, `Falign.c:1297-1323`) before it cuts the
+/// alignment into segments. `matrix` is C's `n_disFFT` (the
+/// `ScoringContext::fft_matrix`), `total_eff` is [`fft_total_eff`].
+pub fn alignable_site_scores(
+    prof1: &Profile,
+    prof2: &Profile,
+    matrix: &[Vec<f64>],
+    total_eff: f64,
+) -> Vec<f64> {
+    shift_and_score(prof1, prof2, matrix, 0, total_eff)
+}
+
 /// `stra[i]` of C's `alignableReagion` (`fftFunctions.c:243-288`), in C's
 /// summation order: residues of `prf1` with non-zero weight in ascending
 /// index order (the `hat1` list), and for each the residues of `prf2` the
@@ -555,6 +583,7 @@ mod tests {
             total_eff: 1.0,
             udpari_long: false,
             nuc_rows: None,
+            site_matrix: None,
         };
         let aln = fft_profile_align(&prof, &prof, &mtx, &params);
         assert!(aln.score > 0.0);
@@ -569,5 +598,33 @@ mod tests {
         let params = FftAlignParams::protein();
         let aln = fft_profile_align(&prof, &prof, &mtx, &params);
         assert!((aln.score - 400.0).abs() < 1e-6);
+    }
+
+    /// `alignableReagion` scores sites with `n_disFFT`, whose rows outside
+    /// the scored block are zero (`constants.c:1435-1442`), while the DP
+    /// matrix carries the IUPAC rows: a column pairing `r` with `a` adds
+    /// nothing to the site score even though it scores in the DP.
+    #[test]
+    fn alignable_site_scores_use_the_site_matrix_not_the_dp_matrix() {
+        // 6 letters: A C G T R -; the DP matrix scores R like a half-match
+        // against A and G, the site matrix knows only the 4x4 block.
+        let mut dp = vec![vec![-100.0f64; 6]; 6];
+        for i in 0..4 { dp[i][i] = 100.0; }
+        dp[4][0] = 50.0; dp[0][4] = 50.0; dp[4][2] = 50.0; dp[2][4] = 50.0; dp[4][4] = 100.0;
+        for i in 0..6 { dp[5][i] = 0.0; dp[i][5] = 0.0; }
+        let mut site = vec![vec![0.0f64; 6]; 6];
+        for i in 0..4 { for j in 0..4 { site[i][j] = dp[i][j]; } }
+        let mut map = [0xFFu8; 256];
+        for (i, c) in b"ACGTR-".iter().enumerate() { map[*c as usize] = i as u8; }
+        let s1: Vec<&[u8]> = vec![b"ACGTR"];
+        let s2: Vec<&[u8]> = vec![b"ACGTA"];
+        let p1 = Profile::from_aligned(&s1, &[1.0], &map, 6);
+        let p2 = Profile::from_aligned(&s2, &[1.0], &map, 6);
+        let with_dp = alignable_site_scores(&p1, &p2, &dp, 1.0);
+        let with_site = alignable_site_scores(&p1, &p2, &site, 1.0);
+        assert_eq!(with_dp[..4], [100.0, 100.0, 100.0, 100.0]);
+        assert_eq!(with_site[..4], [100.0, 100.0, 100.0, 100.0]);
+        assert_eq!(with_dp[4], 50.0, "the DP matrix scores r/a");
+        assert_eq!(with_site[4], 0.0, "n_disFFT ignores the ambiguity code");
     }
 }
