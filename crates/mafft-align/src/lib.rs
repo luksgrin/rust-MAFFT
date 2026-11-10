@@ -28,7 +28,7 @@ pub use profile::{
     reset_dp_pools, reset_cpmx_memo,
 };
 pub use multimtx::MultiMtx;
-pub use fft_align::{fft_profile_align, fft_total_eff, find_fft_anchors, FftAlignParams, Anchor, NucRows};
+pub use fft_align::{alignable_site_scores, fft_profile_align, fft_total_eff, find_fft_anchors, FftAlignParams, Anchor, NucRows};
 pub use constraints::{
     build_local_homology_table, build_homology_table,
     build_homology_table_with_unalign, build_imp_diagonal, build_imp_matrix,

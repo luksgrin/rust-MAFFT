@@ -64,6 +64,43 @@ pub fn dndpre_offset_shift(is_nucleotide: bool) -> i32 {
     if is_nucleotide { 220 } else { 73 }
 }
 
+/// The `amino_dis` matrix `dndpre` scores the aligned sequences with when
+/// it writes the refinement tree's `hat2` (`dndpre.c:392` `constants()`,
+/// `:412` `naivepairscore11`, `:473` `naivepairscorefast`).
+///
+/// `dndpre` runs without `-h`, so `constants()` takes the default
+/// `poffset` off the scored block ([`dndpre_offset_shift`]) and, for
+/// nucleotides, derives the IUPAC ambiguity rows from the shifted
+/// entries afterwards (`ambiguousscore`, `constants.c:524`; `nscore`
+/// with `--nwildcard`, `:525`). Zeroing every row outside the scored
+/// block instead left `r`/`y`/`k`/`m`/`s`/`w`/`b`/`d`/`h`/`v` at 0 in the
+/// pair scores and self-scores, so every distance involving a record
+/// that carries such a code was off, the UPGMA branch lengths moved, and
+/// with them the per-branch weights of every refinement step. On 16S rRNA
+/// FFT-NS-i that flipped an accept decision and shifted one column.
+pub fn dndpre_scoring_matrix(scoring: &mafft_types::ScoringContext, nwildcard: bool) -> Vec<Vec<i32>> {
+    let is_nucleotide = scoring.seq_type.is_nucleotide();
+    let shift = dndpre_offset_shift(is_nucleotide);
+    let nscored = scoring.nscoredalphabets;
+    let mut shifted: Vec<Vec<i32>> = scoring.substitution_matrix
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            row.iter()
+                .enumerate()
+                .map(|(j, &v)| if i < nscored && j < nscored { v + shift } else { 0 })
+                .collect()
+        })
+        .collect();
+    if is_nucleotide {
+        mafft_scoring::fill_dna_ambiguity_scores(&mut shifted);
+        if nwildcard {
+            mafft_scoring::fill_dna_n_scores(&mut shifted);
+        }
+    }
+    shifted
+}
+
 /// Scale factors turning the pair-phase `ppenalty`-style integers
 /// (`lgop * 1000`, …) into DP units: `(gap_scale, offset_scale)`.
 ///
@@ -1278,19 +1315,7 @@ impl MafftEngine {
                     }
                     rounded
                 } else {
-                    let dndpre_offset_shift = dndpre_offset_shift(seq_type.is_nucleotide());
-                    let mut shifted_matrix: Vec<Vec<i32>> = scoring.substitution_matrix
-                        .iter()
-                        .map(|row| row.iter().map(|&v| v + dndpre_offset_shift).collect())
-                        .collect();
-                    let nscored = scoring.nscoredalphabets;
-                    for i in 0..shifted_matrix.len() {
-                        for j in 0..shifted_matrix[i].len() {
-                            if i >= nscored || j >= nscored {
-                                shifted_matrix[i][j] = 0;
-                            }
-                        }
-                    }
+                    let shifted_matrix = dndpre_scoring_matrix(&scoring, want_nwildcard);
                     let penalty_dist = scoring.gap.open;
                     let raw = compute_distance_matrix_scoring(
                         &msa.sequences, &shifted_matrix,
@@ -1687,19 +1712,10 @@ impl MafftEngine {
         // Same shifted matrix as FFT-NS-i's refinement tree: dndpre is
         // invoked without `-h`, so it uses the default `poffset` and writes
         // hat2 at `%.3f` (`engine::align`, the ktuples branch).
-        let dndpre_offset_shift = dndpre_offset_shift(seq_type.is_nucleotide());
-        let mut shifted_matrix: Vec<Vec<i32>> = scoring.substitution_matrix
-            .iter()
-            .map(|row| row.iter().map(|&v| v + dndpre_offset_shift).collect())
-            .collect();
-        let nscored = scoring.nscoredalphabets;
-        for i in 0..shifted_matrix.len() {
-            for j in 0..shifted_matrix[i].len() {
-                if i >= nscored || j >= nscored {
-                    shifted_matrix[i][j] = 0;
-                }
-            }
-        }
+        debug_assert_eq!(scoring.seq_type.is_nucleotide(), seq_type.is_nucleotide());
+        let shifted_matrix = dndpre_scoring_matrix(
+            scoring, self.nwildcard || self.unalign_level > 0.0,
+        );
         let raw = compute_distance_matrix_scoring(
             &msa.sequences, &shifted_matrix, &scoring.amino_map, scoring.gap.open,
         );
@@ -2030,6 +2046,38 @@ mod tests {
         assert_eq!(c_offset(-123), -73, "protein DEFAULTOFS_B");
         assert_eq!(dndpre_offset_shift(true), 220, "DNA must not use the protein shift");
         assert_eq!(dndpre_offset_shift(false), 73);
+    }
+
+    /// `dndpre`'s `constants()` shifts the 4x4 PAM by the default offset
+    /// before `ambiguousscore` derives the IUPAC rows (`constants.c:373`,
+    /// `:524`), so in its `amino_dis` an `r` scores the mean of the
+    /// SHIFTED `a` and `g` entries, and `n`/`-` stay 0 without `--nwildcard`.
+    #[test]
+    fn dndpre_scoring_matrix_derives_iupac_rows_from_the_shifted_block() {
+        let scoring = mafft_scoring::build_context(ScoringModel::Dna, SeqType::Dna);
+        let m = dndpre_scoring_matrix(&scoring, false);
+        let idx = |c: u8| scoring.amino_map[c as usize] as usize;
+        let (a, g, c, t, r, y, n, gap) =
+            (idx(b'a'), idx(b'g'), idx(b'c'), idx(b't'), idx(b'r'), idx(b'y'), idx(b'n'), idx(b'-'));
+        let base = &scoring.substitution_matrix;
+        let half = |x: i32, z: i32| ((x + z) as f64 / 2.0).round() as i32;
+        assert_eq!(m[a][a], base[a][a] + 220, "scored block carries the dndpre shift");
+        assert_eq!(m[r][a], half(base[a][a] + 220, base[g][a] + 220), "r vs a from the shifted a/g rows");
+        assert_eq!(m[a][r], m[r][a], "symmetric");
+        assert_eq!(m[r][r], half(base[a][a] + 220, base[g][g] + 220), "r self-score");
+        assert_eq!(m[y][c], half(base[c][c] + 220, base[t][c] + 220));
+        assert_ne!(m[r][a], 0, "ambiguity rows must not be zeroed with the unscored letters");
+        assert_eq!(m[n][a], 0, "n stays 0 without --nwildcard");
+        assert_eq!(m[gap][a], 0);
+        // Protein: nothing outside the 20x20 block, shift 73.
+        let prot = mafft_scoring::build_context(ScoringModel::Blosum(62), SeqType::Protein);
+        let p = dndpre_scoring_matrix(&prot, false);
+        assert_eq!(p[0][0], prot.substitution_matrix[0][0] + 73);
+        assert!(p[20..].iter().all(|row| row.iter().all(|&v| v == 0)));
+        // `--nwildcard` reaches dndpre through `$model` (`-: `), so the
+        // `n` row is filled from the shifted self-scores.
+        let w = dndpre_scoring_matrix(&scoring, true);
+        assert_eq!(w[n][a], ((0.25 * (base[a][a] + 220) as f64).round()) as i32);
     }
 
     #[test]

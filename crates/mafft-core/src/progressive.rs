@@ -1960,6 +1960,11 @@ fn merge_step_cached(
                 rows2: group2.iter().map(|&i| aligned[i].clone()).collect(),
                 eff2: normalized_group_weights(group2, weights),
             }),
+            // `alignableReagion` scores the candidate lags with `n_disFFT`
+            // (`fftFunctions.c:285`, `constants.c:1435-1442`), whose
+            // IUPAC/`n` rows are zero, while the segment DPs use
+            // `n_dis_consweight_multi`.
+            site_matrix: Some(mafft_align::matrix_i32_to_f64(&scoring.fft_matrix)),
         };
         fft_profile_align(&prof1, &prof2, &scoring.consweight_matrix, &fft_params)
     } else if let Some(table) = constraints {

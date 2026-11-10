@@ -125,6 +125,54 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **L/G/E-INS-i refinement charges a gap that reaches a segment cut like
+  C.** The constrained refinement (`Falign_localhom` → `partA__align`)
+  splits each branch into FFT segments. At the right end of a segment the
+  port subtracted the weight of every sequence whose gap run continues
+  into the next segment from the final-gap count, so closing such a run at
+  the cut cost nothing. That mirrors the disabled `#if 0` body of C's
+  `new_FinalGapCount` (`mltaln9.c:12730-12757`); the compiled body
+  (`:12758-12793`) reads up to the segment string's terminating NUL and
+  counts the run as closing at the last column whatever follows the cut,
+  as the unconstrained FFT path already did. On the 250-record 16S rRNA set
+  under L-INS-i the first refinement iteration was identical to C and the
+  second moved one `c` of `NR_173662.1` across a nine-column gap at a cut;
+  the realignment was accepted where C rejected it and 1683 columns
+  differed in the end. The 250- and 500-record sets are byte-identical to
+  C under L-INS-i now (the 500-record one was 2236 columns against C's
+  2239). Fixture `linsi_16s_18`.
+- **The refinement-tree distances score IUPAC codes like `dndpre`.** For
+  FFT-NS-i (and `--add --maxiterate`) the refinement tree is built from
+  the distances C's `dndpre` writes to `hat2`. `dndpre` runs `constants()`
+  without `-h`, so the default offset comes off the 4x4 PAM
+  (`constants.c:373`) and the ambiguity-code rows are derived from the
+  shifted entries afterwards (`ambiguousscore`, `:524`; `nscore` with
+  `--nwildcard`, `:525`). The port shifted the 10x10 block and zeroed every
+  other row, so on nucleotides a record carrying an R, Y, K, M, S, W, B, D,
+  H or V scored 0 against everything, and against itself, in the pair
+  scores behind those distances. Its distances were off, the UPGMA branch
+  lengths moved, and with them the weights of every refinement branch
+  (first branch of a 9-record 16S set, one sequence: 0.489776 against C's
+  0.487704), which changed which realignments were accepted. On the
+  RefSeq 16S rRNA sets this shifted one column of 248 of 250 sequences
+  under FFT-NS-i from the first iteration on; the 100-, 250- and
+  500-record sets are byte-identical to C under FFT-NS-i now (and, with
+  the segment-cut fix above, under L-INS-i and G-INS-i). The matrix is
+  built by `dndpre_scoring_matrix` in both places that imitate `dndpre`.
+  Fixture `iupac_16s_9`.
+- **FFT segment detection scores columns with `n_disFFT`.** C's
+  `alignableReagion` (`fftFunctions.c:285`) looks for alignable segments
+  with `n_disFFT`, which only carries the scored block
+  (`constants.c:1435-1442`), while the segment DPs use
+  `n_dis_consweight_multi`. The port scored the sites with the DP matrix,
+  so on nucleotides an ambiguity code contributed its DP score to the
+  window sums that place the segment cuts, in the progressive `Falign` and
+  in the refinement's lag-0 pass. Both now score with `fft_matrix`
+  (`FftAlignParams::site_matrix`, `alignable_site_scores`), the refinement
+  pass in C's summation order and with C's `totaleff`. No tested output
+  changed; the cuts differ only when such a column sits in a window at the
+  threshold.
+
 - **Refinement-tree distances round like C's `hat2` file.** `dndpre`
   writes each pairwise distance with `%#6.3f` and `dvtditr` reads it back
   with `atof`; the port imitated that with `(d * 1000.0).round() / 1000.0`,
