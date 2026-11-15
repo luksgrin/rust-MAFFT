@@ -618,6 +618,28 @@ public surfaces stable from 0.1.0 anyway.
   120 × 1.4 kb CDS fixture under L-INS-i at `--thread 1` versus `8`.
   Idle-machine medians are pending (#48).
 
+- **`--parttree` on long sequences no longer peaks 50–100 MiB above C.**
+  The 1-vs-1 progressive merge (`pairwise_align11_ex`, the `G__align11`
+  port) allocated a full (n+1) × (m+1) `f64` score matrix and an `i32`
+  traceback matrix as one `Vec` per row on every call, 12 bytes per DP
+  cell in `2 (n+1)` allocations, freed at return; C keeps only the two
+  rolling rows and takes `ijp` from the grow-only `commonIP` matrix it
+  shares with `A__align` (`Galign11.c:1136-1161`,
+  `Salignmm.c:1416-1425`). Under `--parttree` every merge spans the
+  whole sequence (no FFT anchoring), so at 16S rRNA lengths that was
+  ~32 MB and ~3000 allocations per 1-vs-1 merge, plus the freed rows
+  the allocator kept resident. The score matrix is gone (the end-point
+  search reads the last computed row, the score is that row's last cell
+  or the search's best), `ijp` is the flat per-thread `DP_IJP_POOL`
+  buffer the profile DP already uses, and both pools now grow to the
+  exact size instead of doubling. Serial medians of 3 on an idle Apple
+  M4, `--thread 1`, C / before / after: 16S rRNA n=100 2.21 s, 30 MB /
+  1.67 s, 98 MB / 1.63 s, 23 MB; 16S rRNA n=500 10.62 s, 95 MB / 8.49 s,
+  138 MB / 8.35 s, 55 MB; PF00005 n=100 1.73 s, 131 MB / 1.25 s, 144 MB
+  / 1.24 s, 48 MB. Output is unchanged: byte-identical to C on the 16S
+  rRNA sets at 100, 250 and 500, PF00005 at 100 and PF00001 at 500 under
+  `--parttree`, and on 16S rRNA at 100 under FFT-NS-2.
+
 ### Python
 
 - `pymafft` builds against PyO3 0.30 (was 0.24), which supports
