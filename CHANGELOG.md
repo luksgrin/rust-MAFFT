@@ -653,21 +653,24 @@ public surfaces stable from 0.1.0 anyway.
   macOS allocator either copies on such a `realloc` or, after a plain
   free, parks the dead block resident in its large-block cache: freeing
   and re-allocating at every widening was measured at 6.5 GB RSS for
-  408 MB live. `grow_pooled` (`mafft-align/src/pool.rs`) now drops the
-  old buffer before allocating and reserves a quarter of headroom, so a
-  run of small widenings reuses one allocation; it also serves the
-  refinement traceback and the pairwise DP pools. The pairwise homology
+  408 MB live. `grow_pooled` (`mafft-align/src/pool.rs`) now grows the
+  pooled buffers through `realloc` with a quarter of headroom, so a run
+  of small widenings reuses one allocation and the monotone growth of
+  the progressive stage re-allocates O(log) times instead of once per
+  merge (freeing first and allocating afresh parks one dead block per
+  step: PF00005 n=100 `--parttree` 116 MB against 48 MB); it also serves
+  the refinement traceback and the pairwise and 1-vs-1 DP pools. The pairwise homology
   table is stored once per pair as in C's half table
   (`readlocalhomtable2_half`), with `importance` / `rimportance` on the
   same region and the mirror orientation derived on read
   (`LocalHomologyTable::get`); `recompute_importance` follows
   `calcimportance_half` field for field (12 → 6 MB at n=100, about 60 MB
   at n=250). Peak RSS (`/usr/bin/time -l`, Apple M4, `--thread 1`,
-  C / before / after, MB): PF00400 n=100 G-INS-i 716 / 804 / 647,
-  L-INS-i 817 / 845 / 636; PF02518 n=100 567 / 672 / 434 and 543 / 610 /
-  408; PF00069 n=100 925 / 1040 / 656 and 1076 / 784 / 696; PF00400
-  n=250 G-INS-i 1410 / 2022 / 1394; PF00528 and PF00072 n=100 stay at
-  0.5–0.7× C. Output is unchanged: byte-identical to C on all eleven
+  C / before / after, MB): PF00400 n=100 G-INS-i 716 / 804 / 523,
+  L-INS-i 817 / 845 / 521; PF02518 n=100 567 / 672 / 373 and 543 / 610 /
+  400; PF00069 n=100 925 / 1040 / 623 and 1076 / 784 / 566; PF00400
+  n=250 G-INS-i 1410 / 2022 / 1178; PF00528 and PF00072 n=100 drop to
+  0.4–0.6× C. Output is unchanged: byte-identical to C on all eleven
   cells, before and after.
 
 ### Python
