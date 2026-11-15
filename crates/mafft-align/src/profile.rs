@@ -268,6 +268,118 @@ pub struct Profile {
     pub nalphabets: usize,
 }
 
+/// Column sums of `Profile::from_aligned` over one column range.
+struct ColumnAccum {
+    freqs: Vec<Vec<f64>>,
+    gap_freq: Vec<f64>,
+    opening: Vec<f64>,
+    closing: Vec<f64>,
+}
+
+impl ColumnAccum {
+    fn zeroed(ncols: usize, nalphabets: usize) -> Self {
+        Self {
+            freqs: vec![vec![0.0f64; nalphabets]; ncols],
+            gap_freq: vec![0.0f64; ncols],
+            opening: vec![0.0f64; ncols],
+            closing: vec![0.0f64; ncols],
+        }
+    }
+}
+
+/// Accumulate columns `[a, b)` of the weighted residue frequencies, gap
+/// frequency, gap-opening count and gap-closing count of `sequences`
+/// into `acc` (whose index 0 is column `a`). One fused walk per sequence,
+/// adding in sequence order.
+///
+/// Semantics (those of the original three-pass code, kept exactly):
+///
+///   - opening[pos] += w when the previous position was non-gap AND the
+///     current position IS gap. The position before 0 counts as non-gap.
+///   - closing[pos] += w when position `pos` IS gap AND the next position
+///     is non-gap (recorded at the gap's `pos`). Past the end counts as
+///     non-gap.
+///   - A sequence shorter than `length` is out of bounds from `seq.len()`
+///     on: that first out-of-bounds position is a single gap (opening
+///     fires there if the last in-bounds residue was non-gap; closing
+///     fires at `seq.len() - 1` if it was a gap) and nothing fires beyond.
+///
+/// With several ranges, a closing that the walk records one column back
+/// across a range boundary belongs to the earlier range, which looks one
+/// column ahead at its end; the later range skips that first write. The
+/// opening at an out-of-bounds `seq.len()` belongs to the range holding
+/// that column.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_columns(
+    sequences: &[&[u8]],
+    weights: &[f64],
+    amino_map: &[u8; 256],
+    nalphabets: usize,
+    length: usize,
+    a: usize,
+    b: usize,
+    acc: &mut ColumnAccum,
+) {
+    let is_gap = |ch: u8| ch == b'-' || ch == b'.';
+    let ColumnAccum { freqs, gap_freq, opening, closing } = acc;
+    for (seq, &w) in sequences.iter().zip(weights.iter()) {
+        let n = seq.len().min(length);
+        let lo = a;
+        let hi = b.min(n);
+        if lo >= hi {
+            // No in-bounds column in this range. The out-of-bounds opening
+            // at `n` is ours when `n` lies in the range.
+            if n >= a && n < b && n < length {
+                let gc_prev = n > 0 && is_gap(seq[n - 1]);
+                if !gc_prev {
+                    opening[n - a] += w;
+                }
+            }
+            continue;
+        }
+        // State at `lo - 1`: non-gap before column 0, else that column.
+        let mut gc_prev = lo > 0 && is_gap(seq[lo - 1]);
+        for pos in lo..hi {
+            let ch = unsafe { *seq.get_unchecked(pos) };
+            let gap = is_gap(ch);
+            if gap {
+                gap_freq[pos - a] += w;
+                if !gc_prev {
+                    opening[pos - a] += w;
+                }
+            } else if gc_prev && pos > lo {
+                // closing recorded at the GAP position (pos-1), not at
+                // the non-gap position we're visiting. At `pos == lo > 0`
+                // that column belongs to the previous range, which
+                // records it below.
+                closing[pos - 1 - a] += w;
+            }
+            let idx = amino_map[ch as usize] as usize;
+            if idx < nalphabets {
+                freqs[pos - a][idx] += w;
+            }
+            gc_prev = gap;
+        }
+        if hi < n {
+            // The range ends inside the sequence: record the closing the
+            // next column's visit would have written at `hi - 1`.
+            if gc_prev && !is_gap(seq[hi]) {
+                closing[hi - 1 - a] += w;
+            }
+        } else {
+            // `hi == n`: the sequence ends here. Opening fires at the
+            // first out-of-bounds column when it is in this range;
+            // a trailing gap run closes at `n - 1`.
+            if n < length && n < b && !gc_prev {
+                opening[n - a] += w;
+            }
+            if gc_prev {
+                closing[n - 1 - a] += w;
+            }
+        }
+    }
+}
+
 impl Profile {
     /// Build a profile from a group of aligned sequences with weights.
     ///
@@ -295,79 +407,54 @@ impl Profile {
         }
 
         let length = sequences[0].len();
-        let mut freqs = vec![vec![0.0f64; nalphabets]; length];
-        let mut gap_freq = vec![0.0f64; length];
 
         // Opening gap count (non-gap → gap transitions) and final gap count
         // (gap → non-gap transitions), matching C's st_OpeningGapCount/st_FinalGapCount.
-        let mut opening_count = vec![0.0f64; length];
-        let mut closing_count = vec![0.0f64; length];
-
-        // Single-pass fused loop: freqs + gap_freq + opening_count +
-        // closing_count in one walk of each sequence (was three separate
-        // walks before — measurable speedup in refinement-heavy modes like
-        // FFT-NS-i where Profile::from_aligned is called O(nseq²) times).
         //
-        // Semantics (preserved exactly from the original three-pass code):
-        //
-        //   - opening_count[pos] += w when the previous position was
-        //     non-gap AND the current position IS gap (= a non-gap → gap
-        //     transition at `pos`). The "previous position" before pos=0
-        //     is treated as non-gap.
-        //   - closing_count[pos] += w when the current position IS gap
-        //     AND the next position is non-gap (= a gap → non-gap
-        //     transition recorded at the gap's `pos`). The "next
-        //     position" past the end is treated as non-gap.
-        //   - For sequences shorter than `length`: positions [seq.len(),
-        //     length) are treated as out-of-bounds. The original code
-        //     read them as gaps in opening logic (`map_or(true, ...)`)
-        //     and non-gaps in closing logic (`map_or(false, ...)`). We
-        //     replicate that by treating an "out-of-bounds tail" as an
-        //     immediate single gap (so opening fires once at seq.len() if
-        //     the last in-bounds residue was non-gap; closing fires at
-        //     seq.len() if it was a gap). Beyond seq.len() the state
-        //     stays gap for the rest of the loop.
-        for (seq, &w) in sequences.iter().zip(weights.iter()) {
-            let n = seq.len().min(length);
-            let mut gc_prev = false; // state at position -1: assume non-gap
-
-            for pos in 0..n {
-                let ch = unsafe { *seq.get_unchecked(pos) };
-                let is_gap = ch == b'-' || ch == b'.';
-                if is_gap {
-                    gap_freq[pos] += w;
-                    if !gc_prev {
-                        opening_count[pos] += w;
-                    }
-                } else if gc_prev && pos > 0 {
-                    // closing recorded at the GAP position (pos-1), not
-                    // at the non-gap position we're currently visiting.
-                    closing_count[pos - 1] += w;
-                }
-                let idx = amino_map[ch as usize] as usize;
-                if idx < nalphabets {
-                    freqs[pos][idx] += w;
-                }
-                gc_prev = is_gap;
+        // The columns are accumulated by `accumulate_columns`, a single
+        // fused walk of each sequence over a column range. A large group
+        // (the root-path merges of a big progressive alignment) is split
+        // into column ranges that run on the pool: every column's sums are
+        // still added in sequence order, so the result is the same as the
+        // single-range walk on any thread count.
+        // Below this many cells (rows x columns) the walk is shorter than
+        // a pool dispatch; a range narrower than this is dominated by its
+        // per-sequence setup.
+        const PAR_CELLS: usize = 1 << 16;
+        const MIN_CHUNK: usize = 256;
+        let threads = rayon::current_num_threads();
+        let (mut freqs, mut gap_freq, mut opening_count, mut closing_count);
+        if length * sequences.len() >= PAR_CELLS
+            && length >= 2 * MIN_CHUNK
+            && crate::parallel_enabled()
+        {
+            use rayon::prelude::*;
+            let chunk = MIN_CHUNK.max(length.div_ceil(4 * threads));
+            let nchunks = length.div_ceil(chunk);
+            let parts: Vec<ColumnAccum> = (0..nchunks)
+                .into_par_iter()
+                .map(|c| {
+                    let a = c * chunk;
+                    let b = (a + chunk).min(length);
+                    let mut acc = ColumnAccum::zeroed(b - a, nalphabets);
+                    accumulate_columns(sequences, weights, amino_map, nalphabets, length, a, b, &mut acc);
+                    acc
+                })
+                .collect();
+            freqs = Vec::with_capacity(length);
+            gap_freq = Vec::with_capacity(length);
+            opening_count = Vec::with_capacity(length);
+            closing_count = Vec::with_capacity(length);
+            for part in parts {
+                freqs.extend(part.freqs);
+                gap_freq.extend(part.gap_freq);
+                opening_count.extend(part.opening);
+                closing_count.extend(part.closing);
             }
-
-            // Tail beyond seq.len(): the original opening pass had
-            // `seq.get(pos).map_or(true, ...)`, so the first out-of-bounds
-            // position counts as a non-gap→gap transition iff the last
-            // in-bounds residue was non-gap. (Beyond that, gc stays true
-            // so no further opening_count[] firings.)
-            if n < length && !gc_prev {
-                opening_count[n] += w;
-            }
-            // Closing tail: original had `gc = seq.get(pos+1).map_or(false, ...)`
-            // — past-the-end counts as non-gap, so if seq[n-1] is gap,
-            // closing_count[n-1] fires. The branch above already records
-            // closing at pos-1 when transitioning to non-gap; we still
-            // need to flush a trailing gap run at the last in-bounds
-            // position.
-            if n > 0 && gc_prev {
-                closing_count[n - 1] += w;
-            }
+        } else {
+            let mut acc = ColumnAccum::zeroed(length, nalphabets);
+            accumulate_columns(sequences, weights, amino_map, nalphabets, length, 0, length, &mut acc);
+            ColumnAccum { freqs, gap_freq, opening: opening_count, closing: closing_count } = acc;
         }
 
         // C: nongap_freq = 1.0 - gap_freq (no clamping).
@@ -1684,6 +1771,25 @@ pub fn profile_align_imp_view(
     // Our DP needs these boundary values when i==n or j==m.
     let lasti = if tail_gap { n + 1 } else { n };
 
+    // Row-block match scores. `match_calc_row_into` is a pure function
+    // of row `i` of `prof1`, the matrix and `prof2`'s sparse cpmx, and it
+    // is about a third of the DP, so on a big matrix (a no-anchor merge
+    // of two wide profiles, the serial root path of a large progressive
+    // alignment) a block of rows is scored on the pool ahead of the
+    // recurrence, which then copies each row in. The scores are the same
+    // bytes the per-row call would have written into `currentw`.
+    // Only matrices where a block of rows is enough scoring work to
+    // amortise a pool dispatch; 64 rows keep the block within ~1 MiB at
+    // the widths seen here.
+    const PAR_MATCH_CELLS: usize = 1 << 21;
+    const MATCH_BLOCK_ROWS: usize = 64;
+    let par_match = multi.is_none()
+        && n.saturating_mul(m) >= PAR_MATCH_CELLS
+        && crate::parallel_enabled();
+    let mut match_block: Vec<f64> = Vec::new();
+    let mut match_block_start = 0usize;
+    let mut match_block_rows = 0usize;
+
     let mut dp_cancel_hit = false;
     for i in 1..lasti {
         if (i & 31) == 0 && crate::dp_cancelled() {
@@ -1695,11 +1801,31 @@ pub fn profile_align_imp_view(
 
         // Batch match_calc for row i (C line 816: ist+i)
         // Fills currentw[0..m-1]. Position m doesn't exist in prof2.
-        match_calc_row_into(
-            i, &mut currentw, &mut scarr[..nalpha],
-            multi, n, m, nalpha, matrix, &prof1.freqs,
-            &cpmx2_sparse_offsets, &cpmx2_sparse_entries,
-        );
+        if par_match {
+            if i >= match_block_start + match_block_rows {
+                use rayon::prelude::*;
+                match_block_start = i;
+                match_block_rows = MATCH_BLOCK_ROWS.min(lasti - i);
+                match_block.resize(match_block_rows * m, 0.0);
+                let (offsets, entries) = (&cpmx2_sparse_offsets, &cpmx2_sparse_entries);
+                match_block.par_chunks_mut(m).enumerate().for_each(|(r, out)| {
+                    let mut row_scarr = vec![0.0f64; nalpha];
+                    match_calc_row_into(
+                        match_block_start + r, out, &mut row_scarr,
+                        None, n, m, nalpha, matrix, &prof1.freqs,
+                        offsets, entries,
+                    );
+                });
+            }
+            let off = (i - match_block_start) * m;
+            currentw[..m].copy_from_slice(&match_block[off..off + m]);
+        } else {
+            match_calc_row_into(
+                i, &mut currentw, &mut scarr[..nalpha],
+                multi, n, m, nalpha, matrix, &prof1.freqs,
+                &cpmx2_sparse_offsets, &cpmx2_sparse_entries,
+            );
+        }
         // C: imp_match_out_vead(currentw, i, lgth2) — add impmtx[i][:] (Salignmm.c:1848).
         if let Some(imp) = impmtx {
             if i < imp.nrows() {

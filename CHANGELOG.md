@@ -513,6 +513,40 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Performance
 
+- **Progressive merges no longer spend O(k x W) per merge on row and
+  profile bookkeeping, and that work runs on the pool.** After each
+  merge `merge_step_cached` rewrote the k rows of both groups column by
+  column, one byte pushed into every row per column and every row then
+  cloned back into the alignment; at 1000 sequences the merges that grow
+  the largest cluster (the critical path of the guide tree, up to 999
+  rows at 7000-9000 columns) spent 47 % of their time there, 31 % of the
+  whole run's CPU, all of it serial, which is why `--thread 8` gained
+  only 1.2x at n = 1000 where C gains 1.4-1.7x (the distance stages were
+  already parallel, and replaying the per-step dependency graph shows
+  the critical path is 86 % of the progressive work on PF00106, so the
+  level-by-level schedule was not the cause: a `disttbfast.c:1699`-style
+  job queue would gain ~1 %). The op list now becomes copy runs once per
+  side and each row is a few `copy_from_slice` calls into a gap-filled
+  buffer, moved rather than cloned (C's `gapireru`, `mltaln9.c:12529`),
+  large groups in parallel over rows; level tasks take their rows by
+  move; `Profile::from_aligned` accumulates column ranges on the pool
+  with every column still summed in sequence order; `profile_align_imp_view`
+  scores 64-row blocks of `match_calc_row_into` on the pool ahead of the
+  (still serial) recurrence for matrices above 2^21 cells, the case of
+  the root-path merges where the FFT finds no anchors; and the merged
+  profile is no longer blended into a cache nothing reads. Every output
+  element is computed by the same code in the same order, so the result
+  is the same bytes at any thread count. Byte-identical to C on
+  PF00106, PF00067, PF00072, PF00001, PF00005 and 16S at n = 500 and
+  1000 at `--thread 1` and 8 (FFT-NS-2), on PF00106 and 16S at
+  `--thread 0/2/3/4`, and on the shared refinement paths (PF00528 n100
+  L-INS-i, G-INS-i, FFT-NS-i; PF00072 and 16S n100 FFT-NS-i). Medians
+  of 3 interleaved reps on an idle Apple M4, FFT-NS-2 default flags,
+  n = 1000, seconds (before / after / C): PF00106 `--thread 1` 8.07 /
+  5.65 / 7.63, `--thread 8` 6.83 / 3.48 / 5.54; PF00067 9.78 / 7.50 /
+  10.40 and 7.09 / 4.70 / 5.96; PF00001 6.17 / 4.72 / 6.74 and 4.60 /
+  2.64 / 4.04; 16S 8.24 / 8.07 / 14.29 and 3.40 / 2.84 / 4.72. Peak RSS
+  unchanged or slightly lower.
 - **PartTree's Hirschberg DP scores profile columns sparsely, as C
   does.** Once a profile passes 10,000 columns, `--parttree` merges with
   the linear-space `MSalignmm` port (`mafft_align::msalignmm`,

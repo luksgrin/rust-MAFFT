@@ -1515,7 +1515,10 @@ pub fn progressive_align_full_c_compat_ex(
         let mut long_m = long_alg_m.as_deref().is_some_and(|f| *f);
         let mut slots: Vec<Option<StepTrace>> = vec![None; topology.steps.len()];
         for level in &levels {
-            let tasks: Vec<(usize, BTreeMap<Vec<usize>, CachedProfile>)> = level
+            // Each task owns its members' rows for the duration of the
+            // level (moved out here, moved back below), so no row is
+            // copied on the way in or out.
+            let tasks: Vec<(usize, BTreeMap<Vec<usize>, CachedProfile>, Vec<Vec<u8>>)> = level
                 .iter()
                 .map(|&step_idx| {
                     let step = &topology.steps[step_idx];
@@ -1525,22 +1528,22 @@ pub fn progressive_align_full_c_compat_ex(
                             local.insert(key, entry);
                         }
                     }
-                    (step_idx, local)
+                    let mut rows: Vec<Vec<u8>> = vec![Vec::new(); nseq];
+                    for &i in step.left.iter().chain(&step.right) {
+                        rows[i] = std::mem::take(&mut aligned[i]);
+                    }
+                    (step_idx, local, rows)
                 })
                 .collect();
-            let merge_one = |(step_idx, mut local): (usize, BTreeMap<Vec<usize>, CachedProfile>)| {
+            let merge_one = |(step_idx, mut local, mut rows): (usize, BTreeMap<Vec<usize>, CachedProfile>, Vec<Vec<u8>>)| {
                 let step = &topology.steps[step_idx];
                 let step_scoring: &ScoringContext = if unalign_level > 0.0 {
                     &dyn_scoring[step_idx]
                 } else {
                     scoring
                 };
-                let mut rows: Vec<Vec<u8>> = vec![Vec::new(); nseq];
-                for &i in step.left.iter().chain(&step.right) {
-                    rows[i] = aligned[i].clone();
-                }
-                let len1 = aligned[step.left[0]].len();
-                let len2 = aligned[step.right[0]].len();
+                let len1 = rows[step.left[0]].len();
+                let len2 = rows[step.right[0]].len();
                 let hit = long_enabled
                     && (len1 > DISTTBFAST_MEMSAVE_LEN || len2 > DISTTBFAST_MEMSAVE_LEN);
                 let switched = long_m || hit;
@@ -1789,9 +1792,6 @@ fn merge_step_cached(
     // (`disttbfast.c:2865`).
     udpari_long: bool,
 ) -> f64 {
-    let width1 = aligned[group1[0]].len();
-    let width2 = aligned[group2[0]].len();
-
     // RS_DP_DUMP: when set, append one entry per merge call to the file at
     // its value. Format (tab-delimited per line):
     //   step_idx<TAB>group1_indices<TAB>group2_indices<TAB>weights1<TAB>
@@ -2059,10 +2059,13 @@ fn merge_step_cached(
 
     // Cache the merged profile (C's createcpmxresult + creategapfreqresult +
     // createogresult + createfgresult). Only cache for groups > 20 sequences
-    // (matching C's condition at MSalignmm.c line 2431).
+    // (matching C's condition at MSalignmm.c line 2431). Without
+    // `use_cache` nothing reads the entry back (`try_cache` above), so the
+    // blend is skipped; `MAFFT_DUMP_CPMX_PREFIX` still wants it dumped.
     let total_eff = eff1 + eff2;
     let combined_seqs = group1.len() + group2.len();
-    if total_eff > 0.0 && combined_seqs > 20 {
+    let keep_cache = use_cache || std::env::var_os("MAFFT_DUMP_CPMX_PREFIX").is_some();
+    if keep_cache && total_eff > 0.0 && combined_seqs > 20 {
         let norm_eff1 = eff1 / total_eff;
         let norm_eff2 = eff2 / total_eff;
         let merged_prof = blend_profiles_exact(
@@ -2084,43 +2087,20 @@ fn merge_step_cached(
     cache.remove(&key1);
     cache.remove(&key2);
 
-    // Build new sequences for group1 and group2 ONLY
-    let mut cursor1 = 0usize;
-    let mut cursor2 = 0usize;
-    let mut new_seqs_g1: Vec<Vec<u8>> = vec![Vec::with_capacity(new_width); group1.len()];
-    let mut new_seqs_g2: Vec<Vec<u8>> = vec![Vec::with_capacity(new_width); group2.len()];
-
-    for op in &aln.operations {
-        match op {
-            AlignOp::Match => {
-                for (gi, &idx) in group1.iter().enumerate() {
-                    new_seqs_g1[gi].push(if cursor1 < width1 { aligned[idx][cursor1] } else { b'-' });
-                }
-                for (gi, &idx) in group2.iter().enumerate() {
-                    new_seqs_g2[gi].push(if cursor2 < width2 { aligned[idx][cursor2] } else { b'-' });
-                }
-                cursor1 += 1;
-                cursor2 += 1;
-            }
-            AlignOp::Delete => {
-                for (gi, &idx) in group1.iter().enumerate() {
-                    new_seqs_g1[gi].push(if cursor1 < width1 { aligned[idx][cursor1] } else { b'-' });
-                }
-                for gi in 0..group2.len() { new_seqs_g2[gi].push(new_gap_char); }
-                cursor1 += 1;
-            }
-            AlignOp::Insert => {
-                for gi in 0..group1.len() { new_seqs_g1[gi].push(new_gap_char); }
-                for (gi, &idx) in group2.iter().enumerate() {
-                    new_seqs_g2[gi].push(if cursor2 < width2 { aligned[idx][cursor2] } else { b'-' });
-                }
-                cursor2 += 1;
-            }
-        }
-    }
-
-    for (gi, &idx) in group1.iter().enumerate() { aligned[idx] = new_seqs_g1[gi].clone(); }
-    for (gi, &idx) in group2.iter().enumerate() { aligned[idx] = new_seqs_g2[gi].clone(); }
+    // Rewrite the rows of group1 and group2 ONLY. The op list is turned
+    // into copy runs once per side (`merge_copy_runs`), so each row is a
+    // few `copy_from_slice` calls into a gap-filled buffer instead of a
+    // per-column push: at n=1000 the root-path merges rewrite ~1000 rows
+    // of ~9000 columns each, and that column walk was the single largest
+    // cost of the whole progressive stage. Rows are rebuilt in parallel
+    // when the group is large; every row is an independent byte copy, so
+    // the result is the same on any thread count.
+    let runs1 = merge_copy_runs(&aln.operations, true);
+    let runs2 = merge_copy_runs(&aln.operations, false);
+    let mut new_seqs_g1 = rebuild_rows(group1, aligned, &runs1, new_width, new_gap_char);
+    let mut new_seqs_g2 = rebuild_rows(group2, aligned, &runs2, new_width, new_gap_char);
+    for (gi, &idx) in group1.iter().enumerate() { aligned[idx] = std::mem::take(&mut new_seqs_g1[gi]); }
+    for (gi, &idx) in group2.iter().enumerate() { aligned[idx] = std::mem::take(&mut new_seqs_g2[gi]); }
 
     // RS_DP_DUMP: write per-step inputs + outputs to the file at the env
     // var's value. Format (one tab-separated entry per line):
@@ -2132,8 +2112,8 @@ fn merge_step_cached(
         if let Ok(path) = std::env::var("RS_DP_DUMP") {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                let out1: Vec<String> = new_seqs_g1.iter().map(|v| String::from_utf8_lossy(v).into_owned()).collect();
-                let out2: Vec<String> = new_seqs_g2.iter().map(|v| String::from_utf8_lossy(v).into_owned()).collect();
+                let out1: Vec<String> = group1.iter().map(|&i| String::from_utf8_lossy(&aligned[i]).into_owned()).collect();
+                let out2: Vec<String> = group2.iter().map(|&i| String::from_utf8_lossy(&aligned[i]).into_owned()).collect();
                 let _ = writeln!(f,
                     "g1={}\tg2={}\tw1={}\tw2={}\tpen={}\tpen_ex={}\thgp={}\ttgp={}\tfft={}\tcon={}\tout1={}\tout2={}",
                     s1.join(";"), s2.join(";"),
@@ -2150,6 +2130,66 @@ fn merge_step_cached(
     }
 
     aln.score
+}
+
+/// Copy runs `(new_col, old_col, len)` for one side of a merge: the
+/// stretches of the merged alignment that take this side's old columns.
+/// Every other merged column is a gap on this side. `first` selects
+/// group1 (consumes a column on `Match`/`Delete`) or group2 (`Match`/
+/// `Insert`).
+fn merge_copy_runs(ops: &[AlignOp], first: bool) -> Vec<(usize, usize, usize)> {
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+    let mut old = 0usize;
+    for (new_col, op) in ops.iter().enumerate() {
+        let consumes = match op {
+            AlignOp::Match => true,
+            AlignOp::Delete => first,
+            AlignOp::Insert => !first,
+        };
+        if consumes {
+            match runs.last_mut() {
+                Some((nc, oc, len)) if *nc + *len == new_col && *oc + *len == old => *len += 1,
+                _ => runs.push((new_col, old, 1)),
+            }
+            old += 1;
+        }
+    }
+    runs
+}
+
+/// One row after a merge: `new_gap_char` where the merge inserted a gap,
+/// the old row's bytes along `runs`, and `-` past the old row's end (an
+/// op list longer than the row, as the per-column walk this replaces
+/// did with `cursor < width`).
+fn rebuild_row(old: &[u8], runs: &[(usize, usize, usize)], new_width: usize, new_gap_char: u8) -> Vec<u8> {
+    let mut row = vec![new_gap_char; new_width];
+    for &(nc, oc, len) in runs {
+        let avail = old.len().saturating_sub(oc).min(len);
+        row[nc..nc + avail].copy_from_slice(&old[oc..oc + avail]);
+        if avail < len {
+            row[nc + avail..nc + len].fill(b'-');
+        }
+    }
+    row
+}
+
+/// `rebuild_row` for every member of `group`, in group order. Large
+/// groups are rebuilt on the pool; each row is independent.
+fn rebuild_rows(
+    group: &[usize],
+    aligned: &[Vec<u8>],
+    runs: &[(usize, usize, usize)],
+    new_width: usize,
+    new_gap_char: u8,
+) -> Vec<Vec<u8>> {
+    // Row bytes below this copy faster than a pool dispatch settles.
+    const PAR_BYTES: usize = 1 << 18;
+    if group.len() > 1 && group.len() * new_width >= PAR_BYTES && mafft_align::parallel_enabled() {
+        use rayon::prelude::*;
+        group.par_iter().map(|&i| rebuild_row(&aligned[i], runs, new_width, new_gap_char)).collect()
+    } else {
+        group.iter().map(|&i| rebuild_row(&aligned[i], runs, new_width, new_gap_char)).collect()
+    }
 }
 
 /// Group the topology's steps into dependency levels: a step's level is one
