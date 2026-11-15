@@ -1374,17 +1374,8 @@ pub fn profile_align_imp_view(
     let h_cells = if keep_full_h { cells } else { stride };
     let mut h: Vec<f64> = DP_H_POOL.with_borrow_mut(std::mem::take);
     let mut ijp: Vec<i32> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
-    // Grow to the exact size, like C's `commonIP` (`ll1 + 10` x
-    // `ll2 + 10`): `resize` alone doubles the capacity, which left the
-    // pooled `ijp` at 2x the largest DP of the run.
-    if h.len() < h_cells {
-        h.reserve_exact(h_cells - h.len());
-        h.resize(h_cells, 0.0);
-    }
-    if ijp.len() < cells {
-        ijp.reserve_exact(cells - ijp.len());
-        ijp.resize(cells, 0);
-    }
+    crate::pool::grow_pooled(&mut h, h_cells, 0.0);
+    crate::pool::grow_pooled(&mut ijp, cells, 0);
 
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
     // C fills initverticalw[0..lgth1-1] (0-based), then adds gap to [1..lgth1].
@@ -2231,12 +2222,9 @@ pub fn pairwise_align11_ex(
     let stride = m + 1;
     let cells = (n + 1) * stride;
     let mut ijp: Vec<i32> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
-    if ijp.len() < cells {
-        // Grow to the exact size (C: `ll1 + 10` x `ll2 + 10`), not the
-        // amortised doubling `resize` alone would do.
-        ijp.reserve_exact(cells - ijp.len());
-        ijp.resize(cells, 0);
-    }
+    // Same growth policy as the profile DP that shares this pool: drop
+    // and re-allocate with a little headroom instead of `realloc`.
+    crate::pool::grow_pooled(&mut ijp, cells, 0);
 
     // m[j] = currentw[j-1], NO ogcp multiplication (C line 1218)
     let mut mj = vec![f64::NEG_INFINITY; m + 1];

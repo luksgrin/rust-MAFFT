@@ -18,12 +18,6 @@ fn impmtx_diagonal_for_one_region_no_gaps() {
         importance: 10.0, korh: b'h',
         ..Default::default()
     });
-    table.push(1, 0, HomologyRegion {
-        start1: 0, end1: 4, start2: 0, end2: 4,
-        opt: 0.0, overlapaa: 5,
-        importance: 10.0, korh: b'h',
-        ..Default::default()
-    });
 
     let mut amino_map = [0xFFu8; 256];
     for (i, &c) in b"ACGT-".iter().enumerate() { amino_map[c as usize] = i as u8; }
@@ -80,11 +74,7 @@ fn impmtx_handles_gap_in_seq1() {
         importance: 1.0, korh: b'h',
         ..Default::default()
     };
-    table.push(0, 1, region.clone());
-    table.push(1, 0, HomologyRegion {
-        start1: 0, end1: 3, start2: 0, end2: 3,
-        ..region
-    });
+    table.push(0, 1, region);
 
     let s1 = b"A-CGT";
     let s2 = b"ACGT";

@@ -110,9 +110,9 @@ pub fn build_imp_matrix_flat_into(
     let cells = lgth1 * lgth2;
     out.clear();
     // Exact growth (no amortised doubling): this buffer is the largest
-    // allocation of the run, like C's `impalloclen`-sized impmtx.
-    out.reserve_exact(cells);
-    out.resize(cells, 0.0);
+    // allocation of the run, like C's `impalloclen`-sized impmtx. Grown
+    // without `realloc` so the old and new buffers never coexist.
+    crate::pool::grow_pooled(out, cells, 0.0);
     if std::env::var_os("RS_IMPMTX_DUMP").is_some() {
         // Keep the forensic dump byte-for-byte: build through the row
         // version (which writes the dump) and copy.
@@ -449,6 +449,7 @@ pub fn extract_putlocalhom2_regions(
         r.opt = opt;
         r.overlapaa = sumoverlap;
         r.importance = provisional_importance;
+        r.rimportance = provisional_importance;
     }
     regions
 }
@@ -477,9 +478,8 @@ pub struct SeedGroup<'a> {
 ///    pairwise homology by a factor proportional to N².
 /// 3. Recompute the provisional importance (`opt / sumoverlap`) so the
 ///    boosted `opt` is reflected before `recompute_importance` runs.
-/// 4. Mirror the entry symmetrically: `(i, j)` AND `(j, i)` (`j, i` with
-///    `start1/start2` swapped) — matching how `build_local_homology_table`
-///    already populates both directions.
+/// 4. Store the entry once for the pair `(i, j)`; `LocalHomologyTable::get`
+///    presents the `(j, i)` mirror image on read.
 ///
 /// Different seed groups do not share homology entries (the C script
 /// invokes `multi2hat3s` separately per seed file, with disjoint
@@ -512,18 +512,11 @@ pub fn build_seed_homology_table(
                     (regions[0].opt * tsuyosa) / overlapaa as f64
                 } else { 0.0 };
                 for r in &regions {
-                    let mut fwd = r.clone();
+                    let mut fwd = *r;
                     fwd.opt = r.opt * tsuyosa;
                     fwd.importance = boosted_importance;
-                    let rev = HomologyRegion {
-                        start1: fwd.start2,
-                        end1: fwd.end2,
-                        start2: fwd.start1,
-                        end2: fwd.end1,
-                        ..fwd.clone()
-                    };
+                    fwd.rimportance = boosted_importance;
                     table.push(gi, gj, fwd);
-                    table.push(gj, gi, rev);
                 }
             }
         }
@@ -544,10 +537,9 @@ pub fn build_seed_homology_table(
 /// `start*` / `end*` are inclusive 0-based residue positions, `opt` is
 /// the `tsuyosa`-boosted-and-`*5.8/600`-normalized score that C's
 /// `putlocalhom2` (`io.c:861`) writes, and `k` is the `korh`
-/// classification byte. The C reader (`readlocalhomtable2_half`) populates
-/// only one triangle; we mirror each entry to `(j, i)` with
-/// `start1`/`start2` swapped so downstream `build_imp_matrix` /
-/// `recompute_importance` find entries in both directions.
+/// classification byte. Like the C reader (`readlocalhomtable2_half`) we
+/// store each entry once; `LocalHomologyTable::get` presents the `(j, i)`
+/// mirror image to `build_imp_matrix` / `recompute_importance`.
 ///
 /// `opt` is stored as-written by `multi2hat3s.c:214`
 /// (`isumscore * 5.8 / (600 * sumoverlap) * tsuyosa`); C loads these
@@ -603,23 +595,15 @@ pub fn parse_hat3_seed(
         }
         if i == j { continue; }
         let importance = if overlapaa > 0 { opt / overlapaa as f64 } else { 0.0 };
-        let fwd = HomologyRegion {
+        table.push(i, j, HomologyRegion {
             start1, end1, start2, end2,
             opt,
             overlapaa,
             importance,
+            rimportance: importance,
             korh,
             ..Default::default()
-        };
-        let rev = HomologyRegion {
-            start1: start2,
-            end1: end2,
-            start2: start1,
-            end2: end1,
-            ..fwd.clone()
-        };
-        table.push(i, j, fwd);
-        table.push(j, i, rev);
+        });
     }
     Ok(table)
 }
@@ -630,10 +614,9 @@ pub fn parse_hat3_seed(
 pub fn merge_homology_tables(into: &mut LocalHomologyTable, extra: &LocalHomologyTable) {
     if into.nseq != extra.nseq { return; }
     for i in 0..into.nseq {
-        for j in 0..into.nseq {
-            if i == j { continue; }
+        for j in (i + 1)..into.nseq {
             for r in extra.get(i, j) {
-                into.push(i, j, r.clone());
+                into.push(i, j, r);
             }
         }
     }
@@ -709,17 +692,20 @@ pub fn recompute_importance(
         }
         for j in 0..nseq {
             if i == j { continue; }
-            // Note: C iterates `for tmpptr = localhom[i]+j; tmpptr; tmpptr=tmpptr->next`
-            // — a linked list. We have a Vec; iterate by index so we can mutate.
-            let regions_count = localhom.get(i, j).len();
-            for r in 0..regions_count {
-                let (s, e) = {
-                    let region = &localhom.get(i, j)[r];
-                    (
-                        (region.start1 as usize).min(nlenmax.saturating_sub(1)),
-                        (region.end1 as usize).min(nlenmax.saturating_sub(1)),
-                    )
+            // C walks `localhom[i]+j-i` (i < j) or `localhom[j]+i-j` (i > j)
+            // and writes `importance` or `rimportance` of the same node
+            // (`mltaln9.c:11848-11891`). The pair is stored once, oriented
+            // from `min(i, j)`; the range along sequence `i` is `start1..=end1`
+            // when `i < j` and `start2..=end2` otherwise.
+            let stored = localhom.stored_mut(i, j);
+            for region in stored.iter_mut() {
+                let (start, end) = if i < j {
+                    (region.start1, region.end1)
+                } else {
+                    (region.start2, region.end2)
                 };
+                let s = (start as usize).min(nlenmax.saturating_sub(1));
+                let e = (end as usize).min(nlenmax.saturating_sub(1));
                 let mut sum = 0.0f64;
                 let mut count = 0usize;
                 for pos in s..=e {
@@ -727,8 +713,11 @@ pub fn recompute_importance(
                     count += 1;
                 }
                 let mean = if count > 0 { sum / count as f64 } else { 0.0 };
-                let region = &mut localhom.get_mut(i, j)[r];
-                region.importance = mean * region.opt;
+                if i < j {
+                    region.importance = mean * region.opt;
+                } else {
+                    region.rimportance = mean * region.opt;
+                }
             }
         }
     }
@@ -738,23 +727,15 @@ pub fn recompute_importance(
     // (`mltaln9.c:11928-11950`):
     //   imp = 0.5 * (tmpptr1->importance + tmpptr1->rimportance);
     //   tmpptr1->importance = tmpptr1->rimportance = imp;
-    // C's half-matrix struct stores both `importance` and `rimportance`
-    // for the same pair; the averaging makes them equal. In our full-matrix
-    // layout, (i,j).importance corresponds to C's `importance` and (j,i)
-    // .importance corresponds to C's `rimportance`. Averaging both back to
-    // the same value matches C's final state.
+    // The pair's node stores both `importance` (seen from `i`) and
+    // `rimportance` (seen from `j`), as in C; the averaging makes them
+    // equal, so `get(i, j)` and `get(j, i)` report the same weight.
     for i in 0..nseq.saturating_sub(1) {
         for j in (i + 1)..nseq {
-            let n_ij = localhom.get(i, j).len();
-            let n_ji = localhom.get(j, i).len();
-            let n = n_ij.min(n_ji);
-            for r in 0..n {
-                let avg = 0.5 * (
-                    localhom.get(i, j)[r].importance
-                  + localhom.get(j, i)[r].importance
-                );
-                localhom.get_mut(i, j)[r].importance = avg;
-                localhom.get_mut(j, i)[r].importance = avg;
+            for region in localhom.stored_mut(i, j).iter_mut() {
+                let avg = 0.5 * (region.importance + region.rimportance);
+                region.importance = avg;
+                region.rimportance = avg;
             }
         }
     }
@@ -1229,15 +1210,8 @@ pub fn build_homology_table_with_unalign(
         dist[r.i][r.j] = r.distance;
         dist[r.j][r.i] = r.distance;
 
-        for region in &r.regions {
-            table.push(r.i, r.j, region.clone());
-            table.push(r.j, r.i, HomologyRegion {
-                start1: region.start2,
-                end1: region.end2,
-                start2: region.start1,
-                end2: region.end1,
-                ..region.clone()
-            });
+        for &region in &r.regions {
+            table.push(r.i, r.j, region);
         }
     }
 
@@ -1295,8 +1269,8 @@ mod tests {
         assert_eq!(fwd.len(), rev.len());
 
         if !fwd.is_empty() {
-            assert_eq!(fwd[0].start1, rev[0].start2);
-            assert_eq!(fwd[0].start2, rev[0].start1);
+            assert_eq!(fwd.get(0).start1, rev.get(0).start2);
+            assert_eq!(fwd.get(0).start2, rev.get(0).start1);
         }
     }
 
@@ -1306,19 +1280,19 @@ mod tests {
         let table = parse_hat3_seed(text, 3).expect("parse ok");
         let fwd = table.get(0, 1);
         assert_eq!(fwd.len(), 1);
-        assert_eq!(fwd[0].start1, 0);
-        assert_eq!(fwd[0].end1, 9);
-        assert_eq!(fwd[0].start2, 0);
-        assert_eq!(fwd[0].end2, 9);
-        assert_eq!(fwd[0].overlapaa, 10);
-        assert_eq!(fwd[0].opt, 1234.5);
-        assert_eq!(fwd[0].importance, 123.45);
-        assert_eq!(fwd[0].korh, b'k');
+        assert_eq!(fwd.get(0).start1, 0);
+        assert_eq!(fwd.get(0).end1, 9);
+        assert_eq!(fwd.get(0).start2, 0);
+        assert_eq!(fwd.get(0).end2, 9);
+        assert_eq!(fwd.get(0).overlapaa, 10);
+        assert_eq!(fwd.get(0).opt, 1234.5);
+        assert_eq!(fwd.get(0).importance, 123.45);
+        assert_eq!(fwd.get(0).korh, b'k');
         let rev = table.get(1, 0);
         assert_eq!(rev.len(), 1);
-        assert_eq!(rev[0].start1, 0);
-        assert_eq!(rev[0].end1, 9);
-        assert_eq!(rev[0].opt, 1234.5);
+        assert_eq!(rev.get(0).start1, 0);
+        assert_eq!(rev.get(0).end1, 9);
+        assert_eq!(rev.get(0).opt, 1234.5);
     }
 
     #[test]
@@ -1351,9 +1325,9 @@ mod tests {
         assert_eq!(table.get(0, 1).len(), 2);
         assert_eq!(table.get(1, 0).len(), 2);
         let r = table.get(0, 1);
-        assert_eq!(r[0].overlapaa, 348);
-        assert_eq!(r[1].overlapaa, 348);
-        assert_eq!(r[0].opt, 14356.319);
-        assert_eq!(r[1].opt, 14356.319);
+        assert_eq!(r.get(0).overlapaa, 348);
+        assert_eq!(r.get(1).overlapaa, 348);
+        assert_eq!(r.get(0).opt, 14356.319);
+        assert_eq!(r.get(1).opt, 14356.319);
     }
 }
