@@ -299,7 +299,7 @@ pub fn local_align(
     // observed.
     let ijp_stride = m + 1;
     let cells = (n + 1) * ijp_stride;
-    if ijp.len() < cells { ijp.resize(cells, 0); }
+    crate::pool::grow_pooled(&mut ijp, cells, 0);
     for i in 0..=n { ijp[i * ijp_stride] = LOCALSTOP; }
     for j in 0..=m { ijp[j] = LOCALSTOP; }
 

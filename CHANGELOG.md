@@ -547,6 +547,33 @@ public surfaces stable from 0.1.0 anyway.
   10.40 and 7.09 / 4.70 / 5.96; PF00001 6.17 / 4.72 / 6.74 and 4.60 /
   2.64 / 4.04; 16S 8.24 / 8.07 / 14.29 and 3.40 / 2.84 / 4.72. Peak RSS
   unchanged or slightly lower.
+- **PartTree's Hirschberg DP scores profile columns sparsely, as C
+  does.** Once a profile passes 10,000 columns, `--parttree` merges with
+  the linear-space `MSalignmm` port (`mafft_align::msalignmm`,
+  `splittbfast.c:1020`). Its forward and backward sweeps computed every
+  DP cell's match score as a dense sum over all 26 alphabet entries of
+  the column through `Vec<Vec<f64>>` indexing, where C's
+  `match_calc_alphabet_seq` (`MSalignmm.c:182-236`) walks only the
+  non-zero entries (`cpmxpd` / `cpmxpdn`). The long Pfam alignments
+  average about five residues per column, so Rust did about five times
+  the multiply-adds of C on an O(W²) kernel: on PF00400 at 500
+  sequences, 15,909 of 28,313 profile samples were in `msalignmm_rec`
+  against 8,743 of 20,565 in C's `MSalignmm_rec`. The sweeps now share
+  one per-call context with the sparse views of both profiles
+  (`build_sparse_cpmx`, the one `A__align` already used), the effective
+  gap-cost vectors computed once per call (C's `gapinfo`,
+  `MSalignmm.c:2298-2311`) instead of once per recursion node and pass,
+  and the nongap vector with its tail value in place of a branchy
+  per-cell lookup. The recurrence and every `fmadd` operand order are
+  unchanged; a skipped zero entry would have contributed
+  `fma(scarr, 0, acc) == acc`, so the sums are the same `f64`s.
+  `--parttree --thread 1` at 500 sequences, idle Apple M4, medians of 3
+  interleaved runs (before / after / C): PF00400 28.40 / 18.39 / 19.15 s,
+  PF00069 31.46 / 18.32 / 22.55 s, PF00005 12.06 / 9.20 / 11.50 s;
+  PF02518 never reaches the switch and is unchanged (7.31 / 7.49 /
+  9.31 s). Peak RSS within 2%. Byte-identical to C on those four sets
+  at 100 and 500 sequences and on 16S rRNA at 500; the `MSalignmm` and
+  `Falign_udpari_long` FFI cross-validation suites pass unchanged.
 
 - **The two all-pairs distance stages no longer redo per-sequence work
   per pair.** The 6-mer distance of the first guide tree
@@ -652,6 +679,61 @@ public surfaces stable from 0.1.0 anyway.
   15.0 to 5.7 s on BB30005 L-INS-i and from 50.3 to 12.2 s on the
   120 × 1.4 kb CDS fixture under L-INS-i at `--thread 1` versus `8`.
   Idle-machine medians are pending (#48).
+
+- **`--parttree` on long sequences no longer peaks 50–100 MiB above C.**
+  The 1-vs-1 progressive merge (`pairwise_align11_ex`, the `G__align11`
+  port) allocated a full (n+1) × (m+1) `f64` score matrix and an `i32`
+  traceback matrix as one `Vec` per row on every call, 12 bytes per DP
+  cell in `2 (n+1)` allocations, freed at return; C keeps only the two
+  rolling rows and takes `ijp` from the grow-only `commonIP` matrix it
+  shares with `A__align` (`Galign11.c:1136-1161`,
+  `Salignmm.c:1416-1425`). Under `--parttree` every merge spans the
+  whole sequence (no FFT anchoring), so at 16S rRNA lengths that was
+  ~32 MB and ~3000 allocations per 1-vs-1 merge, plus the freed rows
+  the allocator kept resident. The score matrix is gone (the end-point
+  search reads the last computed row, the score is that row's last cell
+  or the search's best), `ijp` is the flat per-thread `DP_IJP_POOL`
+  buffer the profile DP already uses, and both pools now grow to the
+  exact size instead of doubling. Serial medians of 3 on an idle Apple
+  M4, `--thread 1`, C / before / after: 16S rRNA n=100 2.21 s, 30 MB /
+  1.67 s, 98 MB / 1.63 s, 23 MB; 16S rRNA n=500 10.62 s, 95 MB / 8.49 s,
+  138 MB / 8.35 s, 55 MB; PF00005 n=100 1.73 s, 131 MB / 1.25 s, 144 MB
+  / 1.24 s, 48 MB. Output is unchanged: byte-identical to C on the 16S
+  rRNA sets at 100, 250 and 500, PF00005 at 100 and PF00001 at 500 under
+  `--parttree`, and on 16S rRNA at 100 under FFT-NS-2.
+- **L-INS-i / G-INS-i refinement peaks below C on long, repeat-rich
+  sets too.** After the pooling above, the Rust CLI still peaked above C
+  on PF00400, PF02518 and PF00069 (1.1–1.4× at n=100–250). A counting
+  allocator with stage checkpoints put the live-byte high-water mark of
+  PF00400 n=100 G-INS-i at 841 MB, of which 659 MB were two W × W `f64`
+  importance matrices at once: `realign_all_constrained_fft` rebuilds the
+  matrix at the current width on every branch, the width moves by a few
+  columns at every accepted branch, and `build_imp_matrix_flat_into`
+  grew the pooled buffer with `reserve_exact`, a `realloc` of a
+  280–340 MB block dozens of times per cycle (C frees and re-allocates
+  its `static TLS impmtx` as 50 KB rows, `partSalignmm.c:127-133`). The
+  macOS allocator either copies on such a `realloc` or, after a plain
+  free, parks the dead block resident in its large-block cache: freeing
+  and re-allocating at every widening was measured at 6.5 GB RSS for
+  408 MB live. `grow_pooled` (`mafft-align/src/pool.rs`) now grows the
+  pooled buffers through `realloc` with a quarter of headroom, so a run
+  of small widenings reuses one allocation and the monotone growth of
+  the progressive stage re-allocates O(log) times instead of once per
+  merge (freeing first and allocating afresh parks one dead block per
+  step: PF00005 n=100 `--parttree` 116 MB against 48 MB); it also serves
+  the refinement traceback and the pairwise and 1-vs-1 DP pools. The pairwise homology
+  table is stored once per pair as in C's half table
+  (`readlocalhomtable2_half`), with `importance` / `rimportance` on the
+  same region and the mirror orientation derived on read
+  (`LocalHomologyTable::get`); `recompute_importance` follows
+  `calcimportance_half` field for field (12 → 6 MB at n=100, about 60 MB
+  at n=250). Peak RSS (`/usr/bin/time -l`, Apple M4, `--thread 1`,
+  C / before / after, MB): PF00400 n=100 G-INS-i 716 / 804 / 523,
+  L-INS-i 817 / 845 / 521; PF02518 n=100 567 / 672 / 373 and 543 / 610 /
+  400; PF00069 n=100 925 / 1040 / 623 and 1076 / 784 / 566; PF00400
+  n=250 G-INS-i 1410 / 2022 / 1178; PF00528 and PF00072 n=100 drop to
+  0.4–0.6× C. Output is unchanged: byte-identical to C on all eleven
+  cells, before and after.
 
 ### Python
 

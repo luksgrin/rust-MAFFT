@@ -92,13 +92,6 @@ fn constrained_align_matches_c_a_align() {
     // ---- Rust side ----
     let mut table = LocalHomologyTable::new(2);
     table.push(0, 1, region.clone());
-    table.push(1, 0, HomologyRegion {
-        start1: region.start2,
-        end1: region.end2,
-        start2: region.start1,
-        end2: region.end1,
-        ..region.clone()
-    });
 
     let g1: Vec<&[u8]> = vec![s1];
     let g2: Vec<&[u8]> = vec![s2];
@@ -311,11 +304,6 @@ fn constrained_align_with_gaps_matches_c() {
 
     let mut table = LocalHomologyTable::new(2);
     table.push(0, 1, region.clone());
-    table.push(1, 0, HomologyRegion {
-        start1: region.start2, end1: region.end2,
-        start2: region.start1, end2: region.end1,
-        ..region.clone()
-    });
 
     let g1: Vec<&[u8]> = vec![s1];
     let g2: Vec<&[u8]> = vec![s2];

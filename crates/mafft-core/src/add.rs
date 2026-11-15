@@ -457,17 +457,10 @@ fn fragment_homology(all: &LocalHomologyTable, norg: usize, iadd: usize) -> Loca
     let src = norg + iadd;
     let mut table = LocalHomologyTable::new(norg + 1);
     for i in 0..norg {
-        for region in all.get(i, src) {
-            let mut region = region.clone();
+        for mut region in all.get(i, src) {
             region.importance = region.opt * 0.5;
             region.rimportance = region.importance;
             table.push(i, norg, region);
-        }
-        for region in all.get(src, i) {
-            let mut region = region.clone();
-            region.importance = region.opt * 0.5;
-            region.rimportance = region.importance;
-            table.push(norg, i, region);
         }
     }
     table
