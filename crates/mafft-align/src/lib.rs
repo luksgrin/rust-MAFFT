@@ -6,6 +6,7 @@
 //!          and constrained alignment (Falign_localhom, partSalignmm).
 
 mod dp;
+mod pool;
 mod global;
 mod local;
 mod genaffine;

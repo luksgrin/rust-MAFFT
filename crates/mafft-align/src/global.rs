@@ -152,8 +152,7 @@ pub fn global_align(
     //   >= warpbase        = warp transition (came from (warpis[v-warpbase], warpjs[v-warpbase]))
     let mut ijp_buf: Vec<i32> = GLOBAL_IJP_POOL.with_borrow_mut(std::mem::take);
     ijp_buf.clear();
-    ijp_buf.reserve_exact((n + 2) * (m + 2));
-    ijp_buf.resize((n + 2) * (m + 2), 0);
+    crate::pool::grow_pooled(&mut ijp_buf, (n + 2) * (m + 2), 0);
     let mut ijp = FlatRows { data: &mut ijp_buf[..], stride: m + 2 };
 
     let mut wm = 0.0f64;

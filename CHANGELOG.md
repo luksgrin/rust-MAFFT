@@ -667,6 +667,39 @@ public surfaces stable from 0.1.0 anyway.
   / 1.24 s, 48 MB. Output is unchanged: byte-identical to C on the 16S
   rRNA sets at 100, 250 and 500, PF00005 at 100 and PF00001 at 500 under
   `--parttree`, and on 16S rRNA at 100 under FFT-NS-2.
+- **L-INS-i / G-INS-i refinement peaks below C on long, repeat-rich
+  sets too.** After the pooling above, the Rust CLI still peaked above C
+  on PF00400, PF02518 and PF00069 (1.1–1.4× at n=100–250). A counting
+  allocator with stage checkpoints put the live-byte high-water mark of
+  PF00400 n=100 G-INS-i at 841 MB, of which 659 MB were two W × W `f64`
+  importance matrices at once: `realign_all_constrained_fft` rebuilds the
+  matrix at the current width on every branch, the width moves by a few
+  columns at every accepted branch, and `build_imp_matrix_flat_into`
+  grew the pooled buffer with `reserve_exact`, a `realloc` of a
+  280–340 MB block dozens of times per cycle (C frees and re-allocates
+  its `static TLS impmtx` as 50 KB rows, `partSalignmm.c:127-133`). The
+  macOS allocator either copies on such a `realloc` or, after a plain
+  free, parks the dead block resident in its large-block cache: freeing
+  and re-allocating at every widening was measured at 6.5 GB RSS for
+  408 MB live. `grow_pooled` (`mafft-align/src/pool.rs`) now grows the
+  pooled buffers through `realloc` with a quarter of headroom, so a run
+  of small widenings reuses one allocation and the monotone growth of
+  the progressive stage re-allocates O(log) times instead of once per
+  merge (freeing first and allocating afresh parks one dead block per
+  step: PF00005 n=100 `--parttree` 116 MB against 48 MB); it also serves
+  the refinement traceback and the pairwise and 1-vs-1 DP pools. The pairwise homology
+  table is stored once per pair as in C's half table
+  (`readlocalhomtable2_half`), with `importance` / `rimportance` on the
+  same region and the mirror orientation derived on read
+  (`LocalHomologyTable::get`); `recompute_importance` follows
+  `calcimportance_half` field for field (12 → 6 MB at n=100, about 60 MB
+  at n=250). Peak RSS (`/usr/bin/time -l`, Apple M4, `--thread 1`,
+  C / before / after, MB): PF00400 n=100 G-INS-i 716 / 804 / 523,
+  L-INS-i 817 / 845 / 521; PF02518 n=100 567 / 672 / 373 and 543 / 610 /
+  400; PF00069 n=100 925 / 1040 / 623 and 1076 / 784 / 566; PF00400
+  n=250 G-INS-i 1410 / 2022 / 1178; PF00528 and PF00072 n=100 drop to
+  0.4–0.6× C. Output is unchanged: byte-identical to C on all eleven
+  cells, before and after.
 
 ### Python
 

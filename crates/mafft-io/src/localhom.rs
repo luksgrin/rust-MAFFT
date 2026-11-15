@@ -60,8 +60,9 @@ pub fn read_localhom_table<R: Read>(reader: R, nseq: usize) -> Result<LocalHomol
 
         let opt = (raw_score / SCORE_SCALE_DIVISOR) * SCORE_SCALE_FACTOR;
 
-        // Forward entry (i → j)
-        let region = HomologyRegion {
+        if i == j { continue; }
+        // Stored once per pair; `table.get(j, i)` is the mirror image.
+        table.push(i, j, HomologyRegion {
             start1,
             end1,
             start2,
@@ -70,23 +71,7 @@ pub fn read_localhom_table<R: Read>(reader: R, nseq: usize) -> Result<LocalHomol
             overlapaa,
             korh,
             ..Default::default()
-        };
-        table.push(i, j, region);
-
-        // Reciprocal entry (j → i) with swapped coordinates
-        if i != j {
-            let reciprocal = HomologyRegion {
-                start1: start2,
-                end1: end2,
-                start2: start1,
-                end2: end1,
-                opt,
-                overlapaa,
-                korh,
-                ..Default::default()
-            };
-            table.push(j, i, reciprocal);
-        }
+        });
     }
 
     Ok(table)
@@ -138,22 +123,22 @@ mod tests {
         // Forward entries
         let regions_01 = table.get(0, 1);
         assert_eq!(regions_01.len(), 1);
-        assert_eq!(regions_01[0].start1, 10);
-        assert_eq!(regions_01[0].end1, 60);
-        assert_eq!(regions_01[0].start2, 20);
-        assert_eq!(regions_01[0].end2, 70);
+        assert_eq!(regions_01.get(0).start1, 10);
+        assert_eq!(regions_01.get(0).end1, 60);
+        assert_eq!(regions_01.get(0).start2, 20);
+        assert_eq!(regions_01.get(0).end2, 70);
 
         // Reciprocal entries (coordinates swapped)
         let regions_10 = table.get(1, 0);
         assert_eq!(regions_10.len(), 1);
-        assert_eq!(regions_10[0].start1, 20); // was start2
-        assert_eq!(regions_10[0].end1, 70);   // was end2
-        assert_eq!(regions_10[0].start2, 10); // was start1
-        assert_eq!(regions_10[0].end2, 60);   // was end1
+        assert_eq!(regions_10.get(0).start1, 20); // was start2
+        assert_eq!(regions_10.get(0).end1, 70);   // was end2
+        assert_eq!(regions_10.get(0).start2, 10); // was start1
+        assert_eq!(regions_10.get(0).end2, 60);   // was end1
 
         // Score scaling: 290.0 / 5.8 * 600 = 30000.0
         let expected_opt = (290.0 / 5.8) * 600.0;
-        assert!((regions_01[0].opt - expected_opt).abs() < 0.01);
+        assert!((regions_01.get(0).opt - expected_opt).abs() < 0.01);
 
         // Write and verify
         let mut buf = Vec::new();
