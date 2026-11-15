@@ -1374,8 +1374,17 @@ pub fn profile_align_imp_view(
     let h_cells = if keep_full_h { cells } else { stride };
     let mut h: Vec<f64> = DP_H_POOL.with_borrow_mut(std::mem::take);
     let mut ijp: Vec<i32> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
-    if h.len() < h_cells { h.resize(h_cells, 0.0); }
-    if ijp.len() < cells { ijp.resize(cells, 0); }
+    // Grow to the exact size, like C's `commonIP` (`ll1 + 10` x
+    // `ll2 + 10`): `resize` alone doubles the capacity, which left the
+    // pooled `ijp` at 2x the largest DP of the run.
+    if h.len() < h_cells {
+        h.reserve_exact(h_cells - h.len());
+        h.resize(h_cells, 0.0);
+    }
+    if ijp.len() < cells {
+        ijp.reserve_exact(cells - ijp.len());
+        ijp.resize(cells, 0);
+    }
 
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
     // C fills initverticalw[0..lgth1-1] (0-based), then adds gap to [1..lgth1].
@@ -2204,11 +2213,30 @@ pub fn pairwise_align11_ex(
         }
     }
 
-    let mut h = vec![vec![0.0f64; m + 1]; n + 1];
-    let mut ijp = vec![vec![0i32; m + 1]; n + 1];
-
-    for j in 0..=m { h[0][j] = currentw[j]; }
-    for i in 0..=n { h[i][0] = initverticalw[i]; }
+    // Traceback matrix `ijp`, flat row-major with stride `m + 1`, taken
+    // from the same per-thread pool as the profile DP. C `G__align11`
+    // and `A__align` share one grow-only `commonIP` int matrix
+    // (`Galign11.c:1136-1161`, `Salignmm.c:1416-1425`), and neither
+    // keeps a score matrix: the DP only needs the rolling `currentw` /
+    // `previousw` rows, and the end-point search reads the last
+    // computed row. A full `(n + 1) x (m + 1)` f64 `h` plus per-row
+    // `Vec`s for `ijp` cost 12 bytes per cell in `2 (n + 1)` separate
+    // allocations per call (~32 MB and ~3000 allocations per 1-vs-1
+    // merge at 16S rRNA lengths); their churn kept the peak footprint
+    // ~70 MB above C in `--parttree` mode, where no FFT anchoring
+    // shortens the DP. Every `ijp` cell read by the traceback is
+    // written below before it is read (boundaries, the DP body, and
+    // the explicit `(n, m)` reset for `!tail_gap`), so stale pool
+    // contents cannot leak into the alignment.
+    let stride = m + 1;
+    let cells = (n + 1) * stride;
+    let mut ijp: Vec<i32> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
+    if ijp.len() < cells {
+        // Grow to the exact size (C: `ll1 + 10` x `ll2 + 10`), not the
+        // amortised doubling `resize` alone would do.
+        ijp.reserve_exact(cells - ijp.len());
+        ijp.resize(cells, 0);
+    }
 
     // m[j] = currentw[j-1], NO ogcp multiplication (C line 1218)
     let mut mj = vec![f64::NEG_INFINITY; m + 1];
@@ -2218,8 +2246,8 @@ pub fn pairwise_align11_ex(
         mpj[j] = 0;
     }
 
-    for i in 0..=n { ijp[i][0] = i as i32 + 1; }
-    for j in 0..=m { ijp[0][j] = -(j as i32 + 1); }
+    for i in 0..=n { ijp[i * stride] = i as i32 + 1; }
+    for j in 0..=m { ijp[j] = -(j as i32 + 1); }
 
     let mut previousw = vec![0.0f64; m + 1];
     let mut lastverticalw = vec![0.0f64; n + 1];
@@ -2254,15 +2282,16 @@ pub fn pairwise_align11_ex(
         // verbatim — at the tail-row (i == n) the in-row extension
         // contribution is zeroed.
         let fpenalty_ex_i = if i < n { penalty_ex } else { 0.0 };
+        let ijp_row = &mut ijp[i * stride..(i + 1) * stride];
         for j in 1..=m {
             let mut wm = previousw[j - 1];
-            ijp[i][j] = 0;
+            ijp_row[j] = 0;
 
             // Deletion: mi + fpenalty (flat, C line 1306)
             let g = mi + penalty;
             if g > wm {
                 wm = g;
-                ijp[i][j] = -(j as i32 - mpi as i32);
+                ijp_row[j] = -(j as i32 - mpi as i32);
             }
             // Open from diagonal (C line 1311)
             let g = previousw[j - 1];
@@ -2278,7 +2307,7 @@ pub fn pairwise_align11_ex(
             let g = mj[j] + penalty;
             if g > wm {
                 wm = g;
-                ijp[i][j] = i as i32 - mpj[j] as i32;
+                ijp_row[j] = i as i32 - mpj[j] as i32;
             }
             // Open from diagonal (C line 1330)
             let g = previousw[j - 1];
@@ -2294,29 +2323,32 @@ pub fn pairwise_align11_ex(
             }
 
             currentw[j] += wm;
-            h[i][j] = currentw[j];
         }
         if m > 0 { lastverticalw[i] = currentw[m - 1]; }
     }
 
-    // Tail gap handling
-    if !tail_gap {
+    // Tail gap handling. After the loop `currentw` holds the last computed
+    // row: row `n` when `tail_gap` (its cell `m` is the score), otherwise
+    // row `n - 1` (row 0 when `n == 1`), which is C's `lasthorizontalw`.
+    let score = if tail_gap {
+        currentw[m]
+    } else {
         let mut wm = lastverticalw[0];
+        ijp[n * stride + m] = 0;
         for i in 0..n {
             if lastverticalw[i] >= wm {
                 wm = lastverticalw[i];
-                ijp[n][m] = (n - i) as i32;
+                ijp[n * stride + m] = (n - i) as i32;
             }
         }
         for j in 0..m {
-            if h[n - 1][j] >= wm {
-                wm = h[n - 1][j];
-                ijp[n][m] = -((m - j) as i32);
+            if currentw[j] >= wm {
+                wm = currentw[j];
+                ijp[n * stride + m] = -((m - j) as i32);
             }
         }
-        // Set h[n][m] to the best score found (for the score field).
-        h[n][m] = wm;
-    }
+        wm
+    };
 
     // Traceback (same ijp format as MSalignmm)
     let mut gaptable1 = Vec::new();
@@ -2325,7 +2357,7 @@ pub fn pairwise_align11_ex(
     let klim = n + m;
     let mut k = 0;
     while k <= klim {
-        let v = ijp[iin as usize][jin as usize];
+        let v = ijp[iin as usize * stride + jin as usize];
         let (ifi, jfi): (i32, i32) = if v < 0 {
             (iin - 1, jin + v)
         } else if v > 0 {
@@ -2354,7 +2386,9 @@ pub fn pairwise_align11_ex(
         }
     }
 
-    Alignment { seq1: Vec::new(), seq2: Vec::new(), score: h[n][m], operations: ops }
+    DP_IJP_POOL.with_borrow_mut(|p| std::mem::swap(p, &mut ijp));
+
+    Alignment { seq1: Vec::new(), seq2: Vec::new(), score, operations: ops }
 }
 
 #[cfg(test)]
