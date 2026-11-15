@@ -221,7 +221,7 @@ fn cpmx_add_opening_closing(
 /// `alphabet_index < nalpha`, in alphabet order, appended to one flat
 /// `entries` list; `offsets` gets `len + 1` entries so column `j` is
 /// `entries[offsets[j]..offsets[j + 1]]`.
-fn build_sparse_cpmx(
+pub(crate) fn build_sparse_cpmx(
     freqs: &[Vec<f64>],
     len: usize,
     nalpha: usize,

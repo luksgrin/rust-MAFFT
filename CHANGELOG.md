@@ -513,6 +513,34 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Performance
 
+- **PartTree's Hirschberg DP scores profile columns sparsely, as C
+  does.** Once a profile passes 10,000 columns, `--parttree` merges with
+  the linear-space `MSalignmm` port (`mafft_align::msalignmm`,
+  `splittbfast.c:1020`). Its forward and backward sweeps computed every
+  DP cell's match score as a dense sum over all 26 alphabet entries of
+  the column through `Vec<Vec<f64>>` indexing, where C's
+  `match_calc_alphabet_seq` (`MSalignmm.c:182-236`) walks only the
+  non-zero entries (`cpmxpd` / `cpmxpdn`). The long Pfam alignments
+  average about five residues per column, so Rust did about five times
+  the multiply-adds of C on an O(W²) kernel: on PF00400 at 500
+  sequences, 15,909 of 28,313 profile samples were in `msalignmm_rec`
+  against 8,743 of 20,565 in C's `MSalignmm_rec`. The sweeps now share
+  one per-call context with the sparse views of both profiles
+  (`build_sparse_cpmx`, the one `A__align` already used), the effective
+  gap-cost vectors computed once per call (C's `gapinfo`,
+  `MSalignmm.c:2298-2311`) instead of once per recursion node and pass,
+  and the nongap vector with its tail value in place of a branchy
+  per-cell lookup. The recurrence and every `fmadd` operand order are
+  unchanged; a skipped zero entry would have contributed
+  `fma(scarr, 0, acc) == acc`, so the sums are the same `f64`s.
+  `--parttree --thread 1` at 500 sequences, idle Apple M4, medians of 3
+  interleaved runs (before / after / C): PF00400 28.40 / 18.39 / 19.15 s,
+  PF00069 31.46 / 18.32 / 22.55 s, PF00005 12.06 / 9.20 / 11.50 s;
+  PF02518 never reaches the switch and is unchanged (7.31 / 7.49 /
+  9.31 s). Peak RSS within 2%. Byte-identical to C on those four sets
+  at 100 and 500 sequences and on 16S rRNA at 500; the `MSalignmm` and
+  `Falign_udpari_long` FFI cross-validation suites pass unchanged.
+
 - **The two all-pairs distance stages no longer redo per-sequence work
   per pair.** The 6-mer distance of the first guide tree
   (`compute_distance_matrix_from_seqs`, also the `--add` cycle-1 matrix)

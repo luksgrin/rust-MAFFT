@@ -42,7 +42,7 @@
 
 use mafft_types::fp::fmadd;
 use crate::dp::{Alignment, AlignOp, GapModel};
-use crate::profile::{Profile, profile_align_imp_with_boundary, BoundaryFreqs};
+use crate::profile::{Profile, profile_align_imp_with_boundary, BoundaryFreqs, build_sparse_cpmx};
 
 /// C `MSalignmm.c:11` — sub-problem size threshold below which the
 /// recursion bottoms out into the direct DP.
@@ -80,13 +80,13 @@ pub fn msalignmm_with_boundary(
     if n == 0 || m == 0 {
         return Alignment::against_gaps(n, m);
     }
+    let mut ctx = MsCtx::new(prof1, prof2, matrix, gap, boundary.tail1, boundary.tail2);
     let mut ops = Vec::with_capacity(n + m);
     let score = msalignmm_rec(
-        prof1, prof2, matrix, gap,
+        &mut ctx,
         0, n - 1, 0, m - 1,
         head_gap, tail_gap,
         boundary.head1, boundary.head2,
-        boundary.tail1, boundary.tail2,
         &mut ops,
     );
     debug_assert_eq!(
@@ -107,6 +107,149 @@ pub fn msalignmm_with_boundary(
     }
 }
 
+/// Per-call state shared by every node of the recursion.
+///
+/// C `MSalignmm` computes the gap-cost vectors and the nongap fractions
+/// once per call (`MSalignmm.c:2298-2311`) and passes them down as
+/// `gapinfo`; every DP row then goes through
+/// `match_calc_alphabet_seq` (`MSalignmm.c:182-236`), which visits only
+/// the non-zero alphabet entries of each profile column
+/// (`cpmxpd` / `cpmxpdn`, built once per direction with
+/// `initialize = 1`). `sp1` / `sp2` are those sparse views over the
+/// whole of `prof1` / `prof2`; a node reads its own window through
+/// the offsets table.
+struct MsCtx<'a> {
+    prof1: &'a Profile,
+    prof2: &'a Profile,
+    matrix: &'a [Vec<f64>],
+    gap: &'a GapModel,
+    nalpha: usize,
+    /// `gapinfo[0..4]` in absolute coordinates:
+    /// `0.5 * (1 - count) * penalty * nongap`, plus one zero of calloc
+    /// padding at `[length]` (C reads `ogcp[lgth]` on the last column).
+    ogcp1: Vec<f64>,
+    fgcp1: Vec<f64>,
+    ogcp2: Vec<f64>,
+    fgcp2: Vec<f64>,
+    /// `gapfreq{1,2}f`: the nongap fraction of each column, and at
+    /// `[length]` the segment's tail value (`outgapcount` of `egap`,
+    /// 1.0 for a whole profile).
+    gf1: Vec<f64>,
+    gf2: Vec<f64>,
+    /// Sparse column views (C `cpmxpd` / `cpmxpdn`): column `j`'s
+    /// non-zero `(alphabet_index, freq)` pairs, in alphabet order, are
+    /// `ent[off[j]..off[j + 1]]`.
+    sp1_off: Vec<usize>,
+    sp1_ent: Vec<(usize, f64)>,
+    sp2_off: Vec<usize>,
+    sp2_ent: Vec<(usize, f64)>,
+    /// `scarr` of `match_calc_alphabet_seq`, reused across rows.
+    scarr: Vec<f64>,
+}
+
+impl<'a> MsCtx<'a> {
+    fn new(
+        prof1: &'a Profile,
+        prof2: &'a Profile,
+        matrix: &'a [Vec<f64>],
+        gap: &'a GapModel,
+        tail1: f64,
+        tail2: f64,
+    ) -> Self {
+        let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
+        // C `MSalignmm.c:2298-2306`:
+        //   ogcp1[i] = 0.5 * ( 1.0 - ogcp1opt[i] ) * fpenalty * gapfreq1pt[i]
+        // `Profile.ogcp` / `.fgcp` hold the raw opening / closing counts.
+        let effective = |count: &[f64], p: &Profile| -> Vec<f64> {
+            let mut v: Vec<f64> = (0..p.length)
+                .map(|i| 0.5 * (1.0 - count[i]) * gap.open * p.nongap_freq[i])
+                .collect();
+            v.push(0.0);
+            v
+        };
+        let ogcp1 = effective(&prof1.ogcp, prof1);
+        let fgcp1 = effective(&prof1.fgcp, prof1);
+        let ogcp2 = effective(&prof2.ogcp, prof2);
+        let fgcp2 = effective(&prof2.fgcp, prof2);
+        let mut gf1 = prof1.nongap_freq[..prof1.length].to_vec();
+        gf1.push(tail1);
+        let mut gf2 = prof2.nongap_freq[..prof2.length].to_vec();
+        gf2.push(tail2);
+        let (mut sp1_off, mut sp1_ent) = (Vec::new(), Vec::new());
+        let (mut sp2_off, mut sp2_ent) = (Vec::new(), Vec::new());
+        build_sparse_cpmx(&prof1.freqs, prof1.length, nalpha, &mut sp1_off, &mut sp1_ent);
+        build_sparse_cpmx(&prof2.freqs, prof2.length, nalpha, &mut sp2_off, &mut sp2_ent);
+        Self {
+            prof1, prof2, matrix, gap, nalpha,
+            ogcp1, fgcp1, ogcp2, fgcp2,
+            gf1, gf2,
+            sp1_off, sp1_ent, sp2_off, sp2_ent,
+            scarr: vec![0.0; nalpha],
+        }
+    }
+
+    /// `match_calc_alphabet_seq( mtx, out, cpmx1pt, cpmx2pt, row, jst,
+    /// lgth2, .. )`: `out[j]` is the profile match score of `prof1`
+    /// column `row` against `prof2` column `jst + j`.
+    fn match_row(&mut self, row: usize, jst: usize, lgth2: usize, out: &mut [f64]) {
+        let nalpha = self.nalpha;
+        match_into(
+            &mut self.scarr[..nalpha], self.matrix, &self.prof1.freqs[row][..nalpha],
+            &self.sp2_off, &self.sp2_ent, jst, lgth2, out,
+        );
+    }
+
+    /// The transposed call (`cpmx2pt, cpmx1pt, col, ist, lgth1`):
+    /// `out[i]` is `prof2` column `col` against `prof1` column `ist + i`.
+    fn match_col(&mut self, col: usize, ist: usize, lgth1: usize, out: &mut [f64]) {
+        let nalpha = self.nalpha;
+        match_into(
+            &mut self.scarr[..nalpha], self.matrix, &self.prof2.freqs[col][..nalpha],
+            &self.sp1_off, &self.sp1_ent, ist, lgth1, out,
+        );
+    }
+}
+
+/// Body of C `match_calc_alphabet_seq` (`MSalignmm.c:216-235`).
+///
+/// `scarr[l] = sum_k matrix[k][l] * freqs1[k]`, accumulated over `k` in
+/// ascending order for every `l` (the nest is k-outer / l-inner so the
+/// matrix rows are walked contiguously; each `scarr[l]` still sees the
+/// same ordered multiply-add sequence). Then `out[j]` is the sum, in
+/// alphabet order, of `scarr[k] * v` over column `start2 + j`'s non-zero
+/// entries only. A zero entry would contribute `fma(scarr, 0, acc)`,
+/// which is `acc` exactly, so skipping it leaves the bit pattern
+/// unchanged relative to the dense sum.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn match_into(
+    scarr: &mut [f64],
+    matrix: &[Vec<f64>],
+    freqs1: &[f64],
+    off: &[usize],
+    ent: &[(usize, f64)],
+    start2: usize,
+    lgth2: usize,
+    out: &mut [f64],
+) {
+    let nalpha = scarr.len();
+    scarr.fill(0.0);
+    for (mrow, &f1) in matrix[..nalpha].iter().zip(freqs1) {
+        for (s, &mv) in scarr.iter_mut().zip(&mrow[..nalpha]) {
+            *s = fmadd(mv, f1, *s);
+        }
+    }
+    let offs = &off[start2..=start2 + lgth2];
+    let mut ents = ent[offs[0]..offs[lgth2]].iter();
+    for (o, w) in out[..lgth2].iter_mut().zip(offs.windows(2)) {
+        let mut acc = 0.0f64;
+        for &(k, v) in ents.by_ref().take(w[1] - w[0]) {
+            acc = fmadd(scarr[k], v, acc);
+        }
+        *o = acc;
+    }
+}
+
 /// Recursive Hirschberg DP. `ist`/`ien` and `jst`/`jen` are inclusive
 /// absolute positions into the parent `prof1` / `prof2`. The function
 /// appends the trace operations for the sub-region into `out_ops` and
@@ -117,16 +260,13 @@ pub fn msalignmm_with_boundary(
 /// when those positions don't exist in the parent profile (i.e. for
 /// the top-level call); for nested calls the actual previous column's
 /// nongap_freq is used (matching C line 1072-1075).
+#[allow(clippy::too_many_arguments)]
 fn msalignmm_rec(
-    prof1: &Profile,
-    prof2: &Profile,
-    matrix: &[Vec<f64>],
-    gap: &GapModel,
+    ctx: &mut MsCtx<'_>,
     ist: usize, ien: usize,
     jst: usize, jen: usize,
     head_gap: bool, tail_gap: bool,
     headgapfreq1_g: f64, headgapfreq2_g: f64,
-    tail1_g: f64, tail2_g: f64,
     out_ops: &mut Vec<AlignOp>,
 ) -> f64 {
     // C `MSalignmm_rec:1099`: `lgth2 <= 0` copies the remaining seq1
@@ -154,11 +294,10 @@ fn msalignmm_rec(
     // C `MSalignmm_rec:1144` — `if( lgth1 < DPTANNI || lgth2 < DPTANNI )`.
     if lgth1 < DPTANNI || lgth2 < DPTANNI {
         return base_case(
-            prof1, prof2, matrix, gap,
+            ctx,
             ist, ien, jst, jen,
             head_gap, tail_gap,
             headgapfreq1_g, headgapfreq2_g,
-            tail1_g, tail2_g,
             out_ops,
         );
     }
@@ -167,23 +306,10 @@ fn msalignmm_rec(
     let imid = lgth1 / 2;
 
     // Forward DP rows 1..=imid, accumulating midw/midm/midn at row imid.
-    let fwd = forward_dp(
-        prof1, prof2, matrix, gap,
-        ist, ien, jst, jen,
-        imid,
-        headgapfreq1_g, headgapfreq2_g,
-        tail1_g, tail2_g,
-    );
+    let fwd = forward_dp(ctx, ist, jst, jen, imid, headgapfreq1_g, headgapfreq2_g);
 
     // Backward DP rows lgth1-2 down to imid-1, adding to midw/midm/midn.
-    let bwd = backward_dp(
-        prof1, prof2, matrix, gap,
-        ist, ien, jst, jen,
-        tail_gap,
-        imid,
-        fwd,
-        tail1_g, tail2_g,
-    );
+    let bwd = backward_dp(ctx, ist, ien, jst, jen, imid, fwd);
 
     let (jumpi, jumpj, jmid) = bwd.split_point;
     let imid = bwd.imid_override.unwrap_or(imid);
@@ -198,11 +324,10 @@ fn msalignmm_rec(
     // window position whether a boundary is terminal.
     let mut value = 0.0;
     value += msalignmm_rec(
-        prof1, prof2, matrix, gap,
+        ctx,
         ist, ist + jumpi, jst, jst + jumpj,
         head_gap, tail_gap,
         headgapfreq1_g, headgapfreq2_g,
-        tail1_g, tail2_g,
         out_ops,
     );
 
@@ -218,12 +343,10 @@ fn msalignmm_rec(
         // In C, `ogcp2 = gapinfo[2] + jst` is a SLICE starting at jst,
         // so `ogcp2[jumpj+1]` is `ogcp2_full[jst + jumpj + 1]` in
         // absolute coordinates. Same for fgcp2.
-        let ogcp2 = effective_ogcp2(prof2, gap);
-        let fgcp2 = effective_fgcp2(prof2, gap);
         let idx_o = jst + jumpj + 1;
         let idx_f = jst + jmid - 1;
-        if idx_o < ogcp2.len() && idx_f < fgcp2.len() {
-            value += ogcp2[idx_o] + fgcp2[idx_f];
+        if idx_o < ctx.ogcp2.len() && idx_f < ctx.fgcp2.len() {
+            value += ctx.ogcp2[idx_o] + ctx.fgcp2[idx_f];
         }
     }
     // Inter-half gap padding for prof2: `l = imid - jumpi - 1`
@@ -235,12 +358,10 @@ fn msalignmm_rec(
         }
         // C line 1953:  value += ogcp1[jumpi+1] + fgcp1[imid-1]
         // — slice-relative, same +1 / -1 convention as prof2.
-        let ogcp1 = effective_ogcp1(prof1, gap);
-        let fgcp1 = effective_fgcp1(prof1, gap);
         let idx_o = ist + jumpi + 1;
         let idx_f = ist + imid - 1;
-        if idx_o < ogcp1.len() && idx_f < fgcp1.len() {
-            value += ogcp1[idx_o] + fgcp1[idx_f];
+        if idx_o < ctx.ogcp1.len() && idx_f < ctx.fgcp1.len() {
+            value += ctx.ogcp1[idx_o] + ctx.fgcp1[idx_f];
         }
     }
 
@@ -255,18 +376,17 @@ fn msalignmm_rec(
     // remaining columns whenever `jmid == lgth2`.
     let bottom_ist = ist + imid;
     let bottom_jst = jst + jmid;
-    let head1_for_bot = if bottom_ist > 0 && bottom_ist - 1 < prof1.length {
-        prof1.nongap_freq[bottom_ist - 1]
+    let head1_for_bot = if bottom_ist > 0 && bottom_ist - 1 < ctx.prof1.length {
+        ctx.gf1[bottom_ist - 1]
     } else { headgapfreq1_g };
-    let head2_for_bot = if bottom_jst > 0 && bottom_jst - 1 < prof2.length {
-        prof2.nongap_freq[bottom_jst - 1]
+    let head2_for_bot = if bottom_jst > 0 && bottom_jst - 1 < ctx.prof2.length {
+        ctx.gf2[bottom_jst - 1]
     } else { headgapfreq2_g };
     value += msalignmm_rec(
-        prof1, prof2, matrix, gap,
+        ctx,
         bottom_ist, ien, bottom_jst, jen,
         head_gap, tail_gap,
         head1_for_bot, head2_for_bot,
-        tail1_g, tail2_g,
         out_ops,
     );
 
@@ -277,20 +397,17 @@ fn msalignmm_rec(
 /// trace matrix fits comfortably. Use the existing
 /// [`profile_align_imp_with_boundary`] (= our port of C `A__align` /
 /// `MSalignmm_tanni` — they share the same recurrence).
+#[allow(clippy::too_many_arguments)]
 fn base_case(
-    prof1: &Profile,
-    prof2: &Profile,
-    matrix: &[Vec<f64>],
-    gap: &GapModel,
+    ctx: &mut MsCtx<'_>,
     ist: usize, ien: usize,
     jst: usize, jen: usize,
     head_gap: bool, tail_gap: bool,
     headgapfreq1_g: f64, headgapfreq2_g: f64,
-    tail1_g: f64, tail2_g: f64,
     out_ops: &mut Vec<AlignOp>,
 ) -> f64 {
-    let sub1 = prof1.sub_profile(ist, ien + 1);
-    let sub2 = prof2.sub_profile(jst, jen + 1);
+    let sub1 = ctx.prof1.sub_profile(ist, ien + 1);
+    let sub2 = ctx.prof2.sub_profile(jst, jen + 1);
 
     // Derive boundary nongap fractions from the parent profile.
     // C `MSalignmm_tanni:709-712`:
@@ -299,10 +416,10 @@ fn base_case(
     // (and similarly for tail). `gapfreq1f` is `1 - gap_freq` per
     // position (the "nongap fraction"); `gapfreq1f[-1]` peeks at
     // position `ist - 1` in the parent profile.
-    let head1 = if ist > 0 { prof1.nongap_freq[ist - 1] } else { headgapfreq1_g };
-    let head2 = if jst > 0 { prof2.nongap_freq[jst - 1] } else { headgapfreq2_g };
-    let tail1 = ngf(prof1, ien + 1, tail1_g);
-    let tail2 = ngf(prof2, jen + 1, tail2_g);
+    let head1 = if ist > 0 { ctx.gf1[ist - 1] } else { headgapfreq1_g };
+    let head2 = if jst > 0 { ctx.gf2[jst - 1] } else { headgapfreq2_g };
+    let tail1 = ctx.gf1[ien + 1];
+    let tail2 = ctx.gf2[jen + 1];
 
     // Head penalties follow `MSalignmm_tanni:781-788`: an internal
     // start (`ist != 0` or `jst != 0`) is charged even when `headgp`
@@ -313,11 +430,11 @@ fn base_case(
     // penalized the tail of a fragment that ends inside a longer
     // profile, which slid its last residue to a later exact match.
     let effective_head = head_gap || ist != 0 || jst != 0;
-    let at_global_end = ien + 1 == prof1.length || jen + 1 == prof2.length;
+    let at_global_end = ien + 1 == ctx.prof1.length || jen + 1 == ctx.prof2.length;
     let effective_tail = tail_gap || !at_global_end;
 
     let aln = profile_align_imp_with_boundary(
-        &sub1, &sub2, matrix, gap, effective_head, effective_tail, None, false,
+        &sub1, &sub2, ctx.matrix, ctx.gap, effective_head, effective_tail, None, false,
         BoundaryFreqs { head1, head2, tail1, tail2 },
     );
     out_ops.extend(aln.operations);
@@ -341,6 +458,11 @@ struct ForwardState {
     /// where mi was last raised).
     jumpbackj: Vec<i64>,
     jumpbacki: Vec<i64>,
+    /// Row buffers handed on to the backward pass for reuse.
+    currentw: Vec<f64>,
+    previousw: Vec<f64>,
+    m: Vec<f64>,
+    mp: Vec<i64>,
 }
 
 /// Result of the backward DP plus the split-point selection.
@@ -363,73 +485,48 @@ struct BackwardState {
 /// midpoint sweep). Mirrors C `MSalignmm_rec:1220-1413` — the same
 /// recurrence as `MSalignmm_tanni` / [`profile_align_imp_with_boundary`]
 /// but without the O(N×M) trace matrix.
+///
+/// Every row index touched here is at most `ien < prof1.length` and
+/// every column index at most `jen + 1 <= prof2.length`, so the
+/// absolute slices below are in range; the `[length]` entries of the
+/// gap vectors are C's calloc padding and the segment tail value.
 fn forward_dp(
-    prof1: &Profile,
-    prof2: &Profile,
-    matrix: &[Vec<f64>],
-    gap: &GapModel,
-    ist: usize, _ien: usize,
+    ctx: &mut MsCtx<'_>,
+    ist: usize,
     jst: usize, jen: usize,
     imid: usize,
     headgapfreq1_g: f64, headgapfreq2_g: f64,
-    tail1_g: f64, tail2_g: f64,
 ) -> ForwardState {
     let lgth2 = jen - jst + 1;
-    let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
-
-    let ogcp1 = effective_ogcp1(prof1, gap);
-    let fgcp1 = effective_fgcp1(prof1, gap);
-    let ogcp2 = effective_ogcp2(prof2, gap);
-    let fgcp2 = effective_fgcp2(prof2, gap);
+    debug_assert!(ist + imid < ctx.prof1.length);
+    debug_assert!(jen < ctx.prof2.length);
 
     // Use the parent profile's nongap_freq for `gapfreq{1,2}f` and the
     // headgapfreq{1,2}_g for the absolute boundary (matching C
     // MSalignmm_rec:1072-1075).
-    let headgapfreq1 = if ist > 0 { prof1.nongap_freq[ist - 1] } else { headgapfreq1_g };
-    let headgapfreq2 = if jst > 0 { prof2.nongap_freq[jst - 1] } else { headgapfreq2_g };
+    let headgapfreq1 = if ist > 0 { ctx.gf1[ist - 1] } else { headgapfreq1_g };
+    let headgapfreq2 = if jst > 0 { ctx.gf2[jst - 1] } else { headgapfreq2_g };
 
-    let _ = gap.extend; // C MSalignmm has USE_PENALTY_EX = 0; f_ext is unused.
+    // C MSalignmm has USE_PENALTY_EX = 0; there is no per-cell
+    // extension term anywhere in this function.
 
     // `initverticalw`: `match_calc(prof2[jst], prof1[ist..])` then add
     // `ogcp1[ist] * headgapfreq2 + fgcp1[ist+i-1] * nongap_freq2[jst]`.
     // We collapse "size lgth1+1" to "absolute indices ist..=ien" — the
     // first element corresponds to row 0 of the sub-region.
     let mut initverticalw = vec![0.0f64; imid + 2];
+    ctx.match_col(jst, ist, imid + 1, &mut initverticalw[..=imid]);
     {
-        // match_calc(initverticalw, cpmx2[jst], cpmx1[ist..]).
-        let mut scarr = vec![0.0f64; nalpha];
-        for l in 0..nalpha {
-            let mut s = 0.0f64;
-            for k in 0..nalpha {
-                s = fmadd(matrix[k][l], prof2.freqs[jst][k], s);
-            }
-            scarr[l] = s;
-        }
-        for di in 0..=imid {
-            let row = ist + di;
-            if row >= prof1.length { break; }
-            let mut s = 0.0f64;
-            for l in 0..nalpha {
-                s = fmadd(scarr[l], prof1.freqs[row][l], s);
-            }
-            initverticalw[di] = s;
-        }
         // `MSalignmm_rec` adds this penalty on every call
         // (`MSalignmm.c:1229-1237`), including the free-terminal-gap
         // case `headgp == 0 && ist == 0`, so the forward pass takes no
         // `headgp`. Only `MSalignmm_tanni` gates on `headgp || ist`
-        // (`:781`). `USE_PENALTY_EX` is 0, so there is no per-row
-        // extension term here.
-        let gf2_0 = prof2.nongap_freq[jst];
-        for di in 1..=imid {
-            if di >= initverticalw.len() { break; }
-            let row = ist + di - 1;
-            if row >= prof1.length { break; }
-            initverticalw[di] = fmadd(
-                fgcp1[row],
-                gf2_0,
-                fmadd(ogcp1[ist], headgapfreq2, initverticalw[di]),
-            );
+        // (`:781`).
+        let gf2_0 = ctx.gf2[jst];
+        let ogcp1_0 = ctx.ogcp1[ist];
+        let fgcp1 = &ctx.fgcp1[ist..ist + imid];
+        for (di, iv) in initverticalw[1..=imid].iter_mut().enumerate() {
+            *iv = fmadd(fgcp1[di], gf2_0, fmadd(ogcp1_0, headgapfreq2, *iv));
         }
     }
 
@@ -437,35 +534,14 @@ fn forward_dp(
     // head-gap penalty for prof2 axis.
     let mut currentw = vec![0.0f64; lgth2 + 1];
     let mut previousw = vec![0.0f64; lgth2 + 1];
+    ctx.match_row(ist, jst, lgth2, &mut currentw[..lgth2]);
     {
-        let mut scarr = vec![0.0f64; nalpha];
-        for l in 0..nalpha {
-            let mut s = 0.0f64;
-            for k in 0..nalpha {
-                s = fmadd(matrix[k][l], prof1.freqs[ist][k], s);
-            }
-            scarr[l] = s;
-        }
-        for dj in 0..lgth2 {
-            let col = jst + dj;
-            if col >= prof2.length { break; }
-            let mut s = 0.0f64;
-            for l in 0..nalpha {
-                s = fmadd(scarr[l], prof2.freqs[col][l], s);
-            }
-            currentw[dj] = s;
-        }
         // Same unconditional init (`MSalignmm.c:1234-1237`).
-        let gf1_0 = prof1.nongap_freq[ist];
-        for dj in 1..=lgth2 {
-            if dj >= currentw.len() { break; }
-            let col = jst + dj - 1;
-            if col >= prof2.length { break; }
-            currentw[dj] = fmadd(
-                fgcp2[col],
-                gf1_0,
-                fmadd(ogcp2[jst], headgapfreq1, currentw[dj]),
-            );
+        let gf1_0 = ctx.gf1[ist];
+        let ogcp2_0 = ctx.ogcp2[jst];
+        let fgcp2 = &ctx.fgcp2[jst..=jen];
+        for (dj, cw) in currentw[1..=lgth2].iter_mut().enumerate() {
+            *cw = fmadd(fgcp2[dj], gf1_0, fmadd(ogcp2_0, headgapfreq1, *cw));
         }
     }
 
@@ -473,12 +549,12 @@ fn forward_dp(
     // C line 1252-1257.
     let mut m = vec![0.0f64; lgth2 + 1];
     let mut mp = vec![0i64; lgth2 + 1];
-    for dj in 1..=lgth2 {
-        let col_prev = jst + dj - 1;
-        let gf2_prev = ngf(prof2, col_prev, tail2_g);
-        let row_o = (ist + 1).min(prof1.length.saturating_sub(1));
-        m[dj] = fmadd(ogcp1[row_o], gf2_prev, currentw[dj - 1]);
-        mp[dj] = 0;
+    {
+        let ogcp1_1 = ctx.ogcp1[ist + 1];
+        let gf2 = &ctx.gf2[jst..=jen];
+        for dj in 1..=lgth2 {
+            m[dj] = fmadd(ogcp1_1, gf2[dj - 1], currentw[dj - 1]);
+        }
     }
 
     // Storage for the midpoint row state.
@@ -494,65 +570,48 @@ fn forward_dp(
         std::mem::swap(&mut previousw, &mut currentw);
         previousw[0] = initverticalw[di - 1];
 
-        let row = ist + di;
-        if row >= prof1.length {
-            for v in currentw.iter_mut() { *v = 0.0; }
-        } else {
-            let mut scarr = vec![0.0f64; nalpha];
-            for l in 0..nalpha {
-                let mut s = 0.0f64;
-                for k in 0..nalpha {
-                    s = fmadd(matrix[k][l], prof1.freqs[row][k], s);
-                }
-                scarr[l] = s;
-            }
-            for dj in 0..lgth2 {
-                let col = jst + dj;
-                if col >= prof2.length {
-                    currentw[dj] = 0.0;
-                    continue;
-                }
-                let mut s = 0.0f64;
-                for l in 0..nalpha {
-                    s = fmadd(scarr[l], prof2.freqs[col][l], s);
-                }
-                currentw[dj] = s;
-            }
-        }
+        let row_i = ist + di;
+        let row_im1 = ist + di - 1;
+        ctx.match_row(row_i, jst, lgth2, &mut currentw[..lgth2]);
         currentw[0] = initverticalw[di];
         // C line 1301: `m[0] = ogcp1[i]` — for absolute index ist+di.
-        let row_idx = (ist + di).min(prof1.length.saturating_sub(1));
-        m[0] = ogcp1[row_idx];
+        m[0] = ctx.ogcp1[row_i];
+
+        // Row-invariant gap terms.
+        let gf1_i = ctx.gf1[row_i];
+        let gf1_im1 = ctx.gf1[row_im1];
+        let ogcp1_i = ctx.ogcp1[row_i];
+        let fgcp1_im1 = ctx.fgcp1[row_im1];
+        // Column windows, indexed by the local `dj`.
+        let ogcp2 = &ctx.ogcp2[jst..=jen + 1];
+        let fgcp2 = &ctx.fgcp2[jst..=jen];
+        let gf2 = &ctx.gf2[jst..=jen + 1];
+        let prev = &previousw[..=lgth2];
+        let cur = &mut currentw[..=lgth2];
+        let m = &mut m[..=lgth2];
+        let mp = &mut mp[..=lgth2];
 
         // `mi = previousw[0] + ogcp2[jst+1] * nongap_freq1[ist+di-1]`
-        let row_prev = ist + di - 1;
-        let gf1_prev = ngf(prof1, row_prev, tail1_g);
-        let col_o = (jst + 1).min(prof2.length.saturating_sub(1));
-        let mut mi = fmadd(ogcp2[col_o], gf1_prev, previousw[0]);
+        let mut mi = fmadd(ogcp2[1], gf1_im1, prev[0]);
         let mut mpi: i64 = 0;
 
+        let capture = di == imid;
         // Capture m[0] at midpoint
-        if di == imid { midm[0] = m[0]; }
+        if capture { midm[0] = m[0]; }
 
-        for dj in 1..=lgth2 {
-            let row_i = ist + di;
-            let row_im1 = ist + di - 1;
-            let col_j = jst + dj;
-            let col_jm1 = jst + dj - 1;
+        for dj in 1..lgth2 + 1 {
+            let gf2_j = gf2[dj];
+            let gf2_jm1 = gf2[dj - 1];
+            let diag = prev[dj - 1];
 
-            let gf1_i = ngf(prof1, row_i, tail1_g);
-            let gf1_im1 = ngf(prof1, row_im1, tail1_g);
-            let gf2_j = ngf(prof2, col_j, tail2_g);
-            let gf2_jm1 = ngf(prof2, col_jm1, tail2_g);
-
-            let mut wm = previousw[dj - 1];
+            let mut wm = diag;
 
             // mi (row-running gap-skip tracker)
             // C line 1328: g = mi + fgcp2[col_jm1] * gf1_i
-            let g = fmadd(fgcp2[col_jm1], gf1_i, mi);
+            let g = fmadd(fgcp2[dj - 1], gf1_i, mi);
             if g > wm { wm = g; }
             // C line 1338: g = previousw[dj-1] + ogcp2[col_j] * gf1_im1
-            let g = fmadd(ogcp2[col_j], gf1_im1, previousw[dj - 1]);
+            let g = fmadd(ogcp2[dj], gf1_im1, diag);
             if g >= mi {
                 mi = g;
                 mpi = (dj - 1) as i64;
@@ -563,139 +622,97 @@ fn forward_dp(
 
             // m[dj] (column-running gap-skip tracker)
             // C line 1349: g = m[dj] + fgcp1[row_im1] * gf2_j
-            let g = fmadd(fgcp1[row_im1], gf2_j, m[dj]);
+            let g = fmadd(fgcp1_im1, gf2_j, m[dj]);
             if g > wm { wm = g; }
             // C line 1361: g = previousw[dj-1] + ogcp1[row_i] * gf2_jm1
-            let g = fmadd(ogcp1[row_i], gf2_jm1, previousw[dj - 1]);
+            let g = fmadd(ogcp1_i, gf2_jm1, diag);
             if g >= m[dj] {
                 m[dj] = g;
                 mp[dj] = (di - 1) as i64;
             }
             // `USE_PENALTY_EX = 0`: skip `m[dj] += fpenalty_ex;` too.
 
-            currentw[dj] += wm;
+            cur[dj] += wm;
 
             // At the midpoint, capture state for the join with backward.
-            if di == imid {
+            if capture {
                 jumpbackj[dj] = mp[dj];
                 jumpbacki[dj] = mpi;
-                midw[dj] = currentw[dj];
+                midw[dj] = cur[dj];
                 midm[dj] = m[dj];
                 midn[dj] = mi;
             }
         }
     }
 
-    ForwardState { midw, midm, midn, jumpbackj, jumpbacki }
+    ForwardState { midw, midm, midn, jumpbackj, jumpbacki, currentw, previousw, m, mp }
 }
 
 /// Backward DP from row `ien` (= `ist + lgth1 - 1`) down to `imid - 1`.
 /// Adds the partial scores to `fwd.midw / midm / midn` at the
 /// midpoint, then finds the optimal split column. Mirrors C
 /// `MSalignmm_rec:1442-1785`.
+///
+/// `tailgp` has no direct role here: the tail boundary enters through
+/// `gf1[ien + 1]` / `gf2[jen + 1]`.
 fn backward_dp(
-    prof1: &Profile,
-    prof2: &Profile,
-    matrix: &[Vec<f64>],
-    gap: &GapModel,
+    ctx: &mut MsCtx<'_>,
     ist: usize, ien: usize,
     jst: usize, jen: usize,
-    tail_gap: bool,
     imid: usize,
     fwd: ForwardState,
-    tail1_g: f64, tail2_g: f64,
 ) -> BackwardState {
     let lgth1 = ien - ist + 1;
     let lgth2 = jen - jst + 1;
-    let nalpha = prof1.nalphabets.min(prof2.nalphabets).min(matrix.len());
+    debug_assert!(ien < ctx.prof1.length && jen < ctx.prof2.length);
+    debug_assert!(lgth1 >= 2 && lgth2 >= 2);
 
-    let ogcp1 = effective_ogcp1(prof1, gap);
-    let fgcp1 = effective_fgcp1(prof1, gap);
-    let ogcp2 = effective_ogcp2(prof2, gap);
-    let fgcp2 = effective_fgcp2(prof2, gap);
-
-    let _ = gap.extend; // C MSalignmm has USE_PENALTY_EX = 0; f_ext is unused.
-
-    let tail1: f64 = ngf(prof1, ien + 1, tail1_g);
-    let tail2: f64 = ngf(prof2, jen + 1, tail2_g);
-
-    let _ = tail_gap; // tail_gap is implicitly handled via tail1/tail2 boundaries
+    let tail1 = ctx.gf1[ien + 1];
+    let tail2 = ctx.gf2[jen + 1];
 
     // initverticalw[di] = match_calc(prof2[jen], prof1[ist..=ien]) +
     //   fgcp1[ien] * gf2_lgth2 + ogcp1[ist+di+1] * gf2_lgth2m1
     let mut initverticalw = vec![0.0f64; lgth1 + 1];
+    ctx.match_col(jen, ist, lgth1, &mut initverticalw[..lgth1]);
     {
-        let mut scarr = vec![0.0f64; nalpha];
-        for l in 0..nalpha {
-            let mut s = 0.0f64;
-            for k in 0..nalpha {
-                s = fmadd(matrix[k][l], prof2.freqs[jen][k], s);
-            }
-            scarr[l] = s;
-        }
-        for di in 0..lgth1 {
-            let row = ist + di;
-            if row >= prof1.length { break; }
-            let mut s = 0.0f64;
-            for l in 0..nalpha {
-                s = fmadd(scarr[l], prof1.freqs[row][l], s);
-            }
-            initverticalw[di] = s;
-        }
         let gf2_tail = tail2;
-        let gf2_lgth2m1 = ngf(prof2, jen, tail2_g);
-        for di in 0..lgth1.saturating_sub(1) {
-            initverticalw[di] = fmadd(
-                fgcp1[ien],
-                gf2_tail,
-                fmadd(ogcp1[ist + di + 1], gf2_lgth2m1, initverticalw[di]),
-            );
+        let gf2_lgth2m1 = ctx.gf2[jen];
+        let fgcp1_end = ctx.fgcp1[ien];
+        let ogcp1 = &ctx.ogcp1[ist + 1..=ien];
+        for (di, iv) in initverticalw[..lgth1 - 1].iter_mut().enumerate() {
+            *iv = fmadd(fgcp1_end, gf2_tail, fmadd(ogcp1[di], gf2_lgth2m1, *iv));
         }
     }
 
     // currentw[dj] = match_calc(prof1[ien], prof2[jst..=jen]) +
     //   fgcp2[jen] * gf1_lgth1 + ogcp2[jst+dj+1] * gf1_lgth1m1
-    let mut currentw = vec![0.0f64; lgth2 + 1];
-    let mut previousw = vec![0.0f64; lgth2 + 1];
+    let ForwardState {
+        mut midw, mut midm, mut midn, jumpbackj, jumpbacki,
+        mut currentw, mut previousw, mut m, mut mp,
+    } = fwd;
+    currentw.fill(0.0);
+    previousw.fill(0.0);
+    ctx.match_row(ien, jst, lgth2, &mut currentw[..lgth2]);
     {
-        let mut scarr = vec![0.0f64; nalpha];
-        for l in 0..nalpha {
-            let mut s = 0.0f64;
-            for k in 0..nalpha {
-                s = fmadd(matrix[k][l], prof1.freqs[ien][k], s);
-            }
-            scarr[l] = s;
-        }
-        for dj in 0..lgth2 {
-            let col = jst + dj;
-            if col >= prof2.length { break; }
-            let mut s = 0.0f64;
-            for l in 0..nalpha {
-                s = fmadd(scarr[l], prof2.freqs[col][l], s);
-            }
-            currentw[dj] = s;
-        }
         let gf1_tail = tail1;
-        let gf1_lgth1m1 = ngf(prof1, ien, tail1_g);
-        for dj in 0..lgth2.saturating_sub(1) {
-            currentw[dj] = fmadd(
-                fgcp2[jen],
-                gf1_tail,
-                fmadd(ogcp2[jst + dj + 1], gf1_lgth1m1, currentw[dj]),
-            );
+        let gf1_lgth1m1 = ctx.gf1[ien];
+        let fgcp2_end = ctx.fgcp2[jen];
+        let ogcp2 = &ctx.ogcp2[jst + 1..=jen];
+        for (dj, cw) in currentw[..lgth2 - 1].iter_mut().enumerate() {
+            *cw = fmadd(fgcp2_end, gf1_tail, fmadd(ogcp2[dj], gf1_lgth1m1, *cw));
         }
     }
 
     // m[dj] = currentw[dj+1] + fgcp1[ien-1] * gf2_{jen-dj+1}
-    let mut m = vec![0.0f64; lgth2 + 1];
-    let mut mp = vec![0i64; lgth2 + 1];
-    let row_end_prev = ien.saturating_sub(1);
-    for dj in (0..lgth2).rev() {
-        let col_next = jst + dj + 1;
-        let gf2_next = ngf(prof2, col_next, tail2_g);
-        let cw = if dj + 1 < currentw.len() { currentw[dj + 1] } else { 0.0 };
-        m[dj] = fmadd(fgcp1[row_end_prev], gf2_next, cw);
-        mp[dj] = (lgth1 as i64) - 1;
+    {
+        let fgcp1_prev = ctx.fgcp1[ien - 1];
+        let gf2 = &ctx.gf2[jst + 1..=jen + 1];
+        for dj in (0..lgth2).rev() {
+            m[dj] = fmadd(fgcp1_prev, gf2[dj], currentw[dj + 1]);
+            mp[dj] = (lgth1 as i64) - 1;
+        }
+        m[lgth2] = 0.0;
+        mp[lgth2] = 0;
     }
 
     // Storage for split-point detection.
@@ -717,62 +734,43 @@ fn backward_dp(
     let mut firstm: f64 = f64::NEG_INFINITY;
     let mut firstmp: i64 = lgth1 as i64;
 
-    let mut midw = fwd.midw;
-    let mut midm = fwd.midm;
-    let mut midn = fwd.midn;
-    let jumpbacki = fwd.jumpbacki;
-    let jumpbackj = fwd.jumpbackj;
-
     let mut di_signed: i64 = (lgth1 as i64) - 2;
     while di_signed >= 0 {
         let di = di_signed as usize;
         std::mem::swap(&mut previousw, &mut currentw);
         previousw[lgth2 - 1] = initverticalw[di + 1];
 
-        let row = ist + di;
-        if row >= prof1.length {
-            for v in currentw.iter_mut() { *v = 0.0; }
-        } else {
-            let mut scarr = vec![0.0f64; nalpha];
-            for l in 0..nalpha {
-                let mut s = 0.0f64;
-                for k in 0..nalpha {
-                    s = fmadd(matrix[k][l], prof1.freqs[row][k], s);
-                }
-                scarr[l] = s;
-            }
-            for dj in 0..lgth2 {
-                let col = jst + dj;
-                if col >= prof2.length {
-                    currentw[dj] = 0.0;
-                    continue;
-                }
-                let mut s = 0.0f64;
-                for l in 0..nalpha {
-                    s = fmadd(scarr[l], prof2.freqs[col][l], s);
-                }
-                currentw[dj] = s;
-            }
-        }
-        currentw[lgth2 - 1] = initverticalw[di];
-
         let row_i = ist + di;
         let row_ip1 = ist + di + 1;
-        let gf1_ip1 = ngf(prof1, row_ip1, tail1_g);
-        let col_end_prev_local = lgth2 - 2;
-        let col_end_prev_abs = jst + col_end_prev_local;
-        let mut mi = fmadd(fgcp2[col_end_prev_abs], gf1_ip1, previousw[lgth2 - 1]);
+        ctx.match_row(row_i, jst, lgth2, &mut currentw[..lgth2]);
+        currentw[lgth2 - 1] = initverticalw[di];
+
+        // Row-invariant gap terms.
+        let gf1_i = ctx.gf1[row_i];
+        let gf1_ip1 = ctx.gf1[row_ip1];
+        let ogcp1_ip1 = ctx.ogcp1[row_ip1];
+        let fgcp1_i = ctx.fgcp1[row_i];
+        // Column windows, indexed by the local `dj`.
+        let ogcp2 = &ctx.ogcp2[jst..=jen + 1];
+        let fgcp2 = &ctx.fgcp2[jst..=jen];
+        let gf2 = &ctx.gf2[jst..=jen + 1];
+        let prev = &previousw[..=lgth2];
+        let cur = &mut currentw[..=lgth2];
+        let m = &mut m[..=lgth2];
+        let mp = &mut mp[..=lgth2];
+
+        let mut mi = fmadd(fgcp2[lgth2 - 2], gf1_ip1, prev[lgth2 - 1]);
         let mut mpi: i64 = (lgth2 - 1) as i64;
+
+        let record_forw = di as i64 == stop_i || di + 1 == imid;
+        let at_mid = di == imid;
+        let at_mid_m1 = di + 1 == imid;
 
         let mut dj_signed: i64 = (lgth2 as i64) - 2;
         while dj_signed >= 0 {
             let dj = dj_signed as usize;
-            let col_j = jst + dj;
-            let col_jp1 = jst + dj + 1;
-            let gf1_i = ngf(prof1, row_i, tail1_g);
-            let gf1_ip1 = ngf(prof1, row_ip1, tail1_g);
-            let gf2_j = ngf(prof2, col_j, tail2_g);
-            let gf2_jp1 = ngf(prof2, col_jp1, tail2_g);
+            let gf2_j = gf2[dj];
+            let gf2_jp1 = gf2[dj + 1];
 
             // Diagonal default (C lines 1548-1550). In the C
             // MSalignmm backward inner loop, `*prept = previousw[j+1]`
@@ -780,7 +778,7 @@ fn backward_dp(
             // decrements (so at iter j=lgth2-2, *prept = previousw[lgth2-1]
             // = previousw[(lgth2-2) + 1]). All four `*prept` references
             // below therefore use `previousw[dj + 1]`, NOT `previousw[dj]`.
-            let pprev = previousw[dj + 1];
+            let pprev = prev[dj + 1];
             let mut wm = pprev;
             let mut ijpi: i64 = (di + 1) as i64;
             let mut ijpj: i64 = (dj + 1) as i64;
@@ -788,7 +786,7 @@ fn backward_dp(
             // C line 1552 (mi candidate):
             //   g = mi + ogcp2[col_jp1] * gf1_i
             //   if g > wm: wm = g, ijpj = mpi, ijpi = i+1
-            let g = fmadd(ogcp2[col_jp1], gf1_i, mi);
+            let g = fmadd(ogcp2[dj + 1], gf1_i, mi);
             if g > wm {
                 wm = g;
                 ijpj = mpi;
@@ -797,7 +795,7 @@ fn backward_dp(
 
             // mi update (C line 1561). g = *prept + fgcp2[j] * gf1[i+1]
             //   = previousw[dj+1] + fgcp2[col_j] * gf1_ip1.
-            let g = fmadd(fgcp2[col_j], gf1_ip1, pprev);
+            let g = fmadd(fgcp2[dj], gf1_ip1, pprev);
             if g >= mi {
                 mi = g;
                 mpi = (dj + 1) as i64;
@@ -807,7 +805,7 @@ fn backward_dp(
             // C line 1575 (mj candidate):
             //   g = m[dj] + ogcp1[row_ip1] * gf2_j
             //   if g > wm: wm = g, ijpi = mp[dj], ijpj = j+1
-            let g = fmadd(ogcp1[row_ip1], gf2_j, m[dj]);
+            let g = fmadd(ogcp1_ip1, gf2_j, m[dj]);
             if g > wm {
                 wm = g;
                 ijpi = mp[dj];
@@ -816,7 +814,7 @@ fn backward_dp(
 
             // mj update (C line 1585). g = *prept + fgcp1[i] * gf2_{j+1}
             //   = previousw[dj+1] + fgcp1[row_i] * gf2_jp1.
-            let g = fmadd(fgcp1[row_i], gf2_jp1, pprev);
+            let g = fmadd(fgcp1_i, gf2_jp1, pprev);
             if g >= m[dj] {
                 m[dj] = g;
                 mp[dj] = (di + 1) as i64;
@@ -827,7 +825,7 @@ fn backward_dp(
             // `stop_i` is still the value from before this row (0 until
             // the midpoint decision, then the m-split row), matching C
             // where `jumpi` is assigned after the inner j loop.
-            if di as i64 == stop_i || (di as i64) + 1 == imid as i64 {
+            if record_forw {
                 jumpforwi[dj] = ijpi;
                 jumpforwj[dj] = ijpj;
             }
@@ -837,20 +835,20 @@ fn backward_dp(
             //   midm[j+1] += *mjpt;
             // The midw index off-by-one (j vs j+1) was a port bug
             // that surfaced as a 1-column drift on asymmetric inputs.
-            if di == imid {
-                if dj < midw.len() { midw[dj] += wm; }
-                if dj + 1 < midm.len() { midm[dj + 1] += m[dj]; }
+            if at_mid {
+                midw[dj] += wm;
+                midm[dj + 1] += m[dj];
             }
-            if di == imid.saturating_sub(1) {
-                if dj < midn.len() { midn[dj] += mi; }
+            if at_mid_m1 {
+                midn[dj] += mi;
             }
 
-            currentw[dj] += wm;
+            cur[dj] += wm;
 
             dj_signed -= 1;
         }
         // C line 1628: track firstm = max over rows of previousw[0] + fgcp1[i].
-        let g_first = fgcp1[row_i] + previousw[0];
+        let g_first = fgcp1_i + previousw[0];
         if firstm < g_first {
             firstm = g_first;
             firstmp = (di + 1) as i64;
@@ -858,14 +856,14 @@ fn backward_dp(
         // C line 1637: `if( i == imid ) midm[j+1] += firstm;` — at
         // this point the inner-loop j has decremented past 0 to -1,
         // so `j + 1` is 0. C touches `midm[0]`.
-        if di == imid {
-            if !midm.is_empty() { midm[0] += firstm; }
+        if at_mid {
+            midm[0] += firstm;
         }
 
         // At i == imid - 1, decide jmid + (jumpi, jumpj). Do not break:
         // C breaks only when `i == jumpi` (`MSalignmm.c:1714`), which for
         // an m-split is a later row.
-        if !split_ready && (di as i64) + 1 == imid as i64 {
+        if !split_ready && di + 1 == imid {
             let mut maxwm = midw.get(1).copied().unwrap_or(f64::NEG_INFINITY);
             jmid = 0;
             for j in 2..lgth2.saturating_sub(1) {
@@ -946,41 +944,6 @@ fn backward_dp(
         split_point: (jumpi, jumpj, jmid),
         imid_override: Some(imid),
     }
-}
-
-// Helper functions to compute the effective ogcp/fgcp scaled by
-// penalty * nongap_freq, indexed by ABSOLUTE position in the parent
-// profile. Mirrors C `MSalignmm:2298-2306`:
-//   ogcp1[i] = ogcp1opt[i] * orieff1 * 0.5 * fpenalty (rough analog)
-// Our `Profile.ogcp` stores the raw opening_count; the final value is
-// `0.5 * (1 - opening_count) * penalty * nongap_freq`. We reuse the
-// existing scaling that `profile_align_imp_with_boundary` does
-// internally — and surface it here as well.
-
-fn effective_ogcp1(p: &Profile, gap: &GapModel) -> Vec<f64> {
-    let penalty = gap.open;
-    let mut v: Vec<f64> = (0..p.length).map(|i| {
-        0.5 * (1.0 - p.ogcp[i]) * penalty * p.nongap_freq[i]
-    }).collect();
-    v.push(0.0); // calloc padding
-    v
-}
-
-fn effective_fgcp1(p: &Profile, gap: &GapModel) -> Vec<f64> {
-    let penalty = gap.open;
-    let mut v: Vec<f64> = (0..p.length).map(|i| {
-        0.5 * (1.0 - p.fgcp[i]) * penalty * p.nongap_freq[i]
-    }).collect();
-    v.push(0.0);
-    v
-}
-
-fn effective_ogcp2(p: &Profile, gap: &GapModel) -> Vec<f64> {
-    effective_ogcp1(p, gap)
-}
-
-fn effective_fgcp2(p: &Profile, gap: &GapModel) -> Vec<f64> {
-    effective_fgcp1(p, gap)
 }
 
 #[cfg(test)]
@@ -1229,11 +1192,4 @@ mod tests {
             assert!(aln.operations.len() >= p1.length.max(p2.length));
         }
     }
-}
-
-/// `gapfreq{1,2}f[idx]` in C: the nongap fraction of column `idx`, and
-/// at `idx == lgth` the segment's tail value (`outgapcount` of `egap`,
-/// 1.0 for a whole profile).
-fn ngf(p: &Profile, idx: usize, tail: f64) -> f64 {
-    if idx < p.length { p.nongap_freq[idx] } else { tail }
 }
