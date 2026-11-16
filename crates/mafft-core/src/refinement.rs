@@ -1448,40 +1448,10 @@ fn realign_all(
             total_score += seg_aln.score;
 
             // Reconstruct the segment's output by applying ops to the stripped segments.
-            let mut i1 = 0usize;
-            let mut i2 = 0usize;
-            for op in &seg_aln.operations {
-                match op {
-                    AlignOp::Match => {
-                        for (k, &idx) in group1.iter().enumerate() {
-                            new_sequences[idx].push(stripped_seg1[k][i1]);
-                        }
-                        for (k, &idx) in group2.iter().enumerate() {
-                            new_sequences[idx].push(stripped_seg2[k][i2]);
-                        }
-                        i1 += 1;
-                        i2 += 1;
-                    }
-                    AlignOp::Delete => {
-                        for (k, &idx) in group1.iter().enumerate() {
-                            new_sequences[idx].push(stripped_seg1[k][i1]);
-                        }
-                        for &idx in group2 {
-                            new_sequences[idx].push(b'-');
-                        }
-                        i1 += 1;
-                    }
-                    AlignOp::Insert => {
-                        for &idx in group1 {
-                            new_sequences[idx].push(b'-');
-                        }
-                        for (k, &idx) in group2.iter().enumerate() {
-                            new_sequences[idx].push(stripped_seg2[k][i2]);
-                        }
-                        i2 += 1;
-                    }
-                }
-            }
+            append_aligned_rows(
+                &seg_aln.operations, group1, &stripped_seg1, group2, &stripped_seg2,
+                &mut new_sequences,
+            );
         }
 
         return Some((new_sequences, total_score, None));
@@ -1865,39 +1835,10 @@ fn realign_all_constrained_fft(
         }
 
         // Reconstruct segment output by applying ops to stripped segments.
-        let mut i1 = 0usize;
-        let mut i2 = 0usize;
-        for op in &seg_aln.operations {
-            match op {
-                AlignOp::Match => {
-                    for (k, &idx) in group1.iter().enumerate() {
-                        new_sequences[idx].push(stripped_seg1[k][i1]);
-                    }
-                    for (k, &idx) in group2.iter().enumerate() {
-                        new_sequences[idx].push(stripped_seg2[k][i2]);
-                    }
-                    i1 += 1; i2 += 1;
-                }
-                AlignOp::Delete => {
-                    for (k, &idx) in group1.iter().enumerate() {
-                        new_sequences[idx].push(stripped_seg1[k][i1]);
-                    }
-                    for &idx in group2 {
-                        new_sequences[idx].push(b'-');
-                    }
-                    i1 += 1;
-                }
-                AlignOp::Insert => {
-                    for &idx in group1 {
-                        new_sequences[idx].push(b'-');
-                    }
-                    for (k, &idx) in group2.iter().enumerate() {
-                        new_sequences[idx].push(stripped_seg2[k][i2]);
-                    }
-                    i2 += 1;
-                }
-            }
-        }
+        append_aligned_rows(
+            &seg_aln.operations, group1, &stripped_seg1, group2, &stripped_seg2,
+            &mut new_sequences,
+        );
     }
 
     // Pad sequences not in either group to the new width.
@@ -1944,33 +1885,96 @@ fn build_result_from_stripped(
         return None;
     }
 
-    let mut new_sequences = vec![Vec::with_capacity(aln.operations.len()); sequences.len()];
-    let mut c1 = 0usize;
-    let mut c2 = 0usize;
-    for op in &aln.operations {
-        match op {
-            AlignOp::Match => {
-                let oc1 = kept1[c1];
-                let oc2 = kept2[c2];
-                for &i in group1 { new_sequences[i].push(sequences[i][oc1]); }
-                for &i in group2 { new_sequences[i].push(sequences[i][oc2]); }
-                c1 += 1; c2 += 1;
+    // Row by row (see `append_aligned_rows`): each output row is written
+    // sequentially while gathering from its own input row through the
+    // kept-column map, instead of one byte into every row per column.
+    let ncols = aln.operations.len();
+    let mut new_sequences = vec![Vec::with_capacity(ncols); sequences.len()];
+    for &i in group1 {
+        let src = &sequences[i];
+        let out = &mut new_sequences[i];
+        let mut c1 = 0usize;
+        for op in &aln.operations {
+            match op {
+                AlignOp::Match | AlignOp::Delete => { out.push(src[kept1[c1]]); c1 += 1; }
+                AlignOp::Insert => out.push(b'-'),
             }
-            AlignOp::Delete => {
-                let oc1 = kept1[c1];
-                for &i in group1 { new_sequences[i].push(sequences[i][oc1]); }
-                for &i in group2 { new_sequences[i].push(b'-'); }
-                c1 += 1;
-            }
-            AlignOp::Insert => {
-                let oc2 = kept2[c2];
-                for &i in group1 { new_sequences[i].push(b'-'); }
-                for &i in group2 { new_sequences[i].push(sequences[i][oc2]); }
-                c2 += 1;
+        }
+    }
+    for &i in group2 {
+        let src = &sequences[i];
+        let out = &mut new_sequences[i];
+        let mut c2 = 0usize;
+        for op in &aln.operations {
+            match op {
+                AlignOp::Match | AlignOp::Insert => { out.push(src[kept2[c2]]); c2 += 1; }
+                AlignOp::Delete => out.push(b'-'),
             }
         }
     }
     Some((new_sequences, aln.score))
+}
+
+/// Appends one aligned segment to the rows of both groups.
+///
+/// `rows1[k]` is the (gap-stripped) segment of `group1[k]`, consumed by
+/// `Match` and `Delete`; `rows2[k]` that of `group2[k]`, consumed by
+/// `Match` and `Insert`; the other operation writes a gap. The op list is
+/// turned into runs once, then every row is filled with slice copies and
+/// gap fills, so each output row and each input row is streamed
+/// sequentially. The previous column-major walk pushed one byte into
+/// every row per column; with hundreds of rows that touches hundreds of
+/// buffers per column and its speed depended on where the allocator had
+/// placed them (the refinement rows of the same alignment are all the
+/// same length). The bytes appended to each row, and their order, are
+/// unchanged.
+fn append_aligned_rows(
+    ops: &[AlignOp],
+    group1: &[usize],
+    rows1: &[Vec<u8>],
+    group2: &[usize],
+    rows2: &[Vec<u8>],
+    out: &mut [Vec<u8>],
+) {
+    // (op, run length), consecutive equal ops merged.
+    let mut runs: Vec<(AlignOp, usize)> = Vec::new();
+    for &op in ops {
+        match runs.last_mut() {
+            Some((last, n)) if *last == op => *n += 1,
+            _ => runs.push((op, 1)),
+        }
+    }
+    let ncols = ops.len();
+    for (k, &idx) in group1.iter().enumerate() {
+        let src = &rows1[k];
+        let dst = &mut out[idx];
+        dst.reserve(ncols);
+        let mut i1 = 0usize;
+        for &(op, n) in &runs {
+            match op {
+                AlignOp::Match | AlignOp::Delete => {
+                    dst.extend_from_slice(&src[i1..i1 + n]);
+                    i1 += n;
+                }
+                AlignOp::Insert => dst.resize(dst.len() + n, b'-'),
+            }
+        }
+    }
+    for (k, &idx) in group2.iter().enumerate() {
+        let src = &rows2[k];
+        let dst = &mut out[idx];
+        dst.reserve(ncols);
+        let mut i2 = 0usize;
+        for &(op, n) in &runs {
+            match op {
+                AlignOp::Match | AlignOp::Insert => {
+                    dst.extend_from_slice(&src[i2..i2 + n]);
+                    i2 += n;
+                }
+                AlignOp::Delete => dst.resize(dst.len() + n, b'-'),
+            }
+        }
+    }
 }
 
 fn group_all_gap_columns(group: &[usize], sequences: &[Vec<u8>], width: usize) -> Vec<bool> {
