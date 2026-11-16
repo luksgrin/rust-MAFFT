@@ -735,6 +735,30 @@ public surfaces stable from 0.1.0 anyway.
   0.4–0.6× C. Output is unchanged: byte-identical to C on all eleven
   cells, before and after.
 
+- **Refinement rebuilds the alignment rows row by row.** After every
+  realigned segment (FFT-NS-i `realign_all`, the constrained L/G/E-INS-i
+  path and `build_result_from_stripped`) the new rows were assembled
+  column by column: one byte pushed into every row per column, so each
+  column touched hundreds of row buffers, all of the same length. How fast
+  that ran depended on where the allocator had put those buffers: the CLI
+  and `pymafft` run the same machine code (byte-identical hot functions),
+  yet on PF00400 n=500 FFT-NS-i the CLI took 1678 s against 1488 s for
+  `pymafft` in the scaling sweep, and shifting the CLI's heap by a few
+  tens of MB before `main` reproduced the fast time. A profile of both
+  builds put the whole gap in the byte-wise row loops (uniformly ~35 %
+  slower per instruction in the CLI) while the DP was equal. The op list
+  is now turned into runs once and each row is filled with slice copies
+  and gap fills (`append_aligned_rows`), so every input and output row is
+  streamed sequentially regardless of placement. Same bytes in the same
+  order: byte-identical to C on PF00528, PF00072 and 16S rRNA n=100 under
+  FFT-NS-i (`--thread 1` and 8), L-INS-i and G-INS-i, and on PF00400
+  n=500 FFT-NS-i. User CPU seconds (`/usr/bin/time -l`, Apple M4,
+  `--thread 1 --maxiterate 2`, two passes of two interleaved reps each,
+  before / after / `pymafft`): PF00400 n=500 489–526 / 410–434 / 518–530;
+  PF02518 n=500 (where the sweep had `pymafft` as the slow build) 230–231 /
+  200 / 230–231. The two builds now agree because neither depends on the
+  placement any more; the CLI gained 15–17 % on these cells beyond that.
+
 ### Python
 
 - `pymafft` builds against PyO3 0.30 (was 0.24), which supports
