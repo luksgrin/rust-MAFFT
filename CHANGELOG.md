@@ -125,6 +125,50 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **The progressive stage takes `disttbfast`'s DP branch and reuses its
+  cached profiles like C.** `treebase` only tries the FFT aligner when the
+  first member of each group is longer than the group, `ffttry =
+  nlen[m1] > clus1 && nlen[m2] > clus2` (`disttbfast.c:2850`), where
+  `nlen` starts as the input lengths and, after every merge, the merged
+  group's first member takes the truncated mean of the two
+  representatives (`:2925`); the array is not reset between guide-tree
+  passes. A merge that fails the test goes to `A__align`, or `MSalignmm`
+  after the 30000-column `alg='M'` switch, and that DP branch is also the
+  only one that reads and writes `cpmxhist` (`:2889`, `:2913`): the
+  merged profile a DP merge stores for its parent, blended from the
+  children's profiles through the merge's gap tables
+  (`createcpmxresult`, `MSalignmm.c:283`), which rounds differently from
+  a fresh `cpmx_calc_new`; `MSalignmm` moreover blends the cached child's
+  opening/closing gap counts from its zero-filled scratch buffers
+  (`MSalignmm.c:2459-2460`), unlike `A__align` (`Salignmm.c:2119-2122`).
+  The port tried the FFT aligner on every merge and rebuilt every
+  profile. On the first 500 records of the PF00069 scaling corpus under
+  `--retree 1 --memsave` the 490th merge (477 against 12 sequences, 12490
+  by 2109 columns) came out 12701 columns wide where C's cached chain of
+  three DP merges gives 12688, and the result was 12955 columns against
+  C's 12960; on the first 4000 records under the defaults the first pass
+  already differed. Both inputs are byte-identical to C now at `--thread
+  1`, as are the 2000-record subset under `--memsave` and the 2000- and
+  3000-record subsets under the defaults, which were identical before.
+  The schedule and the cache are decided from the guide tree alone, so
+  the multi-thread merge loop makes the same choices as the serial one.
+  The 30000-column switch is set by the first merge, in `topol` order,
+  whose input is wider than the limit, and every later-numbered merge
+  sees it whenever it runs — a leaf-leaf merge numbered after the switch
+  takes `Falign_udpari_long` — which the loop used to apply level by
+  level (on the 4000-record subset `--thread 8` gave 31921 columns
+  against 31919 at `--thread 1`, and the two already differed before this
+  change). It now runs waves of ready merges and holds back any merge
+  numbered at or past the earliest merge that could still hit the limit
+  (a child is never wider than the sum of its members' lengths) until the
+  switch point is known, so `--thread 8` equals `--thread 1` there too.
+  The switch itself is also restored per guide-tree pass now: `disttbfast` resets `alg` from the command line at
+  the top of every pass (`alg = algbackup`, `disttbfast.c:3938`), so the
+  second FFT-NS-2 pass of the 4000-record subset starts with `A__align`
+  and `Falign` again and switches on its own at 30052 columns, where the
+  port had carried `'M'` over from the first pass. Fixture
+  `protein_dp_branch_n200`, and the `MSalignmm` cache chain is
+  cross-validated against C in `cross_validate_falign_udpari_long_protein`.
 - **L/G/E-INS-i refinement charges a gap that reaches a segment cut like
   C.** The constrained refinement (`Falign_localhom` → `partA__align`)
   splits each branch into FFT segments. At the right end of a segment the
