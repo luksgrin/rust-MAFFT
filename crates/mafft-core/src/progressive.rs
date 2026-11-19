@@ -117,8 +117,6 @@ impl MultipleAlignment {
 #[derive(Debug, Clone)]
 struct CachedProfile {
     profile: Profile,
-    /// Effective weight of this group (orieff), for blending at the next merge.
-    eff: f64,
 }
 
 /// Per-step branch tag for `--add` progressive alignment, mirroring
@@ -1368,7 +1366,7 @@ pub fn progressive_align_full_c_compat(
     progressive_align_full_c_compat_ex(
         sequences, names, topology, scoring, use_fft, shift_penalty,
         constraints, penalize_term_gaps, weights_override, unalign_level,
-        legacy_gap_cost, memsave_dp, c_compat, true, None, None,
+        legacy_gap_cost, memsave_dp, c_compat, true, None, None, None,
     )
 }
 
@@ -1405,14 +1403,28 @@ pub fn progressive_align_full_c_compat_ex(
     // `disttbfast`'s global `alg` (`disttbfast.c:2836`, also `:1926`
     // in `treebasethread` and `:2370` in `dooneiteration`): once either
     // profile is longer than [`DISTTBFAST_MEMSAVE_LEN`] columns, `alg`
-    // becomes `'M'` and stays there for the rest of the process, so the
-    // flag is carried across guide-tree passes. The caller seeds it with
-    // `-M` (`--memsave`). After the switch FFT merges use
+    // becomes `'M'` for the rest of the pass; each guide-tree pass
+    // starts again from the command line (`alg = algbackup`,
+    // `disttbfast.c:3938`), so the caller seeds it with `-M`
+    // (`--memsave`) before every pass. After the switch FFT merges use
     // `Falign_udpari_long` and DP merges use `MSalignmm`, including
     // 1-vs-1. `None` turns the switch off: `-N` (`nevermemsave`),
     // PartTree (its own 10000-column switch is `memsave_len_limit`), and
     // the constrained `tbfast` merges.
     mut long_alg_m: Option<&mut bool>,
+    // `disttbfast`'s `nlen` array (`disttbfast.c:3429`, one `int` per
+    // input sequence, seeded with the input lengths): the FFT aligner is
+    // only tried when the first member of each group is longer than
+    // the group, `ffttry = nlen[m1] > clus1 && nlen[m2] > clus2`
+    // (`disttbfast.c:2850`), and after every merge the first member of
+    // the merged group takes the truncated mean of the two
+    // representatives, `nlen[m1] = 0.5 * (nlen[m1] + nlen[m2])`
+    // (`disttbfast.c:2925`). Merges that fail the test go to the DP
+    // branch (`A__align`, or `MSalignmm` after the `'M'` switch). The
+    // array is never re-read, so a second guide-tree pass starts from
+    // the averaged values; the caller keeps it across passes. `None`
+    // tries the FFT aligner on every merge.
+    fft_rep_len: Option<&mut Vec<i32>>,
 ) -> MultipleAlignment {
     let nseq = sequences.len();
     if nseq == 0 {
@@ -1491,34 +1503,103 @@ pub fn progressive_align_full_c_compat_ex(
         Vec::new()
     };
 
+    // Which merges try the FFT aligner. `ffttry` and the `nlen` update
+    // depend only on the guide tree and the input lengths, so they are
+    // walked in `topol` order up front (`disttbfast.c:2850`, `:2925`),
+    // which keeps the level-parallel loop below identical to the serial
+    // one. (`treebasethread` shares the array between threads,
+    // `disttbfast.c:2108`; this is the single-thread order.)
+    let step_fft: Vec<bool> = match fft_rep_len {
+        Some(nlen) => fft_try_schedule(topology, nlen),
+        None => vec![true; topology.steps.len()],
+    };
+
     // Merges of disjoint subtrees are independent: each reads and writes
     // only its own members' rows and its children's cached profiles. On a
-    // multi-thread pool, run the merges level by level (a level holds the
-    // steps whose children are all done), each into its own result slot,
-    // and apply the results in step order. `--c-compat` keeps the serial
-    // loop: its cpmx memo is per-thread state carried from merge to merge.
-    // The PartTree `alg='M'` switch is also serial: C sets the global
-    // inside `pairalign` and the next merge in `topol` order sees it,
-    // including a shorter sibling that follows a profile past the limit.
-    let levels = if !c_compat && mafft_align::parallel_enabled() && memsave_len_limit.is_none() {
-        merge_levels(topology)
+    // multi-thread pool, run them in waves of ready steps (children
+    // done), each into its own result slot, and apply the results in step
+    // order. `--c-compat` keeps the serial loop: its cpmx memo is
+    // per-thread state carried from merge to merge. The PartTree `alg='M'`
+    // switch is also serial: C sets the global inside `pairalign` and the
+    // next merge in `topol` order sees it, including a shorter sibling
+    // that follows a profile past the limit.
+    //
+    // `disttbfast`'s 30000-column switch is set by the first merge, in
+    // `topol` order, whose input is wider than the limit, and every
+    // later-numbered merge sees it, whenever it runs: a leaf-leaf merge
+    // numbered after the switch takes `Falign_udpari_long`. A merge can
+    // only hit the limit if a child is wider than it, and no alignment is
+    // wider than the sum of its members' lengths, so the earliest merge
+    // that could still hit (the "horizon") is known at every point. A
+    // ready step numbered below the horizon runs unswitched; once the
+    // first real hit is numbered below every remaining possible hit the
+    // switch point is exact and the rest run with it. The lowest-numbered
+    // unfinished step is always ready and below the horizon, so this
+    // never stalls.
+    let children = if !c_compat && mafft_align::parallel_enabled() && memsave_len_limit.is_none() {
+        merge_children(topology)
     } else {
         None
     };
-    if let Some(levels) = levels {
-        // The 30000-column `alg='M'` switch, level by level. A merge over
-        // the limit always switches; its same-level siblings follow C's
-        // thread race, so they keep the state from the previous level.
-        // `--thread 1` takes the serial loop below, which applies the
-        // switch in `topol` order.
+    // One slot per step for both loops below, so the trace comes out in
+    // step order whichever loop ran a step.
+    let mut slots: Vec<Option<StepTrace>> = vec![None; topology.steps.len()];
+    let mut done: Vec<bool> = vec![false; topology.steps.len()];
+    if let Some(children) = children {
+        let nsteps = topology.steps.len();
         let long_enabled = long_alg_m.is_some();
-        let mut long_m = long_alg_m.as_deref().is_some_and(|f| *f);
-        let mut slots: Vec<Option<StepTrace>> = vec![None; topology.steps.len()];
-        for level in &levels {
+        let seeded = long_alg_m.as_deref().is_some_and(|f| *f);
+        // Widest a child of each step can be: the sum of the members'
+        // input lengths (`aligned` holds the ungapped inputs here).
+        let bound: Vec<usize> = topology
+            .steps
+            .iter()
+            .map(|step| {
+                let sum = |g: &[usize]| g.iter().map(|&i| aligned[i].len()).sum::<usize>();
+                sum(&step.left).max(sum(&step.right))
+            })
+            .collect();
+        // `hit[l]`: whether step `l`'s input is over the limit, once both
+        // children are done.
+        let mut hit: Vec<Option<bool>> = vec![None; nsteps];
+        let ready = |l: usize, done: &[bool]| children[l].iter().all(|c| c.map_or(true, |c| done[c]));
+        let mut long_m = seeded;
+        loop {
+            for l in 0..nsteps {
+                if hit[l].is_none() && ready(l, &done) {
+                    let step = &topology.steps[l];
+                    let len1 = aligned[step.left[0]].len();
+                    let len2 = aligned[step.right[0]].len();
+                    hit[l] = Some(long_enabled && (len1 > DISTTBFAST_MEMSAVE_LEN || len2 > DISTTBFAST_MEMSAVE_LEN));
+                }
+            }
+            // The switch point, if known: the lowest-numbered hit, provided
+            // no lower-numbered unevaluated step could still hit.
+            let known_hit = (0..nsteps).find(|&l| hit[l] == Some(true));
+            let horizon = (0..nsteps).find(|&l| hit[l].is_none() && long_enabled && bound[l] > DISTTBFAST_MEMSAVE_LEN);
+            let switch_at: Option<usize> = if seeded {
+                Some(0)
+            } else {
+                match (known_hit, horizon) {
+                    (Some(h), Some(z)) if h < z => Some(h),
+                    (Some(h), None) => Some(h),
+                    _ => None,
+                }
+            };
+            let wave: Vec<usize> = (0..nsteps)
+                .filter(|&l| !done[l] && ready(l, &done))
+                .filter(|&l| match switch_at {
+                    Some(_) => true,
+                    None => horizon.map_or(true, |z| l < z),
+                })
+                .collect();
+            if wave.is_empty() {
+                break;
+            }
             // Each task owns its members' rows for the duration of the
-            // level (moved out here, moved back below), so no row is
+            // wave (moved out here, moved back below), so no row is
             // copied on the way in or out.
-            let tasks: Vec<(usize, BTreeMap<Vec<usize>, CachedProfile>, Vec<Vec<u8>>)> = level
+            let tasks: Vec<(usize, bool, BTreeMap<Vec<usize>, CachedProfile>, Vec<Vec<u8>>)> = wave
                 .iter()
                 .map(|&step_idx| {
                     let step = &topology.steps[step_idx];
@@ -1532,27 +1613,25 @@ pub fn progressive_align_full_c_compat_ex(
                     for &i in step.left.iter().chain(&step.right) {
                         rows[i] = std::mem::take(&mut aligned[i]);
                     }
-                    (step_idx, local, rows)
+                    let switched = switch_at.is_some_and(|at| step_idx >= at);
+                    (step_idx, switched, local, rows)
                 })
                 .collect();
-            let merge_one = |(step_idx, mut local, mut rows): (usize, BTreeMap<Vec<usize>, CachedProfile>, Vec<Vec<u8>>)| {
+            let merge_one = |(step_idx, switched, mut local, mut rows): (usize, bool, BTreeMap<Vec<usize>, CachedProfile>, Vec<Vec<u8>>)| {
                 let step = &topology.steps[step_idx];
                 let step_scoring: &ScoringContext = if unalign_level > 0.0 {
                     &dyn_scoring[step_idx]
                 } else {
                     scoring
                 };
-                let len1 = rows[step.left[0]].len();
-                let len2 = rows[step.right[0]].len();
-                let hit = long_enabled
-                    && (len1 > DISTTBFAST_MEMSAVE_LEN || len2 > DISTTBFAST_MEMSAVE_LEN);
-                let switched = long_m || hit;
+                // `force_fft || (use_fft && ffttry)` (`disttbfast.c:2859`).
+                let fft_step = use_fft && step_fft[step_idx];
                 let score = merge_step_cached(
-                    &step.left, &step.right, &mut rows, &weights, step_scoring, &gap, use_fft,
+                    &step.left, &step.right, &mut rows, &weights, step_scoring, &gap, fft_step,
                     &mut local, constraints, penalize_term_gaps, memsave_dp, false,
-                    use_cache, b'-', switched && !use_fft, switched && use_fft,
+                    use_cache, b'-', switched && !fft_step, switched && fft_step,
                 );
-                (step_idx, score, rows, local, hit)
+                (step_idx, score, rows, local)
             };
             use rayon::prelude::*;
             let results: Vec<_> = if tasks.len() > 1 {
@@ -1560,8 +1639,7 @@ pub fn progressive_align_full_c_compat_ex(
             } else {
                 tasks.into_iter().map(merge_one).collect()
             };
-            for (step_idx, score, mut rows, local, hit) in results {
-                long_m |= hit;
+            for (step_idx, score, mut rows, local) in results {
                 let step = &topology.steps[step_idx];
                 for &i in step.left.iter().chain(&step.right) {
                     aligned[i] = std::mem::take(&mut rows[i]);
@@ -1574,29 +1652,36 @@ pub fn progressive_align_full_c_compat_ex(
                     width,
                     score,
                 });
+                done[step_idx] = true;
+                long_m |= switch_at.is_some_and(|at| step_idx >= at);
             }
         }
-        if let Some(flag) = long_alg_m {
+        if let Some(flag) = long_alg_m.as_deref_mut() {
             *flag = long_m;
         }
-        let step_trace: Vec<StepTrace> = slots.into_iter().map(|t| t.expect("every step merged")).collect();
-        last_score = step_trace.last().map_or(0.0, |t| t.score);
+        if done.iter().all(|&d| d) {
+            let step_trace: Vec<StepTrace> = slots.into_iter().map(|t| t.expect("every step merged")).collect();
+            last_score = step_trace.last().map_or(0.0, |t| t.score);
 
-        let max_width = aligned.iter().map(|s| s.len()).max().unwrap_or(0);
-        for seq in &mut aligned {
-            seq.resize(max_width, b'-');
+            let max_width = aligned.iter().map(|s| s.len()).max().unwrap_or(0);
+            for seq in &mut aligned {
+                seq.resize(max_width, b'-');
+            }
+            return MultipleAlignment {
+                sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
+                guide_tree: None, first_pass_sequences: None, distance_matrix: None,
+            };
         }
-        return MultipleAlignment {
-            sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
-            guide_tree: None, first_pass_sequences: None, distance_matrix: None,
-        };
     }
 
-    let mut step_trace: Vec<StepTrace> = Vec::with_capacity(topology.steps.len());
     // `--memsave` starts `splittbfast` with `alg='M'` (`-M`). Otherwise
     // `alg` stays `'A'` until a profile exceeds `memsave_len_limit`.
     let mut alg_m = memsave_len_limit.is_some() && memsave_dp;
     for (step_idx, step) in topology.steps.iter().enumerate() {
+        // Already merged by the level-parallel loop above.
+        if done[step_idx] {
+            continue;
+        }
         let step_scoring: &ScoringContext = if unalign_level > 0.0 {
             &dyn_scoring[step_idx]
         } else {
@@ -1628,10 +1713,14 @@ pub fn progressive_align_full_c_compat_ex(
             !(alg_m && use_fft),
             "alg=M with FFT is Falign_udpari_long; PartTree leaves use_fft unset",
         );
-        let msalign_even_pairs = (alg_m || long_m) && !use_fft;
-        let udpari_long = long_m && use_fft;
+        // `force_fft || (use_fft && ffttry)` (`disttbfast.c:2859`): a
+        // merge whose representatives are shorter than their groups takes
+        // the DP branch even with `-F`.
+        let fft_step = use_fft && step_fft[step_idx];
+        let msalign_even_pairs = (alg_m || long_m) && !fft_step;
+        let udpari_long = long_m && fft_step;
         last_score = merge_step_cached(
-            &step.left, &step.right, &mut aligned, &weights, step_scoring, &gap, use_fft,
+            &step.left, &step.right, &mut aligned, &weights, step_scoring, &gap, fft_step,
             &mut profile_cache, constraints, penalize_term_gaps,
             memsave_dp || msalign_even_pairs, c_compat,
             use_cache,
@@ -1641,7 +1730,7 @@ pub fn progressive_align_full_c_compat_ex(
         );
 
         let width = aligned[step.left[0]].len().max(aligned[step.right[0]].len());
-        step_trace.push(StepTrace {
+        slots[step_idx] = Some(StepTrace {
             clus1: step.left.len(),
             clus2: step.right.len(),
             width,
@@ -1726,6 +1815,7 @@ pub fn progressive_align_full_c_compat_ex(
         seq.resize(max_width, b'-');
     }
 
+    let step_trace: Vec<StepTrace> = slots.into_iter().map(|t| t.expect("every step merged")).collect();
     MultipleAlignment {
         sequences: aligned, names: names.to_vec(), score: last_score, step_trace,
         guide_tree: None, first_pass_sequences: None, distance_matrix: None,
@@ -1818,32 +1908,42 @@ fn merge_step_cached(
     // FIRST cluster (cluster1) participates in the memo — cluster2 is
     // always rebuilt from scratch (`cpmx_calc_new(seq2, ...)` at
     // Salignmm.c:1555). Mirror that asymmetry here.
-    // C MAFFT only uses the cpmxhist cache in pass 0 (`treebase`); pass 1+
-    // (`dooneiteration`) sets `cpmxchild0/1 = NULL` and falls through to
-    // `cpmx_calc_new` (Salignmm.c:1473-1505 fallback path,
-    // disttbfast.c:2288-2289). The cached blend (`createcpmxresult`) omits
-    // the eff*1.0 gap-insertion contribution to `cpmx[24][j]` ("tsukawanai"
-    // comment at Salignmm.c:624), so reusing it across passes diverges from
-    // a fresh build — this surfaces as the BB20018 / BB40046 step-50
-    // pass-1 divergences. `use_cache=false` here forces fresh
-    // `from_aligned` rebuilds in refinement passes to match C.
-    let try_cache = use_cache;
-    let (prof1, eff1) = if try_cache && cache.get(&key1).is_some() {
-        let cached = cache.get(&key1).unwrap();
-        (cached.profile.clone(), cached.eff)
+    //
+    // `cpmxhist` (`disttbfast.c:4462`) is the profile a DP merge stored
+    // for its parent merge, blended from the children's profiles through
+    // the merge's gap tables (`createcpmxresult`, `MSalignmm.c:283`;
+    // `Salignmm.c:608`). The blend omits the gap-insertion contribution
+    // ("tsukawanai", `MSalignmm.c:296`) and rounds differently from a
+    // fresh `cpmx_calc_new`, so a DP merge whose child came from a DP
+    // merge does not reproduce C unless it uses the blend. `treebase`
+    // allocates a fresh `cpmxhist` for every guide-tree pass; only
+    // `dooneiteration` (`--oneiteration`, `disttbfast.c:2288`) runs
+    // without it.
+    // `treebase` hands `cpmxhist` only to the DP branch
+    // (`disttbfast.c:2889` `MSalignmm`, `:2913` `A__align`); `Falign` and
+    // `Falign_udpari_long` (`:2868`) get no cache, build their profiles
+    // fresh and store nothing, so a cached child is consumed only by a
+    // DP merge. `orieff1`/`orieff2` are the raw weight sums of the
+    // groups, re-added in group order at every merge
+    // (`fastconjuction_noname`, `tddis.c:548`).
+    let try_cache = use_cache && !use_fft;
+    let raw_sum = |group: &[usize]| group.iter().map(|&i| weights[i]).fold(0.0f64, |a, b| a + b);
+    let eff1 = raw_sum(group1);
+    let eff2 = raw_sum(group2);
+    let from_cache1 = try_cache && cache.get(&key1).is_some();
+    let from_cache2 = try_cache && cache.get(&key2).is_some();
+    let prof1 = if from_cache1 {
+        cache.get(&key1).unwrap().profile.clone()
     } else if c_compat {
-        build_profile_with_memo(group1, aligned, weights, scoring)
+        build_profile_with_memo(group1, aligned, weights, scoring).0
     } else {
-        let (prof, eff) = build_profile_from_seqs(group1, aligned, weights, scoring);
-        (prof, eff)
+        build_profile_from_seqs(group1, aligned, weights, scoring).0
     };
 
-    let (prof2, eff2) = if try_cache && cache.get(&key2).is_some() {
-        let cached = cache.get(&key2).unwrap();
-        (cached.profile.clone(), cached.eff)
+    let prof2 = if from_cache2 {
+        cache.get(&key2).unwrap().profile.clone()
     } else {
-        let (prof, eff) = build_profile_from_seqs(group2, aligned, weights, scoring);
-        (prof, eff)
+        build_profile_from_seqs(group2, aligned, weights, scoring).0
     };
 
 
@@ -2062,25 +2162,45 @@ fn merge_step_cached(
     // (matching C's condition at MSalignmm.c line 2431). Without
     // `use_cache` nothing reads the entry back (`try_cache` above), so the
     // blend is skipped; `MAFFT_DUMP_CPMX_PREFIX` still wants it dumped.
+    // Only a DP merge stores its result (`MSalignmm.c:2429-2460`,
+    // `Salignmm.c:2074-2122`); an FFT merge leaves `cpmxhist[l]` NULL.
     let total_eff = eff1 + eff2;
     let combined_seqs = group1.len() + group2.len();
-    let keep_cache = use_cache || std::env::var_os("MAFFT_DUMP_CPMX_PREFIX").is_some();
+    let keep_cache = (use_cache && !use_fft) || std::env::var_os("MAFFT_DUMP_CPMX_PREFIX").is_some();
     if keep_cache && total_eff > 0.0 && combined_seqs > 20 {
-        let norm_eff1 = eff1 / total_eff;
-        let norm_eff2 = eff2 / total_eff;
-        let merged_prof = blend_profiles_exact(
+        // `MSalignmm.c:2436-2448`: the blend weights are the sums of the
+        // normalised group weights (1.0 up to rounding, "marume gosa wo
+        // teigen suru tame") times `orieff / (orieff1 + orieff2)`, in
+        // that order.
+        let norm_sum = |group: &[usize]| {
+            normalized_group_weights(group, weights).iter().fold(0.0f64, |a, b| a + b)
+        };
+        let blend_eff1 = norm_sum(group1) * eff1 / total_eff;
+        let blend_eff2 = norm_sum(group2) * eff2 / total_eff;
+        // `MSalignmm` blends the opening/closing counts from its scratch
+        // buffers, which a cached child leaves at zero
+        // (`MSalignmm.c:2459-2460`, see `blend_profiles_with_counts`);
+        // `A__align` blends the counts it aligned with.
+        let zeros1 = vec![0.0f64; prof1.ogcp.len().max(prof1.fgcp.len())];
+        let zeros2 = vec![0.0f64; prof2.ogcp.len().max(prof2.fgcp.len())];
+        let scratch1 = msalign_even_pairs && from_cache1;
+        let scratch2 = msalign_even_pairs && from_cache2;
+        let merged_prof = blend_profiles_with_counts(
             &prof1, &prof2,
-            norm_eff1, norm_eff2,
+            blend_eff1, blend_eff2,
             &gaptable1, &gaptable2,
             scoring.nalphabets,
+            [
+                if scratch1 { &zeros1 } else { &prof1.ogcp },
+                if scratch1 { &zeros1 } else { &prof1.fgcp },
+                if scratch2 { &zeros2 } else { &prof2.ogcp },
+                if scratch2 { &zeros2 } else { &prof2.fgcp },
+            ],
         );
         let mut merged_key = group1.to_vec();
         merged_key.extend_from_slice(group2);
         merged_key.sort();
-        cache.insert(merged_key, CachedProfile {
-            profile: merged_prof,
-            eff: total_eff,
-        });
+        cache.insert(merged_key, CachedProfile { profile: merged_prof });
     }
 
     // Remove child caches (they won't be needed again)
@@ -2197,49 +2317,45 @@ fn rebuild_rows(
 /// Steps of one level touch disjoint sequences. `None` if a non-singleton
 /// group is not the union of an earlier step (not a plain tree), or if
 /// every level has a single step (nothing to run in parallel).
-fn merge_levels(topology: &Topology) -> Option<Vec<Vec<usize>>> {
+/// For each step, the steps that formed its two groups (`None` for a
+/// single sequence), or `None` when the topology cannot be run out of
+/// order: an empty group, a group no earlier step formed, or fewer than
+/// two independent merges anywhere.
+fn merge_children(topology: &Topology) -> Option<Vec<[Option<usize>; 2]>> {
     let mut formed_by: std::collections::HashMap<Vec<usize>, usize> = std::collections::HashMap::new();
+    let mut children: Vec<[Option<usize>; 2]> = Vec::with_capacity(topology.steps.len());
     let mut level_of: Vec<usize> = Vec::with_capacity(topology.steps.len());
+    let mut widest_level = 0usize;
+    let mut per_level: Vec<usize> = Vec::new();
     for (step_idx, step) in topology.steps.iter().enumerate() {
         if step.left.is_empty() || step.right.is_empty() {
             return None;
         }
+        let mut kids = [None, None];
         let mut level = 0usize;
-        for group in [&step.left, &step.right] {
+        for (k, group) in [&step.left, &step.right].into_iter().enumerate() {
             if group.len() > 1 {
                 let child = *formed_by.get(&sorted_key(group))?;
+                kids[k] = Some(child);
                 level = level.max(level_of[child] + 1);
             }
         }
+        children.push(kids);
         level_of.push(level);
+        if per_level.len() <= level {
+            per_level.resize(level + 1, 0);
+        }
+        per_level[level] += 1;
+        widest_level = widest_level.max(per_level[level]);
         let mut key = sorted_key(&step.left);
         key.extend_from_slice(&step.right);
         key.sort_unstable();
         formed_by.insert(key, step_idx);
     }
-    let nlevels = level_of.iter().max().map_or(0, |&l| l + 1);
-    let mut levels: Vec<Vec<usize>> = vec![Vec::new(); nlevels];
-    for (step_idx, &l) in level_of.iter().enumerate() {
-        levels[l].push(step_idx);
-    }
-    // Members within a level must be disjoint.
-    let mut seen = vec![usize::MAX; topology.nseq.max(1 + topology.steps.iter()
-        .flat_map(|s| s.left.iter().chain(&s.right)).copied().max().unwrap_or(0))];
-    for (l, level) in levels.iter().enumerate() {
-        for &step_idx in level {
-            let step = &topology.steps[step_idx];
-            for &i in step.left.iter().chain(&step.right) {
-                if seen[i] == l {
-                    return None;
-                }
-                seen[i] = l;
-            }
-        }
-    }
-    if levels.iter().all(|l| l.len() <= 1) {
+    if widest_level <= 1 {
         return None;
     }
-    Some(levels)
+    Some(children)
 }
 
 fn sorted_key(group: &[usize]) -> Vec<usize> {
@@ -2250,6 +2366,26 @@ fn sorted_key(group: &[usize]) -> Vec<usize> {
 
 /// The group's weights normalised to sum 1 (C's `fastconjuction_noname`),
 /// as `build_profile_from_seqs` uses them.
+/// Which merges of `topology` try the FFT aligner in `disttbfast`'s
+/// `treebase`, walked in `topol` order: `ffttry = nlen[m1] > clus1 &&
+/// nlen[m2] > clus2` (`disttbfast.c:2850`), where `m1`/`m2` are the first
+/// members of the two groups and `nlen` is the per-sequence `int` array
+/// `treebase` updates after every merge with `nlen[m1] = 0.5 * (nlen[m1] +
+/// nlen[m2])` (`:2925`, truncating). `nlen` is left in its final state so
+/// the next guide-tree pass continues from it, as C's array does.
+pub(crate) fn fft_try_schedule(topology: &Topology, nlen: &mut [i32]) -> Vec<bool> {
+    topology
+        .steps
+        .iter()
+        .map(|step| {
+            let (m1, m2) = (step.left[0], step.right[0]);
+            let ffttry = nlen[m1] > step.left.len() as i32 && nlen[m2] > step.right.len() as i32;
+            nlen[m1] = (0.5 * (nlen[m1] + nlen[m2]) as f64) as i32;
+            ffttry
+        })
+        .collect()
+}
+
 fn normalized_group_weights(group: &[usize], weights: &[f64]) -> Vec<f64> {
     let w: Vec<f64> = group.iter().map(|&i| weights[i]).collect();
     let sum: f64 = w.iter().sum();
@@ -2323,6 +2459,31 @@ pub fn blend_profiles_exact(
     gaptable2: &[u8],
     nalphabets: usize,
 ) -> Profile {
+    blend_profiles_with_counts(
+        prof1, prof2, eff1, eff2, gaptable1, gaptable2, nalphabets,
+        [&prof1.ogcp, &prof1.fgcp, &prof2.ogcp, &prof2.fgcp],
+    )
+}
+
+/// [`blend_profiles_exact`] with the opening/closing gap counts that feed
+/// `createogresult`/`createfgresult` given separately
+/// (`[ogcp1, fgcp1, ogcp2, fgcp2]`). `A__align` passes the counts it
+/// aligned with, cached or fresh (`Salignmm.c:2119-2122`), but
+/// `MSalignmm` passes its per-call scratch buffers `ogcp1o`/`fgcp1o`
+/// (`MSalignmm.c:2459-2460`), which it fills only for a fresh child
+/// (`:2219-2224`): for a child taken from `cpmxhist` they stay as
+/// `AllocateFloatVec` left them, all zero.
+pub fn blend_profiles_with_counts(
+    prof1: &Profile,
+    prof2: &Profile,
+    eff1: f64,
+    eff2: f64,
+    gaptable1: &[u8],
+    gaptable2: &[u8],
+    nalphabets: usize,
+    counts: [&[f64]; 4],
+) -> Profile {
+    let [ogcp1_in, fgcp1_in, ogcp2_in, fgcp2_in] = counts;
     let alen = gaptable1.len();
     let mut freqs = vec![vec![0.0f64; nalphabets]; alen];
     let mut nongap_freq = vec![0.0f64; alen + 1]; // C uses alen+1
@@ -2392,12 +2553,12 @@ pub fn blend_profiles_exact(
     nongap_freq[alen] = 1.0; // C: gapfresult[j] = 1.0 at tail
 
     // createogresult: blend opening gap counts with block-boundary handling
-    blend_og_one_side(&mut ogcp, &prof1.ogcp, &prof1.nongap_freq, gaptable1, eff1);
-    blend_og_one_side(&mut ogcp, &prof2.ogcp, &prof2.nongap_freq, gaptable2, eff2);
+    blend_og_one_side(&mut ogcp, ogcp1_in, &prof1.nongap_freq, gaptable1, eff1);
+    blend_og_one_side(&mut ogcp, ogcp2_in, &prof2.nongap_freq, gaptable2, eff2);
 
     // createfgresult: blend closing gap counts with block-boundary handling
-    blend_fg_one_side(&mut fgcp, &prof1.fgcp, &prof1.nongap_freq, gaptable1, eff1);
-    blend_fg_one_side(&mut fgcp, &prof2.fgcp, &prof2.nongap_freq, gaptable2, eff2);
+    blend_fg_one_side(&mut fgcp, fgcp1_in, &prof1.nongap_freq, gaptable1, eff1);
+    blend_fg_one_side(&mut fgcp, fgcp2_in, &prof2.nongap_freq, gaptable2, eff2);
 
     // Compute gap_freq from nongap_freq
     let gap_freq: Vec<f64> = nongap_freq[..alen].iter().map(|&nf| (1.0 - nf).max(0.0)).collect();
@@ -2493,6 +2654,33 @@ mod tests {
     use mafft_tree::{DistanceMatrix, upgma};
     use mafft_scoring::build_context;
     use mafft_types::{ScoringModel, SeqType};
+
+    /// `disttbfast.c:2850` and `:2925` on a comb tree: the gate compares
+    /// the first members' `nlen` with the group sizes, and the merged
+    /// group's representative takes the truncated mean.
+    #[test]
+    fn fft_try_schedule_follows_disttbfast() {
+        // ((((0,1),2),3),4) with lengths 5, 2, 3, 3, 9.
+        let mut topo = Topology::new(5);
+        let mut left = vec![0usize];
+        for m in 1..5 {
+            topo.steps.push(mafft_tree::JoinStep {
+                left: left.clone(),
+                right: vec![m],
+                left_length: 0.0,
+                right_length: 0.0,
+            });
+            left.push(m);
+        }
+        let mut nlen = vec![5i32, 2, 3, 3, 9];
+        let fft = fft_try_schedule(&topo, &mut nlen);
+        // step 0: 5 > 1 && 2 > 1; nlen[0] = (5+2)/2 = 3 (truncated).
+        // step 1: 3 > 2 && 3 > 1; nlen[0] = 3.
+        // step 2: 3 > 3 fails; nlen[0] = 3.
+        // step 3: 3 > 4 fails; nlen[0] = (3+9)/2 = 6.
+        assert_eq!(fft, vec![true, true, false, false]);
+        assert_eq!(nlen, vec![6, 2, 3, 3, 9]);
+    }
 
     fn check_alignment(result: &MultipleAlignment, original: &[Vec<u8>]) {
         let width = result.width();

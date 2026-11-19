@@ -957,10 +957,20 @@ impl MafftEngine {
             None
         };
 
-        // `disttbfast`'s global `alg`: every pass below runs in the same C
-        // process, so a switch to `'M'` in one pass holds for the next.
-        let mut disttbfast_alg_m = self.memsave_dp;
+        // `disttbfast`'s global `alg`. Every guide-tree pass restores it
+        // from the command line first (`alg = algbackup`,
+        // `disttbfast.c:3312`, `:3938`), so a pass that switched to `'M'`
+        // over 30000 columns does not hand the switch to the next pass;
+        // that pass switches again on its own when it gets there.
+        let mut disttbfast_alg_m: bool;
+        // `disttbfast`'s `nlen` (`disttbfast.c:3429`): the input lengths as
+        // read, gaps included. `treebase` gates the FFT aligner on it and
+        // averages it merge by merge (`disttbfast.c:2850`, `:2925`); the
+        // array is not reset between guide-tree passes.
+        let mut disttbfast_nlen: Vec<i32> =
+            input.sequences.iter().map(|s| s.data.len() as i32).collect();
         for pass in 0..retree {
+            disttbfast_alg_m = self.memsave_dp;
             let topo = if let Some(ref t) = user_topo {
                 t.clone()
             } else if self.pileup {
@@ -1111,23 +1121,31 @@ impl MafftEngine {
             } else {
                 None
             };
-            // Disable the cached profile blend (`blend_profiles_exact`).
-            // C's `createcpmxresult` (Salignmm.c:608) omits the eff*1.0 gap
-            // contribution at gap-insertion positions ("tsukawanai" comment
-            // at line 624). C also only uses the cache in pass 0 (`treebase`)
-            // and forces fresh `cpmx_calc_new` in pass 1+ (`dooneiteration`
-            // — disttbfast.c:2288-2289 sets `cpmxchild0/1 = NULL`). Rust's
-            // blend mirrors C's createcpmxresult math-faithfully, but
-            // matching when the cache fires across all BB tests is delicate
-            // — disabling the blend entirely (always `cpmx_calc_new`) gives
-            // byte-identical output across the BB20018 / BB40046 set without
-            // perf impact at typical alignment sizes.
+            // `ffttry` (`disttbfast.c:2850`) is `disttbfast`'s; PartTree's
+            // `splittbfast` and the constrained `tbfast` merges have their
+            // own `fftlog` tests and are not run with `-F` here.
+            let fft_rep_len = if !use_parttree && progress_constraints.is_none() {
+                Some(&mut disttbfast_nlen)
+            } else {
+                None
+            };
+            // `disttbfast`'s `cpmxhist` (`disttbfast.c:4462`): the profile
+            // a DP merge stores for its parent, blended by
+            // `createcpmxresult`. `treebase` allocates it for every
+            // guide-tree pass and hands it to the DP branch only
+            // (`MSalignmm` `:2889`, `A__align` `:2913`), never to
+            // `Falign`; `MSalignmm` ignores it when
+            // `specificityconsideration != 0` (`MSalignmm.c:2187`), i.e.
+            // under `--unalignlevel`. PartTree's `splittbfast` has no such
+            // cache, and the constrained merges are `tbfast`'s.
+            let use_cache = !use_parttree && progress_constraints.is_none()
+                && self.unalign_level == 0.0;
             msa = crate::progressive::progressive_align_full_c_compat_ex(
                 &input_seqs, &names, &topo, &scoring, progressive_fft, shift,
                 progress_constraints, penalize_term_gaps,
                 weights_override.as_deref(), self.unalign_level,
                 self.legacy_gap_cost, self.memsave_dp, self.c_compat,
-                false, memsave_len_limit, long_alg_m,
+                use_cache, memsave_len_limit, long_alg_m, fft_rep_len,
             );
             accumulated_trace.extend(msa.step_trace.iter().copied());
             final_progressive_topo = Some(topo.clone());
