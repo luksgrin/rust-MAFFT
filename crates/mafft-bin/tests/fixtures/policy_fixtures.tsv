@@ -9,3 +9,4 @@
 # gcc build. Never generate a variant from a downloaded binary.
 memsafety/adjustdirection_lowcomplexity.adjustdirection	crates/mafft-bin/tests/fixtures/memsafety/adjustdirection_lowcomplexity.fa	--quiet --thread 1 --adjustdirection --nuc
 memsafety/adjustdirection_lowcomplexity.adjustdirectionaccurately	crates/mafft-bin/tests/fixtures/memsafety/adjustdirection_lowcomplexity.fa	--quiet --thread 1 --adjustdirectionaccurately --nuc
+protein_dp_branch_n200.fftns2	crates/mafft-bin/tests/fixtures/protein_dp_branch_n200.fa	--quiet --thread 1
