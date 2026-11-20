@@ -51,6 +51,9 @@ struct DpScratch {
     lastverticalw: Vec<f64>,
     mj: Vec<f64>,
     mpj: Vec<usize>,
+    /// Copy of `prof2.nongap_freq` placed on its own page offset (see
+    /// `pool::coloured_window`).
+    ngf2: Vec<f64>,
     scarr: Vec<f64>,
     /// Boundary-init match buffer (`initverticalw` / `currentw` row 0).
     bcarr: Vec<f64>,
@@ -85,6 +88,7 @@ impl DpScratch {
             lastverticalw: Vec::new(),
             mj: Vec::new(),
             mpj: Vec::new(),
+            ngf2: Vec::new(),
             scarr: Vec::new(),
             bcarr: Vec::new(),
             cpmx1_sparse_offsets: Vec::new(),
@@ -1360,10 +1364,18 @@ pub fn profile_align_imp_view(
     // `resize` each one as needed; the underlying buffer is reused when
     // the capacity already fits. Matches the C `A__align` static-TLS
     // amortisation. Put back into the pool at the bottom of the function.
+    //
+    // The eight rows the inner loop walks column by column (`ogcp2`,
+    // `fgcp2`, `ngf2`, `currentw`, `previousw`, `mj`, `mpj` and the
+    // reused row of `h`) are windows of their pooled buffers that start
+    // on distinct offsets within a 4 KiB page (`pool::coloured_window`),
+    // so the loop's stores and loads never share their low address bits
+    // whatever addresses the allocator handed out.
     let DpScratch {
-        mut ogcp1, mut fgcp1, mut ogcp2, mut fgcp2,
-        mut initverticalw, mut currentw, mut previousw, mut lastverticalw,
-        mut mj, mut mpj, mut scarr, mut bcarr,
+        mut ogcp1, mut fgcp1, ogcp2: mut ogcp2_buf, fgcp2: mut fgcp2_buf,
+        mut initverticalw, currentw: mut currentw_buf, previousw: mut previousw_buf,
+        mut lastverticalw,
+        mj: mut mj_buf, mpj: mut mpj_buf, ngf2: mut ngf2_buf, mut scarr, mut bcarr,
         mut cpmx1_sparse_offsets, mut cpmx1_sparse_entries,
         mut cpmx2_sparse_offsets, mut cpmx2_sparse_entries,
         mut wmrecords, mut prevwmrecords,
@@ -1388,12 +1400,17 @@ pub fn profile_align_imp_view(
     fgcp1.clear(); fgcp1.reserve(n + 1);
     for i in 0..n { fgcp1.push(0.5 * (1.0 - prof1.fgcp[i]) * penalty * prof1.nongap_freq[i]); }
     fgcp1.push(0.0);
-    ogcp2.clear(); ogcp2.reserve(m + 1);
-    for j in 0..m { ogcp2.push(0.5 * (1.0 - prof2.ogcp[j]) * penalty * prof2.nongap_freq[j]); }
-    ogcp2.push(0.0);
-    fgcp2.clear(); fgcp2.reserve(m + 1);
-    for j in 0..m { fgcp2.push(0.5 * (1.0 - prof2.fgcp[j]) * penalty * prof2.nongap_freq[j]); }
-    fgcp2.push(0.0);
+    let at = crate::pool::coloured_window(&mut ogcp2_buf, m + 1, 0.0, 0);
+    let ogcp2: &mut [f64] = &mut ogcp2_buf[at..at + m + 1];
+    for j in 0..m { ogcp2[j] = 0.5 * (1.0 - prof2.ogcp[j]) * penalty * prof2.nongap_freq[j]; }
+    ogcp2[m] = 0.0;
+    let at = crate::pool::coloured_window(&mut fgcp2_buf, m + 1, 0.0, 1);
+    let fgcp2: &mut [f64] = &mut fgcp2_buf[at..at + m + 1];
+    for j in 0..m { fgcp2[j] = 0.5 * (1.0 - prof2.fgcp[j]) * penalty * prof2.nongap_freq[j]; }
+    fgcp2[m] = 0.0;
+    let at = crate::pool::coloured_window(&mut ngf2_buf, m, 0.0, 2);
+    let ngf2: &mut [f64] = &mut ngf2_buf[at..at + m];
+    ngf2.copy_from_slice(&prof2.nongap_freq[..m]);
 
     // Exact port of C's MSalignmm_tanni (MSalignmm.c lines 770-888).
     // Uses C's exact rolling-row scheme, batch match_calc with sparse
@@ -1458,10 +1475,16 @@ pub fn profile_align_imp_view(
     let keep_full_h = std::env::var_os("RS_H_DUMP").is_some()
         || std::env::var_os("RS_DP_CORNER").is_some()
         || std::env::var_os("RS_IJP_DUMP_PREFIX").is_some();
-    let h_cells = if keep_full_h { cells } else { stride };
     let mut h: Vec<f64> = DP_H_POOL.with_borrow_mut(std::mem::take);
     let mut ijp: Vec<i32> = DP_IJP_POOL.with_borrow_mut(std::mem::take);
-    crate::pool::grow_pooled(&mut h, h_cells, 0.0);
+    // Start of the single reused row (`h_base..h_base + stride`) when the
+    // full matrix is not kept; 0 with the full matrix.
+    let h_base = if keep_full_h {
+        crate::pool::grow_pooled(&mut h, cells, 0.0);
+        0
+    } else {
+        crate::pool::coloured_window(&mut h, stride, 0.0, 7)
+    };
     crate::pool::grow_pooled(&mut ijp, cells, 0);
 
     // initverticalw (C line 776): match_calc(cpmx2pt, cpmx1pt, 0, lgth1, initverticalw)
@@ -1533,8 +1556,9 @@ pub fn profile_align_imp_view(
     // C fills currentw[0..lgth2-1] (0-based), then adds gap to [1..lgth2].
     // Result: [0] = pure match score (no gap), [1..m-1] = match + gap, [m] = 0 + gap.
     // Pooled.
-    currentw.clear();
-    currentw.resize(m + 1, 0.0);
+    let at = crate::pool::coloured_window(&mut currentw_buf, m + 1, 0.0, 3);
+    let mut currentw: &mut [f64] = &mut currentw_buf[at..at + m + 1];
+    currentw.fill(0.0);
     if let Some(mm) = multi {
         let row = mm.match_row(0, m);
         currentw[..m].copy_from_slice(&row[..m]);
@@ -1603,20 +1627,22 @@ pub fn profile_align_imp_view(
         }
     }
 
-    h[..=m].copy_from_slice(&currentw[..=m]);
+    h[h_base..=h_base + m].copy_from_slice(&currentw[..=m]);
     if keep_full_h {
         for i in 0..=n { h[i * stride] = initverticalw[i]; }
     } else {
-        h[0] = initverticalw[0];
+        h[h_base] = initverticalw[0];
     }
 
     // Pooled. The DP body reads mj[j] / mpj[j] only for j in 1..=m, so
     // mj[0]/mpj[0] never matter. mj[1..=m] is initialised by the loop
     // immediately below; mpj[1..=m] gets written there too.
-    mj.clear();
-    mj.resize(m + 1, f64::NEG_INFINITY);
-    mpj.clear();
-    mpj.resize(m + 1, 0);
+    let at = crate::pool::coloured_window(&mut mj_buf, m + 1, 0.0, 5);
+    let mj: &mut [f64] = &mut mj_buf[at..at + m + 1];
+    mj.fill(f64::NEG_INFINITY);
+    let at = crate::pool::coloured_window(&mut mpj_buf, m + 1, 0, 6);
+    let mpj: &mut [usize] = &mut mpj_buf[at..at + m + 1];
+    mpj.fill(0);
     for j in 1..=m {
         let gf2_jm1 = prof2.nongap_freq.get(j - 1).copied().unwrap_or(0.0);
         // FMA: same rationale as the inner DP gap-candidate computations
@@ -1706,8 +1732,9 @@ pub fn profile_align_imp_view(
     // is overwritten by match_calc_row. The first iteration's swap makes
     // previousw = (the freshly-built currentw); the initial contents of
     // previousw[1..m] are never read. Zero-fill is cosmetic but cheap.
-    previousw.clear();
-    previousw.resize(m + 1, 0.0);
+    let at = crate::pool::coloured_window(&mut previousw_buf, m + 1, 0.0, 4);
+    let mut previousw: &mut [f64] = &mut previousw_buf[at..at + m + 1];
+    previousw.fill(0.0);
     // lastverticalw[0] is set immediately below; lastverticalw[i] is set
     // each row (`lastverticalw[i] = currentw[m - 1];`). Resize-with-zero
     // is fine.
@@ -1856,8 +1883,8 @@ pub fn profile_align_imp_view(
             &mut h[row_start..row_start + stride]
         } else {
             // Single reused row; cell 0 mirrors `h[i][0] = initverticalw[i]`.
-            h[0] = initverticalw[i];
-            &mut h[..stride]
+            h[h_base] = initverticalw[i];
+            &mut h[h_base..h_base + stride]
         };
         let ijp_row: &mut [i32] = &mut ijp[row_start..row_start + stride];
         // Bind shared cold slices to locals so the inner loop sees them
@@ -1865,13 +1892,13 @@ pub fn profile_align_imp_view(
         // a slice pointer per access. This is purely about giving LLVM
         // enough info to eliminate the per-access bounds check in concert
         // with the `get_unchecked` calls below.
-        let prof2_ngf: &[f64] = &prof2.nongap_freq;
-        let ogcp2_s: &[f64] = &ogcp2;
-        let fgcp2_s: &[f64] = &fgcp2;
-        let mj_s: &mut [f64] = &mut mj;
-        let mpj_s: &mut [usize] = &mut mpj;
-        let prev_s: &mut [f64] = &mut previousw;
-        let cur_s: &mut [f64] = &mut currentw;
+        let prof2_ngf: &[f64] = ngf2;
+        let ogcp2_s: &[f64] = ogcp2;
+        let fgcp2_s: &[f64] = fgcp2;
+        let mj_s: &mut [f64] = mj;
+        let mpj_s: &mut [usize] = mpj;
+        let prev_s: &mut [f64] = previousw;
+        let cur_s: &mut [f64] = currentw;
         // SAFETY (the entire inner j-loop, inside j_loop):
         //   - see j_loop's SAFETY doc-block.
         // Use `fmadd` throughout. Apple clang fuses `a + b * c` into a
@@ -2031,7 +2058,7 @@ pub fn profile_align_imp_view(
     if !tail_gap {
         // Row n-1 is the last row the DP computed (row 0 when n == 1); with
         // the single-row `h` it is the only row kept.
-        let last_row_start = if keep_full_h { (n - 1) * stride } else { 0 };
+        let last_row_start = if keep_full_h { (n - 1) * stride } else { h_base };
         let last_row_corner = h[last_row_start + m - 1];
         if impmtx.is_some() {
             // Atracking_localhom port: forward scan, `>=`, includes corner.
@@ -2172,7 +2199,7 @@ pub fn profile_align_imp_view(
     best_score = match best_wm {
         Some(w) => w,
         None if keep_full_h => h[n * stride + m],
-        None => h[m],
+        None => h[h_base + m],
     };
 
     if let Ok(f) = std::env::var("RS_DP_CORNER") {
@@ -2225,9 +2252,10 @@ pub fn profile_align_imp_view(
     // only need to put each named local back.
     DP_SCRATCH.with_borrow_mut(|s| {
         *s = DpScratch {
-            ogcp1, fgcp1, ogcp2, fgcp2,
-            initverticalw, currentw, previousw, lastverticalw,
-            mj, mpj, scarr, bcarr,
+            ogcp1, fgcp1, ogcp2: ogcp2_buf, fgcp2: fgcp2_buf,
+            initverticalw, currentw: currentw_buf, previousw: previousw_buf,
+            lastverticalw,
+            mj: mj_buf, mpj: mpj_buf, ngf2: ngf2_buf, scarr, bcarr,
             cpmx1_sparse_offsets, cpmx1_sparse_entries,
             cpmx2_sparse_offsets, cpmx2_sparse_entries,
             wmrecords, prevwmrecords,
