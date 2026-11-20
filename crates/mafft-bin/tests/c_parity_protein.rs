@@ -1,8 +1,20 @@
 //! Byte-for-byte parity with C MAFFT 7.526 on protein input.
 //!
-//! Every `.expected` file here is the verbatim stdout of the in-tree C build
+//! Every fixture here is the verbatim stdout of the in-tree C build
 //! (`mafft-upstream` at the pinned commit, `scripts/mafft` with the named
 //! flags, `--thread 1`), so these tests need no C installation.
+//!
+//! The inputs are sensitive to the floating-point contraction policy
+//! (`docs/architecture/byte-identity.md`): C MAFFT leaves `-ffp-contract`
+//! unset, Apple clang on arm64 fuses `a * b + c`, gcc in `-std=c99` and
+//! Apple clang on x86-64 do not, and the two builds align these sets
+//! differently. Each fixture is therefore committed twice, `<name>.fma`
+//! from the in-tree Apple clang arm64 build and `<name>.nofma` from an
+//! in-tree x86-64 build, and `fixture_path_fp` picks the variant matching
+//! this build's `mafft_types::fp::CONTRACTS_FMA` (the `fp-contract-fma` /
+//! `fp-contract-none` features). `fixtures/policy_fixtures.tsv` says how
+//! each pair is produced; `scripts/regen_policy_fixtures.sh check`
+//! regenerates and diffs them against the in-tree C build in CI.
 //!
 //! * `protein_dp_branch_n200` — 200 synthetic sequences of 20–30 residues
 //!   from two ancestors with subfamily-wide block indels. Clusters outgrow
@@ -20,6 +32,15 @@ use std::path::{Path, PathBuf};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
+}
+
+/// The C reference matching this build's contraction policy:
+/// `<name>.fma` when the build fuses `a * b + c` (Apple arm64 by default),
+/// `<name>.nofma` otherwise. Same selection as `fixture_path_fp` in
+/// `crates/mafft-core/tests/end_to_end.rs`.
+fn fixture_path_fp(name: &str) -> PathBuf {
+    let suffix = if mafft_types::fp::CONTRACTS_FMA { ".fma" } else { ".nofma" };
+    fixtures().join(format!("{name}{suffix}"))
 }
 
 /// Run `mafft-rs <flags> <input>` in-process and return the FASTA bytes.
@@ -58,7 +79,7 @@ fn fftns2_dp_branch_merges_match_c() {
     expect_identical(
         &["--thread", "1"],
         &f.join("protein_dp_branch_n200.fa"),
-        &f.join("protein_dp_branch_n200.fftns2.expected"),
+        &fixture_path_fp("protein_dp_branch_n200.fftns2"),
     );
 }
 

@@ -123,7 +123,7 @@ jobs:
         run: |
           set -x
           cargo test -p mafft-core  --release --features fp-contract-none --test end_to_end
-          cargo test -p mafft-rs    --release --features fp-contract-none --test c_parity_dna
+          cargo test -p mafft-rs    --release --features fp-contract-none --test c_parity_dna --test c_parity_protein
           cargo test -p mafft-align --release --features fp-contract-none \
             --test imp_matrix_correctness --test imp_zero_equiv
 
