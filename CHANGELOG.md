@@ -152,6 +152,20 @@ public surfaces stable from 0.1.0 anyway.
   PF00067 n = 250 FFT-NS-i 215 -> 170 s; PF00106 n = 1000 FFT-NS-2
   4.8 -> 4.5 s (`--thread 8` wall 3.3 s both).
 
+- **`c_parity_protein` carries both contraction-policy variants of its
+  fixture.** The `protein_dp_branch_n200` reference was committed as a
+  single `.expected` file captured from the in-tree Apple clang arm64
+  build, which fuses `a * b + c`; gcc on x86-64 and Linux aarch64 does
+  not, and C aligns this set differently under each policy, so the test
+  failed on both Linux legs of CI. The fixture is now the
+  `protein_dp_branch_n200.fftns2.fma` / `.nofma` pair, listed in
+  `crates/mafft-bin/tests/fixtures/policy_fixtures.tsv`, selected by the
+  build's `mafft_types::fp::CONTRACTS_FMA` as the other policy-sensitive
+  fixtures are. The `.nofma` variant is the in-tree source built for
+  x86-64 with Apple clang (`-arch x86_64`, which emits no FMA) and
+  reproduces the committed `sample.bl50.fftns2.nofma` byte for byte;
+  `mafft-rs` built with `--features fp-contract-none` matches it. The
+  fp-contract-none CI job now runs `c_parity_protein` as well.
 - **The progressive stage takes `disttbfast`'s DP branch and reuses its
   cached profiles like C.** `treebase` only tries the FFT aligner when the
   first member of each group is longer than the group, `ffttry =
