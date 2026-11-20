@@ -125,6 +125,33 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **The profile DP no longer depends on where the allocator puts its row
+  buffers.** Since the progressive-merge bookkeeping change (PR #82,
+  under Performance) the `mafft-rs` CLI ran PF00069 n = 250 FFT-NS-2 at
+  `--thread 1` in 8.8-9.5 s of user CPU against 6.5-6.8 s before, while
+  `pymafft` built from the same commit took 6.2-6.6 s; FFT-NS-i on the
+  same input took 1070 s against 710 s. Both retired the same
+  instructions; the CLI took 42 % more cycles, in the inner
+  loop of `profile_align_imp_view` (`j_loop`, `profile.rs`). That loop
+  stores `mj[j]` at column `j` and loads `fgcp2[j]` at column `j + 1`
+  (C `Salignmm.c:1920-1953`); both are pooled rows of the same size
+  class, and after #82 changed the sequence of earlier allocations the
+  allocator placed them exactly 2 MiB apart, so every such load matched
+  the preceding store in its low 21 address bits. Moving either row by
+  64 bytes (an env-gated experiment) brought the CLI to 5.5 s; the
+  pre-#82 binary had the two rows 96 KiB apart. The eight rows the loop
+  walks (`ogcp2`, `fgcp2`, a copy of `prof2.nongap_freq`, `currentw`,
+  `previousw`, `mj`, `mpj` and the reused row of `h`) are now windows of
+  their pooled buffers that start on eight distinct 512-byte offsets in
+  a 4 KiB page (`pool::coloured_window`), so no two of these rows share
+  their low 12 address bits in any host process. The values
+  computed are unchanged (byte-identical to C at `--thread 1` and
+  `--thread 8`); each buffer carries at most 4 KiB of slack.
+  User CPU at `--thread 1`, before -> after: PF00069 n = 250 FFT-NS-2
+  CLI 8.8 -> 5.9 s (`pymafft` 6.2 -> 5.9 s), FFT-NS-i 1069 -> 674 s;
+  PF00067 n = 250 FFT-NS-i 215 -> 170 s; PF00106 n = 1000 FFT-NS-2
+  4.8 -> 4.5 s (`--thread 8` wall 3.3 s both).
+
 - **`c_parity_protein` carries both contraction-policy variants of its
   fixture.** The `protein_dp_branch_n200` reference was committed as a
   single `.expected` file captured from the in-tree Apple clang arm64
