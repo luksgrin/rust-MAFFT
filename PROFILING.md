@@ -343,8 +343,9 @@ of `mafft-rs` and 53 h of `pymafft` in all. Ratios of per-cell medians,
   trajectory (the spread of C's three replicates there is 25 – 30 % of
   the median in the typical cell and up to 145 %, against at most 2.5 %
   for `mafft-rs`), so the per-cell ratio ranges from 0.32 (16S) to 1.32
-  (PF00106 n = 500 FFT-NS-i). The thread-scaling gap itself is the
-  subject of #48.
+  (PF00106 n = 500 FFT-NS-i). The `mafft-rs` thread-scaling gap of
+  this run (#48) was closed on 2026-11-27 by the critical-path DP
+  described under "Multi-threading"; this grid predates it.
 * **Memory.** `mafft-rs` peaks at 0.1 – 0.6 of C's RSS on FFT-NS-2 and
   0.2 – 0.9 on the INS-i modes at `--thread 1`. It is above C's in six
   cells: `--parttree` at n = 5000 (PF00005 1.19 at both thread counts,
@@ -566,7 +567,70 @@ Inputs: the 36-sequence protein sample (median length 377), the
 120 × 1.4 kb CDS DNA fixture, and the five largest BAliBASE 3 sets by
 total residues (BB30003 142 seqs × 402, BB30013 86 × 672, BB30001
 116 × 435, BB30005 113 × 491, BB40049 62 × 778). Apple M4 (10 cores,
-32 GB), macOS 26.5, 2026-10-31; `mafft-rs` at `8bff99f` except the
+32 GB), macOS 26.5.
+
+**Grid of 2026-11-27.** C and `mafft-rs` rows measured the same day on an
+otherwise idle machine, 3 runs per cell, 96 cells per side; `mafft-rs`
+with the critical-path DP of the "Multi-threading" section (the C rows
+interleaved with a `mafft-rs` build of `1a2bae5` the same morning, whose
+rows were then replaced by the fixed build's, measured alone). Raw rows:
+`benchmarks/results/memory_2026-11-27.tsv`; every cell:
+`benchmarks/results/memory_2026-11-27_summary.md`.
+
+Ratio C / `mafft-rs` of the median peak RSS (> 1: `mafft-rs` uses less),
+median over the 7 inputs and the range:
+
+| Mode | `--thread 1` | `--thread 4` | `--thread 8` |
+|------|-------------:|-------------:|-------------:|
+| FFT-NS-2 | 3.22 (2.06–7.00) | 3.79 (1.60–8.91) | 4.43 (2.54–8.93) |
+| FFT-NS-i | 2.40 (1.85–4.31) | 1.61 (1.50–3.30) | 1.78 (1.45–2.25) |
+| L-INS-i | 1.57 (1.15–1.80) | 1.26 (1.14–1.47) | 1.38 (1.14–1.52) |
+| `--parttree` | 1.51 (1.10–4.12) | 1.38 (0.99–3.75) | 1.32 (0.93–3.60) |
+| FFT-NS-2 `--memsave` (2 inputs) | 2.38, 3.06 | 3.57, 5.97 | 4.91, 8.33 |
+| FFT-NS-i `--memsave` (2 inputs) | 1.87, 2.02 | 1.45, 2.92 | 1.49, 3.78 |
+
+Selected cells (MiB, median of 3):
+
+| Input | Mode | C `--thread 1` | rs `--thread 1` | C `--thread 8` | rs `--thread 8` |
+|-------|------|---------------:|----------------:|---------------:|----------------:|
+| BB40049 (62 × 778) | FFT-NS-2 | 479 | 68 | 1,146 | 128 |
+| BB40049 | FFT-NS-i | 477 | 111 | 1,829 | 814 |
+| BB40049 | L-INS-i | 823 | 540 | 3,964 | 2,873 |
+| BB30003 (142 × 402) | FFT-NS-i | 36 | 19 | 150 | 91 |
+| BB30003 | L-INS-i | 50 | 32 | 191 | 148 |
+| 120 × 1.4 kb CDS | FFT-NS-i | 43 | 23 | 253 | 115 |
+| 120 × 1.4 kb CDS | L-INS-i | 112 | 63 | 736 | 542 |
+
+What this shows:
+
+- `mafft-rs` peaks below C in 94 of the 96 cells. The two exceptions are
+  `--parttree` on the CDS fixture at `--thread 4` and `8` (23 – 24 vs
+  23 MiB).
+- Single-threaded it is lower on every input in every mode: FFT-NS-2
+  2.1 – 7.0×, FFT-NS-i 1.9 – 4.3×, L-INS-i 1.15 – 1.8×, `--parttree`
+  1.1 – 4.1×. The L-INS-i excess of the 2026-10-31 grid (1.4 – 2.3× C)
+  went with #77 (refinement-stage `impmtx` copy, full DP `h`, LH table
+  clone); the `--parttree` excess of that grid (CDS fixture 80 vs 23 MiB)
+  is gone as well (21 vs 23).
+- Both sides' peaks grow with the thread count since #56: from 1 to 8
+  threads C grows 2.4 – 5.8× in FFT-NS-2, 2.5 – 5.9× in FFT-NS-i and
+  3.8 – 6.6× in L-INS-i, `mafft-rs` 1.9 – 4.7×, 4.3 – 7.4× and
+  4.4 – 8.7×: every speculative branch evaluation in flight, and every
+  tile of a progressive merge, holds its own DP scratch. The speculation
+  cap keeps that in check where it matters: the 2026-11-26 build peaked
+  at 5,096 MiB on BB40049 L-INS-i at `--thread 8` with eight evaluations
+  in flight, above C's 3,964; with at most four it peaks at 2,873. No
+  other cell grew by more than 13 % or 3 MiB against that build.
+- `--parttree` does not depend on the thread count on either side
+  (C 1.00×, `mafft-rs` 1.08 – 1.19×); the tiled progressive DP gives it
+  wall-clock gains anyway (BB40049: 1.81 s at `--thread 1`, 0.52 s at
+  `8`; C 2.71 / 2.70).
+- `--memsave` lowers both sides and `mafft-rs` stays below C on both
+  inputs at every thread count, now that the FFT merges go through the
+  `Falign_udpari_long` port (#85).
+
+**Grid of 2026-10-31 (`8bff99f`, before #56, #77 and #85).** Kept for
+the record; the current figures are above. `mafft-rs` at `8bff99f` except the
 `--parttree` cells, re-measured after the PartTree port of #44 (before
 it, `mafft-rs --parttree` panicked on every input here above 50
 sequences). Raw rows: `benchmarks/results/memory_2026-10-31.tsv` and
@@ -607,8 +671,8 @@ What this shows:
   thread-local buffers, and the refinement then ran on one thread), and
   by 10–65 % in L-INS-i (the parallel all-pairs local alignment). These
   `--thread 4` / `8` figures predate #56, which parallelised the
-  refinement and the progressive merges; they have not been re-measured
-  since.
+  refinement and the progressive merges; the grid of 2026-11-27 above
+  is the re-measurement.
 - Single-threaded, `mafft-rs` is lower on protein FFT-NS-2 / FFT-NS-i
   (1.2–2.2×) and higher on the DNA fixture (54–56 vs 43 MiB).
 - Single-threaded L-INS-i, `mafft-rs` uses 1.4–2.3× C's memory on
@@ -703,8 +767,9 @@ median above on BB30005 L-INS-i and G-INS-i (21.29 / 20.82 s), so the
 "slower on L-INS-i / G-INS-i" statement above no longer holds for the
 current code; the medians below confirm it.
 
-**Idle-machine medians, current code.** Median wall-clock of 3 runs
-(seconds), including process start-up and, for C, the wrapper script;
+**Idle-machine medians at `91903cc` (before the critical-path DP
+below).** Median wall-clock of 3 runs (seconds), including process
+start-up and, for C, the wrapper script;
 `benchmarks/results/threads_2026-11-26.tsv`. The `mafft-rs` rows were
 measured on 2026-11-26 at `91903cc` on an otherwise idle Apple M4 with
 `--max-load 1.5` before each input × mode batch (1-minute load during the
@@ -739,19 +804,116 @@ older build, were dropped. Speedups are against each side's own
 | BB40049 | L-INS-i | 151.51 | 34.82 | 117.89 | 66.82 | 45.04 | 45.19 | 47.75 | 4.35× | 2.61× | 1.29 | 0.77 |
 | BB40049 | G-INS-i | 147.53 | 32.70 | 115.85 | 66.17 | 44.63 | 45.58 | 47.52 | 4.51× | 2.54× | 1.27 | 0.72 |
 
-Single-threaded, `mafft-rs` is faster than C on all 21 cells, by
-1.14 – 1.74×. At `--thread 8` its speedup over its own `--thread 1` is
-2.0 – 4.8× (C: 1.7 – 4.8×), and it stays ahead of C on 15 of the 21
-cells. The six where C `--thread 8` is faster are FFT-NS-i on the four
+In that run, single-threaded `mafft-rs` was faster than C on all 21
+cells, by 1.14 – 1.74×, and at `--thread 8` ahead of C on 15 of them.
+The six where C `--thread 8` was faster were FFT-NS-i on the four
 BAliBASE sets of 86 – 142 sequences (0.84 – 0.98) and L-INS-i / G-INS-i
-on BB40049 (0.77 / 0.72), where `mafft-rs` gains nothing beyond
-`--thread 4` (2.5 – 2.6×) while C reaches 4.4 – 4.5×. That residual is
-what #48 now tracks; the two sides' `--thread 8` runs are not
-like-for-like, since C's threaded refinement is a different, run-dependent
-trajectory each time (its 3-run spread is what the `C: distinct outputs`
-column of `threads.py --summarize` reports). `--thread 10` is no faster
-than `8` on either side. The `--thread 4` / `8` memory grid has not been
-re-measured since #56 (`memory_2026-10-31.tsv` is the pre-#56 grid).
+on BB40049 (0.77 / 0.72), where `mafft-rs` gained nothing beyond
+`--thread 4` (2.5 – 2.6×) while C reaches 4.4 – 4.5×. That residual was
+the last item of #48. The two sides' `--thread 8` runs are not
+like-for-like in any case, since C's threaded refinement is a different,
+run-dependent trajectory each time (its 3-run spread is what the
+`C: distinct outputs` column of `threads.py --summarize` reports).
+
+**Critical-path DP and adaptive speculation (2026-11-27).** A `samply`
+profile of BB40049 L-INS-i at `--thread 8` showed no serial floor: all
+eight workers ran at 94 % CPU for the whole run (350 s of CPU against
+118 s at `--thread 1`), two thirds of that work was speculative branch
+evaluations that an accepted branch then discarded (8 – 26 % of branches
+accepted per cycle, 264 of 1936 over the run, which never converges
+within 16 cycles), and 92 % of the branches are a single FFT segment, so
+segment parallelism had nothing to split (on BB30013 it gave 1.4×). The
+wall is then about N_acc × c + N_rej × c / threads with c the cost of
+one branch (61 ms at `--thread 1`: 34 ms DP recurrence, 16 ms
+`match_calc`), and the only lever left is c for the branch at the commit
+point, which every later decision waits for. Two changes
+(`crates/mafft-align/src/profile.rs`, `crates/mafft-core/src/refinement.rs`),
+neither of which touches a result:
+
+1. The profile DP (`profile_align_imp_view`) fills its matrix by tiles
+   (`dp_fill_tiled`): up to 16 × 16 of them, each at least 32 rows ×
+   96 columns and 2^14 cells; matrices under 2^18 cells are not tiled.
+   A tile depends on the tile above (its last row and the column gap
+   state) and on the tile to its left (its right-edge column and the row
+   gap state), so the tiles of an anti-diagonal are independent and go to
+   idle pool threads as a dependency-counted wavefront (no barrier per
+   diagonal). Inside a tile every cell runs the unchanged `j_loop` body
+   over the tile's column range with the operands the whole-row walk
+   hands it, so the traceback matrix, the last row and `lastverticalw`
+   are the same bits whatever the tile shape or thread count; only the
+   schedule changes. Only the evaluation at the commit point
+   (`mafft_align::dp_priority_scope` / `dp_inner_parallel`) and the
+   progressive merges, which have no speculation to compete with, use the
+   pool for their tiles; a speculative branch keeps its DP on its own
+   thread so the idle threads stay with the critical one.
+2. The number of speculative evaluations in flight follows the accept
+   rate (`speculation_cap`): with p̂ an exponentially weighted estimate of
+   the share of accepted branches (α = 1/8, carried across cycles, prior
+   1/4), at most ⌈1/p̂⌉ evaluations run ahead of the commit point, and at
+   most half the pool when a branch's DP is big enough for the tiles to
+   pay (≥ 2^23 cells, about 2900 columns; `dp_critical_path_pays`), never
+   fewer than two. Workers not speculating are not idle: they take the
+   critical branch's tiles.
+
+A unit test (`tiled_fill_matches_serial_fill`) checks the tiled fill
+against the serial one on 288 random shapes, and `MAFFT_RS_DP_TILE_CHECK=1`
+makes every tiled fill re-run serially on the calling thread and abort on
+the first differing cell, so a schedule bug shows up on the DP it corrupts
+whether or not the traceback passes through the cell. Verified with the
+check on: all 386 BAliBASE 3 sets in FFT-NS-i, L-INS-i, G-INS-i, E-INS-i
+and G-INS-i `--allowshift` at `--thread 1` (equal to the previous build)
+and `4` / `8` (equal to `--thread 1`), 1930 cells, and the same sets in
+FFT-NS-2 and `--parttree`, whose progressive merges now tile too, 772
+cells; without it, the 80 `mafft-rs --thread 8` cells of the scaling grid
+against their cached hashes, and 500 DNA clusters plus 500 orthogroups of
+the high-throughput workload through the Snakemake and loop paths, all
+equal to C.
+
+Median wall-clock of 3 runs (seconds), `mafft-rs` rows measured
+2026-11-27 on an otherwise idle Apple M4 with `--max-load 1.5` (1-minute
+load during the runs: median 2.2, range 1.4 – 8.8, the high values the
+machine's own 8- and 10-thread runs); the C rows are those of the table
+above (2026-11-02, same C build); `benchmarks/results/threads_2026-11-27.tsv`:
+
+| Input | Mode | C t1 | C t8 | rs t1 | rs t2 | rs t4 | rs t8 | rs t10 | C speedup t8 | rs speedup t8 | C t1 / rs t1 | C t8 / rs t8 |
+|-------|------|-----:|-----:|------:|------:|------:|------:|-------:|-------------:|--------------:|-------------:|-------------:|
+| sample (36 × 377) | FFT-NS-i | 0.54 | 0.26 | 0.37 | 0.21 | 0.15 | 0.14 | 0.14 | 2.05× | 2.61× | 1.46 | 1.86 |
+| sample | L-INS-i | 1.06 | 0.38 | 0.67 | 0.38 | 0.24 | 0.22 | 0.21 | 2.80× | 3.00× | 1.58 | 1.69 |
+| sample | G-INS-i | 1.07 | 0.38 | 0.79 | 0.42 | 0.25 | 0.20 | 0.19 | 2.84× | 3.95× | 1.35 | 1.88 |
+| 120 × 1.4 kb CDS | FFT-NS-i | 7.73 | 4.66 | 4.47 | 2.43 | 1.38 | 1.12 | 1.06 | 1.66× | 3.99× | 1.73 | 4.17 |
+| 120 × 1.4 kb CDS | L-INS-i | 84.03 | 17.85 | 47.95 | 25.74 | 13.93 | 9.90 | 8.89 | 4.71× | 4.84× | 1.75 | 1.80 |
+| 120 × 1.4 kb CDS | G-INS-i | 80.78 | 16.83 | 59.30 | 31.24 | 17.28 | 11.71 | 10.45 | 4.80× | 5.06× | 1.36 | 1.44 |
+| BB30001 (116 × 435) | FFT-NS-i | 7.23 | 1.62 | 6.25 | 3.45 | 2.01 | 1.75 | 1.68 | 4.46× | 3.57× | 1.16 | 0.93 |
+| BB30001 | L-INS-i | 21.60 | 5.25 | 12.34 | 6.92 | 3.99 | 3.18 | 3.06 | 4.11× | 3.88× | 1.75 | 1.65 |
+| BB30001 | G-INS-i | 20.13 | 4.58 | 13.40 | 7.47 | 4.34 | 3.40 | 3.21 | 4.40× | 3.94× | 1.50 | 1.34 |
+| BB30003 (142 × 401.5) | FFT-NS-i | 15.22 | 3.42 | 13.08 | 7.14 | 4.07 | 3.45 | 3.38 | 4.45× | 3.79× | 1.16 | 0.99 |
+| BB30003 | L-INS-i | 40.81 | 10.89 | 26.37 | 14.84 | 9.09 | 7.94 | 7.81 | 3.75× | 3.32× | 1.55 | 1.37 |
+| BB30003 | G-INS-i | 38.93 | 11.80 | 26.97 | 15.00 | 9.05 | 7.65 | 7.38 | 3.30× | 3.53× | 1.44 | 1.54 |
+| BB30005 (113 × 491) | FFT-NS-i | 8.54 | 2.33 | 6.95 | 3.85 | 2.32 | 2.09 | 2.02 | 3.67× | 3.32× | 1.23 | 1.11 |
+| BB30005 | L-INS-i | 20.61 | 6.38 | 13.24 | 7.51 | 4.48 | 3.71 | 3.57 | 3.23× | 3.57× | 1.56 | 1.72 |
+| BB30005 | G-INS-i | 20.32 | 6.05 | 14.91 | 8.30 | 4.83 | 3.75 | 3.53 | 3.36× | 3.98× | 1.36 | 1.61 |
+| BB30013 (86 × 671.5) | FFT-NS-i | 13.96 | 2.93 | 11.02 | 5.96 | 3.54 | 3.21 | 3.16 | 4.76× | 3.44× | 1.27 | 0.91 |
+| BB30013 | L-INS-i | 25.87 | 7.23 | 15.68 | 8.85 | 5.46 | 4.62 | 4.46 | 3.58× | 3.39× | 1.65 | 1.57 |
+| BB30013 | G-INS-i | 23.52 | 6.89 | 16.47 | 9.41 | 5.64 | 4.58 | 4.40 | 3.41× | 3.59× | 1.43 | 1.50 |
+| BB40049 (62 × 778) | FFT-NS-i | 79.10 | 40.49 | 61.06 | 31.54 | 16.79 | 12.35 | 11.31 | 1.95× | 4.94× | 1.30 | 3.28 |
+| BB40049 | L-INS-i | 151.51 | 34.82 | 118.06 | 67.17 | 37.48 | 28.47 | 27.16 | 4.35× | 4.15× | 1.28 | 1.22 |
+| BB40049 | G-INS-i | 147.53 | 32.70 | 115.79 | 66.20 | 37.09 | 28.06 | 26.67 | 4.51× | 4.13× | 1.27 | 1.17 |
+
+Against the 2026-11-26 run, the `--thread 1` medians are within 1 %
+everywhere (the serial path is unchanged). At `--thread 8` the wall fell
+37 – 41 % on BB40049 (L-INS-i 45.19 → 28.47 s, G-INS-i 45.58 → 28.06,
+FFT-NS-i 20.89 → 12.35), 51 % on the CDS fixture with FFT-NS-i (2.31 →
+1.12 s, where the progressive merges now run tiled as well), 5 – 12 % on
+FFT-NS-i of the 86 – 142-sequence sets, 4 – 14 % on their L-INS-i /
+G-INS-i, and under 5 % on the sample; at `--thread 4` it fell 17 – 25 %
+on BB40049 and 42 % on the CDS FFT-NS-i. `mafft-rs --thread 8` now gains
+2.6 – 5.1× over its own `--thread 1` (C: 1.7 – 4.8×) and is ahead of C on
+18 of the 21 cells; the three where C `--thread 8` is still faster are
+FFT-NS-i on BB30001, BB30003 and BB30013 (0.91 – 0.99, from 0.84 – 0.94).
+`--thread 10` is now up to 12 % faster than `8` on the large cells
+(BB40049, the CDS fixture), where it was slower before; C's `10` is no
+faster than its `8`. The memory grid at `--thread 1 / 4 / 8` was
+re-measured with this build on the same day; see "Memory footprint".
 
 ### From Python: `pymafft.align(threads=N)`
 

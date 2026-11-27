@@ -524,6 +524,51 @@ fn speculation_width() -> usize {
     if mafft_align::parallel_enabled() { rayon::current_num_threads() } else { 1 }
 }
 
+/// How many branch evaluations `async_cycle` keeps in flight, given the
+/// share of recently evaluated branches that were accepted.
+///
+/// Every accepted branch discards the evaluations running ahead of it, so
+/// a speculation `d` branches past the commit point is useful only if the
+/// `d - 1` branches before it are all rejected: with acceptance rate `p`
+/// that is `(1 - p)^(d - 1)`, below `1/e` beyond `d = 1/p`. Workers not
+/// speculating are not idle: the branch at the commit point, which every
+/// later decision waits for, spreads its DP over them
+/// (`mafft_align::dp_fill_tiled`). So at most half the pool speculates
+/// (never fewer than two evaluations in flight), and fewer when the
+/// accept rate says even that is wasted: the cap is `min(1/p, width/2)`.
+///
+/// Measured on L-INS-i of BAliBASE BB40049 (62 sequences, 1936 branches,
+/// accept rate 0.1-0.26 per cycle, 118 s at `--thread 1`), Apple M4: with
+/// the whole pool speculating `--thread 8` took 45.0 s, three times the
+/// work of `--thread 1`; cap 3-4 takes 30-31 s; `--thread 4` goes from
+/// 43.7 s (cap 4) to 41.3 s (cap 2). The low-accept cases (FFT-NS-i of
+/// BB30013, L-INS-i of the 120 x 1.4 kb CDS set) are unchanged by the
+/// half-pool cap.
+///
+/// The half-pool reservation pays only when the critical branch's DP is
+/// big enough for its tiles to use the helpers
+/// (`mafft_align::dp_critical_path_pays`, `large`); on small alignments
+/// the whole pool speculates, bounded by `1/p` alone.
+///
+/// `MAFFT_RS_SPEC_WIDTH=N` fixes the cap for experiments. Output never
+/// depends on the cap (see `async_cycle`).
+fn speculation_cap(accept_ewma: f64, width: usize, large: bool) -> usize {
+    use std::sync::OnceLock;
+    static OVERRIDE: OnceLock<Option<usize>> = OnceLock::new();
+    let fixed = *OVERRIDE.get_or_init(|| {
+        std::env::var("MAFFT_RS_SPEC_WIDTH").ok().and_then(|s| s.trim().parse::<usize>().ok())
+    });
+    if let Some(w) = fixed {
+        return w.clamp(1, width);
+    }
+    if width <= 2 {
+        return width;
+    }
+    let most = if large { (width / 2).max(2) } else { width };
+    let useful = if accept_ewma > 0.0 { (1.0 / accept_ewma).ceil() as usize } else { most };
+    useful.clamp(2, most)
+}
+
 /// One refinement cycle's decision state.
 ///
 /// `commit` is the body of the sequential walk for one branch. It must be
@@ -548,7 +593,15 @@ struct Committer<'c> {
     /// (`converged` / `oscillation`), mid-cycle, as
     /// `TreeDependentIteration` does.
     stop: Option<&'static str>,
+    /// Exponentially weighted share of recently evaluated branches that
+    /// were accepted, carried from cycle to cycle. Drives the speculation
+    /// cap of `async_cycle`; a scheduling hint only, never a decision input.
+    accept_ewma: f64,
 }
+
+/// Weight of the newest branch in `Committer::accept_ewma` (the estimate
+/// tracks roughly the last eight evaluated branches).
+const ACCEPT_EWMA_ALPHA: f64 = 1.0 / 8.0;
 
 struct CommitOut {
     /// The accepted re-alignment, which becomes the current alignment.
@@ -648,6 +701,10 @@ impl Committer<'_> {
             }
         }
 
+        // Scheduling statistic only (see `accept_ewma`).
+        self.accept_ewma +=
+            ACCEPT_EWMA_ALPHA * (if accepted.is_some() { 1.0 } else { 0.0 } - self.accept_ewma);
+
         if !params.per_cycle_convergence && self.converged_count >= self.convergence_target {
             self.stop = Some("converged");
             return CommitOut { new_seqs: accepted, stop: true };
@@ -723,7 +780,7 @@ fn async_cycle(
     cm: &mut Committer<'_>,
     width: usize,
 ) {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     enum Slot {
@@ -747,6 +804,11 @@ fn async_cycle(
         /// Number of accepted branches so far in this cycle; an evaluation
         /// is current iff it was started at the present value.
         version: AtomicU64,
+        /// `State::commit`, readable without the mutex: the branch whose
+        /// evaluation is at the commit point is the cycle's critical path
+        /// and may recruit idle workers for its DP
+        /// (`mafft_align::dp_priority_scope`).
+        commit_idx: AtomicUsize,
         width: usize,
         window: usize,
     }
@@ -754,7 +816,7 @@ fn async_cycle(
 
     /// Commit everything committable, then hand out new work.
     fn advance(g: &mut State<'_, '_>, sh_cycle: &[CycleEntry<'_>], version: &AtomicU64,
-               width: usize, window: usize) -> Vec<Job> {
+               commit_idx: &AtomicUsize, width: usize, window: usize) -> Vec<Job> {
         let n = sh_cycle.len();
         while !g.done && g.commit < n && matches!(g.slots[g.commit], Slot::Done(_)) {
             let Slot::Done(eval) = std::mem::replace(&mut g.slots[g.commit], Slot::Empty) else {
@@ -779,12 +841,18 @@ fn async_cycle(
         if g.commit >= n {
             g.done = true;
         }
+        commit_idx.store(g.commit, Ordering::Release);
         let mut jobs = Vec::new();
         if !g.done {
             let v = version.load(Ordering::Acquire);
             let end = (g.commit + window).min(n);
+            // A balanced branch's DP has up to width x width cells.
+            let w = g.snapshot.first().map_or(0, |s| s.len());
+            let cap = speculation_cap(
+                g.cm.accept_ewma, width, mafft_align::dp_critical_path_pays(w.saturating_mul(w)),
+            );
             for j in g.commit..end {
-                if g.in_flight >= width {
+                if g.in_flight >= cap {
                     break;
                 }
                 if matches!(g.slots[j], Slot::Empty) {
@@ -812,6 +880,9 @@ fn async_cycle(
                 Some(None)
             } else {
                 let _dp_cancel = mafft_align::dp_cancel_scope(&sh.version, v);
+                // Branch k is the critical path while `commit_idx == k`;
+                // then, and only then, its DP spreads over idle workers.
+                let _dp_priority = mafft_align::dp_priority_scope(&sh.commit_idx, k);
                 evaluate_branch_cancellable(
                     sh.ctx, &snapshot, sh.iter, step_idx, side, group1, group2, skipped, Some(&stale),
                 )
@@ -829,7 +900,7 @@ fn async_cycle(
                     g.slots[k] = Slot::Done(eval);
                 }
             }
-            advance(&mut g, sh.cycle, &sh.version, sh.width, sh.window)
+            advance(&mut g, sh.cycle, &sh.version, &sh.commit_idx, sh.width, sh.window)
         };
         // Spawn the highest index first so that this thread, which pops its
         // own deque LIFO, continues with the lowest one.
@@ -852,6 +923,7 @@ fn async_cycle(
             done: n == 0,
         }),
         version: AtomicU64::new(0),
+        commit_idx: AtomicUsize::new(0),
         width,
         // Lookahead past the commit point. Replaying the n = 250 trajectory
         // with its measured branch costs, 2 x width already keeps the
@@ -861,7 +933,7 @@ fn async_cycle(
     rayon::scope(|s| {
         let jobs = {
             let mut g = sh.state.lock().unwrap();
-            advance(&mut g, sh.cycle, &sh.version, sh.width, sh.window)
+            advance(&mut g, sh.cycle, &sh.version, &sh.commit_idx, sh.width, sh.window)
         };
         let sh = &sh;
         for job in jobs.into_iter().rev() {
@@ -926,6 +998,8 @@ fn iterative_refine_inner(
     let width = speculation_width();
 
     let mut converged_count = 0usize;
+    // Prior for the first cycle's speculation cap: one accept in four.
+    let mut accept_ewma = 0.25f64;
     let convergence_target = nseq * 2;
 
     let nsteps = topology.steps.len();
@@ -984,6 +1058,7 @@ fn iterative_refine_inner(
             branches: 0,
             accepted: 0,
             stop: None,
+            accept_ewma,
         };
         if width > 1 && cycle.len() > 1 {
             async_cycle(&ctx, &cycle, iter, &mut alignment.sequences, &mut cm, width);
@@ -1011,6 +1086,7 @@ fn iterative_refine_inner(
         counters.branches += cm.branches;
         counters.accepted += cm.accepted;
         converged_count = cm.converged_count;
+        accept_ewma = cm.accept_ewma;
         athread_finish = cm.athread_finish;
         let any_change = cm.any_change;
         let last_accepted_tscore = cm.last_accepted_tscore;
@@ -2754,6 +2830,26 @@ mod tests {
     /// `tscore > mscore - cut/100*mscore`, so with cut=0 only strictly
     /// improving moves are accepted. Reverting to a nonzero cut would
     /// accept non-improving moves.
+    #[test]
+    fn speculation_cap_follows_accept_rate_and_pool() {
+        // One or two threads: every thread speculates.
+        assert_eq!(speculation_cap(0.5, 1, true), 1);
+        assert_eq!(speculation_cap(0.05, 2, true), 2);
+        // Large DP: at most half the pool speculates, fewer when branches
+        // are accepted often, never fewer than two.
+        assert_eq!(speculation_cap(0.05, 8, true), 4);
+        assert_eq!(speculation_cap(0.25, 8, true), 4);
+        assert_eq!(speculation_cap(0.5, 8, true), 2);
+        assert_eq!(speculation_cap(0.9, 8, true), 2);
+        assert_eq!(speculation_cap(0.1, 4, true), 2);
+        assert_eq!(speculation_cap(0.0, 8, true), 4);
+        // Small DP: the whole pool speculates, bounded by 1/p alone.
+        assert_eq!(speculation_cap(0.05, 8, false), 8);
+        assert_eq!(speculation_cap(0.2, 8, false), 5);
+        assert_eq!(speculation_cap(0.5, 8, false), 2);
+        assert_eq!(speculation_cap(0.1, 4, false), 4);
+    }
+
     #[test]
     fn default_cut_is_zero() {
         let params = RefinementParams::default();

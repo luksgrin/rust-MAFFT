@@ -18,6 +18,7 @@ mod constrained_align;
 mod msalign;
 
 pub use dp::{Alignment, AlignOp, GapModel, matrix_i32_to_f64};
+pub use profile::dp_critical_path_pays;
 pub use global::global_align;
 pub use local::{local_align, release_pairwise_scratch, LocalAlignment};
 pub use genaffine::{genaffine_local_align, GenAffineGapModel};
@@ -91,6 +92,89 @@ impl Drop for DpCancelGuard<'_> {
     fn drop(&mut self) {
         DP_CANCEL.with(|c| c.set(self.prev));
     }
+}
+
+thread_local! {
+    /// Set by `dp_priority_scope`: `(commit, branch)`. The DP on this
+    /// thread spreads its tiles over idle pool threads only while
+    /// `*commit == branch`, i.e. while its result is the next one the
+    /// refinement walk will decide on.
+    static DP_PRIORITY: std::cell::Cell<Option<(*const std::sync::atomic::AtomicUsize, usize)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Mark the evaluation on this thread as speculative branch `branch` of a
+/// refinement cycle whose commit point is `*commit`.
+///
+/// While the guard lives, [`dp_inner_parallel`] is true only when
+/// `*commit == branch`: the branch at the commit point is on the critical
+/// path of the cycle and may recruit idle pool threads for its DP; a
+/// branch further ahead is speculative and runs on its own thread, so the
+/// idle threads stay available to the critical one. `commit` must only
+/// ever increase. The decision affects scheduling only, never a result.
+pub fn dp_priority_scope(
+    commit: &std::sync::atomic::AtomicUsize,
+    branch: usize,
+) -> DpPriorityGuard<'_> {
+    let prev = DP_PRIORITY.with(|c| c.replace(Some((commit as *const _, branch))));
+    DpPriorityGuard { prev, _commit: std::marker::PhantomData }
+}
+
+/// Restores the previous priority token when dropped.
+pub struct DpPriorityGuard<'a> {
+    prev: Option<(*const std::sync::atomic::AtomicUsize, usize)>,
+    _commit: std::marker::PhantomData<&'a std::sync::atomic::AtomicUsize>,
+}
+
+impl Drop for DpPriorityGuard<'_> {
+    fn drop(&mut self) {
+        DP_PRIORITY.with(|c| c.set(self.prev));
+    }
+}
+
+/// May the DP running on this thread hand work to idle pool threads?
+///
+/// True on a multi-thread pool when no [`dp_priority_scope`] is installed
+/// (the progressive stage, segment refinement) or when the installed one
+/// says this evaluation is at the commit point. Cheap enough to poll at
+/// block boundaries, so an evaluation that becomes critical part-way
+/// through picks up the idle threads from its next block.
+#[inline]
+pub fn dp_inner_parallel() -> bool {
+    parallel_enabled()
+        && DP_PRIORITY.with(|c| match c.get() {
+            // SAFETY: only `dp_priority_scope` installs the pointer, and its
+            // guard borrows the atomic for as long as the pointer is installed.
+            Some((p, k)) => unsafe { &*p }.load(std::sync::atomic::Ordering::Acquire) == k,
+            None => true,
+        })
+}
+
+/// This thread's cancellation token, for work this thread hands to other
+/// pool threads (the tiles of `profile::dp_fill_tiled`), which have no
+/// token of their own. Valid while this thread's `DpCancelGuard` lives,
+/// i.e. for the duration of the DP call that spawned the work.
+#[derive(Clone, Copy)]
+pub(crate) struct DpCancelToken(Option<(*const std::sync::atomic::AtomicU64, u64)>);
+// SAFETY: the pointee is an `AtomicU64` that outlives every holder of the
+// token (see `dp_cancel_token`); atomics are safe to read from any thread.
+unsafe impl Send for DpCancelToken {}
+unsafe impl Sync for DpCancelToken {}
+
+impl DpCancelToken {
+    #[inline]
+    pub(crate) fn cancelled(self) -> bool {
+        match self.0 {
+            // SAFETY: see `dp_cancelled`.
+            Some((p, v)) => unsafe { &*p }.load(std::sync::atomic::Ordering::Relaxed) != v,
+            None => false,
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn dp_cancel_token() -> DpCancelToken {
+    DpCancelToken(DP_CANCEL.with(|c| c.get()))
 }
 
 #[inline]

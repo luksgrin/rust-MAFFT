@@ -174,8 +174,12 @@ branches, which are scored in parallel and applied in the `threads=1`
 order so the output does not depend on N. The refinement and merge
 stages became parallel in
 [#56](https://github.com/luksgrin/rust-MAFFT/pull/56), after the
-measurements below; timings for the current code are pending
-([#48](https://github.com/luksgrin/rust-MAFFT/issues/48)).
+measurements below, and the branch at the refinement's commit point now
+spreads its DP over the idle workers
+([#48](https://github.com/luksgrin/rust-MAFFT/issues/48)); the CLI's
+current timings are in
+[PROFILING.md](../../PROFILING.md#multi-threading-determinism-and-speedup-issue-24),
+and `threads=N` runs the same code.
 
 ```python
 result = pymafft.align(records, strategy="linsi", threads=4)
