@@ -178,7 +178,7 @@ measurements below, and the branch at the refinement's commit point now
 spreads its DP over the idle workers
 ([#48](https://github.com/luksgrin/rust-MAFFT/issues/48)); the CLI's
 current timings are in
-[PROFILING.md](../../PROFILING.md#multi-threading-determinism-and-speedup-issue-24),
+[PROFILING.md](https://github.com/luksgrin/rust-MAFFT/blob/main/PROFILING.md#multi-threading-determinism-and-speedup-issue-24),
 and `threads=N` runs the same code.
 
 ```python
