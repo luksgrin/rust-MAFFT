@@ -451,13 +451,89 @@ interrupted run resumes; `--molecule`, `--impl`, `--workers` and
 `--limit N` select subsets. On macOS wrap the run in `caffeinate -i`
 (idle sleep pauses the clock and the work alike, but stretches the run).
 
-Cost: C spends about 2 s of CPU per DNA cluster and 6 s per orthogroup
-(`--auto` → L-INS-i), so one `snake-c` cell at one worker is ≈ 1.6 h
-(DNA) and ≈ 2.5 h (protein); the default grid (17 cells per molecule)
-is on the order of a day per replicate. `--molecule dna --reps 1` is
-the primary result; add protein and replicates as time allows.
+Cost, as measured below: one replicate of the default grid (17 cells per
+molecule) takes 14.4 h on the Apple M4; the slowest cells, `snake-c` at
+one worker, take 61 min (DNA) and 88 min (protein). `--molecule dna
+--reps 1` is the primary result; add protein and replicates as time
+allows.
 
-`benchmarks/results/htworkload_smoke_2026-10-31.tsv` is the pipeline
+**Results (Apple M4, main `91903cc`).** `benchmarks/results/htworkload_darwin-arm64_2026-11-26.tsv`:
+both molecules, all seven implementations, 1 / 4 / 8 workers, 3
+replicates, 102 runs, 2026-11-24 21:27 → 2026-11-26 16:37 on an otherwise
+idle Apple M4 (10 cores, 32 GB), macOS 26.5, in-tree C MAFFT 7.526,
+`mafft-rs` and `pymafft` at `91903cc`. Every run produced all of its
+alignments and every one was identical to C's (2695/2695 and 1500/1500
+in all 102 runs; byte-identical files for the CLI paths, same names and
+gapped rows for `pymafft`). The table is `summarize` output: medians over
+the 3 replicates, whose spread (range over median) is 0.6 % in the median
+cell and at most 6.2 % (protein `snake-c` at 8 workers). Cells ran back
+to back, so the 1-minute load recorded at the start of a cell (median
+3.6, range 1.2 – 10.7) is the tail of the previous cell's 4 or 8 workers,
+not outside load; the replicate agreement is the evidence it did not
+matter.
+
+| Molecule | Clusters | Impl | Workers | Wall s | CPU s | Max RSS MB | Tree RSS MB | ms / alignment | Speed-up vs snake-c (same workers) | vs snake-c w1 | Identical to C |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| dna | 2695 | snake-c | 1 | 3674.1 | 7163.6 | 369 | 509 | 1363.3 | 1.00 | 1.00 | 2695/2695 |
+| dna | 2695 | snake-c | 4 | 1020.4 | 4929.4 | 369 | 450 | 378.6 | 1.00 | 3.60 | 2695/2695 |
+| dna | 2695 | snake-c | 8 | 666.5 | 5603.4 | 371 | 672 | 247.3 | 1.00 | 5.51 | 2695/2695 |
+| dna | 2695 | snake-rust | 1 | 2185.5 | 4168.4 | 231 | 285 | 810.9 | 1.68 | 1.68 | 2695/2695 |
+| dna | 2695 | snake-rust | 4 | 594.2 | 2732.0 | 213 | 370 | 220.5 | 1.72 | 6.18 | 2695/2695 |
+| dna | 2695 | snake-rust | 8 | 392.4 | 3116.5 | 188 | 472 | 145.6 | 1.70 | 9.36 | 2695/2695 |
+| dna | 2695 | loop-c | 1 | 3418.8 | 3443.1 | 369 | 228 | 1268.6 | 1.07 | 1.07 | 2695/2695 |
+| dna | 2695 | loop-c | 4 | 967.5 | 3694.8 | 369 | 336 | 359.0 | 1.05 | 3.80 | 2695/2695 |
+| dna | 2695 | loop-c | 8 | 678.9 | 4909.4 | 370 | 479 | 251.9 | 0.98 | 5.41 | 2695/2695 |
+| dna | 2695 | loop-rust | 1 | 1974.0 | 1972.7 | 150 | 160 | 732.5 | 1.86 | 1.86 | 2695/2695 |
+| dna | 2695 | loop-rust | 4 | 546.5 | 2041.3 | 150 | 252 | 202.8 | 1.87 | 6.72 | 2695/2695 |
+| dna | 2695 | loop-rust | 8 | 382.3 | 2723.4 | 150 | 339 | 141.9 | 1.74 | 9.61 | 2695/2695 |
+| dna | 2695 | py-serial | 1 | 1978.2 | 1978.3 | 397 | 398 | 734.0 | 1.86 | 1.86 | 2695/2695 |
+| dna | 2695 | py-process | 4 | 555.0 | 2074.6 | 360 | 1106 | 205.9 | 1.84 | 6.62 | 2695/2695 |
+| dna | 2695 | py-process | 8 | 382.4 | 2720.7 | 324 | 1764 | 141.9 | 1.74 | 9.61 | 2695/2695 |
+| dna | 2695 | py-thread | 4 | 546.0 | 2038.1 | 553 | 554 | 202.6 | 1.87 | 6.73 | 2695/2695 |
+| dna | 2695 | py-thread | 8 | 381.5 | 2715.4 | 782 | 783 | 141.6 | 1.75 | 9.63 | 2695/2695 |
+| protein | 1500 | snake-c | 1 | 5269.0 | 10318.8 | 577 | 463 | 3512.6 | 1.00 | 1.00 | 1500/1500 |
+| protein | 1500 | snake-c | 4 | 1404.2 | 6912.8 | 516 | 737 | 936.1 | 1.00 | 3.75 | 1500/1500 |
+| protein | 1500 | snake-c | 8 | 922.1 | 7918.4 | 516 | 1079 | 614.7 | 1.00 | 5.71 | 1500/1500 |
+| protein | 1500 | snake-rust | 1 | 3519.8 | 6807.9 | 228 | 347 | 2346.5 | 1.50 | 1.50 | 1500/1500 |
+| protein | 1500 | snake-rust | 4 | 921.7 | 4465.2 | 228 | 573 | 614.4 | 1.52 | 5.72 | 1500/1500 |
+| protein | 1500 | snake-rust | 8 | 620.6 | 5301.4 | 228 | 798 | 413.7 | 1.49 | 8.49 | 1500/1500 |
+| protein | 1500 | loop-c | 1 | 5044.2 | 5059.0 | 516 | 342 | 3362.8 | 1.04 | 1.04 | 1500/1500 |
+| protein | 1500 | loop-c | 4 | 1372.3 | 5380.3 | 516 | 585 | 914.9 | 1.02 | 3.84 | 1500/1500 |
+| protein | 1500 | loop-c | 8 | 916.0 | 6979.2 | 517 | 970 | 610.7 | 1.01 | 5.75 | 1500/1500 |
+| protein | 1500 | loop-rust | 1 | 3375.8 | 3375.1 | 227 | 260 | 2250.5 | 1.56 | 1.56 | 1500/1500 |
+| protein | 1500 | loop-rust | 4 | 906.2 | 3513.6 | 228 | 428 | 604.2 | 1.55 | 5.81 | 1500/1500 |
+| protein | 1500 | loop-rust | 8 | 611.5 | 4611.7 | 227 | 610 | 407.7 | 1.51 | 8.62 | 1500/1500 |
+| protein | 1500 | py-serial | 1 | 3412.7 | 3412.4 | 337 | 338 | 2275.1 | 1.54 | 1.54 | 1500/1500 |
+| protein | 1500 | py-process | 4 | 915.4 | 3551.7 | 316 | 921 | 610.3 | 1.53 | 5.76 | 1500/1500 |
+| protein | 1500 | py-process | 8 | 616.7 | 4654.8 | 358 | 1516 | 411.2 | 1.50 | 8.54 | 1500/1500 |
+| protein | 1500 | py-thread | 4 | 916.5 | 3556.0 | 537 | 535 | 611.0 | 1.53 | 5.75 | 1500/1500 |
+| protein | 1500 | py-thread | 8 | 624.0 | 4710.2 | 766 | 767 | 416.0 | 1.48 | 8.44 | 1500/1500 |
+
+* **The quantity of interest**, `snake-c` / `py-process` at the same
+  worker count, is 1.84 / 1.74 (DNA, 4 / 8 workers) and 1.53 / 1.50
+  (protein); against `snake-c` at one worker, `py-process` at 8 workers
+  is 9.6× (DNA, 61 min → 6.4 min) and 8.5× (protein, 88 min → 10.3 min).
+* **Engine vs call overhead.** `snake-rust` / `snake-c` is 1.68 – 1.72
+  (DNA) and 1.49 – 1.52 (protein): swapping the binary under Snakemake
+  gives nearly all of the gain. `loop-*` beats `snake-*` by only 4 – 11 %
+  at one worker, so the Snakemake scheduler costs little here, and the
+  in-process `py-*` paths equal `loop-rust` within 2 %: at 0.7 – 2.3 s
+  per alignment the spawn and FASTA round-trip are not where the time
+  goes. `--auto` picks L-INS-i for almost every cluster, so this is the
+  L-INS-i speed ratio of the two engines on small inputs (1.7 – 1.9× on
+  DNA, 1.5 – 1.6× on protein).
+* **Workers.** 8 workers give 5.2× over `py-serial` (DNA) and 5.5×
+  (protein), with 37 % more CPU time than one worker; `snake-c` scales
+  the same way (5.5× / 5.7×). The M4's ten cores are four performance
+  and six efficiency cores. `py-thread` equals `py-process` at every
+  worker count, so the bindings release the GIL as intended.
+* **Memory.** Largest single process: C 369 – 577 MB, `mafft-rs` CLI
+  150 – 231 MB, `pymafft` in one interpreter 337 – 397 MB. Peak summed
+  RSS of the process tree at 8 workers: `py-process` 1.5 – 1.8 GB (eight
+  interpreters) against 0.8 GB for `py-thread`, 0.3 – 0.6 GB for
+  `loop-rust` and 0.5 – 1.1 GB for `snake-c`.
+
+`benchmarks/results/htworkload_smoke_2026-10-31.tsv` was the pipeline
 check: 50 of the smaller clusters per molecule, every path at 1 and 4
 workers, one replicate, under `nice -n 19` on a machine busy with other
 jobs, so its times only show that the measurements are wired up. Every
@@ -564,13 +640,17 @@ to its `--thread 1` output, which is C's `--thread 1` output.
   4, 8`, 2 runs each (`threads_bb_largest_determinism_2026-10-31.tsv`);
 - all 76 sets of BAliBASE 3 RV11, FFT-NS-i, L-INS-i and G-INS-i at
   `--thread 1, 4, 8`, 3 runs each, 2052 runs
-  (`threads_rv11_determinism_2026-10-31.tsv`).
+  (`threads_rv11_determinism_2026-10-31.tsv`);
+- the seven timed inputs of `threads_2026-11-26.tsv` (sample36, the CDS
+  fixture and the five largest BAliBASE sets; FFT-NS-i, L-INS-i, G-INS-i;
+  `--thread 1, 2, 4, 8, 10`; 3 runs): 315 `mafft-rs` runs at `91903cc`,
+  one output per input × mode, equal to C `--thread 1`.
 
 C at `--thread N ≥ 2` produced outputs different from its own
-`--thread 1` in 25 of the 28 timed cells, usually 3 distinct outputs in
-3 runs (exceptions: the CDS fixture at `--thread 2` and `4`, and the
-sample with G-INS-i at `--thread 2`, where all 3 runs equalled
-`--thread 1`).
+`--thread 1` in 81 of the 84 (input, mode, N ≥ 2) cells of that file,
+3 distinct outputs in 3 runs in 76 of them; the exceptions, where all 3
+runs equalled `--thread 1`, are the CDS fixture with FFT-NS-i at
+`--thread 2` and `4` and the sample with G-INS-i at `--thread 2`.
 
 **Speedup before #56.** Median wall-clock of 3 runs (seconds), including process
 start-up and, for C, the wrapper script, with `mafft-rs` built before
@@ -621,9 +701,57 @@ single-thread changes on the refinement path. Single runs from #56
 These single runs put single-threaded `mafft-rs` below C's `--thread 1`
 median above on BB30005 L-INS-i and G-INS-i (21.29 / 20.82 s), so the
 "slower on L-INS-i / G-INS-i" statement above no longer holds for the
-current code, but the two figures come from different runs and load.
-Idle-machine 3-run medians, and the `--thread 4` / `8` memory figures
-for the current code, are pending (#48).
+current code; the medians below confirm it.
+
+**Idle-machine medians, current code.** Median wall-clock of 3 runs
+(seconds), including process start-up and, for C, the wrapper script;
+`benchmarks/results/threads_2026-11-26.tsv`. The `mafft-rs` rows were
+measured on 2026-11-26 at `91903cc` on an otherwise idle Apple M4 with
+`--max-load 1.5` before each input × mode batch (1-minute load during the
+runs: median 2.3, range 1.3 – 11.0, the high values being the machine's
+own 8- and 10-thread runs). The C rows are the C half of a C-vs-`mafft-rs`
+interleaved run of 2026-11-02 on the same machine and C build (load
+median 2.8, range 1.8 – 12.3); the `mafft-rs` rows of that run, at an
+older build, were dropped. Speedups are against each side's own
+`--thread 1`.
+
+| Input | Mode | C t1 | C t8 | rs t1 | rs t2 | rs t4 | rs t8 | rs t10 | C speedup t8 | rs speedup t8 | C t1 / rs t1 | C t8 / rs t8 |
+|-------|------|-----:|-----:|------:|------:|------:|------:|-------:|-------------:|--------------:|-------------:|-------------:|
+| sample (36 × 377) | FFT-NS-i | 0.54 | 0.26 | 0.38 | 0.22 | 0.15 | 0.15 | 0.14 | 2.05× | 2.53× | 1.42 | 1.76 |
+| sample | L-INS-i | 1.06 | 0.38 | 0.69 | 0.39 | 0.25 | 0.23 | 0.22 | 2.80× | 2.99× | 1.54 | 1.64 |
+| sample | G-INS-i | 1.07 | 0.38 | 0.79 | 0.43 | 0.25 | 0.21 | 0.20 | 2.84× | 3.81× | 1.35 | 1.82 |
+| 120 × 1.4 kb CDS | FFT-NS-i | 7.73 | 4.66 | 4.65 | 3.08 | 2.38 | 2.31 | 2.39 | 1.66× | 2.02× | 1.66 | 2.02 |
+| 120 × 1.4 kb CDS | L-INS-i | 84.03 | 17.85 | 48.21 | 25.81 | 14.06 | 10.28 | 9.41 | 4.71× | 4.69× | 1.74 | 1.74 |
+| 120 × 1.4 kb CDS | G-INS-i | 80.78 | 16.83 | 59.56 | 31.56 | 17.51 | 12.40 | 11.36 | 4.80× | 4.80× | 1.36 | 1.36 |
+| BB30001 (116 × 435) | FFT-NS-i | 7.23 | 1.62 | 6.32 | 3.55 | 2.10 | 1.84 | 1.79 | 4.46× | 3.43× | 1.14 | 0.88 |
+| BB30001 | L-INS-i | 21.60 | 5.25 | 12.49 | 6.96 | 3.97 | 3.23 | 3.10 | 4.11× | 3.87× | 1.73 | 1.63 |
+| BB30001 | G-INS-i | 20.13 | 4.58 | 13.80 | 7.55 | 4.37 | 3.47 | 3.33 | 4.40× | 3.98× | 1.46 | 1.32 |
+| BB30003 (142 × 401.5) | FFT-NS-i | 15.22 | 3.42 | 13.36 | 7.42 | 4.20 | 3.62 | 3.51 | 4.45× | 3.69× | 1.14 | 0.94 |
+| BB30003 | L-INS-i | 40.81 | 10.89 | 26.50 | 15.09 | 9.21 | 8.25 | 8.22 | 3.75× | 3.21× | 1.54 | 1.32 |
+| BB30003 | G-INS-i | 38.93 | 11.80 | 26.75 | 15.27 | 9.17 | 7.99 | 7.78 | 3.30× | 3.35× | 1.46 | 1.48 |
+| BB30005 (113 × 491) | FFT-NS-i | 8.54 | 2.33 | 7.02 | 4.00 | 2.45 | 2.38 | 2.38 | 3.67× | 2.95× | 1.22 | 0.98 |
+| BB30005 | L-INS-i | 20.61 | 6.38 | 13.19 | 7.57 | 4.54 | 4.12 | 4.05 | 3.23× | 3.20× | 1.56 | 1.55 |
+| BB30005 | G-INS-i | 20.32 | 6.05 | 15.08 | 8.37 | 4.87 | 4.11 | 3.99 | 3.36× | 3.67× | 1.35 | 1.47 |
+| BB30013 (86 × 671.5) | FFT-NS-i | 13.96 | 2.93 | 11.11 | 6.27 | 3.76 | 3.48 | 3.47 | 4.76× | 3.20× | 1.26 | 0.84 |
+| BB30013 | L-INS-i | 25.87 | 7.23 | 15.71 | 8.85 | 5.40 | 4.98 | 5.07 | 3.58× | 3.15× | 1.65 | 1.45 |
+| BB30013 | G-INS-i | 23.52 | 6.89 | 16.37 | 9.33 | 5.76 | 5.32 | 5.39 | 3.41× | 3.08× | 1.44 | 1.29 |
+| BB40049 (62 × 778) | FFT-NS-i | 79.10 | 40.49 | 62.27 | 35.05 | 22.38 | 20.89 | 20.99 | 1.95× | 2.98× | 1.27 | 1.94 |
+| BB40049 | L-INS-i | 151.51 | 34.82 | 117.89 | 66.82 | 45.04 | 45.19 | 47.75 | 4.35× | 2.61× | 1.29 | 0.77 |
+| BB40049 | G-INS-i | 147.53 | 32.70 | 115.85 | 66.17 | 44.63 | 45.58 | 47.52 | 4.51× | 2.54× | 1.27 | 0.72 |
+
+Single-threaded, `mafft-rs` is faster than C on all 21 cells, by
+1.14 – 1.74×. At `--thread 8` its speedup over its own `--thread 1` is
+2.0 – 4.8× (C: 1.7 – 4.8×), and it stays ahead of C on 15 of the 21
+cells. The six where C `--thread 8` is faster are FFT-NS-i on the four
+BAliBASE sets of 86 – 142 sequences (0.84 – 0.98) and L-INS-i / G-INS-i
+on BB40049 (0.77 / 0.72), where `mafft-rs` gains nothing beyond
+`--thread 4` (2.5 – 2.6×) while C reaches 4.4 – 4.5×. That residual is
+what #48 now tracks; the two sides' `--thread 8` runs are not
+like-for-like, since C's threaded refinement is a different, run-dependent
+trajectory each time (its 3-run spread is what the `C: distinct outputs`
+column of `threads.py --summarize` reports). `--thread 10` is no faster
+than `8` on either side. The `--thread 4` / `8` memory grid has not been
+re-measured since #56 (`memory_2026-10-31.tsv` is the pre-#56 grid).
 
 ### From Python: `pymafft.align(threads=N)`
 
