@@ -294,13 +294,77 @@ sweep resumes where it stopped. Run it on each platform against that
 platform's own C build; `scaling.py compare a.tsv b.tsv` then lists the
 cells where the two C builds disagree with each other.
 
-`benchmarks/results/scaling_smoke_2026-10-31.tsv` is the pipeline check
-(n = 100, `--thread 1`, one replicate, every set): FFT-NS-2 is
-byte-identical between C, `mafft-rs` and pymafft on all 11 sets.
-In that TSV `mafft-rs --parttree` panics on all 11 (`index out of
+**Results (Apple M4, main `91903cc`).** The full grid, 3 replicates per
+(cell, implementation), is `benchmarks/results/scaling_darwin-arm64_2026-11-24.tsv`;
+`scaling_darwin-arm64_2026-11-24_summary.md` next to it has the
+`summarize` table for every cell. Apple M4 (10 cores, 32 GB), macOS 26.5,
+FP policy `fma`, in-tree C MAFFT 7.526. The `mafft-rs` and `pymafft` runs
+were made 2026-11-20 to 2026-11-24 at `91903cc`; the C runs are the
+cached runs of the earlier sweeps on the same machine and C build
+(2026-11-02 to 2026-11-19), so C and Rust were not interleaved within one
+session. 1-minute load at run start: median 2.0 for C, 2.1 for `mafft-rs`
+(ranges 1.5 – 8.0 and 1.0 – 8.9; a `--thread 8` cell raises the load seen
+by the next cell). 260 of the 290 cells ran; 30 were skipped by the
+3600 s budget (FFT-NS-i and L-INS-i cells at n = 500 and 1000: the
+longer Pfam families, and 16S L-INS-i at n = 1000). 81 h of C runs, 54 h
+of `mafft-rs` and 53 h of `pymafft` in all. Ratios of per-cell medians,
+`mafft-rs` over C (< 1: Rust faster, or smaller):
+
+| Mode | `--thread` | Cells | Rust / C wall-clock, median [min – max] | pymafft / C | Rust / C peak RSS, median [min – max] | Rust = C |
+|---|---:|---:|---|---|---|---|
+| FFT-NS-2 | 1 | 46 | 0.64 [0.45 – 0.69] | 0.63 [0.45 – 0.69] | 0.21 [0.10 – 0.60] | 46/46 |
+| FFT-NS-2 | 8 | 24 | 0.59 [0.48 – 0.70] | 0.59 [0.48 – 0.69] | 0.18 [0.10 – 0.46] | 23/24 |
+| FFT-NS-i | 1 | 36 | 0.78 [0.58 – 0.84] | 0.77 [0.58 – 0.84] | 0.37 [0.19 – 0.85] | 36/36 |
+| FFT-NS-i | 8 | 19 | 0.92 [0.32 – 1.32] | 0.92 [0.31 – 1.31] | 0.72 [0.29 – 1.01] | 0/19 |
+| L-INS-i | 1 | 30 | 0.61 [0.49 – 0.71] | 0.61 [0.49 – 0.71] | 0.61 [0.39 – 0.92] | 30/30 |
+| L-INS-i | 8 | 13 | 0.55 [0.40 – 0.68] | 0.55 [0.40 – 0.68] | 0.81 [0.61 – 1.12] | 0/13 |
+| G-INS-i | 1 | 22 | 0.68 [0.57 – 0.76] | 0.68 [0.57 – 0.76] | 0.59 [0.43 – 0.90] | 22/22 |
+| `--parttree` | 1 | 46 | 0.72 [0.59 – 0.81] | – | 0.37 [0.12 – 1.19] | 46/46 |
+| `--parttree` | 8 | 24 | 0.65 [0.60 – 0.74] | – | 0.54 [0.27 – 1.19] | 24/24 |
+
+* **Identity.** At `--thread 1` every `mafft-rs` and `pymafft` output
+  equals C's on all 180 cells. The 33 `--thread 8` cells marked `no` are
+  the cells where C's own `--thread 8` output differs from C `--thread 1`
+  (threaded refinement in C is nondeterministic: 3 different outputs in 3
+  runs in 32 of them; in the 33rd, PF00069 n = 5000 FFT-NS-2, C gave the
+  same 34 221-column alignment three times against 34 441 columns at
+  `--thread 1`). In all 33, `mafft-rs --thread 8` equals
+  `mafft-rs --thread 1`, and C `--thread 1` wherever that cell ran (23 of
+  the 33; the other 10 are n = 1000 cells whose `--thread 1` cell was
+  skipped by the budget). `mafft-rs` and `pymafft` gave one output per
+  cell across replicates and thread counts, everywhere.
+* **Wall-clock.** Single-threaded, `mafft-rs` takes 0.45 – 0.84 of C's
+  time on every cell; the ratio falls with n for FFT-NS-2 (0.62 at
+  n = 100, 0.47 at n = 5000) and rises for `--parttree` (0.67 → 0.80).
+  `pymafft.align()` is within 3 % of the CLI on every cell (median
+  ratio 1.00). At `--thread 8`, FFT-NS-2 and `--parttree` keep the
+  single-thread ratios. FFT-NS-i and L-INS-i at `--thread 8` are not
+  like-for-like: C's threaded refinement follows a different, run-dependent
+  trajectory (the spread of C's three replicates there is 25 – 30 % of
+  the median in the typical cell and up to 145 %, against at most 2.5 %
+  for `mafft-rs`), so the per-cell ratio ranges from 0.32 (16S) to 1.32
+  (PF00106 n = 500 FFT-NS-i). The thread-scaling gap itself is the
+  subject of #48.
+* **Memory.** `mafft-rs` peaks at 0.1 – 0.6 of C's RSS on FFT-NS-2 and
+  0.2 – 0.9 on the INS-i modes at `--thread 1`. It is above C's in six
+  cells: `--parttree` at n = 5000 (PF00005 1.19 at both thread counts,
+  PF00069 1.08 and 1.10), PF00005 n = 500 L-INS-i `--thread 8` (1.12) and
+  PF00400 n = 500 FFT-NS-i `--thread 8` (1.01).
+* **Largest cells.** The longest C runs were FFT-NS-i at n = 1000
+  (PF07690 4571 s vs 3702 s for `mafft-rs`; PF00106 4270 vs 3296;
+  PF00001 3843 vs 3032). PF00069 n = 5000 FFT-NS-2: C 137 s and
+  11.8 GB at `--thread 8`, `mafft-rs` 70 s and 4.1 GB.
+
+The Linux x86-64 leg of #22 has not been run (no suitable machine);
+`scaling.py` caches per host, so a run there produces a second TSV
+without touching this one.
+
+`benchmarks/results/scaling_smoke_2026-10-31.tsv` was the pipeline check
+before the sweep (n = 100, `--thread 1`, one replicate, every set). In
+that TSV `mafft-rs --parttree` panics on all 11 sets (`index out of
 bounds` in `mafft_core::progressive::merge_step_cached`, from n ≈ 50
-sequences up); the PartTree port of #44 fixed that, and the smoke file
-has not been re-run since.
+sequences up); the PartTree port of #44 fixed that, and the full sweep
+above supersedes the smoke file.
 
 ## High-throughput workload: thousands of small alignments (issue #23)
 

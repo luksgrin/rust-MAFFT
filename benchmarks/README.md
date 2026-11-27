@@ -116,6 +116,8 @@ python3 benchmarks/threads.py --summarize benchmarks/results/threads_<date>.tsv
 | `results/memory_2026-10-31.tsv` | full `memory.py` grid, 522 runs, `mafft-rs` at `8bff99f` |
 | `results/memory_parttree_rust_2026-10-31.tsv` | `mafft-rs --parttree` re-measured after the PartTree port (#44); at `8bff99f` it panicked above 50 sequences |
 | `results/memory_2026-10-31_summary.md` | per-cell medians of the two files above |
+| `results/scaling_darwin-arm64_2026-11-24.tsv` | full `scaling.py` grid (issue #22): 11 sets × n = 100 … 5000 × 5 modes × `--thread 1` / `8`, 290 cells, 3 replicates, C / `mafft-rs` / `pymafft`; `mafft-rs` and `pymafft` at `91903cc` (2026-11-20 → 24), C rows cached from the 2026-11-02 → 19 sweeps of the same C build; load at run start median 2.0 |
+| `results/scaling_darwin-arm64_2026-11-24_summary.md` | `scaling.py summarize` of the file above: per-cell medians, a per-mode digest and the provenance notes |
 | `results/threads_2026-10-31.tsv` | `threads.py` timing + determinism: sample36 (FFT-NS-i, L-INS-i, G-INS-i), 120 × 1.4 kb CDS (FFT-NS-i), BB30005 (all three); load 2.2–5.9 |
 | `results/threads_bb_largest_determinism_2026-10-31.tsv` | `mafft-rs` only, five largest BAliBASE sets, FFT-NS-i / L-INS-i, `--thread 1 4 8`, 2 runs (timings not meaningful: ran alongside `memory.py`) |
 | `results/threads_rv11_determinism_2026-10-31.tsv` | `mafft-rs` only, all 76 RV11 sets, FFT-NS-i / L-INS-i / G-INS-i, `--thread 1 4 8`, 3 runs (timings not meaningful) |
