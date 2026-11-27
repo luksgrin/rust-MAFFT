@@ -539,15 +539,34 @@ Benchmark snapshot vs C MAFFT 7.526 (macOS arm64, alternating-run medians):
 
 The table above predates the flattened profile-DP / `L__align11` scratch buffers that landed with the issue #1 integration. Measured against the previous `mafft-rs` build (medians of 5 interleaved runs, Apple M4): `mtb_cds_120x1400 --retree 2 --maxiterate 2` 4.99 s → 4.62 s (1.08×), 36-seq sample `--localpair --maxiterate 1000` 0.85 s → 0.77 s (1.11×), `--maxiterate 1000` 0.54 s → 0.48 s (1.14×), default 0.066 s → 0.055 s (1.21×) — with output bytes unchanged. `MAFFT_RS_REFINE_STATS=1` prints one line per refinement call (`cycles`, `visited`, `accepted`, exit reason) so a speed comparison against C's `dvtditr` log can first confirm both sides did the same work.
 
-### Memory and `--thread N` (2026-10-31)
+### Scaling sweep and high-throughput workload (2026-11)
+
+Two larger runs at `91903cc` on the same Apple M4, raw TSVs in
+[`benchmarks/results/`](benchmarks/README.md), tables and provenance in
+[PROFILING.md](PROFILING.md#scaling-benchmark-n--100-to-5000-issue-22):
+
+- **n = 100 to 5000** (ten Pfam families and RefSeq 16S; FFT-NS-2,
+  FFT-NS-i, L-INS-i, G-INS-i, `--parttree`; 3 replicates): single-threaded,
+  `mafft-rs` takes 0.45 – 0.84 of C's wall-clock on every one of the 180
+  cells (median 0.64 FFT-NS-2, 0.78 FFT-NS-i, 0.61 L-INS-i, 0.68 G-INS-i,
+  0.72 `--parttree`) and 0.1 – 0.9 of its peak RSS, and its output equals
+  C's on all of them; `pymafft.align()` is within 3 % of the CLI.
+- **Thousands of small alignments** (2695 *S. pneumoniae* gene clusters,
+  1500 OrthoDB orthogroups, `--auto`, as a pangenome pipeline runs them):
+  replacing a Snakemake rule around C MAFFT by `pymafft.align()` in a
+  process pool of the same size takes 1.7 – 1.8× less wall-clock on DNA
+  and 1.5× on protein; at 8 workers it is 9.6× / 8.5× faster than the
+  one-worker C rule. Every one of the 4195 alignments equals C's.
+
+### Memory and `--thread N`
 
 Apple M4 (10 cores, 32 GB), macOS 26.5, in-tree C build vs `mafft-rs`,
 both with `--thread N`; drivers and raw TSVs in [`benchmarks/`](benchmarks/README.md),
 method and every cell in [PROFILING.md](PROFILING.md#memory-footprint-issue-26).
 
-Peak RSS, ratio C / `mafft-rs` (> 1: `mafft-rs` uses less), median over 7
-inputs (36-seq sample, 120 × 1.4 kb CDS, the five largest BAliBASE 3 sets),
-3 runs per cell:
+Peak RSS (2026-10-31, before #56), ratio C / `mafft-rs` (> 1: `mafft-rs`
+uses less), median over 7 inputs (36-seq sample, 120 × 1.4 kb CDS, the
+five largest BAliBASE 3 sets), 3 runs per cell:
 
 | Mode | `--thread 1` | `--thread 4` | `--thread 8` |
 |------|-------------:|-------------:|-------------:|
@@ -563,33 +582,42 @@ memory on L-INS-i (BB40049, 62 × 778: 1,787 vs 906 MiB) and more on
 `Falign_udpari_long` and the 30,000-column switch, so `--memsave` lowered
 only C's figure.
 
-Wall clock before #56, median of 3 interleaved runs (s), 1-minute load 2.2–5.9 (median 3.4):
+Wall clock, current code (`91903cc`), median of 3 runs (s). `mafft-rs`
+measured 2026-11-26 on an otherwise idle machine; the C rows are from the
+2026-11-02 run of the same C build (`benchmarks/results/threads_2026-11-26.tsv`):
 
-| Input | Mode | C t1 | C t8 | `mafft-rs` t1 | `mafft-rs` t8 |
-|-------|------|-----:|-----:|--------------:|--------------:|
-| BB30005 (113 × 491) | FFT-NS-i | 8.77 | 3.02 | 7.47 | 7.40 |
-| BB30005 | L-INS-i | 21.29 | 6.20 | 28.04 | 24.40 |
-| BB30005 | G-INS-i | 20.82 | 5.43 | 33.27 | 26.09 |
-| 120 × 1.4 kb CDS | FFT-NS-i | 7.93 | 5.01 | 5.04 | 4.93 |
+| Input | Mode | C t1 | C t8 | `mafft-rs` t1 | `mafft-rs` t8 | C / rs at t1 | C / rs at t8 |
+|-------|------|-----:|-----:|--------------:|--------------:|-------------:|-------------:|
+| BB30005 (113 × 491) | FFT-NS-i | 8.54 | 2.33 | 7.02 | 2.38 | 1.22 | 0.98 |
+| BB30005 | L-INS-i | 20.61 | 6.38 | 13.19 | 4.12 | 1.56 | 1.55 |
+| BB30005 | G-INS-i | 20.32 | 6.05 | 15.08 | 4.11 | 1.35 | 1.47 |
+| BB30003 (142 × 402) | FFT-NS-i | 15.22 | 3.42 | 13.36 | 3.62 | 1.14 | 0.94 |
+| BB40049 (62 × 778) | L-INS-i | 151.51 | 34.82 | 117.89 | 45.19 | 1.29 | 0.77 |
+| 120 × 1.4 kb CDS | FFT-NS-i | 7.73 | 4.66 | 4.65 | 2.31 | 1.66 | 2.02 |
+| 120 × 1.4 kb CDS | L-INS-i | 84.03 | 17.85 | 48.21 | 10.28 | 1.74 | 1.74 |
+| 120 × 1.4 kb CDS | G-INS-i | 80.78 | 16.83 | 59.56 | 12.40 | 1.36 | 1.36 |
 
 `mafft-rs` output is byte-identical at every thread count (and equal to C
 `--thread 1`) on every run, including all 76 BAliBASE RV11 sets at
-`--thread 1/4/8`; C's `--thread N ≥ 2` output varied between runs.
+`--thread 1/4/8` and the 315 runs of the table's source file; C's
+`--thread N ≥ 2` output varied between runs.
 
-The memory ratios and the wall-clock table above were measured before
-[#56](https://github.com/luksgrin/rust-MAFFT/pull/56), when `mafft-rs`
-ran the iterative refinement on one thread, so its `--thread 8` gained at
-most 1.5× there and the `--thread 8` memory column compares 8 C workers
-with a mostly single-threaded `mafft-rs`; `--thread 1` is the
-like-for-like column. Since #56, `--thread N` also runs the progressive
-merges of independent subtrees, the FFT-NS-i refinement segments and
-speculatively scored refinement branches on the pool, with output still
-byte-identical at every thread count. Single runs on the same machine
-(not medians; load about 2–6): BB30005 FFT-NS-i 7.5 → 2.8 s, L-INS-i
-15.0 → 5.7 s, G-INS-i 17.4 → 5.6 s, and the CDS fixture under L-INS-i
-50.3 → 12.2 s at `--thread 1` → `8`. Idle-machine medians, and the
-memory figures after #56, are pending (tracked in
-[#48](https://github.com/luksgrin/rust-MAFFT/issues/48)). From Python,
+Over the 21 input × mode cells of that run (seven inputs, FFT-NS-i /
+L-INS-i / G-INS-i), single-threaded `mafft-rs` is 1.14 – 1.74× faster than
+C. At `--thread 8` it gains 2.0 – 4.8× over its own `--thread 1` and is
+ahead of C on 15 of the 21 cells; C is ahead on FFT-NS-i for the
+86 – 142-sequence BAliBASE sets and on BB40049 L-INS-i / G-INS-i, where
+`mafft-rs` gains nothing beyond `--thread 4` (about 2.5×) while C reaches
+4.4 – 4.5× ([#48](https://github.com/luksgrin/rust-MAFFT/issues/48)).
+C's `--thread 8` runs are not like-for-like with `mafft-rs`'s: its
+threaded refinement follows a different trajectory each run. Since
+[#56](https://github.com/luksgrin/rust-MAFFT/pull/56), `--thread N` runs
+the progressive merges of independent subtrees, the FFT-NS-i refinement
+segments and speculatively scored refinement branches on the pool, with
+output still byte-identical at every thread count; the memory table above
+predates that PR, so its `--thread 4` / `8` columns compare 8 C workers
+with a mostly single-threaded `mafft-rs`, and the post-#56 memory grid has
+not been re-measured. From Python,
 `pymafft.align(threads=N)` uses the same code path and its results equal
 the CLI at `--thread 1`; two concurrent calls in two Python threads take
 as long as one (GIL released); details in
