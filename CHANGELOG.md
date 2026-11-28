@@ -653,9 +653,8 @@ public surfaces stable from 0.1.0 anyway.
   2.39 → 0.86 [3.54] (medians of the `memory.py` grid). Peak RSS at
   `--thread 8` on BB40049 L-INS-i 5,096 → 2,873 MiB [3,964], since the
   cap halves the number of full-size DPs alive at once; no other cell of
-  the re-measured grid (`benchmarks/results/memory_2026-11-27.tsv`) grew
-  by more than 13 % or 3 MiB, and `mafft-rs` is below C in 94 of its 96
-  cells.
+  the re-measured `memory.py` grid grew by more than 13 % or 3 MiB, and
+  `mafft-rs` is below C in 94 of its 96 cells.
 - **Progressive merges no longer spend O(k x W) per merge on row and
   profile bookkeeping, and that work runs on the pool.** After each
   merge `merge_step_cached` rewrote the k rows of both groups column by

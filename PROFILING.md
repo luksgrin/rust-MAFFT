@@ -569,68 +569,31 @@ total residues (BB30003 142 seqs × 402, BB30013 86 × 672, BB30001
 116 × 435, BB30005 113 × 491, BB40049 62 × 778). Apple M4 (10 cores,
 32 GB), macOS 26.5.
 
-**Grid of 2026-11-27.** C and `mafft-rs` rows measured the same day on an
-otherwise idle machine, 3 runs per cell, 96 cells per side; `mafft-rs`
-with the critical-path DP of the "Multi-threading" section (the C rows
-interleaved with a `mafft-rs` build of `1a2bae5` the same morning, whose
-rows were then replaced by the fixed build's, measured alone). Raw rows:
-`benchmarks/results/memory_2026-11-27.tsv`; every cell:
-`benchmarks/results/memory_2026-11-27_summary.md`.
+**Re-measurement of 2026-11-27 (not committed).** The same grid was run
+again with the critical-path DP of the "Multi-threading" section, C and
+`mafft-rs` the same day on an otherwise idle machine, 3 runs per cell,
+96 cells per side; the raw rows stay internal, the committed grid is the
+one of 2026-10-31 below. What it showed: `mafft-rs` peaks below C in 94
+of the 96 cells, the two exceptions `--parttree` on the CDS fixture at
+`--thread 4` and `8` (23 – 24 vs 23 MiB). Single-threaded it is lower on
+every input in every mode (FFT-NS-2 2.1 – 7.0×, FFT-NS-i 1.9 – 4.3×,
+L-INS-i 1.15 – 1.8×, `--parttree` 1.1 – 4.1×): the L-INS-i excess of the
+2026-10-31 grid went with #77 (BB40049 L-INS-i `--thread 1` 540 vs C's
+823 MiB) and the `--parttree` excess of the CDS fixture with #85 (21 vs
+23 MiB). Both sides' peaks now grow with the thread count, since #56
+every speculative branch evaluation in flight, and every tile of a
+progressive merge, holds its own DP scratch (1 → 8 threads: C 2.4 – 6.6×,
+`mafft-rs` 1.9 – 8.7×). The speculation cap keeps that in check where it
+matters: the 2026-11-26 build peaked at 5,096 MiB on BB40049 L-INS-i at
+`--thread 8` with eight evaluations in flight, above C's 3,964; with at
+most four it peaks at 2,873, and no other cell grew by more than 13 % or
+3 MiB against that build. `--parttree` does not depend on the thread
+count on either side, and `--memsave` lowers both sides with `mafft-rs`
+below C at every thread count now that the FFT merges go through the
+`Falign_udpari_long` port (#85).
 
-Ratio C / `mafft-rs` of the median peak RSS (> 1: `mafft-rs` uses less),
-median over the 7 inputs and the range:
-
-| Mode | `--thread 1` | `--thread 4` | `--thread 8` |
-|------|-------------:|-------------:|-------------:|
-| FFT-NS-2 | 3.22 (2.06–7.00) | 3.79 (1.60–8.91) | 4.43 (2.54–8.93) |
-| FFT-NS-i | 2.40 (1.85–4.31) | 1.61 (1.50–3.30) | 1.78 (1.45–2.25) |
-| L-INS-i | 1.57 (1.15–1.80) | 1.26 (1.14–1.47) | 1.38 (1.14–1.52) |
-| `--parttree` | 1.51 (1.10–4.12) | 1.38 (0.99–3.75) | 1.32 (0.93–3.60) |
-| FFT-NS-2 `--memsave` (2 inputs) | 2.38, 3.06 | 3.57, 5.97 | 4.91, 8.33 |
-| FFT-NS-i `--memsave` (2 inputs) | 1.87, 2.02 | 1.45, 2.92 | 1.49, 3.78 |
-
-Selected cells (MiB, median of 3):
-
-| Input | Mode | C `--thread 1` | rs `--thread 1` | C `--thread 8` | rs `--thread 8` |
-|-------|------|---------------:|----------------:|---------------:|----------------:|
-| BB40049 (62 × 778) | FFT-NS-2 | 479 | 68 | 1,146 | 128 |
-| BB40049 | FFT-NS-i | 477 | 111 | 1,829 | 814 |
-| BB40049 | L-INS-i | 823 | 540 | 3,964 | 2,873 |
-| BB30003 (142 × 402) | FFT-NS-i | 36 | 19 | 150 | 91 |
-| BB30003 | L-INS-i | 50 | 32 | 191 | 148 |
-| 120 × 1.4 kb CDS | FFT-NS-i | 43 | 23 | 253 | 115 |
-| 120 × 1.4 kb CDS | L-INS-i | 112 | 63 | 736 | 542 |
-
-What this shows:
-
-- `mafft-rs` peaks below C in 94 of the 96 cells. The two exceptions are
-  `--parttree` on the CDS fixture at `--thread 4` and `8` (23 – 24 vs
-  23 MiB).
-- Single-threaded it is lower on every input in every mode: FFT-NS-2
-  2.1 – 7.0×, FFT-NS-i 1.9 – 4.3×, L-INS-i 1.15 – 1.8×, `--parttree`
-  1.1 – 4.1×. The L-INS-i excess of the 2026-10-31 grid (1.4 – 2.3× C)
-  went with #77 (refinement-stage `impmtx` copy, full DP `h`, LH table
-  clone); the `--parttree` excess of that grid (CDS fixture 80 vs 23 MiB)
-  is gone as well (21 vs 23).
-- Both sides' peaks grow with the thread count since #56: from 1 to 8
-  threads C grows 2.4 – 5.8× in FFT-NS-2, 2.5 – 5.9× in FFT-NS-i and
-  3.8 – 6.6× in L-INS-i, `mafft-rs` 1.9 – 4.7×, 4.3 – 7.4× and
-  4.4 – 8.7×: every speculative branch evaluation in flight, and every
-  tile of a progressive merge, holds its own DP scratch. The speculation
-  cap keeps that in check where it matters: the 2026-11-26 build peaked
-  at 5,096 MiB on BB40049 L-INS-i at `--thread 8` with eight evaluations
-  in flight, above C's 3,964; with at most four it peaks at 2,873. No
-  other cell grew by more than 13 % or 3 MiB against that build.
-- `--parttree` does not depend on the thread count on either side
-  (C 1.00×, `mafft-rs` 1.08 – 1.19×); the tiled progressive DP gives it
-  wall-clock gains anyway (BB40049: 1.81 s at `--thread 1`, 0.52 s at
-  `8`; C 2.71 / 2.70).
-- `--memsave` lowers both sides and `mafft-rs` stays below C on both
-  inputs at every thread count, now that the FFT merges go through the
-  `Falign_udpari_long` port (#85).
-
-**Grid of 2026-10-31 (`8bff99f`, before #56, #77 and #85).** Kept for
-the record; the current figures are above. `mafft-rs` at `8bff99f` except the
+**Grid of 2026-10-31 (`8bff99f`, before #56, #77 and #85).** The
+committed grid. `mafft-rs` at `8bff99f` except the
 `--parttree` cells, re-measured after the PartTree port of #44 (before
 it, `mafft-rs --parttree` panicked on every input here above 50
 sequences). Raw rows: `benchmarks/results/memory_2026-10-31.tsv` and
@@ -671,8 +634,8 @@ What this shows:
   thread-local buffers, and the refinement then ran on one thread), and
   by 10–65 % in L-INS-i (the parallel all-pairs local alignment). These
   `--thread 4` / `8` figures predate #56, which parallelised the
-  refinement and the progressive merges; the grid of 2026-11-27 above
-  is the re-measurement.
+  refinement and the progressive merges; the re-measurement of
+  2026-11-27 above has the current figures.
 - Single-threaded, `mafft-rs` is lower on protein FFT-NS-2 / FFT-NS-i
   (1.2–2.2×) and higher on the DNA fixture (54–56 vs 43 MiB).
 - Single-threaded L-INS-i, `mafft-rs` uses 1.4–2.3× C's memory on

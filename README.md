@@ -564,27 +564,27 @@ Apple M4 (10 cores, 32 GB), macOS 26.5, in-tree C build vs `mafft-rs`,
 both with `--thread N`; drivers and raw TSVs in [`benchmarks/`](benchmarks/README.md),
 method and every cell in [PROFILING.md](PROFILING.md#memory-footprint-issue-26).
 
-Peak RSS (2026-11-27), ratio C / `mafft-rs` (> 1: `mafft-rs` uses
-less), median over 7 inputs (36-seq sample, 120 × 1.4 kb CDS, the five
-largest BAliBASE 3 sets), 3 runs per cell
-(`benchmarks/results/memory_2026-11-27.tsv`):
+Peak RSS (2026-10-31, before #56), ratio C / `mafft-rs` (> 1: `mafft-rs`
+uses less), median over 7 inputs (36-seq sample, 120 × 1.4 kb CDS, the
+five largest BAliBASE 3 sets), 3 runs per cell:
 
 | Mode | `--thread 1` | `--thread 4` | `--thread 8` |
 |------|-------------:|-------------:|-------------:|
-| FFT-NS-2 | 3.22 | 3.79 | 4.43 |
-| FFT-NS-i (`--maxiterate 1000`) | 2.40 | 1.61 | 1.78 |
-| L-INS-i | 1.57 | 1.26 | 1.38 |
-| `--parttree` | 1.51 | 1.38 | 1.32 |
+| FFT-NS-2 | 2.04 | 4.16 | 4.78 |
+| FFT-NS-i (`--maxiterate 1000`) | 1.59 | 3.37 | 4.74 |
+| L-INS-i | 0.51 | 1.25 | 2.34 |
+| `--parttree` | 0.57 | 0.56 | 0.55 |
 
-`mafft-rs` peaks below C in 94 of the 96 cells (the two exceptions:
-`--parttree` on the CDS fixture at `--thread 4` / `8`, 23 – 24 vs 23 MiB).
-Both sides' peaks grow with the thread count, since every refinement
-branch evaluated in parallel holds its own DP scratch; the largest cell,
-BB40049 (62 × 778) L-INS-i at `--thread 8`, is 2,873 MiB against C's
-3,964. The 2026-10-31 grid, where single-threaded `mafft-rs` used
-1.4 – 2.3× C's memory on L-INS-i, predates the fixes of
+That grid predates the fixes of
 [#77](https://github.com/luksgrin/rust-MAFFT/pull/77) and
-[#85](https://github.com/luksgrin/rust-MAFFT/pull/85).
+[#85](https://github.com/luksgrin/rust-MAFFT/pull/85) and the parallel
+refinement of #56. Re-measured with the current code on 2026-11-27 (raw
+rows not committed), `mafft-rs` peaks below C in 94 of the 96 cells, in
+every mode single-threaded (L-INS-i 1.15 – 1.8× lower, BB40049 62 × 778:
+540 vs 823 MiB); both sides now grow with the thread count, since every
+refinement branch evaluated in parallel holds its own DP scratch, and
+the largest cell, BB40049 L-INS-i at `--thread 8`, is 2,873 MiB against
+C's 3,964.
 
 Wall clock, current code, median of 3 runs (s). `mafft-rs` measured
 2026-11-27 on an otherwise idle machine; the C rows are from the
