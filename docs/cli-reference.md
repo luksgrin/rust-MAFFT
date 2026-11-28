@@ -4,7 +4,7 @@ Auto-generated from `mafft-rs --help` on every docs build. The
 authoritative source for every flag is the CLI itself — run
 `mafft-rs --help` locally for the version you have installed.
 
-**Generated for**: `mafft-rs 0.2.0`
+**Generated for**: `mafft-rs 0.3.0`
 
 ## Usage
 

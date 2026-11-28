@@ -137,7 +137,7 @@ shape, an unreadable file, an invalid keyword value — stay plain
 
 ## Progress
 
-The CLI reports what it is doing on stderr (`mafft-rs v0.2.0`,
+The CLI reports what it is doing on stderr (`mafft-rs v0.3.0`,
 `36 sequences (aa), strategy: FFT-NS-2`, `Alignment: 717 columns`).
 pymafft is quiet by default; pass a callable to receive exactly those lines,
 one call per line without the trailing newline:
@@ -169,17 +169,13 @@ result is byte-identical at every thread count and equal to
 `--thread N ≥ 2` output varies between runs. The parallel stages are the
 distance matrices, the all-pairs pairwise alignments of
 `linsi` / `ginsi` / `einsi`, the progressive merges of independent
-guide-tree subtrees, the FFT-NS-i refinement segments, and refinement
-branches, which are scored in parallel and applied in the `threads=1`
-order so the output does not depend on N. The refinement and merge
-stages became parallel in
-[#56](https://github.com/luksgrin/rust-MAFFT/pull/56), after the
-measurements below, and the branch at the refinement's commit point now
-spreads its DP over the idle workers
-([#48](https://github.com/luksgrin/rust-MAFFT/issues/48)); the CLI's
-current timings are in
-[PROFILING.md](https://github.com/luksgrin/rust-MAFFT/blob/main/PROFILING.md#multi-threading-determinism-and-speedup-issue-24),
-and `threads=N` runs the same code.
+guide-tree subtrees (each merge's profile DP filled as a wavefront of
+tiles), the FFT-NS-i refinement segments, and the refinement branches,
+which are evaluated speculatively in parallel and applied in the
+`threads=1` order while the branch at the commit point fills its DP on
+the idle workers, so the output does not depend on N. `threads=N` runs
+the same code as the CLI, whose measured timings are below and in
+[PROFILING.md](https://github.com/luksgrin/rust-MAFFT/blob/main/PROFILING.md#multi-threading-determinism-and-speedup-issue-24).
 
 ```python
 result = pymafft.align(records, strategy="linsi", threads=4)
@@ -202,27 +198,40 @@ with ThreadPoolExecutor(max_workers=8) as pool:
     ))
 ```
 
-Measured with `benchmarks/pymafft_threads.py` before #56, when the
-iterative refinement ran on one thread (Apple M4, 10 cores,
-2026-11-01, `maxiterate=1000`, median of 3 runs, other jobs sharing the
-machine; see [`benchmarks/README.md`](https://github.com/luksgrin/rust-MAFFT/blob/main/benchmarks/README.md)
-and `PROFILING.md`). Every one of the 90 results equalled the
-`mafft-rs --thread 1` CLI output.
+Wall-clock of the CLI path that `threads=N` runs (Apple M4, 10 cores,
+otherwise idle, `--maxiterate 1000`, median of 3 runs, 2026-11-27;
+`benchmarks/threads.py`, raw rows in
+[`benchmarks/results/threads_2026-11-27.tsv`](https://github.com/luksgrin/rust-MAFFT/blob/main/benchmarks/results/threads_2026-11-27.tsv),
+every cell in `PROFILING.md`). C MAFFT at 1 and 8 threads on the same
+machine for scale; its 8-thread output differs from its own `--thread 1`
+output, so those cells are not like for like.
 
-| Input | Strategy | `threads=1` | `threads=8` | Speedup |
-|-------|----------|------------:|------------:|--------:|
-| 36 × 377 (protein sample) | `fftnsi` | 0.44 s | 0.39 s | 1.13× |
-| 36 × 377 | `linsi` | 0.99 s | 0.75 s | 1.32× |
-| 36 × 377 | `ginsi` | 1.29 s | 0.84 s | 1.53× |
-| 113 × 491 (BAliBASE BB30005) | `fftnsi` | 7.67 s | 7.30 s | 1.05× |
-| 113 × 491 | `linsi` | 27.38 s | 23.57 s | 1.16× |
-| 113 × 491 | `ginsi` | 33.15 s | 25.63 s | 1.29× |
+| Input | Strategy | `threads=1` | `threads=8` | Speedup | C `--thread 1` | C `--thread 8` |
+|-------|----------|------------:|------------:|--------:|---------------:|---------------:|
+| 36 × 377 (protein sample) | `fftnsi` | 0.37 s | 0.14 s | 2.6× | 0.54 s | 0.26 s |
+| 36 × 377 | `linsi` | 0.67 s | 0.22 s | 3.0× | 1.06 s | 0.38 s |
+| 36 × 377 | `ginsi` | 0.79 s | 0.20 s | 4.0× | 1.07 s | 0.38 s |
+| 113 × 491 (BAliBASE BB30005) | `fftnsi` | 6.95 s | 2.09 s | 3.3× | 8.54 s | 2.33 s |
+| 113 × 491 | `linsi` | 13.24 s | 3.71 s | 3.6× | 20.61 s | 6.38 s |
+| 113 × 491 | `ginsi` | 14.91 s | 3.75 s | 4.0× | 20.32 s | 6.05 s |
+| 62 × 778 (BAliBASE BB40049) | `fftnsi` | 61.06 s | 12.35 s | 4.9× | 79.10 s | 40.49 s |
+| 62 × 778 | `linsi` | 118.06 s | 28.47 s | 4.1× | 151.51 s | 34.82 s |
+| 120 × 1.4 kb CDS | `fftnsi` | 4.47 s | 1.12 s | 4.0× | 7.73 s | 4.66 s |
 
-In that build `threads=10` was no faster than 8. Two `fftnsi` calls on BB30005 with
-`threads=1`, started together in two Python threads, finished in 7.53 s
-against 7.37 s for one call alone (1.02×, where 2.0× would mean the GIL
-serialised them), so a thread pool of `threads=1` calls uses the cores
-for many independent alignments.
+Over the 21 input × strategy cells of that run, 8 threads give 2.6 – 5.1×
+over 1 thread, and `threads=10` is up to 12 % faster than 8 on the
+largest inputs. From Python, `benchmarks/pymafft_threads.py` checks the
+same properties through `pymafft.align`: all 90 `threads=N` results
+(N = 1, 2, 4, 8, 10; three strategies; 3 runs) equal the
+`mafft-rs --thread 1` output, and two `fftnsi` calls on BB30005 with
+`threads=1`, started together in two Python threads, finished in 1.02×
+the time of one call alone (where 2.0× would mean the GIL serialised
+them), so a thread pool of `threads=1` calls uses the cores for many
+independent alignments. On the per-cluster workload of
+[`benchmarks/htworkload.py`](https://github.com/luksgrin/rust-MAFFT/blob/main/benchmarks/README.md)
+a `ThreadPoolExecutor` of `threads=1` calls matches a
+`ProcessPoolExecutor` of the same size at every worker count and uses
+2.3× less memory across the process tree.
 
 ## Input shapes
 

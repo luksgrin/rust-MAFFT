@@ -10,6 +10,8 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-28
+
 ### Added
 
 - **Peak-memory and `--thread` benchmarks** (`benchmarks/memory.py`,
@@ -125,6 +127,31 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Fixed
 
+- **Concurrent alignments in one process no longer corrupt each other.**
+  A refinement branch installs a cancellation token on the pool thread
+  that evaluates it, so that its profile DP can give up as soon as an
+  earlier branch is accepted. A thread that hands work to the pool and
+  waits for it (the tiles of the critical-path DP and the row-score
+  precomputation added with the tiled fill, the parallel FFT segments,
+  the parallel column accumulation of a profile) runs whatever job the
+  pool gives it meanwhile, and when several alignments share one pool,
+  as the `MafftEngine` API does on rayon's global pool and the test
+  suite does, that job could be another alignment's DP. That DP polled
+  the token of the thread it ran on, found the other branch's version
+  counter moved, and returned the throw-away all-gap alignment that only
+  a cancelled speculative branch may return, so the other alignment
+  came out with rows of gaps and the wrong width (in the end-to-end
+  suite, which runs its tests concurrently, about one run in six on a
+  10-core machine, and one run on the Linux aarch64 CI runner).
+  `mafft_align::without_dp_tokens` now clears this thread's cancellation
+  and priority tokens around every nested pool wait and restores them
+  after, so a job the pool runs on the waiting thread never sees them;
+  the tiles themselves carry the token they need by value. One
+  alignment per process, every `--thread N` run and every `pymafft`
+  call (each builds its own pool) were never affected; the 2702
+  BAliBASE 3 cells, the scaling grid and the workload verified before
+  the release stand. Forty consecutive runs of the end-to-end suite
+  with its default parallelism now pass.
 - **The profile DP no longer depends on where the allocator puts its row
   buffers.** Since the progressive-merge bookkeeping change (PR #82,
   under Performance) the `mafft-rs` CLI ran PF00069 n = 250 FFT-NS-2 at

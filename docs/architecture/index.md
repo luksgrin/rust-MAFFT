@@ -9,7 +9,7 @@ upstream MAFFT.
 2. [**Byte-identity**](byte-identity.md) — why we held to it, and the
    classes of bugs we hit along the way (FP order, tie-breaks,
    FMA-aware compilation).
-3. [**Cross-validation**](cross-validation.md) — how 99 FFI test functions
+3. [**Cross-validation**](cross-validation.md) — how 111 FFI test functions
    compare each Rust function to its C counterpart at the value level,
    not just the alignment level.
 4. [**Upstream policy**](upstream-policy.md) — how the `mafft-upstream`

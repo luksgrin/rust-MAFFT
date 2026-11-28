@@ -2707,7 +2707,7 @@ pub fn segmented_iterative_refine(
         (seg_msa.sequences, iters, report)
     };
     let segments: Vec<(Vec<Vec<u8>>, usize, Option<String>)> = if speculation_width() > 1 {
-        windows.par_iter().map(refine_segment).collect()
+        mafft_align::without_dp_tokens(|| windows.par_iter().map(refine_segment).collect())
     } else {
         windows.iter().map(refine_segment).collect()
     };
