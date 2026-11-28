@@ -1025,13 +1025,36 @@ fn match_calc_row_into(
     debug_assert!(offsets.windows(2).all(|w| w[0] <= w[1]));
     debug_assert_eq!(offsets[m], cpmx2_sparse_entries.len());
 
-    // scarr[l] = sum_j matrix[j][l] * prof1[row_pos][j], accumulated over j
-    // in ascending order for every l (C `match_calc`, Salignmm.c:216-223).
-    // The nest is j-outer / l-inner where C is l-outer / j-inner: each
-    // scarr[l] still sees exactly the same ordered sequence of
-    // multiply-adds (fused or not per `mafft_types::fp`), so the result is
-    // bit-identical, while the inner loop
-    // walks `matrix[j]` contiguously with no per-cell bounds checks.
+    match_calc_scarr(prof1_row, scarr, matrix);
+    // output[j] = sum over column j's non-zero cpmx2 entries (alphabet
+    // order) of scarr[k] * v — C's `cpmxpd`/`cpmxpdn` walk. The entries
+    // are consumed sequentially from one flat list; `offsets` is monotone
+    // by construction (`build_sparse_cpmx`), so `take(count)` never
+    // over-reads, and `scarr[k]` is in bounds because every k was emitted
+    // from `0..nalpha`.
+    let mut entries = cpmx2_sparse_entries.iter();
+    for (out, w) in output.iter_mut().zip(offsets.windows(2)) {
+        let mut acc = 0.0f64;
+        for &(k, v) in entries.by_ref().take(w[1] - w[0]) {
+            acc = fmadd(scarr[k], v, acc);
+        }
+        *out = acc;
+    }
+}
+
+/// The row-dependent half of `match_calc_row_into`:
+/// `scarr[l] = sum_j matrix[j][l] * prof1_row[j]`, accumulated over `j` in
+/// ascending order for every `l` (C `match_calc`, Salignmm.c:216-223).
+///
+/// The nest is j-outer / l-inner where C is l-outer / j-inner: each
+/// `scarr[l]` still sees exactly the same ordered sequence of
+/// multiply-adds (fused or not per `mafft_types::fp`), so the result is
+/// bit-identical, while the inner loop walks `matrix[j]` contiguously
+/// with no per-cell bounds checks. `scarr` and `prof1_row` are exact
+/// `nalpha`-length slices.
+#[inline]
+fn match_calc_scarr(prof1_row: &[f64], scarr: &mut [f64], matrix: &[Vec<f64>]) {
+    let nalpha = scarr.len();
     scarr.fill(0.0);
     for (row, &f1) in matrix[..nalpha].iter().zip(prof1_row) {
         for (s, &mv) in scarr.iter_mut().zip(&row[..nalpha]) {
@@ -1042,14 +1065,23 @@ fn match_calc_row_into(
             *s = fmadd(mv, f1, *s);
         }
     }
-    // output[j] = sum over column j's non-zero cpmx2 entries (alphabet
-    // order) of scarr[k] * v — C's `cpmxpd`/`cpmxpdn` walk. The entries
-    // are consumed sequentially from one flat list; `offsets` is monotone
-    // by construction (`build_sparse_cpmx`), so `take(count)` never
-    // over-reads, and `scarr[k]` is in bounds because every k was emitted
-    // from `0..nalpha`.
-    let mut entries = cpmx2_sparse_entries.iter();
-    for (out, w) in output.iter_mut().zip(offsets.windows(2)) {
+}
+
+/// `output[j]` for `j` in `j0..=j1` from a precomputed `scarr` row: the
+/// column half of `match_calc_row_into`, restricted to one column block.
+/// Each column's sum runs over the same entries in the same order as the
+/// whole-row call, so the values are the same bytes.
+#[inline]
+fn match_calc_cols_from_scarr(
+    scarr: &[f64],
+    j0: usize, j1: usize,
+    output: &mut [f64],
+    cpmx2_sparse_offsets: &[usize],
+    cpmx2_sparse_entries: &[(usize, f64)],
+) {
+    let offsets = &cpmx2_sparse_offsets[j0..=j1 + 1];
+    let mut entries = cpmx2_sparse_entries[offsets[0]..offsets[j1 + 1 - j0]].iter();
+    for (out, w) in output[j0..=j1].iter_mut().zip(offsets.windows(2)) {
         let mut acc = 0.0f64;
         for &(k, v) in entries.by_ref().take(w[1] - w[0]) {
             acc = fmadd(scarr[k], v, acc);
@@ -1081,8 +1113,10 @@ fn match_calc_row_into(
 /// SAFETY invariants (apply to every `get_unchecked` call below):
 ///   - `j` ranges `1..=m`.
 ///   - `prev_s`, `cur_s`, `ogcp2_s`, `fgcp2_s`, `mj_s`, `mpj_s`,
-///     `h_row`, `ijp_row` are sized `m+1`, so indices in `{0..=m}` are
-///     in-bounds.
+///     `h_row` are sized `m+1`, so indices in `{0..=m}` are in-bounds;
+///     `ijp_row` is indexed `j - ijp_base` and covers
+///     `j_begin - ijp_base ..= j_end - ijp_base` (the whole row with
+///     `ijp_base = 0`, a tile's column block with `ijp_base = j_begin`).
 ///   - `prof2_ngf` is sized `m`; `j-1` always in `0..=m-1 < m`; the read
 ///     at index `j` is guarded `if j < m`.
 ///   - Under `TW = true`: `wmrecords`, `prevwmrecords`, `warpi`,
@@ -1095,8 +1129,9 @@ fn match_calc_row_into(
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn j_loop<const TW: bool, const STRICT: bool>(
+    j_begin: usize, j_end: usize,
     m: usize, i: usize,
-    h_row: &mut [f64], ijp_row: &mut [i32],
+    h_row: &mut [f64], ijp_row: &mut [i32], ijp_base: usize,
     cur_s: &mut [f64], prev_s: &[f64],
     ogcp2_s: &[f64], fgcp2_s: &[f64],
     mj_s: &mut [f64], mpj_s: &mut [usize],
@@ -1115,7 +1150,12 @@ fn j_loop<const TW: bool, const STRICT: bool>(
 ) {
     let mut mi_v = *mi;
     let mut mpi_v = *mpi;
-    for j in 1..=m {
+    // `j_begin..=j_end` is `1..=m` for a whole row; a tile of the
+    // wavefront fill (`dp_fill_tiled`) runs one column block of it with the
+    // row state (`mi`, `mpi`, `prev_s[j_begin - 1]`) carried in from the
+    // block to its left, so every cell sees the operands the whole-row
+    // walk gives it.
+    for j in j_begin..=j_end {
         // Out-of-bounds positions in nongap_freq correspond to C's
         // gapfreq1[lgth1] / gapfreq2[lgth2] which take on egap-derived
         // values when partA__align is given sgap/egap
@@ -1127,12 +1167,12 @@ fn j_loop<const TW: bool, const STRICT: bool>(
 
         let prevw_jm1 = unsafe { *prev_s.get_unchecked(j - 1) };
         let mut wm = prevw_jm1;
-        unsafe { *ijp_row.get_unchecked_mut(j) = 0; }
+        unsafe { *ijp_row.get_unchecked_mut(j - ijp_base) = 0; }
 
         let g_jskip = unsafe { fmadd(*fgcp2_s.get_unchecked(j - 1), gf1_i, mi_v) };
         if g_jskip > wm {
             wm = g_jskip;
-            unsafe { *ijp_row.get_unchecked_mut(j) = -(j as i32 - mpi_v as i32); }
+            unsafe { *ijp_row.get_unchecked_mut(j - ijp_base) = -(j as i32 - mpi_v as i32); }
         }
 
         let g = unsafe { fmadd(*ogcp2_s.get_unchecked(j), gf1_im1, prevw_jm1) };
@@ -1149,7 +1189,7 @@ fn j_loop<const TW: bool, const STRICT: bool>(
         if g_iskip > wm {
             wm = g_iskip;
             unsafe {
-                *ijp_row.get_unchecked_mut(j) =
+                *ijp_row.get_unchecked_mut(j - ijp_base) =
                     i as i32 - *mpj_s.get_unchecked(j) as i32;
             }
         }
@@ -1181,9 +1221,9 @@ fn j_loop<const TW: bool, const STRICT: bool>(
                     && pwi_jm1 == unsafe { *warpis.get_unchecked(*warpn - 1) }
                     && pwj_jm1 == unsafe { *warpjs.get_unchecked(*warpn - 1) }
                 {
-                    unsafe { *ijp_row.get_unchecked_mut(j) = warpbase + (*warpn as i32) - 1; }
+                    unsafe { *ijp_row.get_unchecked_mut(j - ijp_base) = warpbase + (*warpn as i32) - 1; }
                 } else {
-                    unsafe { *ijp_row.get_unchecked_mut(j) = warpbase + (*warpn as i32); }
+                    unsafe { *ijp_row.get_unchecked_mut(j - ijp_base) = warpbase + (*warpn as i32); }
                     warpis.push(pwi_jm1);
                     warpjs.push(pwj_jm1);
                     *warpn += 1;
@@ -1220,6 +1260,550 @@ fn j_loop<const TW: bool, const STRICT: bool>(
     }
     *mi = mi_v;
     *mpi = mpi_v;
+}
+
+// ---------------------------------------------------------------------------
+// Tiled wavefront fill of the profile DP.
+//
+// The recurrence of `j_loop` makes cell (i, j) depend on row i-1 at
+// columns j-1 and j (`previousw`), on the column gap state `mj[j]`/`mpj[j]`
+// that row i-1 left, and on the row gap state `mi`/`mpi` that cell
+// (i, j-1) left. Cut the matrix into row blocks x column blocks: a tile
+// depends only on the tile above it (the row it finished with, and the
+// column gap state) and on the tile to its left (the right-edge column of
+// every row, and the row gap state after it). Tiles on one anti-diagonal
+// of the block grid are therefore independent. The fill runs the tiles on
+// this thread in diagonal order while the evaluation may not recruit idle
+// threads (`dp_inner_parallel`), and hands the rest to the pool as a
+// dependency-driven wavefront as soon as it may.
+//
+// Inside a tile every cell runs the unchanged `j_loop` body, over the
+// tile's column range, with the operands the whole-row walk would hand it,
+// so the `ijp` traceback matrix, the last row and `lastverticalw` the fill
+// produces are bit-identical to the serial loop's whatever the tile shape
+// or the thread count. Only the schedule changes.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Tile schedule override for tests on this thread: 0 = automatic,
+    /// 1 = never tile, 2 = always tile when the DP shape allows it.
+    static DP_TILING_OVERRIDE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_dp_tiling_override(mode: u8) {
+    DP_TILING_OVERRIDE.with(|c| c.set(mode));
+}
+
+/// Fewest DP cells for which the tiled fill is worth its bookkeeping.
+const TILE_MIN_CELLS: usize = 1 << 18;
+/// Fewest cells in one tile.
+const TILE_MIN_CELLS_PER_TILE: usize = 1 << 14;
+/// Fewest rows and columns in a tile, and most tiles along either axis.
+const TILE_MIN_ROWS: usize = 32;
+const TILE_MIN_COLS: usize = 96;
+const TILE_MAX_PER_AXIS: usize = 16;
+
+/// Is a DP of `cells` cells big enough that reserving pool threads for
+/// its tiles beats letting them speculate on later refinement branches?
+///
+/// Measured on Apple M4 with `--thread 4` (see
+/// `mafft_core::refinement::speculation_cap`): on BAliBASE BB40049
+/// L-INS-i (5466 columns, 25-30 M cells per balanced branch) two
+/// speculating threads plus two tile helpers take 40 s against 44 s for
+/// four speculating; on the 120 x 1.4 kb CDS set (1850 columns, ~3 M
+/// cells) and BB30013 FFT-NS-i (1720 columns, segments of < 1 M cells)
+/// the same split costs 10-19 %. The crossover is put at 8 M cells
+/// (a width of about 2900 columns).
+pub fn dp_critical_path_pays(cells: usize) -> bool {
+    cells >= 1 << 23
+}
+
+/// Tile the fill? `plain` says the DP is the unadorned recurrence (no
+/// warp, no multi-class match, no kept full `h`). On a one-thread pool the
+/// tiles would all run here, so the serial loop is used.
+fn dp_tiling_wanted(n: usize, m: usize, lasti: usize, plain: bool) -> bool {
+    if !plain || lasti < 2 || !crate::parallel_enabled() {
+        return false;
+    }
+    match DP_TILING_OVERRIDE.with(|c| c.get()) {
+        1 => false,
+        2 => true,
+        _ => tile_knobs().0 && n.saturating_mul(m) >= TILE_MIN_CELLS,
+    }
+}
+
+/// Experiment knobs, read once: `MAFFT_RS_DP_TILES=0` disables the tiled
+/// fill; `MAFFT_RS_DP_TILE_AXIS=N` caps the tiles per axis (default
+/// `TILE_MAX_PER_AXIS`).
+fn tile_knobs() -> (bool, usize) {
+    use std::sync::OnceLock;
+    static KNOBS: OnceLock<(bool, usize)> = OnceLock::new();
+    *KNOBS.get_or_init(|| {
+        let on = std::env::var("MAFFT_RS_DP_TILES").map_or(true, |v| v.trim() != "0");
+        let axis = std::env::var("MAFFT_RS_DP_TILE_AXIS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&a| a >= 1)
+            .unwrap_or(TILE_MAX_PER_AXIS);
+        (on, axis)
+    })
+}
+
+/// Read-only inputs of the tiled fill (the serial loop's operands).
+struct TiledDp<'a> {
+    n: usize,
+    m: usize,
+    /// Rows `1..lasti` are filled (`n + 1` with a tail gap row).
+    lasti: usize,
+    /// Row stride of `ijp`.
+    stride: usize,
+    strict: bool,
+    matrix: &'a [Vec<f64>],
+    nalpha: usize,
+    prof1_freqs: &'a [Vec<f64>],
+    cpmx2_offsets: &'a [usize],
+    cpmx2_entries: &'a [(usize, f64)],
+    impmtx: Option<ImpMtx<'a>>,
+    initverticalw: &'a [f64],
+    /// Row 0 of `h` (the initial `currentw`).
+    row0: &'a [f64],
+    ogcp1: &'a [f64],
+    fgcp1: &'a [f64],
+    ogcp2: &'a [f64],
+    fgcp2: &'a [f64],
+    ngf1: &'a [f64],
+    ngf2: &'a [f64],
+    tail1: f64,
+    tail2: f64,
+    f_ext: f64,
+}
+
+/// A raw pointer to a buffer that concurrently running tiles write at
+/// disjoint indices (see the invariants at each use in `dp_fill_tiled`).
+#[derive(Clone, Copy)]
+struct SharedMut<T>(*mut T);
+unsafe impl<T: Send> Send for SharedMut<T> {}
+unsafe impl<T: Send> Sync for SharedMut<T> {}
+impl<T> SharedMut<T> {
+    /// Accessor rather than field access, so a closure captures the
+    /// wrapper (`Sync`) and not the bare pointer.
+    #[inline]
+    fn ptr(self) -> *mut T {
+        self.0
+    }
+}
+
+/// Per-thread row buffers of a tile: the rows `j_loop` indexes by absolute
+/// column (`m + 1` cells each; only the tile's columns are meaningful).
+#[derive(Default)]
+struct TileScratch {
+    prev: Vec<f64>,
+    cur: Vec<f64>,
+    hrow: Vec<f64>,
+    mj: Vec<f64>,
+    mpj: Vec<usize>,
+    warpis: Vec<i32>,
+    warpjs: Vec<i32>,
+}
+
+thread_local! {
+    static TILE_SCRATCH: RefCell<TileScratch> = RefCell::new(TileScratch::default());
+}
+
+/// Fill rows `1..lasti` of the DP by tiles. Writes `ijp` (rows `1..lasti`,
+/// columns `1..=m`), `lastverticalw[1..lasti]`, the last computed row into
+/// `last_row[1..=m]`, and leaves `mj`/`mpj` in their end-of-fill state.
+/// Returns true when the evaluation was cancelled (`dp_cancelled`), in
+/// which case the outputs are unspecified, as after the serial loop's
+/// early exit.
+#[allow(clippy::too_many_arguments)]
+fn dp_fill_tiled(
+    p: &TiledDp<'_>,
+    mj: &mut [f64],
+    mpj: &mut [usize],
+    ijp: &mut [i32],
+    last_row: &mut [f64],
+    lastverticalw: &mut [f64],
+) -> bool {
+    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let check = *CHECK.get_or_init(|| std::env::var_os("MAFFT_RS_DP_TILE_CHECK").is_some());
+    if !check {
+        return dp_fill_tiled_impl(p, mj, mpj, ijp, last_row, lastverticalw, true);
+    }
+    // Self-check for verification runs (`MAFFT_RS_DP_TILE_CHECK` set):
+    // redo the fill with every tile on this thread, in diagonal order,
+    // and abort on the first output cell that differs. A schedule bug
+    // shows up here on the DP it corrupts, whether or not the traceback
+    // happens to pass through the corrupted cells.
+    let mj0 = mj.to_vec();
+    let mpj0 = mpj.to_vec();
+    if dp_fill_tiled_impl(p, mj, mpj, ijp, last_row, lastverticalw, true) {
+        return true;
+    }
+    let (mut mj2, mut mpj2) = (mj0, mpj0);
+    let mut ijp2 = vec![i32::MIN; ijp.len()];
+    let mut last2 = vec![f64::NAN; last_row.len()];
+    let mut lvw2 = vec![f64::NAN; lastverticalw.len()];
+    if dp_fill_tiled_impl(p, &mut mj2, &mut mpj2, &mut ijp2, &mut last2, &mut lvw2, false) {
+        return true;
+    }
+    let mut bad: Vec<String> = Vec::new();
+    for i in 1..p.lasti {
+        for j in 1..=p.m {
+            let k = i * p.stride + j;
+            if ijp[k] != ijp2[k] {
+                bad.push(format!("ijp({i},{j}) parallel {} serial {}", ijp[k], ijp2[k]));
+            }
+        }
+        if lastverticalw[i].to_bits() != lvw2[i].to_bits() {
+            bad.push(format!("lastverticalw({i}) parallel {} serial {}", lastverticalw[i], lvw2[i]));
+        }
+        if bad.len() > 8 { break; }
+    }
+    for j in 1..=p.m {
+        if last_row[j].to_bits() != last2[j].to_bits() {
+            bad.push(format!("last_row({j}) parallel {} serial {}", last_row[j], last2[j]));
+        }
+        if mj[j].to_bits() != mj2[j].to_bits() || mpj[j] != mpj2[j] {
+            bad.push(format!("mj/mpj({j}) parallel {}/{} serial {}/{}", mj[j], mpj[j], mj2[j], mpj2[j]));
+        }
+        if bad.len() > 16 { break; }
+    }
+    if !bad.is_empty() {
+        eprintln!(
+            "dp_fill_tiled self-check failed: n={} m={} lasti={} strict={} imp={}; first differences:",
+            p.n, p.m, p.lasti, p.strict, p.impmtx.is_some()
+        );
+        for b in &bad { eprintln!("  {b}"); }
+        std::process::abort();
+    }
+    false
+}
+
+/// Block grid of the tiled fill: row block `bi` holds rows
+/// `1 + bi * rows_per ..`, column block `bj` holds columns
+/// `1 + bj * cols_per ..=`, both clipped. Returns `(n_i, n_j, rows_per, cols_per)`.
+fn tile_grid(nrows: usize, m: usize) -> (usize, usize, usize, usize) {
+    let max_axis = tile_knobs().1;
+    let mut n_i = nrows.div_ceil(TILE_MIN_ROWS).clamp(1, max_axis);
+    let mut n_j = m.div_ceil(TILE_MIN_COLS).clamp(1, max_axis);
+    // Fewer, larger tiles on a small matrix: a tile below
+    // `TILE_MIN_CELLS_PER_TILE` cells is dominated by its hand-off.
+    while n_i * n_j > 1 && (nrows / n_i) * (m / n_j) < TILE_MIN_CELLS_PER_TILE {
+        if n_i >= n_j { n_i = n_i.div_ceil(2); } else { n_j = n_j.div_ceil(2); }
+    }
+    let rows_per = nrows.div_ceil(n_i);
+    let n_i = nrows.div_ceil(rows_per);
+    let cols_per = m.div_ceil(n_j);
+    let n_j = m.div_ceil(cols_per);
+    (n_i, n_j, rows_per, cols_per)
+}
+
+fn dp_fill_tiled_impl(
+    p: &TiledDp<'_>,
+    mj: &mut [f64],
+    mpj: &mut [usize],
+    ijp: &mut [i32],
+    last_row: &mut [f64],
+    lastverticalw: &mut [f64],
+    allow_parallel: bool,
+) -> bool {
+    use rayon::prelude::*;
+    let (n, m, lasti, stride, nalpha) = (p.n, p.m, p.lasti, p.stride, p.nalpha);
+    debug_assert!(lasti >= 2 && m >= 1);
+    let nrows = lasti - 1;
+    let (n_i, n_j, rows_per, cols_per) = tile_grid(nrows, m);
+    let col_end = |bj: usize| ((bj + 1) * cols_per).min(m);
+
+    // Row-dependent half of the match scores for every row, in row order
+    // (`match_calc_scarr`); rows at or beyond `n` score zero, as C's
+    // calloc'd tail row does (`match_calc_row_into`).
+    let mut scarr_all = vec![0.0f64; nrows * nalpha];
+    {
+        let score = |(r, out): (usize, &mut [f64])| {
+            let i = r + 1;
+            if i < n {
+                match_calc_scarr(&p.prof1_freqs[i][..nalpha], out, p.matrix);
+            }
+        };
+        if allow_parallel && crate::dp_inner_parallel() {
+            scarr_all.par_chunks_mut(nalpha).enumerate().for_each(score);
+        } else {
+            scarr_all.chunks_mut(nalpha).enumerate().for_each(score);
+        }
+    }
+
+    // Exchange buffers between tiles.
+    // `rowbuf[j]`: `h` of the last row the tile above finished, by column;
+    // starts as row 0.
+    let mut rowbuf: Vec<f64> = p.row0[..=m].to_vec();
+    // `edge_h[bj * lasti + i]`: `h(i, col_end(bj))`, the left neighbour of
+    // column block `bj + 1` in row `i + 1`; row 0 comes from `row0`.
+    let mut edge_h = vec![0.0f64; n_j * lasti];
+    for bj in 0..n_j {
+        edge_h[bj * lasti] = p.row0[col_end(bj)];
+    }
+    // Row gap state after `col_end(bj)` in row `i`, carried into block
+    // `bj + 1` of the same row.
+    let mut carry_mi = vec![0.0f64; n_j * lasti];
+    let mut carry_mpi = vec![0usize; n_j * lasti];
+
+    let sh_rowbuf = SharedMut(rowbuf.as_mut_ptr());
+    let sh_edge = SharedMut(edge_h.as_mut_ptr());
+    let sh_cmi = SharedMut(carry_mi.as_mut_ptr());
+    let sh_cmpi = SharedMut(carry_mpi.as_mut_ptr());
+    let sh_mj = SharedMut(mj.as_mut_ptr());
+    let sh_mpj = SharedMut(mpj.as_mut_ptr());
+    let sh_ijp = SharedMut(ijp.as_mut_ptr());
+    let sh_last = SharedMut(last_row.as_mut_ptr());
+    let sh_lvw = SharedMut(lastverticalw.as_mut_ptr());
+    let scarr_all = &scarr_all;
+
+    // One tile. Concurrent tiles have distinct `bj` (same diagonal), so
+    // their column ranges `c0..=c1` are disjoint and every shared write
+    // below lands in cells no other running tile reads or writes:
+    // `ijp` / `last_row` / `mj` / `mpj` / `rowbuf` are indexed by column,
+    // `edge_h` / `carry_*` by `(bj, row)`, `lastverticalw` by row from the
+    // one block that holds column `m - 1`. Reads of another tile's cells
+    // (`rowbuf`, `edge_h`, `carry_*`, `mj`, `mpj`) are of tiles on earlier
+    // diagonals, finished before this diagonal started (`rayon::scope`
+    // joins them).
+    let run_tile = |bi: usize, bj: usize| {
+        let r0 = 1 + bi * rows_per;
+        let r1 = (r0 + rows_per).min(lasti);
+        let c0 = 1 + bj * cols_per;
+        let c1 = col_end(bj);
+        TILE_SCRATCH.with_borrow_mut(|ts| {
+            // Same page colours as the serial loop's rows (`previousw` 4,
+            // `currentw` 3, `h` 7, `mj` 5, `mpj` 6; see `pool::coloured_window`).
+            let w = m + 1;
+            let a_prev = crate::pool::coloured_window(&mut ts.prev, w, 0.0, 4);
+            let a_cur = crate::pool::coloured_window(&mut ts.cur, w, 0.0, 3);
+            let a_h = crate::pool::coloured_window(&mut ts.hrow, w, 0.0, 7);
+            let a_mj = crate::pool::coloured_window(&mut ts.mj, w, 0.0, 5);
+            let a_mpj = crate::pool::coloured_window(&mut ts.mpj, w, 0, 6);
+            ts.warpis.clear();
+            ts.warpjs.clear();
+            let TileScratch { prev, cur, hrow, mj: mjl, mpj: mpjl, warpis, warpjs } = ts;
+            let mut prev: &mut [f64] = &mut prev[a_prev..a_prev + w];
+            let mut cur: &mut [f64] = &mut cur[a_cur..a_cur + w];
+            let hrow: &mut [f64] = &mut hrow[a_h..a_h + w];
+            let mjl: &mut [f64] = &mut mjl[a_mj..a_mj + w];
+            let mpjl: &mut [usize] = &mut mpjl[a_mpj..a_mpj + w];
+            let mut warpn = 0usize;
+            // SAFETY (all raw accesses in this closure): see the
+            // disjointness invariants above; every index is within the
+            // buffer's length (`rowbuf`, `last_row`, `mj`, `mpj`: `m + 1`;
+            // `edge_h`, `carry_*`: `n_j * lasti`; `ijp`: `(n + 1) * stride`
+            // with `i < lasti <= n + 1`, `j <= m < stride`;
+            // `lastverticalw`: `n + 1`).
+            unsafe {
+                // Seed the row above (`previousw` of row r0) and the
+                // column gap state the tile above left.
+                for j in c0..=c1 {
+                    prev[j] = *sh_rowbuf.ptr().add(j);
+                    mjl[j] = *sh_mj.ptr().add(j);
+                    mpjl[j] = *sh_mpj.ptr().add(j);
+                }
+                for i in r0..r1 {
+                    // Left neighbour of the tile in row i-1: column 0 is
+                    // `initverticalw`, otherwise the right edge of block bj-1.
+                    prev[c0 - 1] = if bj == 0 {
+                        p.initverticalw[i - 1]
+                    } else {
+                        *sh_edge.ptr().add((bj - 1) * lasti + i - 1)
+                    };
+                    // Match scores of row i over the block, plus `impmtx`
+                    // (`imp_match_out_vead`), then the serial loop's
+                    // `currentw[m] = 0.0; currentw[0] = initverticalw[i]`.
+                    let jmax = c1.min(m - 1);
+                    if c0 <= jmax {
+                        if i < n {
+                            match_calc_cols_from_scarr(
+                                &scarr_all[(i - 1) * nalpha..i * nalpha], c0, jmax, cur,
+                                p.cpmx2_offsets, p.cpmx2_entries,
+                            );
+                        } else {
+                            for j in c0..=jmax { cur[j] = 0.0; }
+                        }
+                        if let Some(imp) = p.impmtx {
+                            if i < imp.nrows() {
+                                imp.add_row_range_into(i, cur, m, c0, jmax);
+                            }
+                        }
+                    }
+                    if c1 == m {
+                        cur[m] = 0.0;
+                    }
+                    if bj == 0 {
+                        cur[0] = p.initverticalw[i];
+                    }
+                    let gf1_im1 = p.ngf1[i - 1];
+                    let gf1_i = if i < n { p.ngf1[i] } else { p.tail1 };
+                    let fgcp1_im1 = p.fgcp1[i - 1];
+                    let ogcp1_i = p.ogcp1[i];
+                    let (mut mi, mut mpi) = if bj == 0 {
+                        (fmadd(p.ogcp2[1], gf1_im1, prev[0]), 0usize)
+                    } else {
+                        (*sh_cmi.ptr().add((bj - 1) * lasti + i), *sh_cmpi.ptr().add((bj - 1) * lasti + i))
+                    };
+                    // The tile's cells of row i of `ijp`, written in place
+                    // (`ijp_base = c0`). Disjoint from every other running
+                    // tile's slice (different columns, see above), so the
+                    // exclusive borrow is sound.
+                    let ijp_tile = std::slice::from_raw_parts_mut(
+                        sh_ijp.ptr().add(i * stride + c0), c1 - c0 + 1,
+                    );
+                    if p.strict {
+                        j_loop::<false, true>(
+                            c0, c1, m, i, hrow, ijp_tile, c0, cur, prev,
+                            p.ogcp2, p.fgcp2, mjl, mpjl, p.ngf2,
+                            gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
+                            p.tail2, p.f_ext,
+                            &mut mi, &mut mpi,
+                            0.0, 0,
+                            &mut [], &[], &mut [], &mut [], &[], &[],
+                            warpis, warpjs, &mut warpn,
+                        );
+                    } else {
+                        j_loop::<false, false>(
+                            c0, c1, m, i, hrow, ijp_tile, c0, cur, prev,
+                            p.ogcp2, p.fgcp2, mjl, mpjl, p.ngf2,
+                            gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
+                            p.tail2, p.f_ext,
+                            &mut mi, &mut mpi,
+                            0.0, 0,
+                            &mut [], &[], &mut [], &mut [], &[], &[],
+                            warpis, warpjs, &mut warpn,
+                        );
+                    }
+                    // Publish the row.
+                    *sh_edge.ptr().add(bj * lasti + i) = cur[c1];
+                    *sh_cmi.ptr().add(bj * lasti + i) = mi;
+                    *sh_cmpi.ptr().add(bj * lasti + i) = mpi;
+                    // `lastverticalw[i] = currentw[m - 1]`: column m-1 lies
+                    // in this block, or is column 0 (`initverticalw[i]`)
+                    // when m == 1.
+                    if (c0 <= m - 1 && m - 1 <= c1) || (m == 1 && bj == 0) {
+                        *sh_lvw.ptr().add(i) = cur[m - 1];
+                    }
+                    if i == lasti - 1 {
+                        std::ptr::copy_nonoverlapping(
+                            cur.as_ptr().add(c0), sh_last.ptr().add(c0), c1 - c0 + 1,
+                        );
+                    }
+                    if i == r1 - 1 {
+                        std::ptr::copy_nonoverlapping(
+                            cur.as_ptr().add(c0), sh_rowbuf.ptr().add(c0), c1 - c0 + 1,
+                        );
+                    }
+                    std::mem::swap(&mut prev, &mut cur);
+                }
+                // Column gap state for the tile below.
+                for j in c0..=c1 {
+                    *sh_mj.ptr().add(j) = mjl[j];
+                    *sh_mpj.ptr().add(j) = mpjl[j];
+                }
+            }
+        });
+    };
+    let run_tile = &run_tile;
+
+    // Schedule. Tiles are numbered row-major, `t = bi * n_j + bj`. While
+    // the evaluation may not recruit idle threads the tiles run here, in
+    // anti-diagonal order (every tile after the ones it depends on). As
+    // soon as it may, the remaining tiles go to the pool with dependency
+    // counting: a tile is spawned when the tile above it and the tile to
+    // its left have finished, so the wavefront flows without a barrier per
+    // diagonal (with 8 threads and up to 16 tiles on a diagonal, a barrier
+    // left most of them idle at every diagonal's tail). Tiles on other
+    // threads check this thread's cancellation token; a cancelled fill
+    // still runs every spawn, doing no work, so the scope completes.
+    let ntiles = n_i * n_j;
+    let order: Vec<usize> = {
+        let mut v = Vec::with_capacity(ntiles);
+        for d in 0..(n_i + n_j - 1) {
+            for bi in d.saturating_sub(n_j - 1)..=d.min(n_i - 1) {
+                v.push(bi * n_j + (d - bi));
+            }
+        }
+        v
+    };
+    let cancel = crate::dp_cancel_token();
+    let mut serial_done = 0usize;
+    while serial_done < ntiles {
+        if cancel.cancelled() {
+            return true;
+        }
+        if allow_parallel && crate::dp_inner_parallel() {
+            break;
+        }
+        let t = order[serial_done];
+        run_tile(t / n_j, t % n_j);
+        serial_done += 1;
+    }
+    if serial_done == ntiles {
+        return false;
+    }
+
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    struct Sched<'a> {
+        run_tile: &'a (dyn Fn(usize, usize) + Sync),
+        deps: Vec<AtomicU8>,
+        n_i: usize,
+        n_j: usize,
+        cancel: crate::DpCancelToken,
+        cancelled: AtomicBool,
+    }
+    fn launch<'s>(s: &rayon::Scope<'s>, sc: &'s Sched<'s>, t: usize) {
+        s.spawn(move |s| {
+            let (bi, bj) = (t / sc.n_j, t % sc.n_j);
+            if sc.cancelled.load(Ordering::Relaxed) || sc.cancel.cancelled() {
+                sc.cancelled.store(true, Ordering::Relaxed);
+            } else {
+                (sc.run_tile)(bi, bj);
+            }
+            // Release the tile below and the tile to the right.
+            if bi + 1 < sc.n_i && sc.deps[t + sc.n_j].fetch_sub(1, Ordering::AcqRel) == 1 {
+                launch(s, sc, t + sc.n_j);
+            }
+            if bj + 1 < sc.n_j && sc.deps[t + 1].fetch_sub(1, Ordering::AcqRel) == 1 {
+                launch(s, sc, t + 1);
+            }
+        });
+    }
+    // Pending dependencies of every tile not yet done: the tiles done so
+    // far are a prefix of the diagonal order, so a pending tile whose
+    // count is zero is ready.
+    let done = |t: usize| order[..serial_done].contains(&t);
+    let deps: Vec<AtomicU8> = (0..ntiles)
+        .map(|t| {
+            let (bi, bj) = (t / n_j, t % n_j);
+            let up = bi > 0 && !done(t - n_j);
+            let left = bj > 0 && !done(t - 1);
+            AtomicU8::new(up as u8 + left as u8)
+        })
+        .collect();
+    // The tiles ready now, fixed before anything is spawned: once the
+    // first spawn is out, a running tile may finish and bring a pending
+    // tile's count to zero (and launch it) while this list is still being
+    // walked; reading the counters inside the walk launched such a tile a
+    // second time, and the duplicate, seeding itself from `rowbuf` / `mj`
+    // the tile below had already overwritten, published garbage.
+    let ready: Vec<usize> = order[serial_done..]
+        .iter()
+        .copied()
+        .filter(|&t| deps[t].load(Ordering::Relaxed) == 0)
+        .collect();
+    let sc = Sched { run_tile, deps, n_i, n_j, cancel, cancelled: AtomicBool::new(false) };
+    let sc = &sc;
+    rayon::scope(|s| {
+        for &t in &ready {
+            launch(s, sc, t);
+        }
+    });
+    sc.cancelled.load(Ordering::Relaxed) || cancel.cancelled()
 }
 
 /// Read-only view of a per-cell importance matrix `impmtx[i][j]` for the
@@ -1271,6 +1855,39 @@ impl<'a> ImpMtx<'a> {
             }
         }
     }
+    /// `add_row_into` restricted to columns `j0..=j1`: `out[j] += impmtx[i][j]`
+    /// for every `j` in that range below `min(m, row length)`. Same
+    /// per-cell addition as the whole-row call.
+    #[inline]
+    fn add_row_range_into(&self, i: usize, out: &mut [f64], m: usize, j0: usize, j1: usize) {
+        let lim = m.min(self.ncols(i));
+        if lim <= j0 {
+            return;
+        }
+        let j1 = j1.min(lim - 1);
+        match *self {
+            ImpMtx::Rows(r) => {
+                let row = &r[i];
+                for j in j0..=j1 {
+                    out[j] += row[j];
+                }
+            }
+            ImpMtx::Flat { data, cols, .. } => {
+                let row = &data[i * cols..(i + 1) * cols];
+                for j in j0..=j1 {
+                    out[j] += row[j];
+                }
+            }
+            ImpMtx::Gather { data, stride, row_idx, col_idx } => {
+                let base = row_idx[i] * stride;
+                let row = &data[base..base + stride];
+                for j in j0..=j1 {
+                    out[j] += row[col_idx[j]];
+                }
+            }
+        }
+    }
+
     /// `out[j] += impmtx[i][j]` for `j < min(m, row length)`, in increasing
     /// `j` -- the DP's per-row `imp_match_out_vead`.
     #[inline]
@@ -1818,6 +2435,28 @@ pub fn profile_align_imp_view(
     let mut match_block_rows = 0usize;
 
     let mut dp_cancel_hit = false;
+    // Tiled wavefront fill (`dp_fill_tiled`) when the pool has idle
+    // threads to offer and the DP is the plain recurrence: no warp state
+    // (which carries a row-wide record across columns), no multi-class
+    // match (whose row scorer is not split by column), and no kept full
+    // `h` (a forensic dump wants the row-by-row writes).
+    let plain_dp = !try_warp && multi.is_none() && !keep_full_h;
+    if dp_tiling_wanted(n, m, lasti, plain_dp) {
+        let tp = TiledDp {
+            n, m, lasti, stride, strict: strict_part_tiebreak,
+            matrix, nalpha, prof1_freqs: &prof1.freqs,
+            cpmx2_offsets: &cpmx2_sparse_offsets, cpmx2_entries: &cpmx2_sparse_entries,
+            impmtx, initverticalw: &initverticalw, row0: &*currentw,
+            ogcp1: &ogcp1, fgcp1: &fgcp1, ogcp2: &*ogcp2, fgcp2: &*fgcp2,
+            ngf1: &prof1.nongap_freq, ngf2: &*ngf2,
+            tail1: boundary.tail1, tail2: boundary.tail2, f_ext,
+        };
+        let last_row = &mut h[h_base..h_base + stride];
+        dp_cancel_hit = dp_fill_tiled(&tp, mj, mpj, &mut ijp, last_row, &mut lastverticalw);
+        // The serial loop leaves `h[h_base] = initverticalw[i]` of its last
+        // row; the tail scan below reads it as column 0 of that row.
+        last_row[0] = initverticalw[lasti - 1];
+    } else {
     for i in 1..lasti {
         if (i & 31) == 0 && crate::dp_cancelled() {
             dp_cancel_hit = true;
@@ -1835,14 +2474,23 @@ pub fn profile_align_imp_view(
                 match_block_rows = MATCH_BLOCK_ROWS.min(lasti - i);
                 match_block.resize(match_block_rows * m, 0.0);
                 let (offsets, entries) = (&cpmx2_sparse_offsets, &cpmx2_sparse_entries);
-                match_block.par_chunks_mut(m).enumerate().for_each(|(r, out)| {
+                let score_row = |(r, out): (usize, &mut [f64])| {
                     let mut row_scarr = vec![0.0f64; nalpha];
                     match_calc_row_into(
                         match_block_start + r, out, &mut row_scarr,
                         None, n, m, nalpha, matrix, &prof1.freqs,
                         offsets, entries,
                     );
-                });
+                };
+                // A speculative refinement branch scores its block on its
+                // own thread so the idle workers stay with the branch at
+                // the commit point (`dp_inner_parallel`); same bytes
+                // either way.
+                if crate::dp_inner_parallel() {
+                    match_block.par_chunks_mut(m).enumerate().for_each(score_row);
+                } else {
+                    match_block.chunks_mut(m).enumerate().for_each(score_row);
+                }
             }
             let off = (i - match_block_start) * m;
             currentw[..m].copy_from_slice(&match_block[off..off + m]);
@@ -1921,7 +2569,7 @@ pub fn profile_align_imp_view(
         // amortised over `m` inner cells.
         match (try_warp, strict_part_tiebreak) {
             (false, false) => j_loop::<false, false>(
-                m, i, h_row, ijp_row, cur_s, prev_s,
+                1, m, m, i, h_row, ijp_row, 0, cur_s, prev_s,
                 ogcp2_s, fgcp2_s, mj_s, mpj_s, prof2_ngf,
                 gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
                 boundary.tail2, f_ext,
@@ -1933,7 +2581,7 @@ pub fn profile_align_imp_view(
                 &mut warpis, &mut warpjs, &mut warpn,
             ),
             (false, true) => j_loop::<false, true>(
-                m, i, h_row, ijp_row, cur_s, prev_s,
+                1, m, m, i, h_row, ijp_row, 0, cur_s, prev_s,
                 ogcp2_s, fgcp2_s, mj_s, mpj_s, prof2_ngf,
                 gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
                 boundary.tail2, f_ext,
@@ -1945,7 +2593,7 @@ pub fn profile_align_imp_view(
                 &mut warpis, &mut warpjs, &mut warpn,
             ),
             (true, false) => j_loop::<true, false>(
-                m, i, h_row, ijp_row, cur_s, prev_s,
+                1, m, m, i, h_row, ijp_row, 0, cur_s, prev_s,
                 ogcp2_s, fgcp2_s, mj_s, mpj_s, prof2_ngf,
                 gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
                 boundary.tail2, f_ext,
@@ -1957,7 +2605,7 @@ pub fn profile_align_imp_view(
                 &mut warpis, &mut warpjs, &mut warpn,
             ),
             (true, true) => j_loop::<true, true>(
-                m, i, h_row, ijp_row, cur_s, prev_s,
+                1, m, m, i, h_row, ijp_row, 0, cur_s, prev_s,
                 ogcp2_s, fgcp2_s, mj_s, mpj_s, prof2_ngf,
                 gf1_i, gf1_im1, fgcp1_im1, ogcp1_i,
                 boundary.tail2, f_ext,
@@ -1980,6 +2628,7 @@ pub fn profile_align_imp_view(
             prevwarpj.copy_from_slice(&warpj);
         }
     }
+    } // serial fill
 
     let mut ops: Vec<AlignOp> = Vec::new();
     let mut best_score = 0.0f64;
@@ -2579,6 +3228,97 @@ mod tests {
         assert!((aln.score - 400.0).abs() < 1e-6);
         assert_eq!(aln.operations.len(), 4);
         assert!(aln.operations.iter().all(|op| *op == AlignOp::Match));
+    }
+
+    /// Deterministic 64-bit LCG for the equivalence tests.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    fn random_aligned(rng: &mut Lcg, nseq: usize, len: usize, gap_pct: usize) -> Vec<Vec<u8>> {
+        (0..nseq)
+            .map(|_| {
+                (0..len)
+                    .map(|_| if rng.below(100) < gap_pct { b'-' } else { b"ACGT"[rng.below(4)] })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Run the profile DP once with the serial fill and once with the tiled
+    /// fill on random profiles and demand the same operations and score
+    /// bits. Covers the constraint (`impmtx`) and plain paths, both
+    /// tie-break rules, with and without the tail gap row, skinny and
+    /// square shapes down to a single column or row, on a 4-thread pool so
+    /// the tiles of a diagonal really run concurrently.
+    fn check_tiled_matches_serial(seed: u64, n_len: usize, m_len: usize, nseq1: usize, nseq2: usize,
+                                  with_imp: bool, strict: bool, tail_gap: bool, extend: f64) {
+        let (mtx, map) = simple_setup();
+        let mut rng = Lcg(seed);
+        let s1 = random_aligned(&mut rng, nseq1, n_len, 15);
+        let s2 = random_aligned(&mut rng, nseq2, m_len, 15);
+        let r1: Vec<&[u8]> = s1.iter().map(|s| s.as_slice()).collect();
+        let r2: Vec<&[u8]> = s2.iter().map(|s| s.as_slice()).collect();
+        let w1 = vec![1.0 / nseq1 as f64; nseq1];
+        let w2 = vec![1.0 / nseq2 as f64; nseq2];
+        let p1 = Profile::from_aligned(&r1, &w1, &map, 5);
+        let p2 = Profile::from_aligned(&r2, &w2, &map, 5);
+        let gap = GapModel::new(-150.0, extend);
+        let imp_rows: Vec<Vec<f64>> = (0..n_len)
+            .map(|_| (0..m_len).map(|_| rng.below(1000) as f64 * 0.37).collect())
+            .collect();
+        let impv = with_imp.then(|| ImpMtx::Rows(&imp_rows));
+        let boundary = BoundaryFreqs { head1: 0.9, head2: 0.8, tail1: 0.7, tail2: 0.6 };
+        let run = |mode: u8| {
+            set_dp_tiling_override(mode);
+            let a = profile_align_imp_view(
+                &p1, &p2, &mtx, &gap, true, tail_gap, impv, strict, boundary, None,
+            );
+            set_dp_tiling_override(0);
+            a
+        };
+        let serial = run(1);
+        let tiled = run(2);
+        let label = format!(
+            "seed={seed} n={n_len} m={m_len} nseq={nseq1}/{nseq2} imp={with_imp} strict={strict} tail={tail_gap} ext={extend}"
+        );
+        assert_eq!(serial.operations, tiled.operations, "operations differ: {label}");
+        assert_eq!(serial.score.to_bits(), tiled.score.to_bits(), "score differs: {label}");
+    }
+
+    #[test]
+    fn tiled_fill_matches_serial_fill() {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        pool.install(|| {
+            let shapes: [(usize, usize); 9] = [
+                (300, 400), (40, 700), (700, 33), (1, 500), (500, 1), (2, 2), (97, 1030),
+                (33, 96), (130, 97),
+            ];
+            let mut seed = 1u64;
+            for &(n_len, m_len) in &shapes {
+                for &(nseq1, nseq2) in &[(1usize, 3usize), (2, 2)] {
+                    for &with_imp in &[false, true] {
+                        for &strict in &[false, true] {
+                            for &tail_gap in &[true, false] {
+                                for &extend in &[0.0, -3.0] {
+                                    check_tiled_matches_serial(
+                                        seed, n_len, m_len, nseq1, nseq2, with_imp, strict, tail_gap, extend,
+                                    );
+                                    seed += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 
     #[test]

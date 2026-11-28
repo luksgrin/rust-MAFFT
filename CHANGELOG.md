@@ -598,6 +598,63 @@ public surfaces stable from 0.1.0 anyway.
 
 ### Performance
 
+- **The refinement branch at the commit point fills its DP on the idle
+  workers, and speculation follows the accept rate** (issue #48). At
+  `--thread 8`, `mafft-rs` gained nothing past `--thread 4` on L-INS-i /
+  G-INS-i of BAliBASE BB40049 (62 × 778: 45 s at 4 and at 8 threads
+  against 118 s at one, where C reaches 4.4×) and little on FFT-NS-i of
+  the 86 – 142-sequence sets. A profile showed no serial floor: all eight
+  workers were busy, but two thirds of their work was speculative branch
+  evaluations that an accepted branch then discarded (8 – 26 % of the
+  branches of a cycle are accepted), and 92 % of BB40049's branches are
+  one FFT segment, so there was nothing left to split. The wall is then
+  about N_acc × c + N_rej × c / threads and the only lever left is c, the
+  cost of the one branch every later decision waits for. Two changes,
+  neither of which touches a result: (1) the profile DP
+  (`profile_align_imp_view`, `dp_fill_tiled`) fills its matrix by tiles,
+  up to 16 × 16 of at least 32 rows × 96 columns and 2^14 cells (matrices
+  under 2^18 cells are not tiled). A tile depends on the tile above (its
+  last row and the column gap state) and on the tile to its left (its
+  right-edge column and the row gap state), so the tiles of an
+  anti-diagonal are independent and go to idle pool threads as a
+  dependency-counted wavefront; inside a tile every cell runs the
+  unchanged `j_loop` body with the operands the whole-row walk hands it,
+  so the traceback matrix is the same bits whatever the tile shape or
+  thread count. Only the evaluation at the commit point
+  (`mafft_align::dp_priority_scope`) and the progressive merges, which
+  have no speculation to compete with, use the pool for their tiles; a
+  speculative branch keeps its DP on its own thread. (2) The number of
+  speculative evaluations in flight (`speculation_cap`) is at most
+  ⌈1/p̂⌉, p̂ an exponentially weighted estimate of the accept rate
+  (α = 1/8, carried across cycles), and at most half the pool when a
+  branch's DP is big enough for the tiles to pay (≥ 2^23 cells, about
+  2900 columns), never fewer than two; the workers not speculating take
+  the critical branch's tiles. A unit test checks the tiled fill against
+  the serial one on 288 random shapes, and `MAFFT_RS_DP_TILE_CHECK=1`
+  re-runs every tiled fill serially and aborts on the first differing
+  cell. Verified with it on all 386 BAliBASE 3 sets in FFT-NS-i, L-INS-i,
+  G-INS-i, E-INS-i, G-INS-i `--allowshift`, FFT-NS-2 and `--parttree` at
+  `--thread 1` (equal to the previous build) and `4` / `8` (equal to
+  `--thread 1`), 2702 cells; without it on the 80 `--thread 8` cells of
+  the scaling grid against their cached hashes and on 500 DNA clusters
+  plus 500 orthogroups of the high-throughput workload through the
+  Snakemake and loop paths, all equal to C. Medians of 3 runs on an idle
+  Apple M4 (`benchmarks/results/threads_2026-11-27.tsv`; before → after,
+  seconds, C in brackets): BB40049 L-INS-i `--thread 8` 45.19 → 28.47
+  [34.82], G-INS-i 45.58 → 28.06 [32.70], FFT-NS-i 20.89 → 12.35 [40.49],
+  L-INS-i `--thread 4` 45.04 → 37.48; 120 × 1.4 kb CDS FFT-NS-i
+  `--thread 8` 2.31 → 1.12 [4.66]; BB30005 G-INS-i 4.11 → 3.75 [6.05],
+  BB30013 G-INS-i 5.32 → 4.58 [6.89]; FFT-NS-i on the 86 – 142-sequence
+  sets 5 – 12 % faster; `--thread 1` within 1 % everywhere.
+  `mafft-rs --thread 8` is now ahead of C on 18 of the 21 cells (from 15)
+  with 2.6 – 5.1× over its own `--thread 1`. The progressive stage gains
+  too: FFT-NS-2 `--thread 8` on BB40049 1.61 → 0.44 s [2.52] and on the
+  CDS fixture 1.80 → 0.60 [2.83], `--parttree` 1.75 → 0.52 [2.70] and
+  2.39 → 0.86 [3.54] (medians of the `memory.py` grid). Peak RSS at
+  `--thread 8` on BB40049 L-INS-i 5,096 → 2,873 MiB [3,964], since the
+  cap halves the number of full-size DPs alive at once; no other cell of
+  the re-measured `memory.py` grid grew by more than 13 % or 3 MiB, and
+  `mafft-rs` is below C in 94 of its 96 cells.
 - **Progressive merges no longer spend O(k x W) per merge on row and
   profile bookkeeping, and that work runs on the pool.** After each
   merge `merge_step_cached` rewrote the k rows of both groups column by
