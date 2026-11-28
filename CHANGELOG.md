@@ -10,6 +10,17 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+### Changed
+
+- `python.yml` tests the Linux x86-64 wheel on `ubuntu-24.04` instead of
+  `ubuntu-latest`, whose move to Ubuntu 26.04 left no CPython 3.9 in the
+  runner's toolcache and failed the release run's 3.9 leg (which blocked
+  the publish step of 0.3.0). A manual dispatch can now publish when its
+  `publish` input is set, so a release whose own run could not publish
+  is republished from its commit without re-creating the release.
+- `CITATION.cff`, the README and the citation page carry the Zenodo
+  version DOI of 0.3.0 (10.5281/zenodo.24619455).
+
 ## [0.3.0] - 2026-11-28
 
 ### Added

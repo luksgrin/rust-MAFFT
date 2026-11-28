@@ -143,7 +143,7 @@ rust-MAFFT/
 │   ├── check-mafft-upstream.yml ← weekly: open/update an issue when the submodule pin lags upstream
 │   ├── docs.yml             ← push/PR touching docs inputs: build; main: deploy
 │   ├── release.yml          ← release: 5 pre-built binaries to GH releases
-│   ├── python.yml           ← push/PR: 5 abi3 wheels, tests on py3.12; release: same + sdist to PyPI
+│   ├── python.yml           ← push/PR: 5 abi3 wheels, tests on py3.12; release (or dispatch with `publish`): same + sdist to PyPI
 │   └── cargo-publish.yml    ← release: 10 crates to crates.io
 ├── README.md
 └── TODO.md                  ← parity roadmap, working scratchpad

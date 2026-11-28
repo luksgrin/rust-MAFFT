@@ -744,7 +744,7 @@ git commit -m "Bump MAFFT upstream to <version>"
 |----------|----------|------|
 | **CI** (`ci.yml`, via reusable `build-test.yml`) | push to main, PR to any branch | Build the in-tree C reference and the Rust workspace on ubuntu x86-64, ubuntu aarch64 and macOS arm64; full test suite (lib + integration + FFI) on each; FMA census of the C binaries (0 fused ops on Linux aarch64); `--bl 50` sentinel diff vs same-platform C (738 columns on Linux aarch64); `regen_policy_fixtures.sh check`; FP-policy cross-check (`fp-contract-none` fixtures on arm64); C-binary regression tests on x86-64 |
 | **Python** (`python.yml`) | push to main, PR to any branch | `cargo check -p pymafft` with `-D warnings`; one abi3 wheel per target (Linux x86-64/aarch64, macOS x86-64/arm64, Windows, `cp39-abi3`, any CPython >= 3.9), sdist, wheel tests on 3.12 |
-| | release, manual dispatch | Same 5 wheels + sdist, wheel tests on 3.9/3.12/3.14 (the same wheel on each); publish to PyPI on release |
+| | release, manual dispatch | Same 5 wheels + sdist, wheel tests on 3.9/3.12/3.14 (the same wheel on each); publish to PyPI on release, or on a dispatch with `publish` set |
 | **Documentation** (`docs.yml`) | push to main and PRs touching `docs/**`, `mkdocs.yml`, `crates/mafft-bin/src/**`, `crates/pymafft/**`, `scripts/gen-cli-reference.sh`; release; manual dispatch | Build the mkdocs site (regenerates the CLI reference, introspects pymafft); deploy to GitHub Pages from main/release/dispatch |
 | **Check MAFFT upstream** (`check-mafft-upstream.yml`) | weekly schedule, manual dispatch | Compare the `mafft-upstream` pin against upstream HEAD and report drift (never auto-updates) |
 | **Release** (`release.yml`) | GitHub release | Build `mafft-rs` binaries for 5 platforms, attach to release |
@@ -780,8 +780,8 @@ the algorithmic foundation always remains the Katoh et al. work, and
 that citation never goes away.
 
 Every GitHub release is archived on Zenodo. To pin the exact version of
-the port you used, cite its version DOI (v0.2.0:
-[10.5281/zenodo.22546977](https://doi.org/10.5281/zenodo.22546977));
+the port you used, cite its version DOI (v0.3.0:
+[10.5281/zenodo.24619455](https://doi.org/10.5281/zenodo.24619455));
 the concept DOI
 [10.5281/zenodo.20623683](https://doi.org/10.5281/zenodo.20623683)
 always resolves to the latest release. `CITATION.cff` carries both, so

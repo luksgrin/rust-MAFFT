@@ -172,10 +172,10 @@ be updated. Until then, please:
    Every GitHub release is archived automatically; the concept DOI
    [10.5281/zenodo.20623683](https://doi.org/10.5281/zenodo.20623683)
    always resolves to the latest release, and each release has its own
-   version DOI (v0.2.0:
-   [10.5281/zenodo.22546977](https://doi.org/10.5281/zenodo.22546977)).
-   For example: *Goiriz, L. (2026). rust-MAFFT (v0.2.0). Zenodo.
-   https://doi.org/10.5281/zenodo.22546977*.
+   version DOI (v0.3.0:
+   [10.5281/zenodo.24619455](https://doi.org/10.5281/zenodo.24619455)).
+   For example: *Goiriz, L. (2026). rust-MAFFT (v0.3.0). Zenodo.
+   https://doi.org/10.5281/zenodo.24619455*.
 
 ## Why both should be cited
 

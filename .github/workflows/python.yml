@@ -10,8 +10,8 @@ name: Python Package
 #   * push / pull_request  -> SMOKE: all 5 wheels, sdist, wheel tests on
 #                             Python 3.12. Nothing is published.
 #   * release / dispatch   -> FULL: all 5 wheels, sdist, wheel tests on
-#                             Python 3.9/3.12/3.14, then publish
-#                             (release only).
+#                             Python 3.9/3.12/3.14, then publish (on
+#                             release, or on dispatch with `publish`).
 #
 # Only run for changes that can reach a wheel: the Rust workspace (the
 # wheel bundles the `mafft-rs` binary, so every crate counts), the Cargo
@@ -45,8 +45,16 @@ on:
   # Publish on version tags
   release:
     types: [published]
-  # Manual trigger for testing (runs the FULL matrix, does not publish)
+  # Manual trigger: runs the FULL matrix; publishes only when `publish`
+  # is set (for a release whose own run could not publish, e.g. after a
+  # runner-image change broke one test leg; the version is read from
+  # `pyproject.toml`, so dispatch it on the commit of that release).
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the wheels and sdist to PyPI
+        type: boolean
+        default: false
 
 # A new push to the same PR (or to main) supersedes the run in flight;
 # cancel it instead of finishing wheels nobody will look at. Release and
@@ -279,7 +287,9 @@ jobs:
         python: ${{ fromJSON(needs.matrix.outputs.test-python) }}
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            # Pinned: `ubuntu-latest` moved to Ubuntu 26.04, whose
+            # toolcache has no CPython 3.9, and `setup-python` fails there.
+            os: ubuntu-24.04
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
@@ -327,13 +337,16 @@ jobs:
           python -m pymafft --help | head -1
 
   # ------------------------------------------------------------------
-  # Publish to PyPI (only on release tags)
+  # Publish to PyPI (on release tags, or on a manual dispatch that asks
+  # for it)
   # ------------------------------------------------------------------
   publish:
     name: Publish to PyPI
     needs: [lint, build-wheels, build-sdist, test-wheels]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' && github.event.action == 'published'
+    if: >-
+      (github.event_name == 'release' && github.event.action == 'published')
+      || (github.event_name == 'workflow_dispatch' && inputs.publish)
     environment:
       name: pypi
       url: https://pypi.org/project/pymafft/
