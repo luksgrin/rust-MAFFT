@@ -15,13 +15,13 @@ name = "pymafft"
 crate-type = ["cdylib"]
 
 [dependencies]
-mafft-core = { path = "../mafft-core", version = "0.2.0" }
-mafft-io = { path = "../mafft-io", version = "0.2.0" }
-mafft-types = { path = "../mafft-types", version = "0.2.0" }
+mafft-core = { path = "../mafft-core", version = "0.3.0" }
+mafft-io = { path = "../mafft-io", version = "0.3.0" }
+mafft-types = { path = "../mafft-types", version = "0.3.0" }
 # The CLI's flag layer. Every pymafft option becomes a `mafft-rs` flag and
 # runs through `mafft_rs::run_from_seqs`, so flag semantics are decided in
 # exactly one place and the Python output is byte-identical to the CLI's.
-mafft-rs = { path = "../mafft-bin", version = "0.2.0" }
+mafft-rs = { path = "../mafft-bin", version = "0.3.0" }
 # `abi3-py39`: build against the stable ABI, so one wheel per target serves
 # every CPython >= 3.9 (the `requires-python` floor in pyproject.toml).
 # `extension-module` is not enabled here. In PyO3 0.30 that feature skips

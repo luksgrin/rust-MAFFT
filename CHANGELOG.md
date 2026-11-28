@@ -10,6 +10,8 @@ public surfaces stable from 0.1.0 anyway.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-28
+
 ### Added
 
 - **Peak-memory and `--thread` benchmarks** (`benchmarks/memory.py`,

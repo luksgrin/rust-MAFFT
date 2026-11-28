@@ -416,7 +416,7 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 - **`f64` DP matrices with a per-target floating-point contraction policy.** The substitution matrix is stored as `Vec<Vec<i32>>` and exposed as `consweight_matrix: Vec<Vec<f64>>` for DP arithmetic (matches C's `n_dis_consweight_multi`). Whether `a + b * c` rounds once (fused multiply-add) or twice is decided by the C compiler, and C MAFFT 7.526 is therefore not bit-reproducible across compilers. The reference is the pinned `mafft-upstream` source, built in-tree with the upstream Makefile's default flags, on the platform you run on; CI measures that build at ~1140 fused ops per engine binary (`disttbfast` / `dvtditr` / `tbfast`) with Apple clang and 0 with gcc, including on Linux aarch64 (gcc in `-std=c99` emits no fused ops even though the CPU has FMA hardware). On the 36-seq sample `--bl 50` gives 712 columns with Apple clang and 738 with gcc — with `mafft-rs` matching the same-platform C on each (CI sentinel). Every contraction-sensitive site goes through `mafft_types::fp::fmadd`, which is `mul_add` when `CONTRACTS_FMA` is set and plain `a * b + c` otherwise. The default mirrors the usual C compiler for the target (fused on Apple, not fused on Linux or Windows); the `fp-contract-fma` / `fp-contract-none` cargo features force either policy at build time. There is no runtime flag. Fixtures whose bytes depend on it are committed as `<name>.fma` / `<name>.nofma` and re-derived from the in-tree C build by `scripts/regen_policy_fixtures.sh` in CI. `scripts/fma_census.sh <dir>` counts the fused instructions in any C MAFFT build so you can check which build you are comparing against.
 
-- **Rayon parallelism** for pairwise distance computation, all-vs-all local alignments, and refinement scoring. Sequential float summation is preserved at accept/reject decision boundaries to keep refinement output deterministic across thread counts.
+- **Rayon parallelism with byte-identical output at every thread count.** `--thread N` runs on a pool local to the call: the pairwise distance stages, the all-vs-all alignments of the INS-i modes, the progressive merges of independent guide-tree subtrees (each merge's profile DP filled as a dependency-driven wavefront of tiles whose cells run the unchanged serial recurrence), the FFT segments of FFT-NS-i refinement, and the refinement branches, which are evaluated speculatively in parallel and committed in the single-thread order while the branch at the commit point fills its DP on the otherwise idle workers; the number of speculative branches in flight follows the observed accept rate. Every parallel unit writes into a preallocated slot consumed in a fixed order, so no floating-point summation order changes and the output equals `--thread 1` (and C's `--thread 1`) for every N. `MAFFT_RS_DP_TILE_CHECK=1` re-runs every tiled DP serially and aborts on the first differing cell (verification knob).
 
 - **SIMD-friendly inner loops**: branchless patterns in `match_score()`, `pairwise_score()`, and `pairwise_identity_distance()` that LLVM auto-vectorizes to NEON/AVX instructions.
 
@@ -432,15 +432,15 @@ The release binary (`mafft-rs`) compiles with **zero C code** — `mafft-c-bindi
 
 ### Test suite
 
-**618 Rust tests pass + 10 ignored across 55 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, macOS arm64, 2026-11-02):
+**644 Rust tests pass + 10 ignored across 57 suites, and 160 Python tests** (release build, `cargo test --workspace --exclude pymafft --release`, macOS arm64, 2026-11-28):
 
 | Suite | Count | What |
 |-------|-------|------|
-| Rust lib tests (`--lib`, all crates)  | 267 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index) |
-| `mafft-core/tests/end_to_end.rs`      | 128 (4 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
-| Rust FFI cross-validation (`cross_validate*.rs`, 17 files) | 90 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `Falign_udpari_long`, `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
+| Rust lib tests (`--lib`, all crates)  | 283 | All `#[cfg(test)] mod tests` blocks (incl. the `fp` policy, `seqcheck`, per-alphabet constant audit, `searchAnchors` flush index, the tiled profile DP against the serial fill) |
+| `mafft-core/tests/end_to_end.rs`      | 132 (4 ignored) | Mode-level byte-identity vs committed C fixtures across every supported flag/mode combo |
+| Rust FFI cross-validation (`cross_validate*.rs`, 18 files) | 94 (4 ignored) | Cell-by-cell FFI equality against the in-tree C build: `G__align11`, `A__align`, `genL__align11`, `Falign`, `Falign_udpari_long` (nucleotide and protein), `MSalignmm`, `compacttree_memsaveselectable`, `insertnewgaps`, weights, distances, matrices |
 | `trace_refinement`, `exp_residual_*`  | 17  | Forensic refinement-trajectory and `--exp` residual cross-checks (also link the C shim) |
-| `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `add_variants_vs_c`, `add_followups_vs_c`, `memsafety_regressions`, `thread_determinism`) | 107 (2 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
+| `mafft-bin/tests/` (`input_handling_vs_c`, `input_bytes_vs_c`, `inmemory_parity`, `c_parity_dna`, `c_parity_protein`, `add_variants_vs_c`, `add_followups_vs_c`, `memsafety_regressions`, `thread_determinism`) | 109 (2 ignored) | CLI-level byte-identity: the 22-file input corpus, non-UTF-8 and CR-only input, `run_from_seqs` vs `run_from`, the DNA and protein fixtures (panaroo clusters, 120 × 1.4 kb CDS, `--thread 1`, the policy-sensitive protein cases), the `--add` / `--addfragments` variant fixtures, the memory-safety regressions and `--thread 1/2/4/8` byte-equality. The two ignores are the trailing-X `--add` tie and the homopolymer FFT case (section E) |
 | `mafft-io` / `mafft-align` integration + doctests | 19 | Reader/writer round-trips, `imp` matrix equivalence, `mafft_rs` / `mafft` doc examples |
 | Python tests                          | 160 | API (32), parity/shape (23), **CLI-option parity against the `mafft-rs` binary** (82), Biopython interop (18), console script (5) |
 
@@ -523,25 +523,19 @@ Inputs from the memory-safety run (2026-10-31, [memory safety](docs/architecture
 
 ## Performance
 
-Benchmark snapshot vs C MAFFT 7.526 (macOS arm64, alternating-run medians):
-
-| Mode / input                                | C MAFFT | mafft-rs | Ratio              |
-|---------------------------------------------|---------|----------|--------------------|
-| default FFT-NS-2 (108-seq synthetic)        | 1.34s   | 1.16s    | **rust 1.16× faster** |
-| `--maxiterate 100` FFT-NS-i (36-seq sample) | 0.785s  | 0.670s   | **rust 1.17× faster** |
-| `--maxiterate 100` FFT-NS-i (BB12019)       | 0.333s  | 0.198s   | **rust 1.68× faster** |
-| `--maxiterate 100` FFT-NS-i (BB30004)       | 1.366s  | 1.246s   | **rust 1.10× faster** |
-| `--allowshift --globalpair --maxiterate 1000` (36-seq) | 2.586s | 1.756s | **rust 1.47× faster** |
-| `--maxiterate 50 --localpair` (108-seq)     | 37.00s  | 22.93s   | **rust 1.61× faster** |
-| `--maxiterate 50 --globalpair` (108-seq)    | 35.32s  | 22.62s   | **rust 1.56× faster** |
-| `--parttree` (108-seq)                      | 1.70s   | 0.09s    | **rust 18× faster**   |
-| `--dpparttree` (108-seq)                    | 7.24s   | 0.08s    | **rust 90× faster**   |
-
-The table above predates the flattened profile-DP / `L__align11` scratch buffers that landed with the issue #1 integration. Measured against the previous `mafft-rs` build (medians of 5 interleaved runs, Apple M4): `mtb_cds_120x1400 --retree 2 --maxiterate 2` 4.99 s → 4.62 s (1.08×), 36-seq sample `--localpair --maxiterate 1000` 0.85 s → 0.77 s (1.11×), `--maxiterate 1000` 0.54 s → 0.48 s (1.14×), default 0.066 s → 0.055 s (1.21×) — with output bytes unchanged. `MAFFT_RS_REFINE_STATS=1` prints one line per refinement call (`cycles`, `visited`, `accepted`, exit reason) so a speed comparison against C's `dvtditr` log can first confirm both sides did the same work.
+All timings below are against C MAFFT 7.526 built in-tree, on an Apple
+M4 (10 cores, 32 GB, macOS 26.5), with the same output on both sides
+unless stated. Single-threaded, `mafft-rs` is faster than C on every
+input and mode measured: 1.2 – 2.2× on single alignments of 100 to 5000
+sequences, 1.2 – 1.75× on the 36- to 142-sequence inputs of the
+thread table below. `MAFFT_RS_REFINE_STATS=1` prints one line per
+refinement call (`cycles`, `visited`, `accepted`, exit reason) so a speed
+comparison against C's `dvtditr` log can first confirm both sides did the
+same work.
 
 ### Scaling sweep and high-throughput workload (2026-11)
 
-Two larger runs at `91903cc` on the same Apple M4, raw TSVs in
+Two larger runs at `91903cc` on the same machine, raw TSVs in
 [`benchmarks/results/`](benchmarks/README.md), tables and provenance in
 [PROFILING.md](PROFILING.md#scaling-benchmark-n--100-to-5000-issue-22):
 
@@ -564,7 +558,8 @@ Apple M4 (10 cores, 32 GB), macOS 26.5, in-tree C build vs `mafft-rs`,
 both with `--thread N`; drivers and raw TSVs in [`benchmarks/`](benchmarks/README.md),
 method and every cell in [PROFILING.md](PROFILING.md#memory-footprint-issue-26).
 
-Peak RSS (2026-10-31, before #56), ratio C / `mafft-rs` (> 1: `mafft-rs`
+Peak RSS of the committed grid (2026-10-31, `mafft-rs` at `8bff99f`,
+refinement still single-threaded), ratio C / `mafft-rs` (> 1: `mafft-rs`
 uses less), median over 7 inputs (36-seq sample, 120 × 1.4 kb CDS, the
 five largest BAliBASE 3 sets), 3 runs per cell:
 
@@ -575,16 +570,17 @@ five largest BAliBASE 3 sets), 3 runs per cell:
 | L-INS-i | 0.51 | 1.25 | 2.34 |
 | `--parttree` | 0.57 | 0.56 | 0.55 |
 
-That grid predates the fixes of
-[#77](https://github.com/luksgrin/rust-MAFFT/pull/77) and
-[#85](https://github.com/luksgrin/rust-MAFFT/pull/85) and the parallel
-refinement of #56. Re-measured with the current code on 2026-11-27 (raw
-rows not committed), `mafft-rs` peaks below C in 94 of the 96 cells, in
-every mode single-threaded (L-INS-i 1.15 – 1.8× lower, BB40049 62 × 778:
-540 vs 823 MiB); both sides now grow with the thread count, since every
-refinement branch evaluated in parallel holds its own DP scratch, and
-the largest cell, BB40049 L-INS-i at `--thread 8`, is 2,873 MiB against
-C's 3,964.
+With the current code (same grid re-measured on 2026-11-27, raw rows not
+committed), `mafft-rs` peaks below C in 94 of the 96 cells, in every mode
+single-threaded (L-INS-i 1.15 – 1.8× lower, BB40049 62 × 778: 540 vs
+823 MiB); both sides grow with the thread count, since every refinement
+branch evaluated in parallel holds its own DP scratch, and the largest
+cell, BB40049 L-INS-i at `--thread 8`, is 2,873 MiB against C's 3,964.
+On the scaling grid above, `mafft-rs`'s peak is a median 0.21× of C's in
+FFT-NS-2, 0.37× in FFT-NS-i and `--parttree` and 0.6× in L-INS-i and
+G-INS-i single-threaded; the exceptions where it is above C are
+`--parttree` at 5000 sequences (1.8 – 2.2 GB against 1.7 – 1.9) and a few
+8-thread iterative cells on long, gap-rich families.
 
 Wall clock, current code, median of 3 runs (s). `mafft-rs` measured
 2026-11-27 on an otherwise idle machine; the C rows are from the
@@ -612,16 +608,13 @@ C. At `--thread 8` it gains 2.6 – 5.1× over its own `--thread 1` and is
 ahead of C on 18 of the 21 cells; C is ahead by 1 – 9 % on FFT-NS-i of
 BB30001, BB30003 and BB30013. C's `--thread 8` runs are not like-for-like
 with `mafft-rs`'s: its threaded refinement follows a different trajectory
-each run. Since [#56](https://github.com/luksgrin/rust-MAFFT/pull/56),
-`--thread N` runs the progressive merges of independent subtrees, the
-FFT-NS-i refinement segments and speculatively scored refinement branches
-on the pool; since the fix of
-[#48](https://github.com/luksgrin/rust-MAFFT/issues/48), the branch at the
-commit point of the refinement, and every progressive merge, fill their
-DP matrix as a wavefront of tiles on the idle workers, and the number of
-speculative branches in flight follows the accept rate, so `--thread 8` on
-BB40049 L-INS-i went from 45 s to 28 s. Output is still byte-identical at
-every thread count. From Python,
+each run. `--thread N` runs the all-pairs stage, the progressive merges
+of independent subtrees (each merge's DP as a wavefront of tiles), the
+FFT-NS-i refinement segments and the speculatively scored refinement
+branches on the pool; the branch at the refinement's commit point fills
+its DP on the idle workers and the number of speculative branches in
+flight follows the accept rate (see
+[Key design decisions](#key-design-decisions)). From Python,
 `pymafft.align(threads=N)` uses the same code path and its results equal
 the CLI at `--thread 1`; two concurrent calls in two Python threads take
 as long as one (GIL released); details in
@@ -703,7 +696,7 @@ It needs:
   dependencies already built, longer from a cold build.
 
 ```bash
-# Whole workspace: 55 suites, 618 tests pass, 10 ignored
+# Whole workspace: 57 suites, 644 tests pass, 10 ignored
 cargo test --workspace --exclude pymafft --release
 
 # Just unit tests (faster; no FFI or fixture suites, but the first build

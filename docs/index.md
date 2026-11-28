@@ -93,7 +93,7 @@ binary is a drop-in replacement.
 
 The [Byte-identity](architecture/byte-identity.md) page documents the
 design decisions, FFT tie-break ports, FP-order constraints, and
-cross-validation infrastructure (99 FFI test functions against the C
+cross-validation infrastructure (111 FFI test functions against the C
 implementation, compiled in-tree on the same platform).
 
 ## Status

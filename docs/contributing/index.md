@@ -80,7 +80,7 @@ Results are relative to the C build on your platform; see
 ### Workspace suite
 
 ```sh
-# 618 tests + 10 ignored across 55 suites; builds the C reference in-tree
+# 644 tests + 10 ignored across 57 suites; builds the C reference in-tree
 # (mafft-c-bindings/build.rs) on the first run
 cargo test --workspace --exclude pymafft --release
 ```
@@ -138,7 +138,7 @@ rust-MAFFT/
 ├── mkdocs.yml
 ├── mafft-upstream/          ← submodule: reference C MAFFT
 ├── .github/workflows/
-│   ├── ci.yml               ← push/PR (non-docs changes): build + test on x86-64 and arm64 (via build-test.yml)
+│   ├── ci.yml               ← push/PR (non-docs changes): build + test on Linux x86-64, Linux aarch64 and macOS arm64 (via build-test.yml)
 │   ├── build-test.yml       ← reusable job: C in-tree, cargo test, FMA census, sentinel, fixture check
 │   ├── check-mafft-upstream.yml ← weekly: open/update an issue when the submodule pin lags upstream
 │   ├── docs.yml             ← push/PR touching docs inputs: build; main: deploy

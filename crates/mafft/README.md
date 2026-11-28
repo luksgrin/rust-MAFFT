@@ -48,7 +48,7 @@ get exactly that behaviour in-process instead of re-deriving it, enable the
 [`mafft-rs`](https://crates.io/crates/mafft-rs) library:
 
 ```toml
-mafft = { version = "0.1", features = ["cli"] }
+mafft = { version = "0.3", features = ["cli"] }
 ```
 
 ```rust,no_run
