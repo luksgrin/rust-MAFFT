@@ -435,16 +435,18 @@ impl Profile {
             use rayon::prelude::*;
             let chunk = MIN_CHUNK.max(length.div_ceil(4 * threads));
             let nchunks = length.div_ceil(chunk);
-            let parts: Vec<ColumnAccum> = (0..nchunks)
-                .into_par_iter()
-                .map(|c| {
-                    let a = c * chunk;
-                    let b = (a + chunk).min(length);
-                    let mut acc = ColumnAccum::zeroed(b - a, nalphabets);
-                    accumulate_columns(sequences, weights, amino_map, nalphabets, length, a, b, &mut acc);
-                    acc
-                })
-                .collect();
+            let parts: Vec<ColumnAccum> = crate::without_dp_tokens(|| {
+                (0..nchunks)
+                    .into_par_iter()
+                    .map(|c| {
+                        let a = c * chunk;
+                        let b = (a + chunk).min(length);
+                        let mut acc = ColumnAccum::zeroed(b - a, nalphabets);
+                        accumulate_columns(sequences, weights, amino_map, nalphabets, length, a, b, &mut acc);
+                        acc
+                    })
+                    .collect()
+            });
             freqs = Vec::with_capacity(length);
             gap_freq = Vec::with_capacity(length);
             opening_count = Vec::with_capacity(length);
@@ -837,7 +839,7 @@ fn align_with_anchors_inner(
     // concatenated and summed in segment order exactly as in the serial loop.
     let segments: Vec<Option<Alignment>> = if count > 2 && crate::parallel_enabled() {
         use rayon::prelude::*;
-        (0..count - 1).into_par_iter().map(align_segment).collect()
+        crate::without_dp_tokens(|| (0..count - 1).into_par_iter().map(align_segment).collect())
     } else {
         (0..count - 1).map(align_segment).collect()
     };
@@ -1528,7 +1530,9 @@ fn dp_fill_tiled_impl(
             }
         };
         if allow_parallel && crate::dp_inner_parallel() {
-            scarr_all.par_chunks_mut(nalpha).enumerate().for_each(score);
+            // A pool wait: this thread may run another computation's job
+            // meanwhile, which must not see this thread's tokens.
+            crate::without_dp_tokens(|| scarr_all.par_chunks_mut(nalpha).enumerate().for_each(score));
         } else {
             scarr_all.chunks_mut(nalpha).enumerate().for_each(score);
         }
@@ -1798,10 +1802,15 @@ fn dp_fill_tiled_impl(
         .collect();
     let sc = Sched { run_tile, deps, n_i, n_j, cancel, cancelled: AtomicBool::new(false) };
     let sc = &sc;
-    rayon::scope(|s| {
-        for &t in &ready {
-            launch(s, sc, t);
-        }
+    // The tiles carry `cancel` by value; this thread's own tokens are
+    // cleared while it waits, so a job of another computation that the pool
+    // runs on it meanwhile does not read them.
+    crate::without_dp_tokens(|| {
+        rayon::scope(|s| {
+            for &t in &ready {
+                launch(s, sc, t);
+            }
+        })
     });
     sc.cancelled.load(Ordering::Relaxed) || cancel.cancelled()
 }

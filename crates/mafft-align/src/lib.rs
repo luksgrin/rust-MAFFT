@@ -177,6 +177,35 @@ pub(crate) fn dp_cancel_token() -> DpCancelToken {
     DpCancelToken(DP_CANCEL.with(|c| c.get()))
 }
 
+/// Run `f`, which hands work to the pool and waits for it, with this
+/// thread's cancellation and priority tokens cleared for the duration.
+///
+/// A thread that waits inside `rayon::scope` or a parallel iterator runs
+/// whatever job the pool gives it meanwhile, including a DP of another
+/// alignment in the same process. That DP polls the tokens of the thread
+/// it runs on, so it must not find the tokens of the computation that is
+/// waiting: a foreign cancellation token would make it give up and return
+/// an all-gap alignment. The tokens are restored when `f` returns, after
+/// every stolen job has finished. Work that `f` itself hands out must take
+/// the token it needs by value (`dp_cancel_token`) before calling this.
+pub fn without_dp_tokens<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore {
+        cancel: Option<(*const std::sync::atomic::AtomicU64, u64)>,
+        priority: Option<(*const std::sync::atomic::AtomicUsize, usize)>,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DP_CANCEL.with(|c| c.set(self.cancel));
+            DP_PRIORITY.with(|c| c.set(self.priority));
+        }
+    }
+    let _restore = Restore {
+        cancel: DP_CANCEL.with(|c| c.replace(None)),
+        priority: DP_PRIORITY.with(|c| c.replace(None)),
+    };
+    f()
+}
+
 #[inline]
 pub(crate) fn dp_cancelled() -> bool {
     DP_CANCEL.with(|c| match c.get() {

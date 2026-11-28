@@ -2306,7 +2306,9 @@ fn rebuild_rows(
     const PAR_BYTES: usize = 1 << 18;
     if group.len() > 1 && group.len() * new_width >= PAR_BYTES && mafft_align::parallel_enabled() {
         use rayon::prelude::*;
-        group.par_iter().map(|&i| rebuild_row(&aligned[i], runs, new_width, new_gap_char)).collect()
+        mafft_align::without_dp_tokens(|| {
+            group.par_iter().map(|&i| rebuild_row(&aligned[i], runs, new_width, new_gap_char)).collect()
+        })
     } else {
         group.iter().map(|&i| rebuild_row(&aligned[i], runs, new_width, new_gap_char)).collect()
     }
