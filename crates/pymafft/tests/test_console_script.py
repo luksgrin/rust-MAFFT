@@ -19,6 +19,7 @@ than fail — the launcher is correct, the binary is just absent.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -87,8 +88,9 @@ def test_python_m_pymafft_version():
     )
     assert result.returncode == 0
     out = (result.stdout + result.stderr).strip()
-    # Either "mafft-rs 0.1.0" or just "0.1.0" — both are fine.
-    assert "0.1" in out or "0.2" in out or "1." in out
+    # Either "mafft-rs 0.3.0" or just "0.3.0" — both are fine; only the
+    # shape of the version number is checked, not its value.
+    assert re.search(r"\b\d+\.\d+\.\d+\b", out), out
 
 
 def test_console_script_on_path():
